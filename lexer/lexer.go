@@ -18,7 +18,7 @@ const (
 	STRING                      // Double quote delimited string literal, e.g. "Hello, World!"
 	IDENTIFIER                  // If a word is not a reserved keyword, then it must be an identifier
 
-	// Multicharacter symbols
+	// Multicharacter tokens
 	COLON_EQUALS   // :=
 	DOUBLE_EQUALS  // ==
 	NOT_EQUALS     // !=
@@ -30,7 +30,7 @@ const (
 	SLASH_EQUALS   // /=
 	PERCENT_EQUALS // %=
 
-	// Single- character symbols
+	// Single- character tokens
 	EQUALS        // =
 	NOT           // !
 	PIPE          // |
@@ -45,7 +45,7 @@ const (
 	STAR          // *
 	PERCENT       // %
 	DOT           // .
-	SEMI_COLON    // ;
+	SEMICOLON     // ;
 	COLON         // :
 	COMMA         // ,
 	OPEN_BRACKET  // [
@@ -55,7 +55,7 @@ const (
 	OPEN_PAREN    // (
 	CLOSE_PAREN   // )
 
-	// Keywords
+	// Reserved keywords
 	LET
 	STRUCT
 	TRUE
@@ -67,6 +67,9 @@ const (
 	ELSE
 	FOR
 	RETURN
+
+	// Sentinel value
+	NUM_TOKENS
 )
 
 type tokenPattern struct {
@@ -74,7 +77,9 @@ type tokenPattern struct {
 	pattern   *regexp.Regexp
 }
 
+// NOTE: Order matters! (e.g. need to try `!=` pattern before `!` to correctly identify the token NOT_EQUALS)
 var tokenPatterns []tokenPattern = []tokenPattern{
+	// Literals, comments, and special tokens
 	{EOL, regexp.MustCompile(`^\r?\n|\r`)},
 	{WHITESPACE, regexp.MustCompile(`^\s+`)},
 	{WORD, regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*`)},
@@ -82,6 +87,7 @@ var tokenPatterns []tokenPattern = []tokenPattern{
 	{NUMBER, regexp.MustCompile(`^[0-9]+(\.[0-9]+)?`)},
 	{STRING, regexp.MustCompile(`^"[^"]*"`)},
 
+	// Multicharacter tokens
 	{COLON_EQUALS, regexp.MustCompile(`^:=`)},
 	{DOUBLE_EQUALS, regexp.MustCompile(`^==`)},
 	{NOT_EQUALS, regexp.MustCompile(`^!=`)},
@@ -93,6 +99,7 @@ var tokenPatterns []tokenPattern = []tokenPattern{
 	{SLASH_EQUALS, regexp.MustCompile(`^/=`)},
 	{PERCENT_EQUALS, regexp.MustCompile(`^%=`)},
 
+	// Single- character tokens
 	{EQUALS, regexp.MustCompile(`^=`)},
 	{NOT, regexp.MustCompile(`^!`)},
 	{PIPE, regexp.MustCompile(`^\|`)},
@@ -107,7 +114,7 @@ var tokenPatterns []tokenPattern = []tokenPattern{
 	{STAR, regexp.MustCompile(`^\*`)},
 	{PERCENT, regexp.MustCompile(`^%`)},
 	{DOT, regexp.MustCompile(`^\.`)},
-	{SEMI_COLON, regexp.MustCompile(`^;`)},
+	{SEMICOLON, regexp.MustCompile(`^;`)},
 	{COLON, regexp.MustCompile(`^:`)},
 	{COMMA, regexp.MustCompile(`^,`)},
 	{OPEN_BRACKET, regexp.MustCompile(`^\[`)},
@@ -132,97 +139,74 @@ var reservedKeywords map[string]TokenType = map[string]TokenType{
 	"return": RETURN,
 }
 
+// A lookup table for the Stringer interface implementation
+var tokenDisplayNames map[TokenType]string = map[TokenType]string{
+	// Literals, comments, and special tokens
+	EOF:        "eof",
+	EOL:        "eol",
+	WHITESPACE: "whitespace",
+	WORD:       "word",
+	COMMENT:    "comment",
+	NUMBER:     "number",
+	STRING:     "string",
+
+	// Multicharacter tokens
+	COLON_EQUALS:   "colon_equals",
+	DOUBLE_EQUALS:  "double_equals",
+	NOT_EQUALS:     "not_equals",
+	LESS_EQUALS:    "less_equals",
+	GREATER_EQUALS: "greater_equals",
+	PLUS_EQUALS:    "plus_equals",
+	DASH_EQUALS:    "dash_equals",
+	STAR_EQUALS:    "star_equals",
+	SLASH_EQUALS:   "slash_equals",
+	PERCENT_EQUALS: "percent_equals",
+
+	// Single- character tokens
+	EQUALS:        "equals",
+	NOT:           "not",
+	PIPE:          "pipe",
+	AMPERSAND:     "ampersand",
+	CHEVRON:       "chevron",
+	LESS:          "less",
+	GREATER:       "greater",
+	PLUS:          "plus",
+	DASH:          "dash",
+	UNDERSCORE:    "underscore",
+	SLASH:         "slash",
+	STAR:          "star",
+	PERCENT:       "percent",
+	DOT:           "dot",
+	SEMICOLON:     "semicolon",
+	COLON:         "colon",
+	COMMA:         "comma",
+	OPEN_BRACKET:  "open_bracket",
+	CLOSE_BRACKET: "close_bracket",
+	OPEN_CURLY:    "open_curly",
+	CLOSE_CURLY:   "close_curly",
+	OPEN_PAREN:    "open_paren",
+	CLOSE_PAREN:   "close_paren",
+
+	// Reserved keywords
+	LET:    "let",
+	STRUCT: "struct",
+	TRUE:   "true",
+	FALSE:  "false",
+	FUNC:   "func",
+	IF:     "if",
+	OR:     "or",
+	AND:    "and",
+	ELSE:   "else",
+	FOR:    "for",
+	RETURN: "return",
+}
+
+// Implement Stringer for TokenType.
 func (tokenType TokenType) String() string {
-	switch tokenType {
-	case EOF:
-		return "eof"
-	case WHITESPACE:
-		return "whitespace"
-	case WORD:
-		return "word"
-	case COMMENT:
-		return "comment"
-	case NUMBER:
-		return "number"
-	case STRING:
-		return "string"
-	case TRUE:
-		return "true"
-	case FALSE:
-		return "false"
-	case IDENTIFIER:
-		return "identifier"
-	case OPEN_BRACKET:
-		return "open_bracket"
-	case CLOSE_BRACKET:
-		return "close_bracket"
-	case OPEN_CURLY:
-		return "open_curly"
-	case CLOSE_CURLY:
-		return "close_curly"
-	case OPEN_PAREN:
-		return "open_paren"
-	case CLOSE_PAREN:
-		return "close_paren"
-	case EQUALS:
-		return "assignment"
-	case DOUBLE_EQUALS:
-		return "equals"
-	case NOT_EQUALS:
-		return "not_equals"
-	case NOT:
-		return "not"
-	case LESS:
-		return "less"
-	case LESS_EQUALS:
-		return "less_equals"
-	case GREATER:
-		return "greater"
-	case GREATER_EQUALS:
-		return "greater_equals"
-	case DOT:
-		return "dot"
-	case SEMI_COLON:
-		return "semi_colon"
-	case COLON:
-		return "colon"
-	case COMMA:
-		return "comma"
-	case PLUS_EQUALS:
-		return "plus_equals"
-	case DASH_EQUALS:
-		return "minus_equals"
-	case PLUS:
-		return "plus"
-	case DASH:
-		return "dash"
-	case SLASH:
-		return "slash"
-	case STAR:
-		return "star"
-	case PERCENT:
-		return "percent"
-	case LET:
-		return "let"
-	case FUNC:
-		return "func"
-	case IF:
-		return "if"
-	case OR:
-		return "or"
-	case AND:
-		return "and"
-	case ELSE:
-		return "else"
-	case FOR:
-		return "for"
-	case STRUCT:
-		return "struct"
-	case RETURN:
-		return "return"
-	default:
-		return fmt.Sprintf("unknown(%d)", tokenType)
+	if str, found := tokenDisplayNames[tokenType]; found {
+		return str
 	}
+	return fmt.Sprintf("unknown (%d)", tokenType)
 }
 
 type Token struct {
@@ -231,18 +215,26 @@ type Token struct {
 }
 
 func tryMatchPattern(src string, re *regexp.Regexp, tokenType TokenType) (int, Token) {
+	// Try to match the regex
 	matchRange := re.FindStringIndex(src)
+	// No match, return empty Token
 	if matchRange == nil {
 		return 0, Token{}
 	}
 
+	// Sanity check: All regexes should start with `^`, because we always want to match
+	// against the beginning of the remaining (unprocessed) source text.
 	if matchRange[0] > 0 {
 		panic(fmt.Sprintf("Internal error: regex matched at non-zero index %d!", matchRange[0]))
 	}
 
-	match := src[:matchRange[1]]
+	// Because the beginning of the match range must be 0, length is just the end of the range
 	length := matchRange[1]
+	match := src[:length]
 
+	// If we're not matching against a WORD token, return the type as is.
+	// If we are, check the result string in detail to see if it is a reserved keyword.
+	// If it's not, then it must be an identifier.
 	if tokenType != WORD {
 		return length, Token{
 			Type:  tokenType,
@@ -264,19 +256,34 @@ func tryMatchPattern(src string, re *regexp.Regexp, tokenType TokenType) (int, T
 func Tokenize(src string) []Token {
 	pos := 0
 	tokens := make([]Token, 0)
-
+	// While there is unprocessed source left...
 	for pos < len(src) {
+		// Keep track of whether we have found a matching token for the input beginning at the current position
+		found := false
+		// Get the remaining part as a slice
 		remainingSrc := src[pos:]
+		// For each pattern, try to match them in order.
 		for _, tp := range tokenPatterns {
+			// If some pattern did match, add the token to the collection and update the position
 			if length, newToken := tryMatchPattern(remainingSrc, tp.pattern, tp.tokenType); length != 0 {
-				if newToken.Type != WHITESPACE && newToken.Type != COMMENT {
+				if newToken.Type != WHITESPACE {
 					tokens = append(tokens, newToken)
 				}
+				found = true
 				pos += length
 				break
 			}
 		}
+		if !found {
+			panic(fmt.Sprintf("Internal error: failed to tokenize source at %d", pos))
+		}
 	}
-
 	return tokens
+}
+
+// During package initialization, sanity check that we have a string representation for all tokens
+func init() {
+	if len(tokenDisplayNames) != int(NUM_TOKENS) {
+		panic(fmt.Sprintf("Internal error: Expected %d token display names, found %d", len(tokenDisplayNames), NUM_TOKENS))
+	}
 }

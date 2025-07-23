@@ -285,16 +285,16 @@ func Tokenize(src string) []Token {
 	return tokens
 }
 
-// During package initialization, sanity check that we have a string representation for all tokens
+// During package initialization, perform basic sanity checks to ensure all TokenType values are handled.
 func init() {
 	numTokens := int(NUM_TOKENS)
 
 	// Add 2 for EOF and IDENTIFIER which are not present in neither patterns nor keywords
 	if numPatternsKeywords := len(tokenPatterns) + len(reservedKeywords) + 2; numPatternsKeywords != numTokens {
-		panic(fmt.Sprintf("Internal error: Expected %d token patterns and/or keywords, found %d", numTokens, numPatternsKeywords))
+		panic(fmt.Sprintf("Lexer error! Expected %d token patterns and/or keywords, found %d", numTokens, numPatternsKeywords))
 	}
 
 	if numNames := len(tokenDisplayNames); numNames != numTokens {
-		panic(fmt.Sprintf("Internal error: Expected %d token display names, found %d", numTokens, numNames))
+		panic(fmt.Sprintf("Lexer error! Expected %d token display names, found %d", numTokens, numNames))
 	}
 }

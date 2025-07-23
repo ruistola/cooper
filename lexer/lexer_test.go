@@ -40,8 +40,7 @@ func (tl testLogger) Error(format string, args ...any) {
 	tl.t.Errorf("\033[31m✗ "+format+"\033[0m", args...)
 }
 
-// Token dump helper
-func logTokens(log testLogger, tokens []Token) {
+func (tl testLogger) Dump(tokens []Token) {
 	if *showTokens {
 		godump.Dump(tokens)
 	} else if *showTokenTypes {
@@ -49,7 +48,7 @@ func logTokens(log testLogger, tokens []Token) {
 		for i, tok := range tokens {
 			types[i] = tok.Type.String()
 		}
-		log.Info("Token types: [%s]", strings.Join(types, ", "))
+		tl.Info("Token types: [%s]", strings.Join(types, ", "))
 	}
 }
 
@@ -64,7 +63,7 @@ func testTokenization(t *testing.T, src string, expected ...TokenType) {
 	// Check token count
 	if len(tokens) != len(expected) {
 		log.Error("Expected %d tokens, got %d", len(expected), len(tokens))
-		logTokens(log, tokens)
+		log.Dump(tokens)
 		t.FailNow()
 		return
 	}
@@ -73,14 +72,14 @@ func testTokenization(t *testing.T, src string, expected ...TokenType) {
 	for i := range len(tokens) {
 		if tokens[i].Type != expected[i] {
 			log.Error("Token %d: expected %s, got %s", i, expected[i], tokens[i].Type)
-			logTokens(log, tokens)
+			log.Dump(tokens)
 			t.FailNow()
 			return
 		}
 	}
 
 	log.Success("OK - %d tokens", len(tokens))
-	logTokens(log, tokens)
+	log.Dump(tokens)
 }
 
 // Test helper that expects tokenization to panic

@@ -225,25 +225,26 @@ type Token struct {
 // tryMatchPattern tests a regex against the input text and if there is a match, produces a new Token
 // of the type specified by the `tokenType` argument (or a refined type, in case of WORD).
 func tryMatchPattern(src string, re *regexp.Regexp, tokenType TokenType) (int, Token) {
-	// Try to match the regex
+	// Try to find a range in the input text where the reges matches
 	matchRange := re.FindStringIndex(src)
 	// No match, return empty Token
 	if matchRange == nil {
 		return 0, Token{}
 	}
 
-	// Sanity check: All regexes should start with `^`, and matches should therefore always start at 0.
+	// Sanity check: All regexes should start with `^`, and any match should therefore always start at 0.
+	// Otherwise we would be skipping some sections of the input text entirely.
 	if matchRange[0] > 0 {
 		panic(fmt.Sprintf("Internal error: regex matched at non-zero index %d!", matchRange[0]))
 	}
 
-	// Because the beginning of the match range must be 0, length is just the end of the range
+	// Because the beginning of the match range is now guaranteed to be 0,
+	// length is just the end of the range.
 	length := matchRange[1]
 	match := src[:length]
 
-	// If we're not matching against a WORD token, return the type as is.
-	// If we are, check the result string in detail to see if it is a reserved keyword.
-	// If it's not, then it must be an identifier.
+	// If we're not matching against a WORD token, simply return the type provided as an argument.
+	// If we are, check the matched string to see if it is one of the reserved keywords, or an IDENTIFIER.
 	if tokenType != WORD {
 		return length, Token{
 			Type:  tokenType,

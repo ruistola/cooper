@@ -86,7 +86,7 @@ var tokenPatterns []tokenPattern = []tokenPattern{
 	{WHITESPACE, regexp.MustCompile(`^\s+`)},
 	{WORD, regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*`)},
 	{COMMENT, regexp.MustCompile(`^\/\/.*`)},
-	{NUMBER, regexp.MustCompile(`^[0-9]+(\.[0-9]+)?`)},
+	{NUMBER, regexp.MustCompile(`^(0[xX][0-9a-fA-F](_?[0-9a-fA-F])*|0[bB][01](_?[01])*|[0-9](_?[0-9])*(\.([0-9](_?[0-9])*)?)?([eE][+-]?[0-9](_?[0-9])*)?)`)},
 	{STRING, regexp.MustCompile(`^"[^"]*"`)},
 
 	// Multicharacter tokens

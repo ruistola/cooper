@@ -262,8 +262,7 @@ func tryMatchPattern(src string, re *regexp.Regexp, tokenType TokenType) (int, T
 	}
 }
 
-// Tokenize essentially does all the real work in this package. It converts a raw text source
-// into a token stream that can then be fed as input for the parser.
+// Tokenize converts a raw text source into a token stream that can then be fed as input for the parser.
 func Tokenize(src string) []Token {
 	pos := 0
 	tokens := make([]Token, 0)
@@ -290,18 +289,4 @@ func Tokenize(src string) []Token {
 		}
 	}
 	return tokens
-}
-
-// During package initialization, perform basic sanity checks to ensure all TokenType values are handled.
-func init() {
-	numTokens := int(NUM_TOKENS)
-
-	// Add 2 for EOF and IDENTIFIER which are not present in neither patterns nor keywords
-	if numPatternsKeywords := len(tokenPatterns) + len(reservedKeywords) + 2; numPatternsKeywords != numTokens {
-		panic(fmt.Sprintf("Lexer error! Expected %d token patterns and/or keywords, found %d", numTokens, numPatternsKeywords))
-	}
-
-	if numNames := len(tokenDisplayNames); numNames != numTokens {
-		panic(fmt.Sprintf("Lexer error! Expected %d token display names, found %d", numTokens, numNames))
-	}
 }

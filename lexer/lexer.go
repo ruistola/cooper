@@ -72,12 +72,14 @@ const (
 	NUM_TOKENS
 )
 
+// Golang has no built-in ordered map type, so we store an array of (token type, regex pattern) pairs.
+// The order in which they are stored (or rather, iterated, during tokenization) matters,
+// e.g. the lexer must try `!=` pattern before `!` to correctly identify a NOT_EQUALS token.
 type tokenPattern struct {
 	tokenType TokenType
 	pattern   *regexp.Regexp
 }
 
-// NOTE: Order matters! (e.g. need to try `!=` pattern before `!` to correctly identify the token NOT_EQUALS)
 var tokenPatterns []tokenPattern = []tokenPattern{
 	// Literals, comments, and special tokens
 	{EOL, regexp.MustCompile(`^\r?\n|\r`)},
@@ -125,6 +127,9 @@ var tokenPatterns []tokenPattern = []tokenPattern{
 	{CLOSE_PAREN, regexp.MustCompile(`^\)`)},
 }
 
+// A lookup table for WORD type patterns. If a key matching the pattern is found,
+// then we read the token type from the value in this map. Otherwise, we store
+// the token as an IDENTIFIER.
 var reservedKeywords map[string]TokenType = map[string]TokenType{
 	"let":    LET,
 	"struct": STRUCT,
@@ -210,6 +215,8 @@ func (tokenType TokenType) String() string {
 	return fmt.Sprintf("unknown (%d)", tokenType)
 }
 
+// Token stores a type identifier (e.g. NUMBER) with the corresponding
+// raw string section of the source (e.g. "3.141").
 type Token struct {
 	Type  TokenType
 	Value string

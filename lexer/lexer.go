@@ -149,6 +149,7 @@ var tokenDisplayNames map[TokenType]string = map[TokenType]string{
 	COMMENT:    "comment",
 	NUMBER:     "number",
 	STRING:     "string",
+	IDENTIFIER: "identifier",
 
 	// Multicharacter tokens
 	COLON_EQUALS:   "colon_equals",
@@ -214,6 +215,8 @@ type Token struct {
 	Value string
 }
 
+// tryMatchPattern tests a regex against the input text and if there is a match, produces a new Token
+// of the type specified by the `tokenType` argument (or a refined type, in case of WORD).
 func tryMatchPattern(src string, re *regexp.Regexp, tokenType TokenType) (int, Token) {
 	// Try to match the regex
 	matchRange := re.FindStringIndex(src)
@@ -222,8 +225,7 @@ func tryMatchPattern(src string, re *regexp.Regexp, tokenType TokenType) (int, T
 		return 0, Token{}
 	}
 
-	// Sanity check: All regexes should start with `^`, because we always want to match
-	// against the beginning of the remaining (unprocessed) source text.
+	// Sanity check: All regexes should start with `^`, and matches should therefore always start at 0.
 	if matchRange[0] > 0 {
 		panic(fmt.Sprintf("Internal error: regex matched at non-zero index %d!", matchRange[0]))
 	}
@@ -253,16 +255,18 @@ func tryMatchPattern(src string, re *regexp.Regexp, tokenType TokenType) (int, T
 	}
 }
 
+// Tokenize essentially does all the real work in this package. It converts a raw text source
+// into a token stream that can then be fed as input for the parser.
 func Tokenize(src string) []Token {
 	pos := 0
 	tokens := make([]Token, 0)
 	// While there is unprocessed source left...
 	for pos < len(src) {
-		// Keep track of whether we have found a matching token for the input beginning at the current position
+		// Keep track of whether we did end up finding a match
 		found := false
 		// Get the remaining part as a slice
 		remainingSrc := src[pos:]
-		// For each pattern, try to match them in order.
+		// Find which TokenType represents the next token in the input
 		for _, tp := range tokenPatterns {
 			// If some pattern did match, add the token to the collection and update the position
 			if length, newToken := tryMatchPattern(remainingSrc, tp.pattern, tp.tokenType); length != 0 {
@@ -283,7 +287,14 @@ func Tokenize(src string) []Token {
 
 // During package initialization, sanity check that we have a string representation for all tokens
 func init() {
-	if len(tokenDisplayNames) != int(NUM_TOKENS) {
-		panic(fmt.Sprintf("Internal error: Expected %d token display names, found %d", len(tokenDisplayNames), NUM_TOKENS))
+	numTokens := int(NUM_TOKENS)
+
+	// Add 2 for EOF and IDENTIFIER which are not present in neither patterns nor keywords
+	if numPatternsKeywords := len(tokenPatterns) + len(reservedKeywords) + 2; numPatternsKeywords != numTokens {
+		panic(fmt.Sprintf("Internal error: Expected %d token patterns and/or keywords, found %d", numTokens, numPatternsKeywords))
+	}
+
+	if numNames := len(tokenDisplayNames); numNames != numTokens {
+		panic(fmt.Sprintf("Internal error: Expected %d token display names, found %d", numTokens, numNames))
 	}
 }

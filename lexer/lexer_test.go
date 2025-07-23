@@ -1,6 +1,7 @@
 package lexer
 
 import (
+	"github.com/yassinebenaid/godump"
 	"testing"
 )
 
@@ -21,24 +22,42 @@ func TestCompleteness(t *testing.T) {
 // Test the actual tokenization
 func TestTokenize(t *testing.T) {
 	test := func(src string, expected ...TokenType) {
+		t.Logf("\n\033[94;1m%s\033[0m", src)
 		tokens := Tokenize(src)
+
+		// Check that the number of tokens resulting from src matches the expected
 		numTokens := len(tokens)
 		if numTokens != len(expected) {
 			t.Fatalf("Tokenization failed! Expected %d tokens, found %d", len(expected), numTokens)
 		}
 
+		// Check that the type of each token matches the expected token type for that particular position
 		for i := range numTokens {
 			if tokens[i].Type != expected[i] {
 				t.Fatalf("Tokenization mismatch! Expected %s, found %s", expected[i], tokens[i].Type)
 			}
 		}
+
+		if testing.Verbose() {
+			godump.Dump(tokens)
+		}
 	}
 
+	// Single- character token
 	test("&", AMPERSAND)
+
+	// Multicharacter token
 	test(":=", COLON_EQUALS)
+
+	// For statement
 	test("for i := 0; i <= 100; i += 1;",
 		FOR, IDENTIFIER, COLON_EQUALS, NUMBER, SEMICOLON,
 		IDENTIFIER, LESS_EQUALS, NUMBER, SEMICOLON,
 		IDENTIFIER, PLUS_EQUALS, NUMBER, SEMICOLON,
 	)
+
+	// End of line
+	test(`if 1 > 0 {
+        foo()
+    }`, IF, NUMBER, GREATER, NUMBER, OPEN_CURLY, EOL, IDENTIFIER, OPEN_PAREN, CLOSE_PAREN, EOL, CLOSE_CURLY)
 }

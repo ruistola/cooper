@@ -262,7 +262,7 @@ func tryMatchPattern(src string, re *regexp.Regexp, tokenType TokenType) (int, T
 	}
 }
 
-// Tokenize converts a raw text source into a token stream that can then be fed as input for the parser.
+// Tokenize converts a raw text source into a slice of tokens that can then be fed as input for the parser.
 func Tokenize(src string) []Token {
 	pos := 0
 	tokens := make([]Token, 0)

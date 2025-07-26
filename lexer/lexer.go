@@ -64,6 +64,7 @@ const (
 	IF
 	OR
 	AND
+	THEN
 	ELSE
 	FOR
 	RETURN
@@ -139,6 +140,7 @@ var reservedKeywords map[string]TokenType = map[string]TokenType{
 	"if":     IF,
 	"or":     OR,
 	"and":    AND,
+	"then":   THEN,
 	"else":   ELSE,
 	"for":    FOR,
 	"return": RETURN,
@@ -202,6 +204,7 @@ var tokenDisplayNames map[TokenType]string = map[TokenType]string{
 	IF:     "if",
 	OR:     "or",
 	AND:    "and",
+	THEN:   "then",
 	ELSE:   "else",
 	FOR:    "for",
 	RETURN: "return",

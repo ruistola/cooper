@@ -74,11 +74,11 @@ type BinaryExpr struct {
 
 func (e BinaryExpr) expr() {}
 
-type BlockStmt struct {
-	Body []Stmt
+type BlockExpr struct {
+	Statements []Stmt
 }
 
-func (s BlockStmt) stmt() {}
+func (e BlockExpr) expr() {}
 
 type ExpressionStmt struct {
 	Expr Expr
@@ -108,7 +108,7 @@ type FuncDeclStmt struct {
 	Name       string
 	Parameters []TypedIdent
 	ReturnType Type
-	Body       BlockStmt
+	Body       BlockExpr
 }
 
 func (s FuncDeclStmt) stmt() {}
@@ -148,19 +148,19 @@ type ArrayIndexExpr struct {
 
 func (e ArrayIndexExpr) expr() {}
 
-type IfStmt struct {
+type IfExpr struct {
 	Cond Expr
-	Then Stmt
-	Else Stmt
+	Then Expr
+	Else Expr
 }
 
-func (s IfStmt) stmt() {}
+func (e IfExpr) expr() {}
 
 type ForStmt struct {
 	Init Stmt
 	Cond Expr
 	Iter ExpressionStmt
-	Body BlockStmt
+	Body BlockExpr
 }
 
 func (s ForStmt) stmt() {}

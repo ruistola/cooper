@@ -43,7 +43,7 @@ func (p *parser) consumeStatementTerminator() {
 
 func headPrecedence(tokenType lexer.TokenType) int {
 	switch tokenType {
-	case lexer.EOF, lexer.EOL, lexer.SEMICOLON, lexer.OPEN_PAREN:
+	case lexer.EOF, lexer.EOL, lexer.SEMICOLON, lexer.OPEN_PAREN, lexer.OPEN_CURLY:
 		return 0
 	case lexer.NUMBER, lexer.STRING, lexer.WORD, lexer.TRUE, lexer.FALSE:
 		return 1
@@ -56,7 +56,7 @@ func headPrecedence(tokenType lexer.TokenType) int {
 
 func tailPrecedence(tokenType lexer.TokenType) (int, int) {
 	switch tokenType {
-	case lexer.EOF, lexer.EOL, lexer.SEMICOLON, lexer.CLOSE_PAREN, lexer.COMMA, lexer.CLOSE_CURLY, lexer.CLOSE_BRACKET:
+	case lexer.EOF, lexer.EOL, lexer.SEMICOLON, lexer.CLOSE_PAREN, lexer.COMMA, lexer.CLOSE_CURLY, lexer.CLOSE_BRACKET, lexer.THEN, lexer.ELSE:
 		return 0, 0
 	case lexer.EQUALS, lexer.PLUS_EQUALS, lexer.DASH_EQUALS:
 		return 1, 2
@@ -81,11 +81,11 @@ func tailPrecedence(tokenType lexer.TokenType) (int, int) {
 	}
 }
 
-func Parse(tokens []lexer.Token) ast.BlockStmt {
+func Parse(tokens []lexer.Token) ast.BlockExpr {
 	p := parser{tokens, 0}
-	program := ast.BlockStmt{}
+	program := ast.BlockExpr{}
 	for p.peek().Type != lexer.EOF {
-		program.Body = append(program.Body, p.parseStmt())
+		program.Statements = append(program.Statements, p.parseStmt())
 	}
 	return program
 }
@@ -93,15 +93,15 @@ func Parse(tokens []lexer.Token) ast.BlockStmt {
 func (p *parser) parseStmt() ast.Stmt {
 	switch p.peek().Type {
 	case lexer.OPEN_CURLY:
-		return p.parseBlockStmt()
+		return ast.ExpressionStmt{
+			Expr: p.parseBlockExpr(),
+		}
 	case lexer.LET:
 		return p.parseVarDeclStmt()
 	case lexer.STRUCT:
 		return p.parseStructDeclStmt()
 	case lexer.FUNC:
 		return p.parseFuncDeclStmt()
-	case lexer.IF:
-		return p.parseIfStmt()
 	case lexer.FOR:
 		return p.parseForStmt()
 	case lexer.RETURN:
@@ -157,6 +157,8 @@ func (p *parser) parseHeadExpr(token lexer.Token) ast.Expr {
 		return ast.GroupExpr{
 			Expr: rhs,
 		}
+	case lexer.IF:
+		return p.parseIfExpr()
 	default:
 		panic(fmt.Sprintf("Failed to parse head expression from token %v\n", token))
 	}
@@ -309,7 +311,7 @@ func (p *parser) parseFuncDeclStmt() ast.FuncDeclStmt {
 		p.consume(lexer.COLON)
 		returnType = p.parseType()
 	}
-	funcBody := p.parseBlockStmt()
+	funcBody := p.parseBlockExpr()
 	return ast.FuncDeclStmt{
 		Name:       name,
 		Parameters: params,
@@ -343,21 +345,30 @@ func (p *parser) parseStructDeclStmt() ast.StructDeclStmt {
 	}
 }
 
-func (p *parser) parseIfStmt() ast.Stmt {
-	p.consume(lexer.IF)
-	p.consume(lexer.OPEN_PAREN)
+func (p *parser) parseIfExpr() ast.IfExpr {
 	cond := p.parseExpr(0)
-	p.consume(lexer.CLOSE_PAREN)
-	thenStmt := p.parseStmt()
-	var elseStmt ast.Stmt
+	var thenExpr ast.Expr
+	if p.peek().Type == lexer.THEN {
+		p.consume(lexer.THEN)
+		thenExpr = p.parseExpr(0)
+	} else if p.peek().Type == lexer.OPEN_CURLY {
+		thenExpr = p.parseBlockExpr()
+	} else {
+		panic("Expected 'then' or '{' after an if condition")
+	}
+	var elseExpr ast.Expr
 	if p.peek().Type == lexer.ELSE {
 		p.consume(lexer.ELSE)
-		elseStmt = p.parseStmt()
+		if p.peek().Type == lexer.OPEN_CURLY {
+			elseExpr = p.parseBlockExpr()
+		} else {
+			elseExpr = p.parseExpr(0)
+		}
 	}
-	return ast.IfStmt{
+	return ast.IfExpr{
 		Cond: cond,
-		Then: thenStmt,
-		Else: elseStmt,
+		Then: thenExpr,
+		Else: elseExpr,
 	}
 }
 
@@ -368,7 +379,7 @@ func (p *parser) parseForStmt() ast.Stmt {
 	condExpr := p.parseExpressionStmt().(ast.ExpressionStmt).Expr
 	iterStmt := ast.ExpressionStmt{Expr: p.parseExpr(0)}
 	p.consume(lexer.CLOSE_PAREN)
-	body := p.parseBlockStmt()
+	body := p.parseBlockExpr()
 	return ast.ForStmt{
 		Init: initStmt,
 		Cond: condExpr,
@@ -447,14 +458,14 @@ func (p *parser) parseExpressionStmt() ast.Stmt {
 	}
 }
 
-func (p *parser) parseBlockStmt() ast.BlockStmt {
+func (p *parser) parseBlockExpr() ast.BlockExpr {
 	p.consume(lexer.OPEN_CURLY)
-	body := []ast.Stmt{}
+	statements := []ast.Stmt{}
 	for nextToken := p.peek(); nextToken.Type != lexer.EOF && nextToken.Type != lexer.CLOSE_CURLY; nextToken = p.peek() {
-		body = append(body, p.parseStmt())
+		statements = append(statements, p.parseStmt())
 	}
 	p.consume(lexer.CLOSE_CURLY)
-	return ast.BlockStmt{
-		Body: body,
+	return ast.BlockExpr{
+		Statements: statements,
 	}
 }

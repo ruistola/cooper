@@ -11,3 +11,9 @@ func TestBasicExpression(t *testing.T) {
 	ast := Parse(lexer.Tokenize(src))
 	godump.Dump(ast)
 }
+
+func TestIfExpression(t *testing.T) {
+	src := "if x < 5 then 0 else 1"
+	ast := Parse(lexer.Tokenize(src))
+	godump.Dump(ast)
+}

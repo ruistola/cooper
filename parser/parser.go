@@ -92,10 +92,6 @@ func Parse(tokens []lexer.Token) ast.BlockExpr {
 
 func (p *parser) parseStmt() ast.Stmt {
 	switch p.peek().Type {
-	case lexer.OPEN_CURLY:
-		return ast.ExpressionStmt{
-			Expr: p.parseBlockExpr(),
-		}
 	case lexer.LET:
 		return p.parseVarDeclStmt()
 	case lexer.STRUCT:
@@ -159,6 +155,10 @@ func (p *parser) parseHeadExpr(token lexer.Token) ast.Expr {
 		}
 	case lexer.IF:
 		return p.parseIfExpr()
+	case lexer.OPEN_CURLY:
+		rhs := p.parseBlockExpr()
+		p.consume(lexer.CLOSE_CURLY)
+		return rhs
 	default:
 		panic(fmt.Sprintf("Failed to parse head expression from token %v\n", token))
 	}
@@ -311,7 +311,9 @@ func (p *parser) parseFuncDeclStmt() ast.FuncDeclStmt {
 		p.consume(lexer.COLON)
 		returnType = p.parseType()
 	}
+	p.consume(lexer.OPEN_CURLY)
 	funcBody := p.parseBlockExpr()
+	p.consume(lexer.CLOSE_CURLY)
 	return ast.FuncDeclStmt{
 		Name:       name,
 		Parameters: params,
@@ -352,7 +354,9 @@ func (p *parser) parseIfExpr() ast.IfExpr {
 		p.consume(lexer.THEN)
 		thenExpr = p.parseExpr(0)
 	} else if p.peek().Type == lexer.OPEN_CURLY {
+		p.consume(lexer.OPEN_CURLY)
 		thenExpr = p.parseBlockExpr()
+		p.consume(lexer.CLOSE_CURLY)
 	} else {
 		panic("Expected 'then' or '{' after an if condition")
 	}
@@ -360,7 +364,9 @@ func (p *parser) parseIfExpr() ast.IfExpr {
 	if p.peek().Type == lexer.ELSE {
 		p.consume(lexer.ELSE)
 		if p.peek().Type == lexer.OPEN_CURLY {
+			p.consume(lexer.OPEN_CURLY)
 			elseExpr = p.parseBlockExpr()
+			p.consume(lexer.CLOSE_CURLY)
 		} else {
 			elseExpr = p.parseExpr(0)
 		}
@@ -379,7 +385,9 @@ func (p *parser) parseForStmt() ast.Stmt {
 	condExpr := p.parseExpressionStmt().(ast.ExpressionStmt).Expr
 	iterStmt := ast.ExpressionStmt{Expr: p.parseExpr(0)}
 	p.consume(lexer.CLOSE_PAREN)
+	p.consume(lexer.OPEN_CURLY)
 	body := p.parseBlockExpr()
+	p.consume(lexer.CLOSE_CURLY)
 	return ast.ForStmt{
 		Init: initStmt,
 		Cond: condExpr,
@@ -459,12 +467,10 @@ func (p *parser) parseExpressionStmt() ast.Stmt {
 }
 
 func (p *parser) parseBlockExpr() ast.BlockExpr {
-	p.consume(lexer.OPEN_CURLY)
 	statements := []ast.Stmt{}
 	for nextToken := p.peek(); nextToken.Type != lexer.EOF && nextToken.Type != lexer.CLOSE_CURLY; nextToken = p.peek() {
 		statements = append(statements, p.parseStmt())
 	}
-	p.consume(lexer.CLOSE_CURLY)
 	return ast.BlockExpr{
 		Statements: statements,
 	}

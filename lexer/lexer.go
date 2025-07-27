@@ -82,8 +82,8 @@ type tokenPattern struct {
 }
 
 // Sanity check: All regexes should start with `^` so that we only match a token
-// at the beginning of the remaining unprocessed input text. Otherwise we might be
-// skipping some sections of the input text entirely.
+// at the beginning of the remaining unprocessed source. Otherwise we might be
+// skipping some sections of the source entirely.
 var tokenPatterns []tokenPattern = []tokenPattern{
 	// Literals, comments, and special tokens
 	{EOL, regexp.MustCompile(`^\r?\n|\r`)},
@@ -131,7 +131,7 @@ var tokenPatterns []tokenPattern = []tokenPattern{
 	{CLOSE_PAREN, regexp.MustCompile(`^\)`)},
 }
 
-// A lookup table for WORD type patterns. If a key matching the pattern is found,
+// A lookup table for WORD type patterns. If a key matching the pattern exists,
 // then we read the token type from the value in this map. Otherwise, we store
 // the token as an IDENTIFIER.
 var reservedKeywords map[string]TokenType = map[string]TokenType{
@@ -221,17 +221,29 @@ func (tokenType TokenType) String() string {
 	return fmt.Sprintf("unknown (%d)", tokenType)
 }
 
-// Token stores a type identifier with the corresponding raw string section of the source.
-// For example: {NOT_EQUALS, "!="}, {NUMBER, "3.141"}, {KEYWORD, "return"}
+type SrcPos struct {
+	Col    int // 1- based column number
+	Line   int // 1- based line number
+	Offset int // 0- based byte offset from start of input
+}
+
+type Span struct {
+	Start SrcPos
+	End   SrcPos
+}
+
+// Token stores a type identifier with the corresponding section of the source.
 type Token struct {
 	Type  TokenType
 	Value string
+	Span  Span
 }
 
-// tryMatchPattern tests a regex against the input text and if there is a match, produces a new Token
-// of the type specified by the `tokenType` argument (or a refined type, if tokenType is WORD).
+// tryMatchPattern tests a regex against the remaining unprocessed part of the source
+// and if there is a match, produces a new Token of the type specified by
+// the `tokenType` argument (or a refined type, if tokenType is WORD).
 func tryMatchPattern(src string, re *regexp.Regexp, tokenType TokenType) (int, Token) {
-	// Try to find a range in the input text where the reges matches
+	// Try to find a range in the source where the reges matches
 	matchRange := re.FindStringIndex(src)
 	// No match, return empty Token
 	if matchRange == nil {
@@ -239,7 +251,7 @@ func tryMatchPattern(src string, re *regexp.Regexp, tokenType TokenType) (int, T
 	}
 
 	// Sanity check: any match range must always start at 0.
-	// Otherwise we would be skipping some sections of the input text entirely.
+	// Otherwise we would be skipping some sections of the source entirely.
 	if matchRange[0] > 0 {
 		panic(fmt.Sprintf("Internal error: regex matched at non-zero index %d!", matchRange[0]))
 	}

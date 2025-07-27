@@ -10,8 +10,8 @@ import (
 )
 
 var (
-	showTokens     = flag.Bool("tokendump", false, "Show detailed token dumps")
-	showTokenTypes = flag.Bool("tokendump-short", false, "Show just token types (less verbose than full dumps)")
+	showTokens     = flag.Bool("show-tokens", false, "Show detailed token dumps")
+	showTokenTypes = flag.Bool("show-tokens-short", false, "Show just token types (less verbose than full dumps)")
 )
 
 // Initialize custom flags

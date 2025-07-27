@@ -3,6 +3,7 @@ package lexer
 import (
 	"fmt"
 	"regexp"
+	"unicode/utf8"
 )
 
 type TokenType int
@@ -222,21 +223,16 @@ func (tokenType TokenType) String() string {
 }
 
 type SrcPos struct {
-	Col    int // 1- based column number
-	Line   int // 1- based line number
-	Offset int // 0- based byte offset from start of input
-}
-
-type Span struct {
-	Start SrcPos
-	End   SrcPos
+	Column int // 1-based column number
+	Line   int // 1-based line number
+	Offset int // 0-based byte offset
 }
 
 // Token stores a type identifier with the corresponding section of the source.
 type Token struct {
-	Type  TokenType
-	Value string
-	Span  Span
+	Type   TokenType
+	Value  string
+	SrcPos SrcPos
 }
 
 // tryMatchPattern tests a regex against the remaining unprocessed part of the source
@@ -284,23 +280,37 @@ func tryMatchPattern(src string, re *regexp.Regexp, tokenType TokenType) (int, T
 // Tokenize converts a raw text source into a slice of tokens that can then be fed as input for the parser.
 func Tokenize(src string) []Token {
 	pos := 0
+	line := 1
+	column := 1
 	tokens := make([]Token, 0)
-	// While there is unprocessed source left...
+	// While there are unprocessed bytes left...
 	for pos < len(src) {
 		// Keep track of whether we did end up finding a match
 		found := false
 		// Get the remaining part as a slice
 		remainingSrc := src[pos:]
 		// Find which TokenType represents the next token in the input
-		for _, tp := range tokenPatterns {
+		for _, tpat := range tokenPatterns {
 			// If some pattern did match, add the token to the collection and update the position
-			if length, newToken := tryMatchPattern(remainingSrc, tp.pattern, tp.tokenType); length != 0 {
+			if length, newToken := tryMatchPattern(remainingSrc, tpat.pattern, tpat.tokenType); length != 0 {
+				// Add position information to the token
+				newToken.SrcPos = SrcPos{
+					Column: column,
+					Line:   line,
+					Offset: pos,
+				}
 				if newToken.Type != WHITESPACE {
 					tokens = append(tokens, newToken)
 				}
 				found = true
+				// Update the position
 				pos += length
-				break
+				column += utf8.RuneCountInString(newToken.Value)
+				if newToken.Type == EOL {
+					line++
+					column = 1
+				}
+				break // out of the pattern loop
 			}
 		}
 		if !found {

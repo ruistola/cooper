@@ -283,38 +283,47 @@ func Tokenize(src string) []Token {
 	line := 1
 	column := 1
 	tokens := make([]Token, 0)
+
 	// While there are unprocessed bytes left...
 	for pos < len(src) {
 		// Keep track of whether we did end up finding a match
 		found := false
 		// Get the remaining part as a slice
 		remainingSrc := src[pos:]
-		// Find which TokenType represents the next token in the input
+
+		// Find which TokenType represents the next token in the input.
+		// If some pattern does match, add the token to the collection and update the position.
 		for _, tpat := range tokenPatterns {
-			// If some pattern did match, add the token to the collection and update the position
 			if length, newToken := tryMatchPattern(remainingSrc, tpat.pattern, tpat.tokenType); length != 0 {
+				found = true
+
 				// Add position information to the token
 				newToken.SrcPos = SrcPos{
 					Column: column,
 					Line:   line,
 					Offset: pos,
 				}
+
+				// If not whitespace, store the token
 				if newToken.Type != WHITESPACE {
 					tokens = append(tokens, newToken)
 				}
-				found = true
-				// Update the position
+
+				// Update the current lexer position to the start of the next token
 				pos += length
 				column += utf8.RuneCountInString(newToken.Value)
 				if newToken.Type == EOL {
 					line++
 					column = 1
 				}
-				break // out of the pattern loop
+
+				break // out of the pattern loop and onto the next token
 			}
 		}
 		if !found {
-			panic(fmt.Sprintf("Internal error: failed to tokenize source at %d", pos))
+			// Print up to 32 bytes from where the lexer failed
+			sampleLength := min(32, len(remainingSrc))
+			panic(fmt.Sprintf("failed to tokenize source at line %d, column %d: %s", line, column, remainingSrc[:sampleLength]))
 		}
 	}
 	return tokens

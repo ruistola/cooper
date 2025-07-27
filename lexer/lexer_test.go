@@ -127,6 +127,11 @@ func TestCompleteness(t *testing.T) {
 	}
 }
 
+// Test malformed source
+func TestMalformedSource(t *testing.T) {
+	testTokenizationPanic(t, "for i in 1..100 {\n  foo(i)\\\n}", "failed to tokenize")
+}
+
 // Test basic tokens
 func TestBasicTokens(t *testing.T) {
 	tests := []struct {

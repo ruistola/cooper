@@ -1,3 +1,7 @@
 package main
 
-func main() {}
+import "cooper/lexer"
+
+func main() {
+	lexer.Tokenize("\\")
+}

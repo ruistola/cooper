@@ -81,6 +81,9 @@ type tokenPattern struct {
 	pattern   *regexp.Regexp
 }
 
+// Sanity check: All regexes should start with `^` so that we only match a token
+// at the beginning of the remaining unprocessed input text. Otherwise we might be
+// skipping some sections of the input text entirely.
 var tokenPatterns []tokenPattern = []tokenPattern{
 	// Literals, comments, and special tokens
 	{EOL, regexp.MustCompile(`^\r?\n|\r`)},
@@ -218,15 +221,15 @@ func (tokenType TokenType) String() string {
 	return fmt.Sprintf("unknown (%d)", tokenType)
 }
 
-// Token stores a type identifier (e.g. NUMBER) with the corresponding
-// raw string section of the source (e.g. "3.141").
+// Token stores a type identifier with the corresponding raw string section of the source.
+// For example: {NOT_EQUALS, "!="}, {NUMBER, "3.141"}, {KEYWORD, "return"}
 type Token struct {
 	Type  TokenType
 	Value string
 }
 
 // tryMatchPattern tests a regex against the input text and if there is a match, produces a new Token
-// of the type specified by the `tokenType` argument (or a refined type, in case of WORD).
+// of the type specified by the `tokenType` argument (or a refined type, if tokenType is WORD).
 func tryMatchPattern(src string, re *regexp.Regexp, tokenType TokenType) (int, Token) {
 	// Try to find a range in the input text where the reges matches
 	matchRange := re.FindStringIndex(src)
@@ -235,7 +238,7 @@ func tryMatchPattern(src string, re *regexp.Regexp, tokenType TokenType) (int, T
 		return 0, Token{}
 	}
 
-	// Sanity check: All regexes should start with `^`, and any match should therefore always start at 0.
+	// Sanity check: any match range must always start at 0.
 	// Otherwise we would be skipping some sections of the input text entirely.
 	if matchRange[0] > 0 {
 		panic(fmt.Sprintf("Internal error: regex matched at non-zero index %d!", matchRange[0]))

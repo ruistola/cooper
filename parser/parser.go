@@ -12,6 +12,8 @@ type parser struct {
 	pos    int
 }
 
+// 1-token lookahead. Does not consume / update the parser position.
+// If the parser position points beyond the end of tokens, returns EOF.
 func (p *parser) peek() lexer.Token {
 	result := lexer.Token{}
 	if p.pos < len(p.tokens) {
@@ -20,6 +22,9 @@ func (p *parser) peek() lexer.Token {
 	return result
 }
 
+// Consumes a single token which must be one of the expected token types, if any
+// are provided as arguments. If the type of the next token is not any of the expected, panics.
+// When called without arguments, accepts any token (including EOF). Returns the consumed token.
 func (p *parser) consume(expected ...lexer.TokenType) lexer.Token {
 	token := p.peek()
 	if len(expected) > 0 && !slices.Contains(expected, token.Type) {
@@ -29,6 +34,9 @@ func (p *parser) consume(expected ...lexer.TokenType) lexer.Token {
 	return token
 }
 
+// Primarily intended for consuming a semicolon or a linefeed, but from the parser
+// point of view, technically EOF and the closing curly brace are also valid
+// (it is up to semantic analysis to determine whether ok in context).
 func (p *parser) consumeStatementTerminator() {
 	next := p.peek()
 	switch next.Type {
@@ -41,6 +49,7 @@ func (p *parser) consumeStatementTerminator() {
 	}
 }
 
+// Right binding power of tokens that may appear in the head position of an expression (Pratt: NUD).
 func headPrecedence(tokenType lexer.TokenType) int {
 	switch tokenType {
 	case lexer.EOF, lexer.EOL, lexer.SEMICOLON, lexer.OPEN_PAREN, lexer.OPEN_CURLY:
@@ -54,6 +63,8 @@ func headPrecedence(tokenType lexer.TokenType) int {
 	}
 }
 
+// Binding power of tokens that may appear in the tail position of an expression (Pratt: LED).
+// Unequal left vs right binding power to enforce left or right associativity as appropriate.
 func tailPrecedence(tokenType lexer.TokenType) (int, int) {
 	switch tokenType {
 	case lexer.EOF, lexer.EOL, lexer.SEMICOLON, lexer.CLOSE_PAREN, lexer.COMMA, lexer.CLOSE_CURLY, lexer.CLOSE_BRACKET, lexer.THEN, lexer.ELSE:
@@ -81,6 +92,7 @@ func tailPrecedence(tokenType lexer.TokenType) (int, int) {
 	}
 }
 
+// Parse converts a slice of tokens into an AST that can then be used as input for type checking and semantic analysis.
 func Parse(tokens []lexer.Token) ast.BlockExpr {
 	p := parser{tokens, 0}
 	program := ast.BlockExpr{}
@@ -90,6 +102,10 @@ func Parse(tokens []lexer.Token) ast.BlockExpr {
 	return program
 }
 
+// parseStmt looks at the next token and invokes the appropriate keyword specific
+// parser function. If the next token isn't any of the statement opening keywords,
+// defaults to expression parsing where the and the expression is handled as a statement,
+// ignoring the expression value.
 func (p *parser) parseStmt() ast.Stmt {
 	switch p.peek().Type {
 	case lexer.LET:
@@ -107,6 +123,7 @@ func (p *parser) parseStmt() ast.Stmt {
 	}
 }
 
+// A Pratt parser for parsing expressions.
 func (p *parser) parseExpr(min_bp int) ast.Expr {
 	token := p.consume()
 	leftExpr := p.parseHeadExpr(token)
@@ -121,6 +138,8 @@ func (p *parser) parseExpr(min_bp int) ast.Expr {
 	return leftExpr
 }
 
+// Parses the token provided in the argument as a token in the head (NUD) position.
+// May parse subexpressions recursively. Returns the (possibly compound) expression.
 func (p *parser) parseHeadExpr(token lexer.Token) ast.Expr {
 	switch token.Type {
 	case lexer.NUMBER:
@@ -164,6 +183,10 @@ func (p *parser) parseHeadExpr(token lexer.Token) ast.Expr {
 	}
 }
 
+// Parses a tail expression, or the right-hand side expression of some head expression
+// that is provided as an argument. May parse subexpressions recursively. Passes the minimum
+// binding power forward to recursive calls (to determine expression boundary) provided
+// as an argument. Returns the (possibly compound) expression.
 func (p *parser) parseTailExpr(head ast.Expr, rbp int) ast.Expr {
 	token := p.consume()
 	switch token.Type {
@@ -201,6 +224,10 @@ func (p *parser) parseTailExpr(head ast.Expr, rbp int) ast.Expr {
 		panic(fmt.Sprintf("Failed to parse tail expression from token %v\n", token))
 	}
 }
+
+// ----------------------------------------------------------------------------
+// Parsing functions for specific individual statements, expressions, and types
+// ----------------------------------------------------------------------------
 
 func (p *parser) parseArrayType(innerType ast.Type) ast.Type {
 	p.consume(lexer.OPEN_BRACKET)

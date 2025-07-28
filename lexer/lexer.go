@@ -132,9 +132,6 @@ var tokenPatterns []tokenPattern = []tokenPattern{
 	{CLOSE_PAREN, regexp.MustCompile(`^\)`)},
 }
 
-// A lookup table for WORD type patterns. If a key matching the pattern exists,
-// then we read the token type from the value in this map. Otherwise, we store
-// the token as an IDENTIFIER.
 var reservedKeywords map[string]TokenType = map[string]TokenType{
 	"let":    LET,
 	"struct": STRUCT,
@@ -228,7 +225,7 @@ type SrcPos struct {
 	Offset int // 0-based byte offset
 }
 
-// Token stores a type identifier with the corresponding section of the source.
+// Token stores a type identifier with the corresponding section of the source and its location.
 type Token struct {
 	Type   TokenType
 	Value  string
@@ -277,7 +274,7 @@ func tryMatchPattern(src string, re *regexp.Regexp, tokenType TokenType) (int, T
 	}
 }
 
-// Tokenize converts a raw text source into a slice of tokens that can then be fed as input for the parser.
+// Tokenize converts a raw text source into a slice of tokens that can then be used as input for the parser.
 func Tokenize(src string) []Token {
 	pos := 0
 	line := 1

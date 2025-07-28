@@ -1,4 +1,4 @@
-module cooper
+module github.com/ruistola/cooper
 
 go 1.24.3
 

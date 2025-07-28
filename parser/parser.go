@@ -1,9 +1,9 @@
 package parser
 
 import (
-	"cooper/ast"
-	"cooper/lexer"
 	"fmt"
+	"github.com/ruistola/cooper/ast"
+	"github.com/ruistola/cooper/lexer"
 	"slices"
 )
 

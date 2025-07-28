@@ -1,7 +1,7 @@
 package parser
 
 import (
-	"cooper/lexer"
+	"github.com/ruistola/cooper/lexer"
 	"github.com/yassinebenaid/godump"
 	"testing"
 )

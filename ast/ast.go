@@ -1,7 +1,7 @@
 package ast
 
 import (
-	"cooper/lexer"
+	"github.com/ruistola/cooper/lexer"
 )
 
 type Type interface {

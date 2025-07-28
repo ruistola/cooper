@@ -1,6 +1,6 @@
 package main
 
-import "cooper/lexer"
+import "github.com/ruistola/cooper/lexer"
 
 func main() {
 	lexer.Tokenize("\\")

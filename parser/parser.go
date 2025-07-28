@@ -34,6 +34,16 @@ func (p *parser) consume(expected ...lexer.TokenType) lexer.Token {
 	return token
 }
 
+// Essentially a glorified `if p.peek().Type == lexer.SEMICOLON`
+func (p *parser) statementTerminates() bool {
+	switch p.peek().Type {
+	case lexer.SEMICOLON, lexer.EOL, lexer.EOF, lexer.CLOSE_CURLY:
+		return true
+	default:
+		return false
+	}
+}
+
 // Primarily intended for consuming a semicolon or a linefeed, but from the parser
 // point of view, technically EOF and the closing curly brace are also valid
 // (it is up to semantic analysis to determine whether ok in context).
@@ -242,17 +252,23 @@ func (p *parser) parseArrayType(innerType ast.Type) ast.Type {
 }
 
 func (p *parser) parseType() ast.Type {
-	if p.peek().Type == lexer.FUNC {
-		return p.parseFuncType()
-	}
-	name := p.consume(lexer.IDENTIFIER).Value
-	namedType := ast.NamedType{
-		TypeName: name,
+	var t ast.Type
+	if p.peek().Type == lexer.OPEN_PAREN {
+		p.consume(lexer.OPEN_PAREN)
+		t = p.parseType()
+		p.consume(lexer.CLOSE_PAREN)
+	} else if p.peek().Type == lexer.FUNC {
+		t = p.parseFuncType()
+	} else {
+		name := p.consume(lexer.IDENTIFIER).Value
+		t = ast.NamedType{
+			TypeName: name,
+		}
 	}
 	if p.peek().Type == lexer.OPEN_BRACKET {
-		return p.parseArrayType(namedType)
+		t = p.parseArrayType(t)
 	}
-	return namedType
+	return t
 }
 
 func (p *parser) parseFuncType() ast.FuncType {
@@ -301,7 +317,7 @@ func (p *parser) parseVarDeclStmt() ast.VarDeclStmt {
 	p.consume(lexer.COLON)
 	varType := p.parseType()
 	var initVal ast.Expr
-	if p.peek().Type != lexer.SEMICOLON {
+	if !p.statementTerminates() {
 		p.consume(lexer.EQUALS)
 		initVal = p.parseExpr(0)
 	}
@@ -476,7 +492,7 @@ func (p *parser) parseArrayIndexExpr(left ast.Expr) ast.ArrayIndexExpr {
 
 func (p *parser) parseReturnStmt() ast.ReturnStmt {
 	p.consume(lexer.RETURN)
-	if p.peek().Type == lexer.SEMICOLON {
+	if p.statementTerminates() {
 		p.consumeStatementTerminator()
 		return ast.ReturnStmt{Expr: nil}
 	}

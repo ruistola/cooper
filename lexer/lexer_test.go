@@ -320,3 +320,59 @@ func BenchmarkTokenizeNumbers(b *testing.B) {
 		}
 	}
 }
+
+// Test tokenization of redundant newlines
+func TestCollapsedEOLs(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []TokenType
+	}{
+		{
+			"single newline",
+			"foo\nbar",
+			[]TokenType{IDENTIFIER, EOL, IDENTIFIER},
+		},
+		{
+			"single newline + return carriage",
+			"foo\r\nbar",
+			[]TokenType{IDENTIFIER, EOL, IDENTIFIER},
+		},
+		{
+			"multiple newlines collapsed",
+			"foo\n\n\nbar",
+			[]TokenType{IDENTIFIER, EOL, IDENTIFIER},
+		},
+		{
+			"mixed newline types",
+			"foo\r\n\r\n\nbar",
+			[]TokenType{IDENTIFIER, EOL, IDENTIFIER},
+		},
+		{
+			"newlines at start",
+			"\n\n\nfoo",
+			[]TokenType{EOL, IDENTIFIER},
+		},
+		{
+			"newlines at end",
+			"foo\n\n\n",
+			[]TokenType{IDENTIFIER, EOL},
+		},
+		{
+			"only newlines",
+			"\n\n\n",
+			[]TokenType{EOL},
+		},
+		{
+			"newlines with spaces between",
+			"foo\n  \n  \nbar",
+			[]TokenType{IDENTIFIER, EOL, IDENTIFIER},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testTokenization(t, tt.input, tt.expected...)
+		})
+	}
+}

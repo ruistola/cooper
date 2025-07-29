@@ -87,12 +87,12 @@ type tokenPattern struct {
 // skipping some sections of the source entirely.
 var tokenPatterns []tokenPattern = []tokenPattern{
 	// Literals, comments, and special tokens
-	{EOL, regexp.MustCompile(`^\r?\n|\r`)},
+	{EOL, regexp.MustCompile(`^(\r\n|\n|\r)`)},
 	{WHITESPACE, regexp.MustCompile(`^\s+`)},
 	{WORD, regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*`)},
 	{COMMENT, regexp.MustCompile(`^\/\/.*`)},
 	{NUMBER, regexp.MustCompile(`^(0[xX][0-9a-fA-F](_?[0-9a-fA-F])*|0[bB][01](_?[01])*|[0-9](_?[0-9])*(\.([0-9](_?[0-9])*)?)?([eE][+-]?[0-9](_?[0-9])*)?)`)},
-	{STRING, regexp.MustCompile(`^"[^"]*"`)},
+	{STRING, regexp.MustCompile(`^"([^"\\]|\\.)*"`)},
 
 	// Multicharacter tokens
 	{COLON_EQUALS, regexp.MustCompile(`^:=`)},
@@ -301,8 +301,11 @@ func Tokenize(src string) []Token {
 					Offset: pos,
 				}
 
-				// If not whitespace, store the token
-				if newToken.Type != WHITESPACE {
+				// If not whitespace or a redundant endline, store the token
+				isPrevTokenEOL := len(tokens) > 0 && tokens[len(tokens)-1].Type == EOL
+				isRepeatingEOL := newToken.Type == EOL && isPrevTokenEOL
+				isWhitespace := newToken.Type == WHITESPACE
+				if !(isWhitespace || isRepeatingEOL) {
 					tokens = append(tokens, newToken)
 				}
 

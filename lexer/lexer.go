@@ -57,18 +57,18 @@ const (
 	CLOSE_PAREN   // )
 
 	// Reserved keywords
-	LET
-	STRUCT
-	TRUE
+	AND
+	ELSE
 	FALSE
+	FOR
 	FUNC
 	IF
+	LET
 	OR
-	AND
-	THEN
-	ELSE
-	FOR
 	RETURN
+	STRUCT
+	THEN
+	TRUE
 
 	// Sentinel value
 	NUM_TOKENS
@@ -301,11 +301,12 @@ func Tokenize(src string) []Token {
 					Offset: pos,
 				}
 
-				// If not whitespace or a redundant endline, store the token
+				// If not whitespace, comment or a redundant endline, store the token
 				isPrevTokenEOL := len(tokens) > 0 && tokens[len(tokens)-1].Type == EOL
 				isRepeatingEOL := newToken.Type == EOL && isPrevTokenEOL
 				isWhitespace := newToken.Type == WHITESPACE
-				if !(isWhitespace || isRepeatingEOL) {
+				isComment := newToken.Type == COMMENT
+				if !(isWhitespace || isComment || isRepeatingEOL) {
 					tokens = append(tokens, newToken)
 				}
 

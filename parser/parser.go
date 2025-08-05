@@ -8,8 +8,17 @@ import (
 )
 
 type parser struct {
-	tokens []lexer.Token
-	pos    int
+	tokens     []lexer.Token
+	pos        int
+	parenStack []lexer.TokenType
+}
+
+func newParser() parser {
+	return parser{
+		tokens:     make([]lexer.Token, 0),
+		pos:        0,
+		parenStack: make([]lexer.TokenType, 0),
+	}
 }
 
 // 1-token lookahead. Does not consume / update the parser position.
@@ -104,7 +113,7 @@ func tailPrecedence(tokenType lexer.TokenType) (int, int) {
 
 // Parse converts a slice of tokens into an AST that can then be used as input for type checking and semantic analysis.
 func Parse(tokens []lexer.Token) ast.BlockExpr {
-	p := parser{tokens, 0}
+	p := newParser()
 	program := ast.BlockExpr{}
 	for p.peek().Type != lexer.EOF {
 		program.Statements = append(program.Statements, p.parseStmt())
@@ -198,13 +207,18 @@ func (p *parser) parseHeadExpr(token lexer.Token) ast.Expr {
 // binding power forward to recursive calls (to determine expression boundary) provided
 // as an argument. Returns the (possibly compound) expression.
 func (p *parser) parseTailExpr(head ast.Expr, rbp int) ast.Expr {
-	token := p.consume()
-	switch token.Type {
-	case lexer.EQUALS, lexer.PLUS_EQUALS, lexer.DASH_EQUALS:
+	nextToken := p.peek()
+	switch nextToken.Type {
+	case lexer.EQUALS,
+		lexer.PLUS_EQUALS,
+		lexer.DASH_EQUALS,
+		lexer.STAR_EQUALS,
+		lexer.SLASH_EQUALS:
+		operator := p.consume()
 		rhs := p.parseExpr(rbp)
 		return ast.AssignExpr{
 			Assigne:       head,
-			Operator:      token,
+			Operator:      operator,
 			AssignedValue: rhs,
 		}
 	case lexer.PLUS,
@@ -216,10 +230,11 @@ func (p *parser) parseTailExpr(head ast.Expr, rbp int) ast.Expr {
 		lexer.LESS_EQUALS,
 		lexer.GREATER,
 		lexer.GREATER_EQUALS:
+		operator := p.consume()
 		rhs := p.parseExpr(rbp)
 		return ast.BinaryExpr{
 			Lhs:      head,
-			Operator: token,
+			Operator: operator,
 			Rhs:      rhs,
 		}
 	case lexer.OPEN_PAREN:
@@ -231,7 +246,7 @@ func (p *parser) parseTailExpr(head ast.Expr, rbp int) ast.Expr {
 	case lexer.DOT:
 		return p.parseStructMemberExpr(head)
 	default:
-		panic(fmt.Sprintf("Failed to parse tail expression from token %v\n", token))
+		panic(fmt.Sprintf("Failed to parse tail expression from token %v\n", nextToken))
 	}
 }
 
@@ -440,6 +455,7 @@ func (p *parser) parseForStmt() ast.Stmt {
 }
 
 func (p *parser) parseFuncCallExpr(left ast.Expr) ast.FuncCallExpr {
+	p.consume(lexer.OPEN_PAREN)
 	args := []ast.Expr{}
 	for p.peek().Type != lexer.CLOSE_PAREN {
 		args = append(args, p.parseExpr(0))
@@ -455,6 +471,7 @@ func (p *parser) parseFuncCallExpr(left ast.Expr) ast.FuncCallExpr {
 }
 
 func (p *parser) parseStructLiteralExpr(left ast.Expr) ast.StructLiteralExpr {
+	p.consume(lexer.OPEN_CURLY)
 	members := []ast.MemberAssignExpr{}
 	for p.peek().Type != lexer.CLOSE_CURLY {
 		memberName := p.consume(lexer.IDENTIFIER).Value
@@ -473,6 +490,7 @@ func (p *parser) parseStructLiteralExpr(left ast.Expr) ast.StructLiteralExpr {
 }
 
 func (p *parser) parseStructMemberExpr(left ast.Expr) ast.StructMemberExpr {
+	p.consume(lexer.DOT)
 	return ast.StructMemberExpr{
 		Struct: left,
 		Member: ast.IdentExpr{
@@ -482,6 +500,7 @@ func (p *parser) parseStructMemberExpr(left ast.Expr) ast.StructMemberExpr {
 }
 
 func (p *parser) parseArrayIndexExpr(left ast.Expr) ast.ArrayIndexExpr {
+	p.consume(lexer.OPEN_BRACKET)
 	indexExpr := p.parseExpr(0)
 	p.consume(lexer.CLOSE_BRACKET)
 	return ast.ArrayIndexExpr{

@@ -119,10 +119,21 @@ func (p *parser) nextToken() lexer.Token {
 func (p *parser) peek() lexer.Token {
 	currToken := p.currentToken()
 	if currToken.Type == lexer.EOL {
+		isBeforeClosingBrace := p.nextToken().Type == lexer.CLOSE_CURLY
+		// Don't convert EOL into a semicolon if this would be the last expression in a block.
+		// If the user's intention is specifically to return nothing from the block
+		// and this is not one of the blocks where the value is silently suppressed
+		// (e.g. for- statements), they must insert an explicit semicolon.
+		if isBeforeClosingBrace {
+			p.tokens = append(p.tokens[:p.pos], p.tokens[p.pos+1:]...)
+			// Recurse to get the new current token
+			return p.peek()
+		}
+		// If current token is EOL, replace with a semicolon or delete as whitespace.
 		isOutsideParens := len(p.parenStack) == 0
 		statementCanTerminate := slices.Contains(beforeSemicolon, p.prevToken().Type) && slices.Contains(afterSemicolon, p.nextToken().Type)
 		if isOutsideParens && statementCanTerminate {
-			// EOL is a statement terminator, replace with an explicit SEMICOLON token
+			// EOL is applicable as a statement terminator, replace it with an explicit SEMICOLON token
 			p.tokens[p.pos] = lexer.Token{
 				Type:   lexer.SEMICOLON,
 				Value:  ";",

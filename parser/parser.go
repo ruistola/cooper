@@ -132,7 +132,7 @@ func (p *parser) peek() lexer.Token {
 		// If current token is EOL, replace with a semicolon or delete as whitespace.
 		isOutsideParens := len(p.parenStack) == 0
 		statementCanTerminate := slices.Contains(beforeSemicolon, p.prevToken().Type) && slices.Contains(afterSemicolon, p.nextToken().Type)
-		if isOutsideParens && statementCanTerminate {
+		if isOutsideParens && statementCanTerminate && p.nextToken().Type != lexer.EOF {
 			// EOL is applicable as a statement terminator, replace it with an explicit SEMICOLON token
 			p.tokens[p.pos] = lexer.Token{
 				Type:   lexer.SEMICOLON,
@@ -205,7 +205,7 @@ func (p *parser) consumeStatementTerminator() {
 // Right binding power of tokens that may appear in the head position of an expression (Pratt: NUD).
 func headPrecedence(tokenType lexer.TokenType) int {
 	switch tokenType {
-	case lexer.EOF, lexer.EOL, lexer.SEMICOLON, lexer.OPEN_PAREN, lexer.OPEN_CURLY:
+	case lexer.EOF, lexer.SEMICOLON, lexer.OPEN_PAREN, lexer.OPEN_CURLY:
 		return 0
 	case lexer.NUMBER, lexer.STRING, lexer.WORD, lexer.TRUE, lexer.FALSE:
 		return 1
@@ -220,7 +220,7 @@ func headPrecedence(tokenType lexer.TokenType) int {
 // Unequal left vs right binding power to enforce left or right associativity as appropriate.
 func tailPrecedence(tokenType lexer.TokenType) (int, int) {
 	switch tokenType {
-	case lexer.EOF, lexer.EOL, lexer.SEMICOLON, lexer.CLOSE_PAREN, lexer.COMMA, lexer.CLOSE_CURLY, lexer.CLOSE_BRACKET, lexer.THEN, lexer.ELSE:
+	case lexer.EOF, lexer.SEMICOLON, lexer.CLOSE_PAREN, lexer.COMMA, lexer.CLOSE_CURLY, lexer.CLOSE_BRACKET, lexer.THEN, lexer.ELSE:
 		return 0, 0
 	case lexer.EQUALS, lexer.PLUS_EQUALS, lexer.DASH_EQUALS:
 		return 1, 2

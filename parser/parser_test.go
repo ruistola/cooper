@@ -15,7 +15,39 @@ func TestBasicExpression(t *testing.T) {
 }
 
 func TestIfExpression(t *testing.T) {
-	src := "if x < 5 then { 0 } else if x > 10 then 100 else 10"
+	src := "if x < 5 then { 0 } else { 5 }"
+	ast := Parse(lexer.Tokenize(src))
+	if testing.Verbose() {
+		godump.Dump(ast)
+	}
+}
+
+func TestIfExpressionNewline(t *testing.T) {
+	src := "if x < 5 then 0\n else 5"
+	ast := Parse(lexer.Tokenize(src))
+	if testing.Verbose() {
+		godump.Dump(ast)
+	}
+}
+
+func TestIfExpressionStatements(t *testing.T) {
+	src := "if x < 5 then foo(); else bar();"
+	ast := Parse(lexer.Tokenize(src))
+	if testing.Verbose() {
+		godump.Dump(ast)
+	}
+}
+
+func TestIfExpressionStatementsNewline(t *testing.T) {
+	src := "if x < 5 then foo();\nelse bar();"
+	ast := Parse(lexer.Tokenize(src))
+	if testing.Verbose() {
+		godump.Dump(ast)
+	}
+}
+
+func TestOneLineIfExpression(t *testing.T) {
+	src := "if x < 5 then foo() else if x > 10 then 100 else 10"
 	ast := Parse(lexer.Tokenize(src))
 	if testing.Verbose() {
 		godump.Dump(ast)

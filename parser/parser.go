@@ -13,17 +13,89 @@ type parser struct {
 	parenStack []lexer.TokenType
 }
 
-func newParser() parser {
+func newParser(tokens []lexer.Token) parser {
 	return parser{
-		tokens:     make([]lexer.Token, 0),
+		tokens:     tokens,
 		pos:        0,
 		parenStack: make([]lexer.TokenType, 0),
 	}
 }
 
-// 1-token lookahead. Does not consume / update the parser position.
-// If the parser position points beyond the end of tokens, returns EOF.
-func (p *parser) peek() lexer.Token {
+var (
+	beforeSemicolon []lexer.TokenType = []lexer.TokenType{
+		lexer.NUMBER,
+		lexer.STRING,
+		lexer.IDENTIFIER,
+		lexer.UNDERSCORE,
+		lexer.COMMA,
+		lexer.CLOSE_BRACKET,
+		lexer.CLOSE_CURLY,
+		lexer.CLOSE_PAREN,
+		lexer.ELSE,
+		lexer.FALSE,
+		lexer.RETURN,
+		lexer.THEN,
+		lexer.TRUE,
+	}
+
+	afterSemicolon []lexer.TokenType = []lexer.TokenType{
+		lexer.EOF,
+		lexer.COMMENT,
+		lexer.NUMBER,
+		lexer.STRING,
+		lexer.IDENTIFIER,
+		lexer.UNDERSCORE,
+		lexer.SEMICOLON,
+		lexer.OPEN_CURLY,
+		lexer.CLOSE_CURLY,
+		lexer.OPEN_PAREN,
+		lexer.FALSE,
+		lexer.FOR,
+		lexer.FUNC,
+		lexer.IF,
+		lexer.ELSE,
+		lexer.LET,
+		lexer.RETURN,
+		lexer.STRUCT,
+		lexer.TRUE,
+	}
+)
+
+func (p *parser) popParenStack(t lexer.TokenType) {
+	if len(p.parenStack) == 0 {
+		panic(fmt.Sprintf("Unmatched pairwise symbol '%s' found\n", t))
+	}
+	top := p.parenStack[len(p.parenStack)-1]
+	match := false
+	switch t {
+	case lexer.CLOSE_PAREN:
+		if top == lexer.OPEN_PAREN {
+			match = true
+		}
+	case lexer.CLOSE_CURLY:
+		if top == lexer.OPEN_CURLY {
+			match = true
+		}
+	case lexer.CLOSE_BRACKET:
+		if top == lexer.OPEN_BRACKET {
+			match = true
+		}
+	}
+	if !match {
+		panic(fmt.Sprintf("Unmatched pairwise symbol '%s' found\n", t))
+	}
+	p.parenStack = p.parenStack[:len(p.parenStack)-1]
+}
+
+func (p *parser) prevToken() lexer.Token {
+	result := lexer.Token{}
+	if p.pos > 0 {
+		result = p.tokens[p.pos-1]
+	}
+	return result
+}
+
+func (p *parser) currentToken() lexer.Token {
 	result := lexer.Token{}
 	if p.pos < len(p.tokens) {
 		result = p.tokens[p.pos]
@@ -31,35 +103,78 @@ func (p *parser) peek() lexer.Token {
 	return result
 }
 
-// Consumes a single token which must be one of the expected token types, if any
-// are provided as arguments. If the type of the next token is not any of the expected, panics.
-// When called without arguments, accepts any token (including EOF). Returns the consumed token.
-func (p *parser) consume(expected ...lexer.TokenType) lexer.Token {
-	token := p.peek()
-	if len(expected) > 0 && !slices.Contains(expected, token.Type) {
-		panic(fmt.Sprintf("Expected %s, found %s\n", expected, token.Type))
+func (p *parser) nextToken() lexer.Token {
+	result := lexer.Token{}
+	if p.pos+1 < len(p.tokens) {
+		result = p.tokens[p.pos+1]
 	}
-	p.pos++
-	return token
+	return result
 }
 
-// Essentially a glorified `if p.peek().Type == lexer.SEMICOLON`
+// Returns the current token without advancing the parser position.
+// Converts EOL to semicolon when applicable, returns the next token otherwise.
+// Redundant EOLs have been omitted by the lexer. This way, the rest of the parser
+// can stay whitespace ignorant, and only expect semicolons when an explicit
+// statement terminator is required.
+func (p *parser) peek() lexer.Token {
+	currToken := p.currentToken()
+	if currToken.Type == lexer.EOL {
+		isOutsideParens := len(p.parenStack) == 0
+		statementCanTerminate := slices.Contains(beforeSemicolon, p.prevToken().Type) && slices.Contains(afterSemicolon, p.nextToken().Type)
+		if isOutsideParens && statementCanTerminate {
+			return lexer.Token{
+				Type:   lexer.SEMICOLON,
+				Value:  ";",
+				SrcPos: currToken.SrcPos,
+			}
+		}
+	}
+	return currToken
+}
+
+// Consumes a single token which must be one of the expected token types, if any have been
+// provided as arguments. If the type of the next token is not any of the expected, panics.
+// When called without arguments, accepts any token (including EOF). Returns the consumed token.
+// Updates the parser's paren stack as appropriate.
+func (p *parser) consume(expected ...lexer.TokenType) lexer.Token {
+	currToken := p.peek()
+	if len(expected) > 0 && !slices.Contains(expected, currToken.Type) {
+		panic(fmt.Sprintf("Expected %s, found %s\n", expected, currToken.Type))
+	}
+	switch currToken.Type {
+	case lexer.OPEN_PAREN, lexer.OPEN_BRACKET:
+		p.parenStack = append(p.parenStack, currToken.Type)
+	case lexer.CLOSE_PAREN, lexer.CLOSE_BRACKET:
+		p.popParenStack(currToken.Type)
+	case lexer.CLOSE_CURLY:
+		// Open curly is contextual and can only be pushed to the stack by specific
+		// parsing functions, but close curly braces can be safely popped, if a matching
+		// open curly is found on the top of the stack (implying the parser was inside
+		// a struct definition or struct literal body).
+		if len(p.parenStack) > 0 && p.parenStack[len(p.parenStack)-1] == lexer.OPEN_CURLY {
+			p.popParenStack(currToken.Type)
+		}
+	}
+	p.pos++
+	return currToken
+}
+
+// Essentially a glorified `if p.peek().Type == lexer.SEMICOLON`.
 func (p *parser) statementTerminates() bool {
 	switch p.peek().Type {
-	case lexer.SEMICOLON, lexer.EOL, lexer.EOF, lexer.CLOSE_CURLY:
+	case lexer.SEMICOLON, lexer.EOF, lexer.CLOSE_CURLY:
 		return true
 	default:
 		return false
 	}
 }
 
-// Primarily intended for consuming a semicolon or a linefeed, but from the parser
-// point of view, technically EOF and the closing curly brace are also valid
-// (it is up to semantic analysis to determine whether ok in context).
+// Primarily intended for consuming a semicolon, but from the parser point of view,
+// technically EOF and the closing curly brace are also valid (it is up to
+// semantic analysis to determine whether ok in context).
 func (p *parser) consumeStatementTerminator() {
-	next := p.peek()
-	switch next.Type {
-	case lexer.SEMICOLON, lexer.EOL:
+	switch p.peek().Type {
+	case lexer.SEMICOLON:
 		p.consume()
 	case lexer.EOF, lexer.CLOSE_CURLY:
 		// OK but do nothing
@@ -113,7 +228,7 @@ func tailPrecedence(tokenType lexer.TokenType) (int, int) {
 
 // Parse converts a slice of tokens into an AST that can then be used as input for type checking and semantic analysis.
 func Parse(tokens []lexer.Token) ast.BlockExpr {
-	p := newParser()
+	p := newParser(tokens)
 	program := ast.BlockExpr{}
 	for p.peek().Type != lexer.EOF {
 		program.Statements = append(program.Statements, p.parseStmt())
@@ -121,9 +236,9 @@ func Parse(tokens []lexer.Token) ast.BlockExpr {
 	return program
 }
 
-// parseStmt looks at the next token and invokes the appropriate keyword specific
-// parser function. If the next token isn't any of the statement opening keywords,
-// defaults to expression parsing where the and the expression is handled as a statement,
+// parseStmt looks at the current token and invokes the appropriate keyword specific
+// parser function. If the token isn't any of the statement opening keywords,
+// defaults to expression parsing where the expression is handled as a statement,
 // ignoring the expression value.
 func (p *parser) parseStmt() ast.Stmt {
 	switch p.peek().Type {
@@ -147,8 +262,8 @@ func (p *parser) parseExpr(min_bp int) ast.Expr {
 	token := p.consume()
 	leftExpr := p.parseHeadExpr(token)
 	for {
-		nextToken := p.peek()
-		if lbp, rbp := tailPrecedence(nextToken.Type); lbp <= min_bp {
+		token = p.peek()
+		if lbp, rbp := tailPrecedence(token.Type); lbp <= min_bp {
 			break
 		} else {
 			leftExpr = p.parseTailExpr(leftExpr, rbp)
@@ -207,8 +322,8 @@ func (p *parser) parseHeadExpr(token lexer.Token) ast.Expr {
 // binding power forward to recursive calls (to determine expression boundary) provided
 // as an argument. Returns the (possibly compound) expression.
 func (p *parser) parseTailExpr(head ast.Expr, rbp int) ast.Expr {
-	nextToken := p.peek()
-	switch nextToken.Type {
+	currToken := p.peek()
+	switch currToken.Type {
 	case lexer.EQUALS,
 		lexer.PLUS_EQUALS,
 		lexer.DASH_EQUALS,
@@ -246,7 +361,7 @@ func (p *parser) parseTailExpr(head ast.Expr, rbp int) ast.Expr {
 	case lexer.DOT:
 		return p.parseStructMemberExpr(head)
 	default:
-		panic(fmt.Sprintf("Failed to parse tail expression from token %v\n", nextToken))
+		panic(fmt.Sprintf("Failed to parse tail expression from token %v\n", currToken))
 	}
 }
 
@@ -384,6 +499,7 @@ func (p *parser) parseStructDeclStmt() ast.StructDeclStmt {
 	p.consume(lexer.STRUCT)
 	name := p.consume(lexer.IDENTIFIER).Value
 	p.consume(lexer.OPEN_CURLY)
+	p.parenStack = append(p.parenStack, lexer.OPEN_CURLY)
 	members := make([]ast.TypedIdent, 0)
 	for p.peek().Type != lexer.CLOSE_CURLY {
 		memberName := p.consume(lexer.IDENTIFIER).Value
@@ -411,6 +527,10 @@ func (p *parser) parseIfExpr() ast.IfExpr {
 	if p.peek().Type == lexer.THEN {
 		p.consume(lexer.THEN)
 		thenExpr = p.parseExpr(0)
+		// Optionally consume statement terminator
+		if p.peek().Type == lexer.SEMICOLON {
+			p.consume(lexer.SEMICOLON)
+		}
 	} else if p.peek().Type == lexer.OPEN_CURLY {
 		p.consume(lexer.OPEN_CURLY)
 		thenExpr = p.parseBlockExpr()
@@ -427,6 +547,10 @@ func (p *parser) parseIfExpr() ast.IfExpr {
 			p.consume(lexer.CLOSE_CURLY)
 		} else {
 			elseExpr = p.parseExpr(0)
+			// Optionally consume statement terminator
+			if p.peek().Type == lexer.SEMICOLON {
+				p.consume(lexer.SEMICOLON)
+			}
 		}
 	}
 	return ast.IfExpr{
@@ -472,6 +596,7 @@ func (p *parser) parseFuncCallExpr(left ast.Expr) ast.FuncCallExpr {
 
 func (p *parser) parseStructLiteralExpr(left ast.Expr) ast.StructLiteralExpr {
 	p.consume(lexer.OPEN_CURLY)
+	p.parenStack = append(p.parenStack, lexer.OPEN_CURLY)
 	members := []ast.MemberAssignExpr{}
 	for p.peek().Type != lexer.CLOSE_CURLY {
 		memberName := p.consume(lexer.IDENTIFIER).Value
@@ -530,7 +655,7 @@ func (p *parser) parseExpressionStmt() ast.Stmt {
 
 func (p *parser) parseBlockExpr() ast.BlockExpr {
 	statements := []ast.Stmt{}
-	for nextToken := p.peek(); nextToken.Type != lexer.EOF && nextToken.Type != lexer.CLOSE_CURLY; nextToken = p.peek() {
+	for token := p.peek(); token.Type != lexer.EOF && token.Type != lexer.CLOSE_CURLY; token = p.peek() {
 		statements = append(statements, p.parseStmt())
 	}
 	return ast.BlockExpr{

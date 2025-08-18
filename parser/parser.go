@@ -112,24 +112,30 @@ func (p *parser) nextToken() lexer.Token {
 }
 
 // Returns the current token without advancing the parser position.
-// Converts EOL to semicolon when applicable, returns the next token otherwise.
-// Redundant EOLs have been omitted by the lexer. This way, the rest of the parser
-// can stay whitespace ignorant, and only expect semicolons when an explicit
-// statement terminator is required.
+// Converts EOL to semicolon when applicable, deletes as whitespace otherwise.
+// Redundant consecutive EOLs have already been omitted by the lexer.
+// This way, the rest of the parser can remain completely whitespace ignorant,
+// and only expect semicolons when an explicit statement terminator is required.
 func (p *parser) peek() lexer.Token {
 	currToken := p.currentToken()
 	if currToken.Type == lexer.EOL {
 		isOutsideParens := len(p.parenStack) == 0
 		statementCanTerminate := slices.Contains(beforeSemicolon, p.prevToken().Type) && slices.Contains(afterSemicolon, p.nextToken().Type)
 		if isOutsideParens && statementCanTerminate {
-			return lexer.Token{
+			// EOL is a statement terminator, replace with an explicit SEMICOLON token
+			p.tokens[p.pos] = lexer.Token{
 				Type:   lexer.SEMICOLON,
 				Value:  ";",
 				SrcPos: currToken.SrcPos,
 			}
+		} else {
+			// EOL is not a statement terminator, remove from token stream as whitespace
+			p.tokens = append(p.tokens[:p.pos], p.tokens[p.pos+1:]...)
+			// Recurse to get the new current token
+			return p.peek()
 		}
 	}
-	return currToken
+	return p.currentToken()
 }
 
 // Consumes a single token which must be one of the expected token types, if any have been

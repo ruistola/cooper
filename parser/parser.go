@@ -524,19 +524,17 @@ func (p *parser) parseStructDeclStmt() ast.StructDeclStmt {
 func (p *parser) parseIfExpr() ast.IfExpr {
 	cond := p.parseExpr(0)
 	var thenExpr ast.Expr
-	if p.peek().Type == lexer.THEN {
-		p.consume(lexer.THEN)
+	p.consume(lexer.THEN)
+	if p.peek().Type == lexer.OPEN_CURLY {
+		p.consume(lexer.OPEN_CURLY)
+		thenExpr = p.parseBlockExpr()
+		p.consume(lexer.CLOSE_CURLY)
+	} else {
 		thenExpr = p.parseExpr(0)
 		// Optionally consume statement terminator
 		if p.peek().Type == lexer.SEMICOLON {
 			p.consume(lexer.SEMICOLON)
 		}
-	} else if p.peek().Type == lexer.OPEN_CURLY {
-		p.consume(lexer.OPEN_CURLY)
-		thenExpr = p.parseBlockExpr()
-		p.consume(lexer.CLOSE_CURLY)
-	} else {
-		panic("Expected 'then' or '{' after an if condition")
 	}
 	var elseExpr ast.Expr
 	if p.peek().Type == lexer.ELSE {

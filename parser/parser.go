@@ -179,7 +179,7 @@ func (p *parser) consume(expected ...lexer.TokenType) lexer.Token {
 // Essentially a glorified `if p.peek().Type == lexer.SEMICOLON`.
 func (p *parser) statementTerminates() bool {
 	switch p.peek().Type {
-	case lexer.SEMICOLON, lexer.EOF:
+	case lexer.SEMICOLON, lexer.EOF, lexer.CLOSE_CURLY:
 		return true
 	default:
 		return false

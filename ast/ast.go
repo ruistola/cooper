@@ -75,13 +75,15 @@ type BinaryExpr struct {
 func (e BinaryExpr) expr() {}
 
 type BlockExpr struct {
-	Statements []Stmt
+	Statements    []Stmt
+	SuppressValue bool
 }
 
 func (e BlockExpr) expr() {}
 
 type ExpressionStmt struct {
-	Expr Expr
+	Expr              Expr
+	ExplicitSemicolon bool
 }
 
 func (s ExpressionStmt) stmt() {}

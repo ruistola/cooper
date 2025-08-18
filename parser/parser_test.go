@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"github.com/ruistola/cooper/ast"
 	"github.com/ruistola/cooper/lexer"
 	"github.com/yassinebenaid/godump"
 	"testing"
@@ -8,49 +9,49 @@ import (
 
 func TestBasicExpression(t *testing.T) {
 	src := "69 + 420"
-	ast := Parse(lexer.Tokenize(src))
+	parsedAst := Parse(lexer.Tokenize(src))
 	if testing.Verbose() {
-		godump.Dump(ast)
+		godump.Dump(parsedAst)
 	}
 }
 
 func TestIfExpression(t *testing.T) {
 	src := "if x < 5 then { 0 } else { 5 }"
-	ast := Parse(lexer.Tokenize(src))
+	parsedAst := Parse(lexer.Tokenize(src))
 	if testing.Verbose() {
-		godump.Dump(ast)
+		godump.Dump(parsedAst)
 	}
 }
 
 func TestIfExpressionNewline(t *testing.T) {
 	src := "if x < 5 then 0\n else 5"
-	ast := Parse(lexer.Tokenize(src))
+	parsedAst := Parse(lexer.Tokenize(src))
 	if testing.Verbose() {
-		godump.Dump(ast)
+		godump.Dump(parsedAst)
 	}
 }
 
 func TestIfExpressionStatements(t *testing.T) {
 	src := "if x < 5 then foo(); else bar();"
-	ast := Parse(lexer.Tokenize(src))
+	parsedAst := Parse(lexer.Tokenize(src))
 	if testing.Verbose() {
-		godump.Dump(ast)
+		godump.Dump(parsedAst)
 	}
 }
 
 func TestIfExpressionStatementsNewline(t *testing.T) {
 	src := "if x < 5 then foo();\nelse bar();"
-	ast := Parse(lexer.Tokenize(src))
+	parsedAst := Parse(lexer.Tokenize(src))
 	if testing.Verbose() {
-		godump.Dump(ast)
+		godump.Dump(parsedAst)
 	}
 }
 
 func TestOneLineIfExpression(t *testing.T) {
 	src := "if x < 5 then foo() else if x > 10 then 100 else 10"
-	ast := Parse(lexer.Tokenize(src))
+	parsedAst := Parse(lexer.Tokenize(src))
 	if testing.Verbose() {
-		godump.Dump(ast)
+		godump.Dump(parsedAst)
 	}
 }
 
@@ -87,11 +88,146 @@ func TestFuncArrayType(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			ast := Parse(lexer.Tokenize(tc.src))
+			parsedAst := Parse(lexer.Tokenize(tc.src))
 			if testing.Verbose() {
 				t.Logf("\nParsing: %s", tc.src)
-				godump.Dump(ast)
+				godump.Dump(parsedAst)
 			}
 		})
+	}
+}
+
+func TestSemicolonInference(t *testing.T) {
+	testCases := []struct {
+		name string
+		src  string
+	}{
+		{
+			"basic inference with newlines",
+			`let x: i32 = 5
+let y: i32 = 10
+x + y`,
+		},
+		{
+			"no semicolon before closing brace",
+			`{
+  let a: i32 = 5
+  let b: i32 = 10
+  a + b
+}`,
+		},
+		{
+			"explicit semicolon suppresses block value",
+			`{
+  let a: i32 = 5
+  let b: i32 = 10
+  a + b;
+}`,
+		},
+		{
+			"for loop body suppresses value",
+			`for (let i: i32 = 0; i < 10; i += 1) {
+  doSomething()
+  i * 2
+}`,
+		},
+		{
+			"void function body suppresses value",
+			`func foo() {
+  let x: i32 = 5
+  x + 10
+}`,
+		},
+		{
+			"non-void function preserves value",
+			`func bar(): i32 {
+  let x: i32 = 5
+  x + 10
+}`,
+		},
+		{
+			"if expression blocks preserve values",
+			`if x > 0 then {
+  doA()
+  5
+} else {
+  doB()
+  10
+}`,
+		},
+		{
+			"nested block as expression",
+			`let result: i32 = {
+  let temp: i32 = {
+    let a: i32 = 1
+    let b: i32 = 2
+    a + b
+  }
+  temp * 10
+}`,
+		},
+		{
+			"newlines in parentheses ignored",
+			`foo(
+  1,
+  2,
+  3
+)`,
+		},
+		{
+			"assignment with newline",
+			`let x: i32 = 5
+x = 10
+y = x + 5`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			parsedAst := Parse(lexer.Tokenize(tc.src))
+			if testing.Verbose() {
+				t.Logf("\nParsing: %s", tc.src)
+				godump.Dump(parsedAst)
+			}
+			// Just verify it parses without panic
+		})
+	}
+}
+
+func TestBlockValueSemantics(t *testing.T) {
+	src := `{
+  let a: i32 = 5
+  a + 10
+}`
+	parsedAst := Parse(lexer.Tokenize(src))
+
+	// Verify the block has statements and no suppression
+	if len(parsedAst.Statements) != 1 {
+		t.Errorf("Expected 1 statement (the block), got %d", len(parsedAst.Statements))
+	}
+
+	if exprStmt, ok := parsedAst.Statements[0].(ast.ExpressionStmt); ok {
+		if blockExpr, ok := exprStmt.Expr.(ast.BlockExpr); ok {
+			if blockExpr.SuppressValue {
+				t.Error("Block value should not be suppressed")
+			}
+		}
+	}
+}
+
+func TestForLoopValueSuppression(t *testing.T) {
+	src := `for (let i: i32 = 0; i < 10; i += 1) {
+  i * 2
+}`
+	parsedAst := Parse(lexer.Tokenize(src))
+
+	if len(parsedAst.Statements) != 1 {
+		t.Errorf("Expected 1 statement, got %d", len(parsedAst.Statements))
+	}
+
+	if forStmt, ok := parsedAst.Statements[0].(ast.ForStmt); ok {
+		if !forStmt.Body.SuppressValue {
+			t.Error("For loop body should suppress value")
+		}
 	}
 }

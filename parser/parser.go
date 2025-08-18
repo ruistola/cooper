@@ -179,7 +179,7 @@ func (p *parser) consume(expected ...lexer.TokenType) lexer.Token {
 // Essentially a glorified `if p.peek().Type == lexer.SEMICOLON`.
 func (p *parser) statementTerminates() bool {
 	switch p.peek().Type {
-	case lexer.SEMICOLON, lexer.EOF, lexer.CLOSE_CURLY:
+	case lexer.SEMICOLON, lexer.EOF:
 		return true
 	default:
 		return false
@@ -193,8 +193,10 @@ func (p *parser) consumeStatementTerminator() {
 	switch p.peek().Type {
 	case lexer.SEMICOLON:
 		p.consume()
-	case lexer.EOF, lexer.CLOSE_CURLY:
+	case lexer.EOF:
 		// OK but do nothing
+	case lexer.CLOSE_CURLY:
+		// Don't consume, let the block parser handle it
 	default:
 		panic("Expected statement terminator")
 	}
@@ -326,7 +328,7 @@ func (p *parser) parseHeadExpr(token lexer.Token) ast.Expr {
 	case lexer.IF:
 		return p.parseIfExpr()
 	case lexer.OPEN_CURLY:
-		rhs := p.parseBlockExpr()
+		rhs := p.parseBlockExpr(blockContextExpression)
 		p.consume(lexer.CLOSE_CURLY)
 		return rhs
 	default:
@@ -497,12 +499,17 @@ func (p *parser) parseFuncDeclStmt() ast.FuncDeclStmt {
 	}
 	p.consume(lexer.CLOSE_PAREN)
 	var returnType ast.Type
+	// Suppress unused warning from the function body block unless there is some non-void return type
+	bodyBlockContext := blockContextStatement
 	if p.peek().Type == lexer.COLON {
 		p.consume(lexer.COLON)
 		returnType = p.parseType()
+		if namedType, ok := returnType.(ast.NamedType); ok && namedType.TypeName != "void" {
+			bodyBlockContext = blockContextExpression
+		}
 	}
 	p.consume(lexer.OPEN_CURLY)
-	funcBody := p.parseBlockExpr()
+	funcBody := p.parseBlockExpr(blockContext(bodyBlockContext))
 	p.consume(lexer.CLOSE_CURLY)
 	return ast.FuncDeclStmt{
 		Name:       name,
@@ -544,7 +551,7 @@ func (p *parser) parseIfExpr() ast.IfExpr {
 	p.consume(lexer.THEN)
 	if p.peek().Type == lexer.OPEN_CURLY {
 		p.consume(lexer.OPEN_CURLY)
-		thenExpr = p.parseBlockExpr()
+		thenExpr = p.parseBlockExpr(blockContextExpression)
 		p.consume(lexer.CLOSE_CURLY)
 	} else {
 		thenExpr = p.parseExpr(0)
@@ -558,7 +565,7 @@ func (p *parser) parseIfExpr() ast.IfExpr {
 		p.consume(lexer.ELSE)
 		if p.peek().Type == lexer.OPEN_CURLY {
 			p.consume(lexer.OPEN_CURLY)
-			elseExpr = p.parseBlockExpr()
+			elseExpr = p.parseBlockExpr(blockContextExpression)
 			p.consume(lexer.CLOSE_CURLY)
 		} else {
 			elseExpr = p.parseExpr(0)
@@ -583,7 +590,7 @@ func (p *parser) parseForStmt() ast.Stmt {
 	iterStmt := ast.ExpressionStmt{Expr: p.parseExpr(0)}
 	p.consume(lexer.CLOSE_PAREN)
 	p.consume(lexer.OPEN_CURLY)
-	body := p.parseBlockExpr()
+	body := p.parseBlockExpr(blockContextStatement)
 	p.consume(lexer.CLOSE_CURLY)
 	return ast.ForStmt{
 		Init: initStmt,
@@ -662,18 +669,40 @@ func (p *parser) parseReturnStmt() ast.ReturnStmt {
 
 func (p *parser) parseExpressionStmt() ast.Stmt {
 	expr := p.parseExpr(0)
+	explicitSemicolon := p.peek().Type == lexer.SEMICOLON
 	p.consumeStatementTerminator()
 	return ast.ExpressionStmt{
-		Expr: expr,
+		Expr:              expr,
+		ExplicitSemicolon: explicitSemicolon,
 	}
 }
 
-func (p *parser) parseBlockExpr() ast.BlockExpr {
+// For convenience, suppress warnings/errors about unused
+// values returned from a block expression in some cases
+// where the value can be discarded.
+type blockContext int
+
+const (
+	blockContextExpression = iota
+	blockContextStatement
+)
+
+func (p *parser) parseBlockExpr(ctx blockContext) ast.BlockExpr {
 	statements := []ast.Stmt{}
 	for token := p.peek(); token.Type != lexer.EOF && token.Type != lexer.CLOSE_CURLY; token = p.peek() {
 		statements = append(statements, p.parseStmt())
 	}
+	// Determine whether to suppress the value of the block expression
+	// (the user will explicitly add a semicolon to make the block's last expression into a statement)
+	suppressValue := ctx == blockContextStatement
+	if !suppressValue && len(statements) > 0 {
+		// Check if last statement has an explicit semicolon
+		if exprStmt, ok := statements[len(statements)-1].(ast.ExpressionStmt); ok {
+			suppressValue = exprStmt.ExplicitSemicolon
+		}
+	}
 	return ast.BlockExpr{
-		Statements: statements,
+		Statements:    statements,
+		SuppressValue: suppressValue,
 	}
 }

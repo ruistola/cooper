@@ -15,8 +15,16 @@ func TestBasicExpression(t *testing.T) {
 	}
 }
 
-func TestIfExpression(t *testing.T) {
-	src := "if x < 5 then { 0 } else { 5 }"
+func TestIfExpression1(t *testing.T) {
+	src := "result = if x < 5 then { 0 } else { 5 }"
+	parsedAst := Parse(lexer.Tokenize(src))
+	if testing.Verbose() {
+		godump.Dump(parsedAst)
+	}
+}
+
+func TestIfExpression2(t *testing.T) {
+	src := "result = if x < 5 then 0 else 5"
 	parsedAst := Parse(lexer.Tokenize(src))
 	if testing.Verbose() {
 		godump.Dump(parsedAst)
@@ -24,14 +32,14 @@ func TestIfExpression(t *testing.T) {
 }
 
 func TestIfExpressionNewline(t *testing.T) {
-	src := "if x < 5 then 0\n else 5"
+	src := "result = if x < 5 then 0\n else 5"
 	parsedAst := Parse(lexer.Tokenize(src))
 	if testing.Verbose() {
 		godump.Dump(parsedAst)
 	}
 }
 
-func TestIfExpressionStatements(t *testing.T) {
+func TestIfStatementExplicitSemicolon(t *testing.T) {
 	src := "if x < 5 then foo(); else bar();"
 	parsedAst := Parse(lexer.Tokenize(src))
 	if testing.Verbose() {
@@ -39,7 +47,15 @@ func TestIfExpressionStatements(t *testing.T) {
 	}
 }
 
-func TestIfExpressionStatementsNewline(t *testing.T) {
+func TestIfStatementNewline(t *testing.T) {
+	src := "if x < 5 then foo()\nelse bar()"
+	parsedAst := Parse(lexer.Tokenize(src))
+	if testing.Verbose() {
+		godump.Dump(parsedAst)
+	}
+}
+
+func TestIfStatementSemicolonNewline(t *testing.T) {
 	src := "if x < 5 then foo();\nelse bar();"
 	parsedAst := Parse(lexer.Tokenize(src))
 	if testing.Verbose() {
@@ -47,7 +63,24 @@ func TestIfExpressionStatementsNewline(t *testing.T) {
 	}
 }
 
-func TestOneLineIfExpression(t *testing.T) {
+func TestOneLineIfStatementBlock(t *testing.T) {
+	src := "if x < 5 then { foo() } else { bar() }"
+	parsedAst := Parse(lexer.Tokenize(src))
+	if testing.Verbose() {
+		godump.Dump(parsedAst)
+	}
+}
+
+func TestOneLineIfStatement(t *testing.T) {
+	src := "if x < 5 then foo() else bar()"
+	parsedAst := Parse(lexer.Tokenize(src))
+	if testing.Verbose() {
+		godump.Dump(parsedAst)
+	}
+}
+
+// Should this be legal? Is it an expression statement with then-expr & else-expr or statement with then-stmt & else-expr?
+func TestOneLineIfStatementComplex(t *testing.T) {
 	src := "if x < 5 then foo() else if x > 10 then 100 else 10"
 	parsedAst := Parse(lexer.Tokenize(src))
 	if testing.Verbose() {
@@ -207,27 +240,8 @@ func TestBlockValueSemantics(t *testing.T) {
 	}
 
 	if exprStmt, ok := parsedAst.Statements[0].(ast.ExpressionStmt); ok {
-		if blockExpr, ok := exprStmt.Expr.(ast.BlockExpr); ok {
-			if blockExpr.SuppressValue {
-				t.Error("Block value should not be suppressed")
-			}
-		}
-	}
-}
-
-func TestForLoopValueSuppression(t *testing.T) {
-	src := `for (let i: i32 = 0; i < 10; i += 1) {
-  i * 2
-}`
-	parsedAst := Parse(lexer.Tokenize(src))
-
-	if len(parsedAst.Statements) != 1 {
-		t.Errorf("Expected 1 statement, got %d", len(parsedAst.Statements))
-	}
-
-	if forStmt, ok := parsedAst.Statements[0].(ast.ForStmt); ok {
-		if !forStmt.Body.SuppressValue {
-			t.Error("For loop body should suppress value")
+		if _, ok := exprStmt.Expr.(ast.BlockExpr); !ok {
+			t.Errorf("Expected block expression, got %t", exprStmt.Expr)
 		}
 	}
 }

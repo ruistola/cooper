@@ -260,7 +260,7 @@ func Check(program ast.BlockStmt) []string {
 func (tc *TypeChecker) CheckBlockStmt(block ast.BlockStmt) {
 	oldEnv := tc.env
 	tc.env = NewTypeEnv(oldEnv)
-	for _, stmt := range block.Body {
+	for _, stmt := range block.Statements {
 		tc.CheckStmt(stmt)
 	}
 	tc.env = oldEnv
@@ -656,23 +656,23 @@ func (tc *TypeChecker) StmtReturns(stmt ast.Stmt) bool {
 }
 
 func (tc *TypeChecker) BlockReturns(block ast.BlockStmt) bool {
-	if len(block.Body) == 0 {
+	if len(block.Statements) == 0 {
 		return false
 	}
-	if slices.ContainsFunc(block.Body, func(stmt ast.Stmt) bool { return tc.StmtReturns(stmt) }) {
+	if slices.ContainsFunc(block.Statements, func(stmt ast.Stmt) bool { return tc.StmtReturns(stmt) }) {
 		return true
 	}
 	return false
 }
 
 func (tc *TypeChecker) CheckUnreachableCode(block ast.BlockStmt) {
-	for i := range len(block.Body) - 1 {
-		if tc.StmtReturns(block.Body[i]) {
+	for i := range len(block.Statements) - 1 {
+		if tc.StmtReturns(block.Statements[i]) {
 			tc.Err(fmt.Sprintf("unreachable code after line %d", i+1))
 			break
 		}
 	}
-	for _, stmt := range block.Body {
+	for _, stmt := range block.Statements {
 		switch s := stmt.(type) {
 		case ast.BlockStmt:
 			tc.CheckUnreachableCode(s)

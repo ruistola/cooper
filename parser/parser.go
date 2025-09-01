@@ -121,9 +121,8 @@ func (p *parser) peek() lexer.Token {
 	if currToken.Type == lexer.EOL {
 		isBeforeClosingBrace := p.nextToken().Type == lexer.CLOSE_CURLY
 		// Don't convert EOL into a semicolon if this would be the last expression in a block.
-		// If the user's intention is specifically to return nothing from the block
-		// and this is not one of the blocks where the value is silently suppressed
-		// (e.g. for- statements), they must insert an explicit semicolon.
+		// If the user's intention is specifically to return nothing from a block expression,
+		// they must insert an explicit semicolon.
 		if isBeforeClosingBrace {
 			p.tokens = append(p.tokens[:p.pos], p.tokens[p.pos+1:]...)
 			// Recurse to get the new current token
@@ -246,9 +245,9 @@ func tailPrecedence(tokenType lexer.TokenType) (int, int) {
 }
 
 // Parse converts a slice of tokens into an AST that can then be used as input for type checking and semantic analysis.
-func Parse(tokens []lexer.Token) ast.BlockExpr {
+func Parse(tokens []lexer.Token) ast.BlockStmt {
 	p := newParser(tokens)
-	program := ast.BlockExpr{}
+	program := ast.BlockStmt{}
 	for p.peek().Type != lexer.EOF {
 		program.Statements = append(program.Statements, p.parseStmt())
 	}
@@ -267,6 +266,8 @@ func (p *parser) parseStmt() ast.Stmt {
 		return p.parseStructDeclStmt()
 	case lexer.FUNC:
 		return p.parseFuncDeclStmt()
+	case lexer.IF:
+		return p.parseIfStmt()
 	case lexer.FOR:
 		return p.parseForStmt()
 	case lexer.RETURN:
@@ -328,7 +329,7 @@ func (p *parser) parseHeadExpr(token lexer.Token) ast.Expr {
 	case lexer.IF:
 		return p.parseIfExpr()
 	case lexer.OPEN_CURLY:
-		rhs := p.parseBlockExpr(blockContextExpression)
+		rhs := p.parseBlockExpr()
 		p.consume(lexer.CLOSE_CURLY)
 		return rhs
 	default:
@@ -499,17 +500,12 @@ func (p *parser) parseFuncDeclStmt() ast.FuncDeclStmt {
 	}
 	p.consume(lexer.CLOSE_PAREN)
 	var returnType ast.Type
-	// Suppress unused warning from the function body block unless there is some non-void return type
-	bodyBlockContext := blockContextStatement
 	if p.peek().Type == lexer.COLON {
 		p.consume(lexer.COLON)
 		returnType = p.parseType()
-		if namedType, ok := returnType.(ast.NamedType); ok && namedType.TypeName != "void" {
-			bodyBlockContext = blockContextExpression
-		}
 	}
 	p.consume(lexer.OPEN_CURLY)
-	funcBody := p.parseBlockExpr(blockContext(bodyBlockContext))
+	funcBody := p.parseBlockStmt()
 	p.consume(lexer.CLOSE_CURLY)
 	return ast.FuncDeclStmt{
 		Name:       name,
@@ -518,7 +514,6 @@ func (p *parser) parseFuncDeclStmt() ast.FuncDeclStmt {
 		Body:       funcBody,
 	}
 }
-
 func (p *parser) parseStructDeclStmt() ast.StructDeclStmt {
 	p.consume(lexer.STRUCT)
 	name := p.consume(lexer.IDENTIFIER).Value
@@ -547,38 +542,65 @@ func (p *parser) parseStructDeclStmt() ast.StructDeclStmt {
 
 func (p *parser) parseIfExpr() ast.IfExpr {
 	cond := p.parseExpr(0)
-	var thenExpr ast.Expr
 	p.consume(lexer.THEN)
+	var thenExpr ast.Expr
 	if p.peek().Type == lexer.OPEN_CURLY {
 		p.consume(lexer.OPEN_CURLY)
-		thenExpr = p.parseBlockExpr(blockContextExpression)
+		thenExpr = p.parseBlockExpr()
 		p.consume(lexer.CLOSE_CURLY)
 	} else {
 		thenExpr = p.parseExpr(0)
-		// Optionally consume statement terminator
-		if p.peek().Type == lexer.SEMICOLON {
-			p.consume(lexer.SEMICOLON)
-		}
+	}
+	// There might be a semicolon resulting from an EOL conversion
+	// (the `beforeSemicolon` and `afterSemicolon` categories can't differentiate
+	// between lexer.ELSE in a statement vs expression context)
+	// so just consume it silently if there is one
+	if p.peek().Type == lexer.SEMICOLON {
+		p.consume(lexer.SEMICOLON)
 	}
 	var elseExpr ast.Expr
-	if p.peek().Type == lexer.ELSE {
-		p.consume(lexer.ELSE)
-		if p.peek().Type == lexer.OPEN_CURLY {
-			p.consume(lexer.OPEN_CURLY)
-			elseExpr = p.parseBlockExpr(blockContextExpression)
-			p.consume(lexer.CLOSE_CURLY)
-		} else {
-			elseExpr = p.parseExpr(0)
-			// Optionally consume statement terminator
-			if p.peek().Type == lexer.SEMICOLON {
-				p.consume(lexer.SEMICOLON)
-			}
-		}
+	p.consume(lexer.ELSE)
+	if p.peek().Type == lexer.OPEN_CURLY {
+		p.consume(lexer.OPEN_CURLY)
+		elseExpr = p.parseBlockExpr()
+		p.consume(lexer.CLOSE_CURLY)
+	} else {
+		elseExpr = p.parseExpr(0)
 	}
 	return ast.IfExpr{
 		Cond: cond,
 		Then: thenExpr,
 		Else: elseExpr,
+	}
+}
+
+func (p *parser) parseIfStmt() ast.Stmt {
+	p.consume(lexer.IF)
+	cond := p.parseExpr(0)
+	p.consume(lexer.THEN)
+	var thenStmt ast.Stmt
+	if p.peek().Type == lexer.OPEN_CURLY {
+		p.consume(lexer.OPEN_CURLY)
+		thenStmt = p.parseBlockStmt()
+		p.consume(lexer.CLOSE_CURLY)
+	} else {
+		thenStmt = p.parseStmt()
+	}
+	var elseStmt ast.Stmt
+	if p.peek().Type == lexer.ELSE {
+		p.consume(lexer.ELSE)
+		if p.peek().Type == lexer.OPEN_CURLY {
+			p.consume(lexer.OPEN_CURLY)
+			elseStmt = p.parseBlockStmt()
+			p.consume(lexer.CLOSE_CURLY)
+		} else {
+			elseStmt = p.parseStmt()
+		}
+	}
+	return ast.IfStmt{
+		Cond: cond,
+		Then: thenStmt,
+		Else: elseStmt,
 	}
 }
 
@@ -590,7 +612,7 @@ func (p *parser) parseForStmt() ast.Stmt {
 	iterStmt := ast.ExpressionStmt{Expr: p.parseExpr(0)}
 	p.consume(lexer.CLOSE_PAREN)
 	p.consume(lexer.OPEN_CURLY)
-	body := p.parseBlockExpr(blockContextStatement)
+	body := p.parseBlockStmt()
 	p.consume(lexer.CLOSE_CURLY)
 	return ast.ForStmt{
 		Init: initStmt,
@@ -662,9 +684,9 @@ func (p *parser) parseReturnStmt() ast.ReturnStmt {
 		p.consumeStatementTerminator()
 		return ast.ReturnStmt{Expr: nil}
 	}
-	return ast.ReturnStmt{
-		Expr: p.parseExpressionStmt().(ast.ExpressionStmt).Expr,
-	}
+	expr := p.parseExpr(0)
+	p.consumeStatementTerminator()
+	return ast.ReturnStmt{Expr: expr}
 }
 
 func (p *parser) parseExpressionStmt() ast.Stmt {
@@ -677,32 +699,27 @@ func (p *parser) parseExpressionStmt() ast.Stmt {
 	}
 }
 
-// For convenience, suppress warnings/errors about unused
-// values returned from a block expression in some cases
-// where the value can be discarded.
-type blockContext int
-
-const (
-	blockContextExpression = iota
-	blockContextStatement
-)
-
-func (p *parser) parseBlockExpr(ctx blockContext) ast.BlockExpr {
+func (p *parser) parseBlockStmt() ast.BlockStmt {
 	statements := []ast.Stmt{}
 	for token := p.peek(); token.Type != lexer.EOF && token.Type != lexer.CLOSE_CURLY; token = p.peek() {
 		statements = append(statements, p.parseStmt())
 	}
-	// Determine whether to suppress the value of the block expression
-	// (the user will explicitly add a semicolon to make the block's last expression into a statement)
-	suppressValue := ctx == blockContextStatement
-	if !suppressValue && len(statements) > 0 {
-		// Check if last statement has an explicit semicolon
+	return ast.BlockStmt{
+		Statements: statements,
+	}
+}
+
+func (p *parser) parseBlockExpr() ast.BlockExpr {
+	statements := p.parseBlockStmt().Statements
+	var resultExpr ast.Expr = ast.UnitExpr{}
+	if len(statements) > 0 {
 		if exprStmt, ok := statements[len(statements)-1].(ast.ExpressionStmt); ok {
-			suppressValue = exprStmt.ExplicitSemicolon
+			resultExpr = exprStmt.Expr
+			statements = statements[:len(statements)-1]
 		}
 	}
 	return ast.BlockExpr{
-		Statements:    statements,
-		SuppressValue: suppressValue,
+		Statements: statements,
+		ResultExpr: resultExpr,
 	}
 }

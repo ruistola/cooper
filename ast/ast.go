@@ -35,6 +35,10 @@ type FuncType struct {
 
 func (t FuncType) _type() {}
 
+type UnitExpr struct{}
+
+func (e UnitExpr) expr() {}
+
 type BoolLiteralExpr struct {
 	Value bool
 }
@@ -75,11 +79,17 @@ type BinaryExpr struct {
 func (e BinaryExpr) expr() {}
 
 type BlockExpr struct {
-	Statements    []Stmt
-	SuppressValue bool
+	Statements []Stmt
+	ResultExpr Expr
 }
 
 func (e BlockExpr) expr() {}
+
+type BlockStmt struct {
+	Statements []Stmt
+}
+
+func (s BlockStmt) stmt() {}
 
 type ExpressionStmt struct {
 	Expr              Expr
@@ -110,7 +120,7 @@ type FuncDeclStmt struct {
 	Name       string
 	Parameters []TypedIdent
 	ReturnType Type
-	Body       BlockExpr
+	Body       BlockStmt
 }
 
 func (s FuncDeclStmt) stmt() {}
@@ -158,11 +168,19 @@ type IfExpr struct {
 
 func (e IfExpr) expr() {}
 
+type IfStmt struct {
+	Cond Expr
+	Then Stmt
+	Else Stmt
+}
+
+func (s IfStmt) stmt() {}
+
 type ForStmt struct {
 	Init Stmt
 	Cond Expr
 	Iter ExpressionStmt
-	Body BlockExpr
+	Body BlockStmt
 }
 
 func (s ForStmt) stmt() {}

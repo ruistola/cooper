@@ -39,6 +39,22 @@ func TestIfExpressionNewline(t *testing.T) {
 	}
 }
 
+func TestIfExpressionSemicolon(t *testing.T) {
+	src := "result = if x < 5 then 0; else 5"
+	parsedAst := Parse(lexer.Tokenize(src))
+	if testing.Verbose() {
+		godump.Dump(parsedAst)
+	}
+}
+
+func TestIfExpressionSemicolonNewline(t *testing.T) {
+	src := "result = if x < 5 then 0;\nelse 5"
+	parsedAst := Parse(lexer.Tokenize(src))
+	if testing.Verbose() {
+		godump.Dump(parsedAst)
+	}
+}
+
 func TestIfStatementExplicitSemicolon(t *testing.T) {
 	src := "if x < 5 then foo(); else bar();"
 	parsedAst := Parse(lexer.Tokenize(src))
@@ -65,6 +81,14 @@ func TestIfStatementSemicolonNewline(t *testing.T) {
 
 func TestOneLineIfStatementBlock(t *testing.T) {
 	src := "if x < 5 then { foo() } else { bar() }"
+	parsedAst := Parse(lexer.Tokenize(src))
+	if testing.Verbose() {
+		godump.Dump(parsedAst)
+	}
+}
+
+func TestOneLineIfStatementMultiStatementBlock(t *testing.T) {
+	src := "if x < 5 then { foo()\nbar() } else { bar(); baz() }"
 	parsedAst := Parse(lexer.Tokenize(src))
 	if testing.Verbose() {
 		godump.Dump(parsedAst)

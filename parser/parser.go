@@ -8,16 +8,18 @@ import (
 )
 
 type parser struct {
-	tokens     []lexer.Token
-	pos        int
-	parenStack []lexer.TokenType
+	tokens       []lexer.Token
+	pos          int
+	parenStack   []lexer.TokenType
+	inThenBranch bool
 }
 
 func newParser(tokens []lexer.Token) parser {
 	return parser{
-		tokens:     tokens,
-		pos:        0,
-		parenStack: make([]lexer.TokenType, 0),
+		tokens:       tokens,
+		pos:          0,
+		parenStack:   make([]lexer.TokenType, 0),
+		inThenBranch: false,
 	}
 }
 
@@ -180,6 +182,9 @@ func (p *parser) statementTerminates() bool {
 	switch p.peek().Type {
 	case lexer.SEMICOLON, lexer.EOF, lexer.CLOSE_CURLY:
 		return true
+	case lexer.ELSE:
+		// when inside an if-statement, allow the `else` keyword to behave as a terminator for the then-branch
+		return p.inThenBranch
 	default:
 		return false
 	}
@@ -196,6 +201,12 @@ func (p *parser) consumeStatementTerminator() {
 		// OK but do nothing
 	case lexer.CLOSE_CURLY:
 		// Don't consume, let the block parser handle it
+	case lexer.ELSE:
+		if p.inThenBranch {
+			// Don't consume, let parseIfStmt handle it
+			return
+		}
+		fallthrough
 	default:
 		panic("Expected statement terminator")
 	}
@@ -584,7 +595,9 @@ func (p *parser) parseIfStmt() ast.Stmt {
 		thenStmt = p.parseBlockStmt()
 		p.consume(lexer.CLOSE_CURLY)
 	} else {
+		p.inThenBranch = true
 		thenStmt = p.parseStmt()
+		p.inThenBranch = false
 	}
 	var elseStmt ast.Stmt
 	if p.peek().Type == lexer.ELSE {

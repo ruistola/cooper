@@ -271,18 +271,20 @@ func Parse(tokens []lexer.Token) ast.BlockStmt {
 // ignoring the expression value.
 func (p *parser) parseStmt() ast.Stmt {
 	switch p.peek().Type {
-	case lexer.LET:
-		return p.parseVarDeclStmt()
-	case lexer.STRUCT:
-		return p.parseStructDeclStmt()
+	case lexer.FOR:
+		return p.parseForStmt()
 	case lexer.FUNC:
 		return p.parseFuncDeclStmt()
 	case lexer.IF:
 		return p.parseIfStmt()
-	case lexer.FOR:
-		return p.parseForStmt()
+	case lexer.LET:
+		return p.parseVarDeclStmt()
 	case lexer.RETURN:
 		return p.parseReturnStmt()
+	case lexer.STRUCT:
+		return p.parseStructDeclStmt()
+	case lexer.USE:
+		return p.parseUseDeclStmt()
 	default:
 		return p.parseExpressionStmt()
 	}
@@ -734,5 +736,33 @@ func (p *parser) parseBlockExpr() ast.BlockExpr {
 	return ast.BlockExpr{
 		Statements: statements,
 		ResultExpr: resultExpr,
+	}
+}
+
+// Always required to be a use block, to minimize diff noise from when the number of declared uses
+// goes from 1 -> 2. Like struct declarations and struct literals, trailing comma is mandatory,
+// for the same reason: consistency and less noise in diffs.
+//
+//	use {
+//	  moduleNameOrPath,
+//	  alias: moduleNameOrPath,
+//	}
+func (p *parser) parseUseDeclStmt() ast.UseDeclStmt {
+	specs := make([]ast.UseSpecExpr, 0)
+	p.consume(lexer.USE)
+	p.consume(lexer.OPEN_CURLY)
+	for p.peek().Type != lexer.CLOSE_CURLY {
+		name := p.consume(lexer.IDENTIFIER).Value
+		p.consume(lexer.COLON)
+		module := p.consume(lexer.IDENTIFIER).Value
+		specs = append(specs, ast.UseSpecExpr{
+			Name:   name,
+			Module: module,
+		})
+		p.consume(lexer.COMMA)
+	}
+	p.consume(lexer.CLOSE_CURLY)
+	return ast.UseDeclStmt{
+		UseSpecs: specs,
 	}
 }

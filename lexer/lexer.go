@@ -69,6 +69,7 @@ const (
 	STRUCT
 	THEN
 	TRUE
+	USE
 
 	// Sentinel value
 	NUM_TOKENS
@@ -133,18 +134,19 @@ var tokenPatterns []tokenPattern = []tokenPattern{
 }
 
 var reservedKeywords map[string]TokenType = map[string]TokenType{
-	"let":    LET,
-	"struct": STRUCT,
-	"true":   TRUE,
+	"and":    AND,
+	"else":   ELSE,
 	"false":  FALSE,
+	"for":    FOR,
 	"func":   FUNC,
 	"if":     IF,
+	"let":    LET,
 	"or":     OR,
-	"and":    AND,
-	"then":   THEN,
-	"else":   ELSE,
-	"for":    FOR,
 	"return": RETURN,
+	"struct": STRUCT,
+	"then":   THEN,
+	"true":   TRUE,
+	"use":    USE,
 }
 
 // A lookup table for the Stringer interface implementation
@@ -209,6 +211,7 @@ var tokenDisplayNames map[TokenType]string = map[TokenType]string{
 	ELSE:   "else",
 	FOR:    "for",
 	RETURN: "return",
+	USE:    "use",
 }
 
 // Implement Stringer for TokenType.

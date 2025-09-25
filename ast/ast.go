@@ -205,3 +205,16 @@ type ReturnStmt struct {
 }
 
 func (s ReturnStmt) stmt() {}
+
+type UseDeclStmt struct {
+	UseSpecs []UseSpecExpr
+}
+
+func (s UseDeclStmt) stmt() {}
+
+type UseSpecExpr struct {
+	Name   string
+	Module string // or should this be more structural, like a ModulePath or something?
+}
+
+func (e UseSpecExpr) expr()

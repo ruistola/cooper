@@ -60,6 +60,7 @@ var (
 		lexer.RETURN,
 		lexer.STRUCT,
 		lexer.TRUE,
+		lexer.USE,
 	}
 )
 

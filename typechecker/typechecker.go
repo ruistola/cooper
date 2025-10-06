@@ -257,15 +257,6 @@ func Check(program ast.BlockStmt) []string {
 	return tc.Errors
 }
 
-func (tc *TypeChecker) CheckBlockStmt(block ast.BlockStmt) {
-	oldEnv := tc.env
-	tc.env = NewTypeEnv(oldEnv)
-	for _, stmt := range block.Statements {
-		tc.CheckStmt(stmt)
-	}
-	tc.env = oldEnv
-}
-
 func (tc *TypeChecker) CheckStmt(stmt ast.Stmt) {
 	switch s := stmt.(type) {
 	case ast.BlockStmt:
@@ -287,6 +278,15 @@ func (tc *TypeChecker) CheckStmt(stmt ast.Stmt) {
 	default:
 		tc.Err(fmt.Sprintf("unknown statement type: %T", stmt))
 	}
+}
+
+func (tc *TypeChecker) CheckBlockStmt(block ast.BlockStmt) {
+	oldEnv := tc.env
+	tc.env = NewTypeEnv(oldEnv)
+	for _, stmt := range block.Statements {
+		tc.CheckStmt(stmt)
+	}
+	tc.env = oldEnv
 }
 
 func (tc *TypeChecker) CheckVarDeclStmt(stmt ast.VarDeclStmt) {

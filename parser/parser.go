@@ -7,6 +7,12 @@ import (
 	"slices"
 )
 
+// For semicolon inference, the parser keeps track of whether the token currently being inspected
+// is inside parentheses, square brackets, or non-compound-statement(/expression) curly braces.
+// These can be nested, so they must be stored in a stack.
+//
+// The parser also keeps track of whether the current token is inside a then- branch of an if- statement
+// or if- expression, where (and only where) the "else" keyword is also a valid statement terminator.
 type parser struct {
 	tokens       []lexer.Token
 	pos          int
@@ -24,6 +30,7 @@ func newParser(tokens []lexer.Token) parser {
 }
 
 var (
+	// An EOL may be converted into a semicolon only if the previous token is one of the following:
 	beforeSemicolon []lexer.TokenType = []lexer.TokenType{
 		lexer.NUMBER,
 		lexer.STRING,
@@ -40,6 +47,7 @@ var (
 		lexer.TRUE,
 	}
 
+	// An EOL may be converted into a semicolon only if the next token is one of the following:
 	afterSemicolon []lexer.TokenType = []lexer.TokenType{
 		lexer.EOF,
 		lexer.COMMENT,
@@ -64,32 +72,23 @@ var (
 	}
 )
 
+// A closing parenthesis, curly brace, or square bracket (provided as the argument) has been encountered,
+// and must be matched by a corresponding opening one.
+// TODO: Collect errors instead of panicking and exiting early?
 func (p *parser) popParenStack(t lexer.TokenType) {
 	if len(p.parenStack) == 0 {
 		panic(fmt.Sprintf("Unmatched pairwise symbol '%s' found\n", t))
 	}
 	top := p.parenStack[len(p.parenStack)-1]
-	match := false
-	switch t {
-	case lexer.CLOSE_PAREN:
-		if top == lexer.OPEN_PAREN {
-			match = true
-		}
-	case lexer.CLOSE_CURLY:
-		if top == lexer.OPEN_CURLY {
-			match = true
-		}
-	case lexer.CLOSE_BRACKET:
-		if top == lexer.OPEN_BRACKET {
-			match = true
-		}
-	}
-	if !match {
+	if (top == lexer.OPEN_PAREN && t != lexer.CLOSE_PAREN) ||
+		(top == lexer.OPEN_CURLY && t != lexer.CLOSE_CURLY) ||
+		(top == lexer.OPEN_BRACKET && t != lexer.CLOSE_BRACKET) {
 		panic(fmt.Sprintf("Unmatched pairwise symbol '%s' found\n", t))
 	}
 	p.parenStack = p.parenStack[:len(p.parenStack)-1]
 }
 
+// prevToken returns the previous token or EOF
 func (p *parser) prevToken() lexer.Token {
 	result := lexer.Token{}
 	if p.pos > 0 {
@@ -98,6 +97,7 @@ func (p *parser) prevToken() lexer.Token {
 	return result
 }
 
+// currentToken returns the current token or EOF
 func (p *parser) currentToken() lexer.Token {
 	result := lexer.Token{}
 	if p.pos < len(p.tokens) {
@@ -106,6 +106,7 @@ func (p *parser) currentToken() lexer.Token {
 	return result
 }
 
+// nextToken returns the next token or EOF
 func (p *parser) nextToken() lexer.Token {
 	result := lexer.Token{}
 	if p.pos+1 < len(p.tokens) {
@@ -131,7 +132,7 @@ func (p *parser) peek() lexer.Token {
 			// Recurse to get the new current token
 			return p.peek()
 		}
-		// If current token is EOL, replace with a semicolon or delete as whitespace.
+		// If the current token is an EOL, replace with a semicolon or delete as whitespace.
 		isOutsideParens := len(p.parenStack) == 0
 		statementCanTerminate := slices.Contains(beforeSemicolon, p.prevToken().Type) && slices.Contains(afterSemicolon, p.nextToken().Type)
 		if isOutsideParens && statementCanTerminate && p.nextToken().Type != lexer.EOF {
@@ -178,13 +179,12 @@ func (p *parser) consume(expected ...lexer.TokenType) lexer.Token {
 	return currToken
 }
 
-// Essentially a glorified `if p.peek().Type == lexer.SEMICOLON`.
 func (p *parser) statementTerminates() bool {
 	switch p.peek().Type {
 	case lexer.SEMICOLON, lexer.EOF, lexer.CLOSE_CURLY:
 		return true
 	case lexer.ELSE:
-		// when inside an if-statement, allow the `else` keyword to behave as a terminator for the then-branch
+		// when inside an if-statement, allow the "else" keyword to behave as a terminator for the then-branch
 		return p.inThenBranch
 	default:
 		return false
@@ -399,43 +399,59 @@ func (p *parser) parseTailExpr(head ast.Expr, rbp int) ast.Expr {
 	}
 }
 
-// ----------------------------------------------------------------------------
-// Parsing functions for specific individual statements, expressions, and types
-// ----------------------------------------------------------------------------
+// -----------------
+// Parsing functions
+// -----------------
 
-func (p *parser) parseArrayType(innerType ast.TypeExpr) ast.TypeExpr {
+func (p *parser) parseTypeExpr() ast.TypeExpr {
+	var t ast.TypeExpr
+	if p.peek().Type == lexer.OPEN_PAREN {
+		// If a type expression is enclosed in parens, ignore them and parse the TypeExpr inside
+		p.consume(lexer.OPEN_PAREN)
+		t = p.parseTypeExpr()
+		p.consume(lexer.CLOSE_PAREN)
+	} else if p.peek().Type == lexer.FUNC {
+		// The type expression starts with a `func` keyword, so a complete function type expression must follow
+		t = p.parseFuncTypeExpr()
+	} else {
+		// The type expression must be a built-in like `i32` or a user defined type (e.g. `Foo` which is declared elsewhere)
+		// TODO: Should there be a StructTypeExpr for anonymous structs that start with the `struct` keyword (like FuncTypeExpr) ?
+		name := p.consume(lexer.IDENTIFIER).Value
+		t = ast.NamedTypeExpr{
+			TypeName: name,
+		}
+	}
+	// If a type expression is followed by square brackets, then the complete type expression is T[]
+	if p.peek().Type == lexer.OPEN_BRACKET {
+		t = p.parseArrayTypeExpr(t)
+	}
+	return t
+}
+
+func (p *parser) parseArrayTypeExpr(innerType ast.TypeExpr) ast.TypeExpr {
 	p.consume(lexer.OPEN_BRACKET)
 	p.consume(lexer.CLOSE_BRACKET)
 	arrayType := ast.ArrayTypeExpr{
 		UnderlyingType: innerType,
 	}
 	if p.peek().Type == lexer.OPEN_BRACKET {
-		return p.parseArrayType(arrayType)
+		return p.parseArrayTypeExpr(arrayType)
 	}
 	return arrayType
 }
 
-func (p *parser) parseType() ast.TypeExpr {
-	var t ast.TypeExpr
-	if p.peek().Type == lexer.OPEN_PAREN {
-		p.consume(lexer.OPEN_PAREN)
-		t = p.parseType()
-		p.consume(lexer.CLOSE_PAREN)
-	} else if p.peek().Type == lexer.FUNC {
-		t = p.parseFuncType()
-	} else {
-		name := p.consume(lexer.IDENTIFIER).Value
-		t = ast.NamedTypeExpr{
-			TypeName: name,
-		}
-	}
-	if p.peek().Type == lexer.OPEN_BRACKET {
-		t = p.parseArrayType(t)
-	}
-	return t
-}
-
-func (p *parser) parseFuncType() ast.FuncTypeExpr {
+// For clarification:
+//
+//	func add(x: i32, y: i32): i64 {
+//	  return x + y
+//	}
+//
+// is a function declaration,
+//
+// func(i32,i32):i64
+//
+// is a function type expression.
+func (p *parser) parseFuncTypeExpr() ast.FuncTypeExpr {
 	p.consume(lexer.FUNC)
 	p.consume(lexer.OPEN_PAREN)
 	paramTypes := []ast.TypeExpr{}
@@ -444,7 +460,7 @@ func (p *parser) parseFuncType() ast.FuncTypeExpr {
 			name := p.consume(lexer.IDENTIFIER).Value
 			if p.peek().Type == lexer.COLON {
 				p.consume(lexer.COLON)
-				paramType := p.parseType()
+				paramType := p.parseTypeExpr()
 				paramTypes = append(paramTypes, paramType)
 			} else {
 				paramTypes = append(paramTypes, ast.NamedTypeExpr{
@@ -452,7 +468,7 @@ func (p *parser) parseFuncType() ast.FuncTypeExpr {
 				})
 			}
 		} else {
-			paramType := p.parseType()
+			paramType := p.parseTypeExpr()
 			paramTypes = append(paramTypes, paramType)
 		}
 		if p.peek().Type == lexer.COMMA {
@@ -465,7 +481,7 @@ func (p *parser) parseFuncType() ast.FuncTypeExpr {
 	var returnType ast.TypeExpr
 	if p.peek().Type == lexer.COLON {
 		p.consume(lexer.COLON)
-		returnType = p.parseType()
+		returnType = p.parseTypeExpr()
 	} else {
 		returnType = ast.NamedTypeExpr{TypeName: "void"}
 	}
@@ -475,11 +491,12 @@ func (p *parser) parseFuncType() ast.FuncTypeExpr {
 	}
 }
 
+// TODO: handle colon-equals
 func (p *parser) parseVarDeclStmt() ast.VarDeclStmt {
 	p.consume(lexer.LET)
 	varName := p.consume(lexer.IDENTIFIER).Value
 	p.consume(lexer.COLON)
-	varType := p.parseType()
+	varType := p.parseTypeExpr()
 	var initVal ast.Expr
 	if !p.statementTerminates() {
 		p.consume(lexer.EQUALS)
@@ -503,7 +520,7 @@ func (p *parser) parseFuncDeclStmt() ast.FuncDeclStmt {
 	for p.peek().Type != lexer.CLOSE_PAREN {
 		paramName := p.consume(lexer.IDENTIFIER).Value
 		p.consume(lexer.COLON)
-		paramType := p.parseType()
+		paramType := p.parseTypeExpr()
 		params = append(params, ast.TypedIdent{
 			Name: paramName,
 			Type: paramType,
@@ -516,7 +533,7 @@ func (p *parser) parseFuncDeclStmt() ast.FuncDeclStmt {
 	var returnType ast.TypeExpr
 	if p.peek().Type == lexer.COLON {
 		p.consume(lexer.COLON)
-		returnType = p.parseType()
+		returnType = p.parseTypeExpr()
 	}
 	p.consume(lexer.OPEN_CURLY)
 	funcBody := p.parseBlockStmt()
@@ -528,6 +545,14 @@ func (p *parser) parseFuncDeclStmt() ast.FuncDeclStmt {
 		Body:       funcBody,
 	}
 }
+
+// A user defined record type.
+// Example:
+//
+//	struct Foo {
+//	  bar: i32,
+//	  baz: string,
+//	}
 func (p *parser) parseStructDeclStmt() ast.StructDeclStmt {
 	p.consume(lexer.STRUCT)
 	name := p.consume(lexer.IDENTIFIER).Value
@@ -537,7 +562,7 @@ func (p *parser) parseStructDeclStmt() ast.StructDeclStmt {
 	for p.peek().Type != lexer.CLOSE_CURLY {
 		memberName := p.consume(lexer.IDENTIFIER).Value
 		p.consume(lexer.COLON)
-		memberType := p.parseType()
+		memberType := p.parseTypeExpr()
 		newMember := ast.TypedIdent{
 			Name: memberName,
 			Type: memberType,
@@ -554,6 +579,9 @@ func (p *parser) parseStructDeclStmt() ast.StructDeclStmt {
 	}
 }
 
+// Example:
+//
+// let x = if x < 0 then 0 else x
 func (p *parser) parseIfExpr() ast.IfExpr {
 	cond := p.parseExpr(0)
 	p.consume(lexer.THEN)
@@ -588,6 +616,12 @@ func (p *parser) parseIfExpr() ast.IfExpr {
 	}
 }
 
+// Example:
+//
+//	if x < 0 then {
+//	  doA()
+//	  doB()
+//	}
 func (p *parser) parseIfStmt() ast.Stmt {
 	p.consume(lexer.IF)
 	cond := p.parseExpr(0)
@@ -620,6 +654,7 @@ func (p *parser) parseIfStmt() ast.Stmt {
 	}
 }
 
+// TODO: Ranges
 func (p *parser) parseForStmt() ast.Stmt {
 	p.consume(lexer.FOR)
 	p.consume(lexer.OPEN_PAREN)

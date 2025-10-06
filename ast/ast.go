@@ -4,8 +4,8 @@ import (
 	"github.com/ruistola/cooper/lexer"
 )
 
-type Type interface {
-	_type()
+type TypeExpr interface {
+	typeExpr()
 }
 
 type Expr interface {
@@ -16,24 +16,24 @@ type Stmt interface {
 	stmt()
 }
 
-type NamedType struct {
+type NamedTypeExpr struct {
 	TypeName string
 }
 
-func (t NamedType) _type() {}
+func (t NamedTypeExpr) typeExpr() {}
 
-type ArrayType struct {
-	UnderlyingType Type
+type ArrayTypeExpr struct {
+	UnderlyingType TypeExpr
 }
 
-func (t ArrayType) _type() {}
+func (t ArrayTypeExpr) typeExpr() {}
 
-type FuncType struct {
-	ReturnType Type
-	ParamTypes []Type
+type FuncTypeExpr struct {
+	ReturnType TypeExpr
+	ParamTypes []TypeExpr
 }
 
-func (t FuncType) _type() {}
+func (t FuncTypeExpr) typeExpr() {}
 
 type UnitExpr struct{}
 
@@ -113,13 +113,13 @@ func (s VarDeclStmt) stmt() {}
 
 type TypedIdent struct {
 	Name string
-	Type Type
+	Type TypeExpr
 }
 
 type FuncDeclStmt struct {
 	Name       string
 	Parameters []TypedIdent
-	ReturnType Type
+	ReturnType TypeExpr
 	Body       BlockStmt
 }
 
@@ -214,7 +214,7 @@ func (s UseDeclStmt) stmt() {}
 
 type UseSpecExpr struct {
 	Name   string
-	Module string // or should this be more structural, like a ModulePath or something?
+	Module string //TODO: should this be more structural, like a ModulePath or something?
 }
 
-func (e UseSpecExpr) expr()
+func (e UseSpecExpr) expr() {}

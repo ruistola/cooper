@@ -211,33 +211,33 @@ func (tc *TypeChecker) Err(msg string) {
 	tc.Errors = append(tc.Errors, coloredMsg)
 }
 
-func (tc *TypeChecker) ResolveType(astType ast.Type) Type {
-	switch t := astType.(type) {
-	case ast.NamedType:
-		if prim, ok := tc.primitives[t.TypeName]; ok {
+func (tc *TypeChecker) ResolveType(typeExpr ast.TypeExpr) Type {
+	switch e := typeExpr.(type) {
+	case ast.NamedTypeExpr:
+		if prim, ok := tc.primitives[e.TypeName]; ok {
 			return prim
 		}
-		if structType, ok := tc.env.LookupStructType(t.TypeName); ok {
+		if structType, ok := tc.env.LookupStructType(e.TypeName); ok {
 			return structType
 		}
-		tc.Err(fmt.Sprintf("undefined type: %s", t.TypeName))
+		tc.Err(fmt.Sprintf("undefined type: %s", e.TypeName))
 		return nil
-	case ast.ArrayType:
-		elemType := tc.ResolveType(t.UnderlyingType)
+	case ast.ArrayTypeExpr:
+		elemType := tc.ResolveType(e.UnderlyingType)
 		if elemType == nil {
 			return nil
 		}
 		return ArrayType{ElemType: elemType}
-	case ast.FuncType:
+	case ast.FuncTypeExpr:
 		paramTypes := []Type{}
-		for _, astParamType := range t.ParamTypes {
+		for _, astParamType := range e.ParamTypes {
 			paramType := tc.ResolveType(astParamType)
 			if paramType == nil {
 				continue
 			}
 			paramTypes = append(paramTypes, paramType)
 		}
-		returnType := tc.ResolveType(t.ReturnType)
+		returnType := tc.ResolveType(e.ReturnType)
 		if returnType == nil {
 			return nil
 		}
@@ -246,7 +246,7 @@ func (tc *TypeChecker) ResolveType(astType ast.Type) Type {
 			ParamTypes: paramTypes,
 		}
 	default:
-		tc.Err(fmt.Sprintf("unknown type: %T", astType))
+		tc.Err(fmt.Sprintf("unknown type: %T", typeExpr))
 		return nil
 	}
 }
@@ -283,7 +283,7 @@ func (tc *TypeChecker) CheckStmt(stmt ast.Stmt) {
 	case ast.ReturnStmt:
 		tc.CheckReturnStmt(s)
 	case ast.ExpressionStmt:
-		tc.InferType(s.Expr)
+		tc.CheckExpr(s.Expr)
 	default:
 		tc.Err(fmt.Sprintf("unknown statement type: %T", stmt))
 	}
@@ -295,7 +295,7 @@ func (tc *TypeChecker) CheckVarDeclStmt(stmt ast.VarDeclStmt) {
 		return
 	}
 	if stmt.InitVal != nil {
-		initType := tc.InferType(stmt.InitVal)
+		initType := tc.CheckExpr(stmt.InitVal)
 		if initType == nil {
 			return
 		}
@@ -368,7 +368,7 @@ func (tc *TypeChecker) CheckFuncDeclStmt(stmt ast.FuncDeclStmt) {
 }
 
 func (tc *TypeChecker) CheckIfStmt(stmt ast.IfStmt) {
-	condType := tc.InferType(stmt.Cond)
+	condType := tc.CheckExpr(stmt.Cond)
 	if !IsPrimitive(condType, "bool") {
 		tc.Err("if- statement condition does not evaluate to a boolean type")
 	}
@@ -380,7 +380,7 @@ func (tc *TypeChecker) CheckIfStmt(stmt ast.IfStmt) {
 
 func (tc *TypeChecker) CheckForStmt(stmt ast.ForStmt) {
 	tc.CheckStmt(stmt.Init)
-	condType := tc.InferType(stmt.Cond)
+	condType := tc.CheckExpr(stmt.Cond)
 	if !IsPrimitive(condType, "bool") {
 		tc.Err("for- statement condition does not evaluate to a boolean type")
 	}
@@ -400,7 +400,7 @@ func (tc *TypeChecker) CheckReturnStmt(stmt ast.ReturnStmt) {
 		}
 		return
 	}
-	exprType := tc.InferType(stmt.Expr)
+	exprType := tc.CheckExpr(stmt.Expr)
 	switch {
 	case exprType == nil:
 		return
@@ -411,7 +411,7 @@ func (tc *TypeChecker) CheckReturnStmt(stmt ast.ReturnStmt) {
 	}
 }
 
-func (tc *TypeChecker) InferType(expr ast.Expr) Type {
+func (tc *TypeChecker) CheckExpr(expr ast.Expr) Type {
 	switch e := expr.(type) {
 	case ast.NumberLiteralExpr:
 		return tc.primitives["i32"] // todo; evaluate the number literal to determine exact type
@@ -438,7 +438,7 @@ func (tc *TypeChecker) InferType(expr ast.Expr) Type {
 	case ast.UnaryExpr:
 		return tc.CheckUnaryExpr(e)
 	case ast.GroupExpr:
-		return tc.InferType(e.Expr)
+		return tc.CheckExpr(e.Expr)
 	case ast.FuncCallExpr:
 		return tc.CheckFuncCallExpr(e)
 	case ast.StructLiteralExpr:
@@ -456,8 +456,8 @@ func (tc *TypeChecker) InferType(expr ast.Expr) Type {
 }
 
 func (tc *TypeChecker) CheckBinaryExpr(expr ast.BinaryExpr) Type {
-	leftType := tc.InferType(expr.Lhs)
-	rightType := tc.InferType(expr.Rhs)
+	leftType := tc.CheckExpr(expr.Lhs)
+	rightType := tc.CheckExpr(expr.Rhs)
 	if leftType == nil || rightType == nil {
 		return nil
 	}
@@ -496,7 +496,7 @@ func (tc *TypeChecker) CheckBinaryExpr(expr ast.BinaryExpr) Type {
 }
 
 func (tc *TypeChecker) CheckUnaryExpr(expr ast.UnaryExpr) Type {
-	operandType := tc.InferType(expr.Rhs)
+	operandType := tc.CheckExpr(expr.Rhs)
 	if operandType == nil {
 		return nil
 	}
@@ -520,7 +520,7 @@ func (tc *TypeChecker) CheckUnaryExpr(expr ast.UnaryExpr) Type {
 }
 
 func (tc *TypeChecker) CheckFuncCallExpr(expr ast.FuncCallExpr) Type {
-	funcType := tc.InferType(expr.Func)
+	funcType := tc.CheckExpr(expr.Func)
 	if funcType == nil {
 		return nil
 	}
@@ -534,7 +534,7 @@ func (tc *TypeChecker) CheckFuncCallExpr(expr ast.FuncCallExpr) Type {
 		return nil
 	}
 	for i, arg := range expr.Args {
-		argType := tc.InferType(arg)
+		argType := tc.CheckExpr(arg)
 		if argType == nil {
 			return nil
 		}
@@ -548,7 +548,7 @@ func (tc *TypeChecker) CheckFuncCallExpr(expr ast.FuncCallExpr) Type {
 
 func (tc *TypeChecker) CheckStructLiteralExpr(expr ast.StructLiteralExpr) Type {
 	var structType StructType
-	structTypeValue := tc.InferType(expr.Struct)
+	structTypeValue := tc.CheckExpr(expr.Struct)
 	structType, ok := structTypeValue.(StructType)
 	if !ok {
 		tc.Err(fmt.Sprintf("expression of type %s cannot be used as a struct", structTypeValue))
@@ -568,7 +568,7 @@ func (tc *TypeChecker) CheckStructLiteralExpr(expr ast.StructLiteralExpr) Type {
 			tc.Err(fmt.Sprintf("struct member %s assigned multiple times", member.Name))
 			continue
 		}
-		assignedValueType := tc.InferType(member.Value)
+		assignedValueType := tc.CheckExpr(member.Value)
 		if assignedValueType == nil {
 			continue
 		}
@@ -587,7 +587,7 @@ func (tc *TypeChecker) CheckStructLiteralExpr(expr ast.StructLiteralExpr) Type {
 }
 
 func (tc *TypeChecker) CheckStructMemberExpr(expr ast.StructMemberExpr) Type {
-	structTypeValue := tc.InferType(expr.Struct)
+	structTypeValue := tc.CheckExpr(expr.Struct)
 	structType, ok := structTypeValue.(StructType)
 	if !ok {
 		tc.Err(fmt.Sprintf("expression of type %s cannot be used as a struct", structTypeValue))
@@ -601,11 +601,11 @@ func (tc *TypeChecker) CheckStructMemberExpr(expr ast.StructMemberExpr) Type {
 }
 
 func (tc *TypeChecker) CheckArrayIndexExpr(expr ast.ArrayIndexExpr) Type {
-	if !IsNumeric(tc.InferType(expr.Index)) {
+	if !IsNumeric(tc.CheckExpr(expr.Index)) {
 		tc.Err(fmt.Sprintf("array index expression does not result in a numeric type: %s", expr.Index))
 		return nil
 	}
-	arrayExprType := tc.InferType(expr.Array)
+	arrayExprType := tc.CheckExpr(expr.Array)
 	if arrayExprType == nil {
 		return nil
 	}
@@ -618,8 +618,8 @@ func (tc *TypeChecker) CheckArrayIndexExpr(expr ast.ArrayIndexExpr) Type {
 }
 
 func (tc *TypeChecker) CheckAssignExpr(expr ast.AssignExpr) Type {
-	assigneType := tc.InferType(expr.Assigne)
-	assignedValueType := tc.InferType(expr.AssignedValue)
+	assigneType := tc.CheckExpr(expr.Assigne)
+	assignedValueType := tc.CheckExpr(expr.AssignedValue)
 	switch expr.Operator.Type {
 	case lexer.EQUALS:
 		if !assigneType.Equals(assignedValueType) {

@@ -403,10 +403,10 @@ func (p *parser) parseTailExpr(head ast.Expr, rbp int) ast.Expr {
 // Parsing functions for specific individual statements, expressions, and types
 // ----------------------------------------------------------------------------
 
-func (p *parser) parseArrayType(innerType ast.Type) ast.Type {
+func (p *parser) parseArrayType(innerType ast.TypeExpr) ast.TypeExpr {
 	p.consume(lexer.OPEN_BRACKET)
 	p.consume(lexer.CLOSE_BRACKET)
-	arrayType := ast.ArrayType{
+	arrayType := ast.ArrayTypeExpr{
 		UnderlyingType: innerType,
 	}
 	if p.peek().Type == lexer.OPEN_BRACKET {
@@ -415,8 +415,8 @@ func (p *parser) parseArrayType(innerType ast.Type) ast.Type {
 	return arrayType
 }
 
-func (p *parser) parseType() ast.Type {
-	var t ast.Type
+func (p *parser) parseType() ast.TypeExpr {
+	var t ast.TypeExpr
 	if p.peek().Type == lexer.OPEN_PAREN {
 		p.consume(lexer.OPEN_PAREN)
 		t = p.parseType()
@@ -425,7 +425,7 @@ func (p *parser) parseType() ast.Type {
 		t = p.parseFuncType()
 	} else {
 		name := p.consume(lexer.IDENTIFIER).Value
-		t = ast.NamedType{
+		t = ast.NamedTypeExpr{
 			TypeName: name,
 		}
 	}
@@ -435,10 +435,10 @@ func (p *parser) parseType() ast.Type {
 	return t
 }
 
-func (p *parser) parseFuncType() ast.FuncType {
+func (p *parser) parseFuncType() ast.FuncTypeExpr {
 	p.consume(lexer.FUNC)
 	p.consume(lexer.OPEN_PAREN)
-	paramTypes := []ast.Type{}
+	paramTypes := []ast.TypeExpr{}
 	for p.peek().Type != lexer.CLOSE_PAREN {
 		if p.peek().Type == lexer.IDENTIFIER {
 			name := p.consume(lexer.IDENTIFIER).Value
@@ -447,7 +447,7 @@ func (p *parser) parseFuncType() ast.FuncType {
 				paramType := p.parseType()
 				paramTypes = append(paramTypes, paramType)
 			} else {
-				paramTypes = append(paramTypes, ast.NamedType{
+				paramTypes = append(paramTypes, ast.NamedTypeExpr{
 					TypeName: name,
 				})
 			}
@@ -462,14 +462,14 @@ func (p *parser) parseFuncType() ast.FuncType {
 		}
 	}
 	p.consume(lexer.CLOSE_PAREN)
-	var returnType ast.Type
+	var returnType ast.TypeExpr
 	if p.peek().Type == lexer.COLON {
 		p.consume(lexer.COLON)
 		returnType = p.parseType()
 	} else {
-		returnType = ast.NamedType{TypeName: "void"}
+		returnType = ast.NamedTypeExpr{TypeName: "void"}
 	}
-	return ast.FuncType{
+	return ast.FuncTypeExpr{
 		ReturnType: returnType,
 		ParamTypes: paramTypes,
 	}
@@ -513,7 +513,7 @@ func (p *parser) parseFuncDeclStmt() ast.FuncDeclStmt {
 		}
 	}
 	p.consume(lexer.CLOSE_PAREN)
-	var returnType ast.Type
+	var returnType ast.TypeExpr
 	if p.peek().Type == lexer.COLON {
 		p.consume(lexer.COLON)
 		returnType = p.parseType()

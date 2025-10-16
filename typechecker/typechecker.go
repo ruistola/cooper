@@ -449,6 +449,8 @@ func (tc *TypeChecker) CheckExpr(expr ast.Expr) Type {
 		return tc.CheckArrayIndexExpr(e)
 	case ast.AssignExpr:
 		return tc.CheckAssignExpr(e)
+	case ast.VarDeclAssignExpr:
+		return tc.CheckVarDeclAssignExpr(e)
 	default:
 		tc.Err(fmt.Sprintf("unknown expression type: %T", expr))
 		return nil
@@ -638,6 +640,12 @@ func (tc *TypeChecker) CheckAssignExpr(expr ast.AssignExpr) Type {
 		}
 	}
 	return assigneType
+}
+
+func (tc *TypeChecker) CheckVarDeclAssignExpr(expr ast.VarDeclAssignExpr) Type {
+	assignedValueType := tc.CheckExpr(expr.AssignedValue)
+	tc.env.DefineVar(expr.Name, assignedValueType)
+	return assignedValueType
 }
 
 func (tc *TypeChecker) StmtReturns(stmt ast.Stmt) bool {

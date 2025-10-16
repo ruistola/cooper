@@ -233,7 +233,7 @@ func tailPrecedence(tokenType lexer.TokenType) (int, int) {
 	switch tokenType {
 	case lexer.EOF, lexer.SEMICOLON, lexer.CLOSE_PAREN, lexer.COMMA, lexer.CLOSE_CURLY, lexer.CLOSE_BRACKET, lexer.THEN, lexer.ELSE:
 		return 0, 0
-	case lexer.EQUALS, lexer.PLUS_EQUALS, lexer.DASH_EQUALS:
+	case lexer.EQUALS, lexer.PLUS_EQUALS, lexer.DASH_EQUALS, lexer.COLON_EQUALS:
 		return 1, 2
 	case lexer.OR, lexer.AND:
 		return 4, 3
@@ -358,6 +358,8 @@ func (p *parser) parseHeadExpr(token lexer.Token) ast.Expr {
 func (p *parser) parseTailExpr(head ast.Expr, rbp int) ast.Expr {
 	currToken := p.peek()
 	switch currToken.Type {
+	case lexer.COLON_EQUALS:
+		return p.parseDeclAssignExpr(head)
 	case lexer.EQUALS,
 		lexer.PLUS_EQUALS,
 		lexer.DASH_EQUALS,
@@ -491,7 +493,18 @@ func (p *parser) parseFuncTypeExpr() ast.FuncTypeExpr {
 	}
 }
 
-// TODO: handle colon-equals
+func (p *parser) parseDeclAssignExpr(expr ast.Expr) ast.VarDeclAssignExpr {
+	p.consume(lexer.COLON_EQUALS)
+	if identExpr, ok := expr.(ast.IdentExpr); ok {
+		return ast.VarDeclAssignExpr{
+			Name:          identExpr.Value,
+			AssignedValue: p.parseExpr(0),
+		}
+	} else {
+		panic("The left-hand side of a declaration-assignment must be an identifier")
+	}
+}
+
 func (p *parser) parseVarDeclStmt() ast.VarDeclStmt {
 	p.consume(lexer.LET)
 	varName := p.consume(lexer.IDENTIFIER).Value

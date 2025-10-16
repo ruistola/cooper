@@ -15,6 +15,30 @@ func TestBasicExpression(t *testing.T) {
 	}
 }
 
+func TestBasicExpressionStmt(t *testing.T) {
+	src := "x += 69 + 420"
+	parsedAst := Parse(lexer.Tokenize(src))
+	if testing.Verbose() {
+		godump.Dump(parsedAst)
+	}
+}
+
+func TestVarDeclStatement(t *testing.T) {
+	src := "let x = 1"
+	parsedAst := Parse(lexer.Tokenize(src))
+	if testing.Verbose() {
+		godump.Dump(parsedAst)
+	}
+}
+
+func TestAssignDeclExpression(t *testing.T) {
+	src := "x := 69 + 420"
+	parsedAst := Parse(lexer.Tokenize(src))
+	if testing.Verbose() {
+		godump.Dump(parsedAst)
+	}
+}
+
 func TestIfExpression1(t *testing.T) {
 	src := "result = if x < 5 then { 0 } else { 5 }"
 	parsedAst := Parse(lexer.Tokenize(src))

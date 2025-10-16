@@ -200,6 +200,13 @@ type MemberAssignExpr struct {
 
 func (e MemberAssignExpr) expr() {}
 
+type VarDeclAssignExpr struct {
+	Name          string
+	AssignedValue Expr
+}
+
+func (e VarDeclAssignExpr) expr() {}
+
 type ReturnStmt struct {
 	Expr Expr
 }

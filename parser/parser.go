@@ -408,9 +408,15 @@ func (p *parser) parseTailExpr(head ast.Expr, rbp int) ast.Expr {
 func (p *parser) parseTypeExpr() ast.TypeExpr {
 	var t ast.TypeExpr
 	if p.peek().Type == lexer.OPEN_PAREN {
-		// If a type expression is enclosed in parens, ignore them and parse the TypeExpr inside
+		// If a type expression is enclosed in parens:
 		p.consume(lexer.OPEN_PAREN)
-		t = p.parseTypeExpr()
+		if p.peek().Type == lexer.CLOSE_PAREN {
+			// If empty parens (), it is an explicit unit type expression
+			t = ast.UnitTypeExpr{}
+		} else {
+			// If non-empty parens, ignore and parse the TypeExpr inside
+			t = p.parseTypeExpr()
+		}
 		p.consume(lexer.CLOSE_PAREN)
 	} else if p.peek().Type == lexer.FUNC {
 		// The type expression starts with a `func` keyword, so a complete function type expression must follow
@@ -485,7 +491,7 @@ func (p *parser) parseFuncTypeExpr() ast.FuncTypeExpr {
 		p.consume(lexer.COLON)
 		returnType = p.parseTypeExpr()
 	} else {
-		returnType = ast.NamedTypeExpr{TypeName: "void"}
+		returnType = ast.UnitTypeExpr{}
 	}
 	return ast.FuncTypeExpr{
 		ReturnType: returnType,

@@ -12,6 +12,19 @@ type Type interface {
 	Equals(other Type) bool
 }
 
+type UnitType struct{}
+
+func (t UnitType) String() string {
+	return "()"
+}
+
+func (t UnitType) Equals(other Type) bool {
+	if _, ok := other.(UnitType); ok {
+		return true
+	}
+	return false
+}
+
 type PrimitiveType struct {
 	Name string
 }
@@ -23,6 +36,13 @@ func (p PrimitiveType) String() string {
 func (p PrimitiveType) Equals(other Type) bool {
 	if o, ok := other.(PrimitiveType); ok {
 		return p.Name == o.Name
+	}
+	return false
+}
+
+func IsUnit(t Type) bool {
+	if _, ok := t.(UnitType); ok {
+		return true
 	}
 	return false
 }
@@ -194,7 +214,6 @@ func NewTypeChecker() *TypeChecker {
 		Errors: []string{},
 		env:    NewTypeEnv(nil),
 		primitives: map[string]Type{
-			"void":   PrimitiveType{Name: "void"},
 			"bool":   PrimitiveType{Name: "bool"},
 			"string": PrimitiveType{Name: "string"},
 			"i8":     PrimitiveType{Name: "i8"},
@@ -330,7 +349,7 @@ func (tc *TypeChecker) CheckFuncDeclStmt(stmt ast.FuncDeclStmt) {
 		tc.Err(fmt.Sprintf("redeclared function %s in the same scope", stmt.Name))
 		return
 	}
-	returnType := tc.primitives["void"]
+	var returnType Type = UnitType{}
 	if stmt.ReturnType != nil {
 		returnType = tc.ResolveType(stmt.ReturnType)
 		if returnType == nil {
@@ -358,7 +377,7 @@ func (tc *TypeChecker) CheckFuncDeclStmt(stmt ast.FuncDeclStmt) {
 	oldEnv := tc.env
 	tc.env = funcBodyEnv
 	tc.CheckBlockStmt(stmt.Body)
-	if returnType != nil && !IsPrimitive(returnType, "void") {
+	if returnType != nil && !IsUnit(returnType) {
 		if !tc.BlockReturns(stmt.Body) {
 			tc.Err(fmt.Sprintf("function '%s' with return type %s does not return a value in all code paths", stmt.Name, returnType))
 		}
@@ -393,9 +412,9 @@ func (tc *TypeChecker) CheckReturnStmt(stmt ast.ReturnStmt) {
 		tc.Err("return statement outside of function")
 		return
 	}
-	isVoidReturn := IsPrimitive(tc.env.currentFuncReturnType, "void")
+	isUnitReturn := IsUnit(tc.env.currentFuncReturnType)
 	if stmt.Expr == nil {
-		if !isVoidReturn {
+		if !isUnitReturn {
 			tc.Err(fmt.Sprintf("expected function to return %s", tc.env.currentFuncReturnType))
 		}
 		return
@@ -404,8 +423,8 @@ func (tc *TypeChecker) CheckReturnStmt(stmt ast.ReturnStmt) {
 	switch {
 	case exprType == nil:
 		return
-	case isVoidReturn:
-		tc.Err("cannot return a value from a void function")
+	case isUnitReturn:
+		tc.Err("cannot return a value from a function with no declared return type")
 	case !exprType.Equals(tc.env.currentFuncReturnType):
 		tc.Err(fmt.Sprintf("return type mismatch: expected %s, found %s", tc.env.currentFuncReturnType, exprType))
 	}

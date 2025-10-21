@@ -35,6 +35,10 @@ type FuncTypeExpr struct {
 
 func (t FuncTypeExpr) typeExpr() {}
 
+type UnitTypeExpr struct{}
+
+func (t UnitTypeExpr) typeExpr() {}
+
 type UnitExpr struct{}
 
 func (e UnitExpr) expr() {}

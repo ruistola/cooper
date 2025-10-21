@@ -24,7 +24,7 @@ func TestBasicExpressionStmt(t *testing.T) {
 }
 
 func TestVarDeclStatement(t *testing.T) {
-	src := "let x = 1"
+	src := "let x: i32 = 1"
 	parsedAst := Parse(lexer.Tokenize(src))
 	if testing.Verbose() {
 		godump.Dump(parsedAst)

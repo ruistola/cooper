@@ -511,11 +511,15 @@ func (p *parser) parseDeclAssignExpr(expr ast.Expr) ast.VarDeclAssignExpr {
 	}
 }
 
+// A variable declaration with a let- statement.
 func (p *parser) parseVarDeclStmt() ast.VarDeclStmt {
 	p.consume(lexer.LET)
 	varName := p.consume(lexer.IDENTIFIER).Value
-	p.consume(lexer.COLON)
-	varType := p.parseTypeExpr()
+	var varType ast.TypeExpr = nil
+	if p.peek().Type == lexer.COLON {
+		p.consume(lexer.COLON)
+		varType = p.parseTypeExpr()
+	}
 	var initVal ast.Expr
 	if !p.statementTerminates() {
 		p.consume(lexer.EQUALS)

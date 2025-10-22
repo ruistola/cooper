@@ -31,6 +31,22 @@ func TestVarDeclStatement(t *testing.T) {
 	}
 }
 
+func TestVarDeclStatementTypeOnly(t *testing.T) {
+	src := "let x: i32"
+	parsedAst := Parse(lexer.Tokenize(src))
+	if testing.Verbose() {
+		godump.Dump(parsedAst)
+	}
+}
+
+func TestVarDeclStatementValueOnly(t *testing.T) {
+	src := "let x = 1"
+	parsedAst := Parse(lexer.Tokenize(src))
+	if testing.Verbose() {
+		godump.Dump(parsedAst)
+	}
+}
+
 func TestAssignDeclExpression(t *testing.T) {
 	src := "x := 69 + 420"
 	parsedAst := Parse(lexer.Tokenize(src))

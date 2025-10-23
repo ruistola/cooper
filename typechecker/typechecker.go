@@ -4,215 +4,19 @@ import (
 	"fmt"
 	"github.com/ruistola/cooper/ast"
 	"github.com/ruistola/cooper/lexer"
-	"slices"
 )
 
-type Type interface {
-	String() string
-	Equals(other Type) bool
-}
-
-type UnitType struct{}
-
-func (t UnitType) String() string {
-	return "()"
-}
-
-func (t UnitType) Equals(other Type) bool {
-	if _, ok := other.(UnitType); ok {
-		return true
-	}
-	return false
-}
-
-type PrimitiveType struct {
-	Name string
-}
-
-func (p PrimitiveType) String() string {
-	return p.Name
-}
-
-func (p PrimitiveType) Equals(other Type) bool {
-	if o, ok := other.(PrimitiveType); ok {
-		return p.Name == o.Name
-	}
-	return false
-}
-
-func IsUnit(t Type) bool {
-	if _, ok := t.(UnitType); ok {
-		return true
-	}
-	return false
-}
-
-func IsPrimitive(t Type, name string) bool {
-	if p, ok := t.(PrimitiveType); ok {
-		return p.Name == name
-	}
-	return false
-}
-
-func IsNumeric(t Type) bool {
-	if p, ok := t.(PrimitiveType); ok {
-		return p.Name == "i8" || p.Name == "i32" || p.Name == "i64" || p.Name == "f32" || p.Name == "f64"
-	}
-	return false
-}
-
-type ArrayType struct {
-	ElemType Type
-}
-
-func (a ArrayType) String() string {
-	return fmt.Sprintf("%s[]", a.ElemType)
-}
-
-func (a ArrayType) Equals(other Type) bool {
-	if o, ok := other.(ArrayType); ok {
-		return a.ElemType.Equals(o.ElemType)
-	}
-	return false
-}
-
-type FuncType struct {
-	ReturnType Type
-	ParamTypes []Type
-}
-
-func (f FuncType) String() string {
-	params := ""
-	for i, param := range f.ParamTypes {
-		if i > 0 {
-			params += ","
-		}
-		params += param.String()
-	}
-	return fmt.Sprintf("func(%s):%s", params, f.ReturnType)
-}
-
-func (f FuncType) Equals(other Type) bool {
-	o, ok := other.(FuncType)
-	if !ok || len(f.ParamTypes) != len(o.ParamTypes) {
-		return false
-	}
-	if !f.ReturnType.Equals(o.ReturnType) {
-		return false
-	}
-	for i, param := range f.ParamTypes {
-		if !param.Equals(o.ParamTypes[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-type StructType struct {
-	Name    string
-	Members map[string]Type
-}
-
-func (s StructType) String() string {
-	return s.Name
-}
-
-func (s StructType) Equals(other Type) bool {
-	if o, ok := other.(StructType); ok {
-		return s.Name == o.Name
-	}
-	return false
-}
-
-type TypeEnv struct {
-	parent                *TypeEnv
-	vars                  map[string]Type
-	structTypes           map[string]StructType
-	funcs                 map[string]string
-	funcTypes             map[string]FuncType
+type TypeChecker struct {
+	Errors                []string
+	symbolTable           *SymbolTable
+	primitives            map[string]Type
 	currentFuncReturnType Type
 }
 
-func NewTypeEnv(parent *TypeEnv) *TypeEnv {
-	newTypeEnv := &TypeEnv{
-		parent:      parent,
-		vars:        make(map[string]Type),
-		structTypes: make(map[string]StructType),
-		funcs:       make(map[string]string),
-		funcTypes:   make(map[string]FuncType),
-	}
-	if parent != nil {
-		newTypeEnv.currentFuncReturnType = parent.currentFuncReturnType
-	}
-	return newTypeEnv
-}
-
-func (env *TypeEnv) DefineVar(name string, varType Type) {
-	env.vars[name] = varType
-}
-
-func (env *TypeEnv) LookupVarType(name string) (Type, bool) {
-	if varType, ok := env.vars[name]; ok {
-		return varType, true
-	}
-	if env.parent != nil {
-		return env.parent.LookupVarType(name)
-	}
-	return nil, false
-}
-
-func (env *TypeEnv) DefineStructType(name string, st StructType) {
-	env.structTypes[name] = st
-}
-
-func (env *TypeEnv) LookupStructType(name string) (StructType, bool) {
-	if st, ok := env.structTypes[name]; ok {
-		return st, true
-	}
-	if env.parent != nil {
-		return env.parent.LookupStructType(name)
-	}
-	return StructType{}, false
-}
-
-func (env *TypeEnv) DefineFunc(name string, funcTypeName string) {
-	env.funcs[name] = funcTypeName
-}
-
-func (env *TypeEnv) LookupFunc(name string) (string, bool) {
-	if fn, ok := env.funcs[name]; ok {
-		return fn, true
-	}
-	if env.parent != nil {
-		return env.parent.LookupFunc(name)
-	}
-	return "", false
-}
-
-func (env *TypeEnv) DefineFuncType(name string, fn FuncType) {
-	env.funcTypes[name] = fn
-}
-
-func (env *TypeEnv) LookupFuncType(name string) (FuncType, bool) {
-	if fn, ok := env.funcTypes[name]; ok {
-		return fn, true
-	}
-	if env.parent != nil {
-		return env.parent.LookupFuncType(name)
-	}
-	return FuncType{}, false
-}
-
-type TypeChecker struct {
-	Errors     []string
-	env        *TypeEnv
-	primitives map[string]Type
-}
-
-func NewTypeChecker() *TypeChecker {
+func NewTypeChecker(symbolTable *SymbolTable) *TypeChecker {
 	return &TypeChecker{
-		Errors: []string{},
-		env:    NewTypeEnv(nil),
+		Errors:      []string{},
+		symbolTable: symbolTable,
 		primitives: map[string]Type{
 			"bool":   PrimitiveType{Name: "bool"},
 			"string": PrimitiveType{Name: "string"},
@@ -226,54 +30,29 @@ func NewTypeChecker() *TypeChecker {
 }
 
 func (tc *TypeChecker) Err(msg string) {
-	coloredMsg := fmt.Sprintf("\033[31mError: %s\033[0m", msg)
+	coloredMsg := fmt.Sprintf("\033[31mType Error: %s\033[0m", msg)
 	tc.Errors = append(tc.Errors, coloredMsg)
 }
 
-func (tc *TypeChecker) ResolveType(typeExpr ast.TypeExpr) Type {
-	switch e := typeExpr.(type) {
-	case ast.NamedTypeExpr:
-		if prim, ok := tc.primitives[e.TypeName]; ok {
-			return prim
-		}
-		if structType, ok := tc.env.LookupStructType(e.TypeName); ok {
-			return structType
-		}
-		tc.Err(fmt.Sprintf("undefined type: %s", e.TypeName))
-		return nil
-	case ast.ArrayTypeExpr:
-		elemType := tc.ResolveType(e.UnderlyingType)
-		if elemType == nil {
-			return nil
-		}
-		return ArrayType{ElemType: elemType}
-	case ast.FuncTypeExpr:
-		paramTypes := []Type{}
-		for _, astParamType := range e.ParamTypes {
-			paramType := tc.ResolveType(astParamType)
-			if paramType == nil {
-				continue
-			}
-			paramTypes = append(paramTypes, paramType)
-		}
-		returnType := tc.ResolveType(e.ReturnType)
-		if returnType == nil {
-			return nil
-		}
-		return FuncType{
-			ReturnType: returnType,
-			ParamTypes: paramTypes,
-		}
-	default:
-		tc.Err(fmt.Sprintf("unknown type: %T", typeExpr))
-		return nil
-	}
-}
-
 func Check(program ast.BlockStmt) []string {
-	tc := NewTypeChecker()
-	tc.CheckBlockStmt(program)
-	return tc.Errors
+	// First pass: Resolve symbols
+	resolved := Resolve(program)
+	allErrors := resolved.Errors
+
+	// Second pass: Type checking
+	if len(resolved.Errors) == 0 {
+		tc := NewTypeChecker(resolved.SymbolTable)
+		tc.CheckBlockStmt(program)
+		allErrors = append(allErrors, tc.Errors...)
+
+		// Third pass: Semantic analysis (only if type checking passed)
+		if len(tc.Errors) == 0 {
+			semanticErrors := AnalyzeSemantics(program, resolved.SymbolTable)
+			allErrors = append(allErrors, semanticErrors...)
+		}
+	}
+
+	return allErrors
 }
 
 func (tc *TypeChecker) CheckStmt(stmt ast.Stmt) {
@@ -300,17 +79,19 @@ func (tc *TypeChecker) CheckStmt(stmt ast.Stmt) {
 }
 
 func (tc *TypeChecker) CheckBlockStmt(block ast.BlockStmt) {
-	oldEnv := tc.env
-	tc.env = NewTypeEnv(oldEnv)
+	oldTable := tc.symbolTable
+	tc.symbolTable = NewSymbolTable(oldTable)
 	for _, stmt := range block.Statements {
 		tc.CheckStmt(stmt)
 	}
-	tc.env = oldEnv
+	tc.symbolTable = oldTable
 }
 
 func (tc *TypeChecker) CheckVarDeclStmt(stmt ast.VarDeclStmt) {
-	declaredType := tc.ResolveType(stmt.Var.Type)
-	if declaredType == nil {
+	// Type already resolved by resolver, just get it from symbol table
+	declaredType, ok := tc.symbolTable.LookupVarType(stmt.Var.Name)
+	if !ok {
+		tc.Err(fmt.Sprintf("variable %s not found in symbol table", stmt.Var.Name))
 		return
 	}
 	if stmt.InitVal != nil {
@@ -322,68 +103,34 @@ func (tc *TypeChecker) CheckVarDeclStmt(stmt ast.VarDeclStmt) {
 			tc.Err(fmt.Sprintf("type mismatch: variable %s declared as %s but initialized with %s", stmt.Var.Name, declaredType, initType))
 		}
 	}
-	tc.env.DefineVar(stmt.Var.Name, declaredType)
 }
 
 func (tc *TypeChecker) CheckStructDeclStmt(stmt ast.StructDeclStmt) {
-	if _, ok := tc.env.LookupStructType(stmt.Name); ok {
-		tc.Err(fmt.Sprintf("redeclared struct %s in the same scope", stmt.Name))
+	// Struct already declared by resolver, just verify it exists
+	if _, ok := tc.symbolTable.LookupStructType(stmt.Name); !ok {
+		tc.Err(fmt.Sprintf("struct %s not found in symbol table", stmt.Name))
 		return
 	}
-	members := make(map[string]Type)
-	for _, member := range stmt.Members {
-		if _, ok := members[member.Name]; ok {
-			tc.Err(fmt.Sprintf("duplicate member %s in struct %s", member.Name, stmt.Name))
-			continue
-		}
-		members[member.Name] = tc.ResolveType(member.Type)
-	}
-	tc.env.DefineStructType(stmt.Name, StructType{
-		Name:    stmt.Name,
-		Members: members,
-	})
+	// Additional type checking for struct members can be added here if needed
 }
 
 func (tc *TypeChecker) CheckFuncDeclStmt(stmt ast.FuncDeclStmt) {
-	if _, ok := tc.env.LookupFuncType(stmt.Name); ok {
-		tc.Err(fmt.Sprintf("redeclared function %s in the same scope", stmt.Name))
+	// Function already declared by resolver, get its type
+	funcType, ok := tc.symbolTable.LookupFunc(stmt.Name)
+	if !ok {
+		tc.Err(fmt.Sprintf("function %s not found in symbol table", stmt.Name))
 		return
 	}
-	var returnType Type = UnitType{}
-	if stmt.ReturnType != nil {
-		returnType = tc.ResolveType(stmt.ReturnType)
-		if returnType == nil {
-			return
-		}
-	}
-	paramTypes := make([]Type, 0, len(stmt.Parameters))
-	funcBodyEnv := NewTypeEnv(tc.env)
-	funcBodyEnv.currentFuncReturnType = returnType
-	for _, param := range stmt.Parameters {
-		paramType := tc.ResolveType(param.Type)
-		if paramType == nil {
-			return
-		}
-		paramTypes = append(paramTypes, paramType)
-		funcBodyEnv.DefineVar(param.Name, paramType)
-	}
-	funcType := FuncType{
-		ReturnType: returnType,
-		ParamTypes: paramTypes,
-	}
-	funcTypeName := fmt.Sprintf("%s", funcType)
-	tc.env.DefineFunc(stmt.Name, funcTypeName)
-	tc.env.DefineFuncType(funcTypeName, funcType)
-	oldEnv := tc.env
-	tc.env = funcBodyEnv
+
+	// Set up function context for return type checking
+	oldReturnType := tc.currentFuncReturnType
+	tc.currentFuncReturnType = funcType.ReturnType
+
+	// Type check the function body
 	tc.CheckBlockStmt(stmt.Body)
-	if returnType != nil && !IsUnit(returnType) {
-		if !tc.BlockReturns(stmt.Body) {
-			tc.Err(fmt.Sprintf("function '%s' with return type %s does not return a value in all code paths", stmt.Name, returnType))
-		}
-	}
-	tc.CheckUnreachableCode(stmt.Body)
-	tc.env = oldEnv
+
+	// Restore previous function context
+	tc.currentFuncReturnType = oldReturnType
 }
 
 func (tc *TypeChecker) CheckIfStmt(stmt ast.IfStmt) {
@@ -408,14 +155,14 @@ func (tc *TypeChecker) CheckForStmt(stmt ast.ForStmt) {
 }
 
 func (tc *TypeChecker) CheckReturnStmt(stmt ast.ReturnStmt) {
-	if tc.env.currentFuncReturnType == nil {
+	if tc.currentFuncReturnType == nil {
 		tc.Err("return statement outside of function")
 		return
 	}
-	isUnitReturn := IsUnit(tc.env.currentFuncReturnType)
+	isUnitReturn := IsUnit(tc.currentFuncReturnType)
 	if stmt.Expr == nil {
 		if !isUnitReturn {
-			tc.Err(fmt.Sprintf("expected function to return %s", tc.env.currentFuncReturnType))
+			tc.Err(fmt.Sprintf("expected function to return %s", tc.currentFuncReturnType))
 		}
 		return
 	}
@@ -425,8 +172,8 @@ func (tc *TypeChecker) CheckReturnStmt(stmt ast.ReturnStmt) {
 		return
 	case isUnitReturn:
 		tc.Err("cannot return a value from a function with no declared return type")
-	case !exprType.Equals(tc.env.currentFuncReturnType):
-		tc.Err(fmt.Sprintf("return type mismatch: expected %s, found %s", tc.env.currentFuncReturnType, exprType))
+	case !exprType.Equals(tc.currentFuncReturnType):
+		tc.Err(fmt.Sprintf("return type mismatch: expected %s, found %s", tc.currentFuncReturnType, exprType))
 	}
 }
 
@@ -439,16 +186,14 @@ func (tc *TypeChecker) CheckExpr(expr ast.Expr) Type {
 	case ast.BoolLiteralExpr:
 		return tc.primitives["bool"]
 	case ast.IdentExpr:
-		if varType, ok := tc.env.LookupVarType(e.Value); ok {
+		if varType, ok := tc.symbolTable.LookupVarType(e.Value); ok {
 			return varType
 		}
-		if structType, ok := tc.env.LookupStructType(e.Value); ok {
+		if structType, ok := tc.symbolTable.LookupStructType(e.Value); ok {
 			return structType
 		}
-		if funcTypeName, ok := tc.env.LookupFunc(e.Value); ok {
-			if funcType, ok := tc.env.LookupFuncType(funcTypeName); ok {
-				return funcType
-			}
+		if funcType, ok := tc.symbolTable.LookupFunc(e.Value); ok {
+			return funcType
 		}
 		tc.Err(fmt.Sprintf("undefined variable: %s", e.Value))
 		return nil
@@ -663,57 +408,6 @@ func (tc *TypeChecker) CheckAssignExpr(expr ast.AssignExpr) Type {
 
 func (tc *TypeChecker) CheckVarDeclAssignExpr(expr ast.VarDeclAssignExpr) Type {
 	assignedValueType := tc.CheckExpr(expr.AssignedValue)
-	tc.env.DefineVar(expr.Name, assignedValueType)
+	tc.symbolTable.DefineVar(expr.Name, assignedValueType)
 	return assignedValueType
-}
-
-func (tc *TypeChecker) StmtReturns(stmt ast.Stmt) bool {
-	switch s := stmt.(type) {
-	case ast.BlockStmt:
-		return tc.BlockReturns(s)
-	case ast.ReturnStmt:
-		return true
-	case ast.IfStmt:
-		if s.Else == nil {
-			return false
-		}
-		return tc.StmtReturns(s.Then) && tc.StmtReturns(s.Else)
-	}
-	return false
-}
-
-func (tc *TypeChecker) BlockReturns(block ast.BlockStmt) bool {
-	if len(block.Statements) == 0 {
-		return false
-	}
-	if slices.ContainsFunc(block.Statements, func(stmt ast.Stmt) bool { return tc.StmtReturns(stmt) }) {
-		return true
-	}
-	return false
-}
-
-func (tc *TypeChecker) CheckUnreachableCode(block ast.BlockStmt) {
-	for i := range len(block.Statements) - 1 {
-		if tc.StmtReturns(block.Statements[i]) {
-			tc.Err(fmt.Sprintf("unreachable code after line %d", i+1))
-			break
-		}
-	}
-	for _, stmt := range block.Statements {
-		switch s := stmt.(type) {
-		case ast.BlockStmt:
-			tc.CheckUnreachableCode(s)
-		case ast.IfStmt:
-			if thenBlock, ok := s.Then.(ast.BlockStmt); ok {
-				tc.CheckUnreachableCode(thenBlock)
-			}
-			if s.Else != nil {
-				if elseBlock, ok := s.Else.(ast.BlockStmt); ok {
-					tc.CheckUnreachableCode(elseBlock)
-				}
-			}
-		case ast.ForStmt:
-			tc.CheckUnreachableCode(s.Body)
-		}
-	}
 }

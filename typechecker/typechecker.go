@@ -34,20 +34,20 @@ func (tc *TypeChecker) Err(msg string) {
 	tc.Errors = append(tc.Errors, coloredMsg)
 }
 
-func Check(program ast.BlockStmt) []string {
+func Check(module ast.BlockStmt) []string {
 	// First pass: Resolve symbols
-	resolved := Resolve(program)
+	resolved := Resolve(module)
 	allErrors := resolved.Errors
 
 	// Second pass: Type checking
 	if len(resolved.Errors) == 0 {
 		tc := NewTypeChecker(resolved.SymbolTable)
-		tc.CheckBlockStmt(program)
+		tc.CheckBlockStmt(module)
 		allErrors = append(allErrors, tc.Errors...)
 
 		// Third pass: Semantic analysis (only if type checking passed)
 		if len(tc.Errors) == 0 {
-			semanticErrors := AnalyzeSemantics(program, resolved.SymbolTable)
+			semanticErrors := AnalyzeSemantics(module, resolved.SymbolTable)
 			allErrors = append(allErrors, semanticErrors...)
 		}
 	}

@@ -26,10 +26,10 @@ func (sa *SemanticAnalyzer) Err(msg string) {
 	sa.errors = append(sa.errors, coloredMsg)
 }
 
-// AnalyzeSemantics performs semantic analysis on the program
-func AnalyzeSemantics(program ast.BlockStmt, symbolTable *SymbolTable) []string {
+// AnalyzeSemantics performs semantic analysis on the module
+func AnalyzeSemantics(module ast.BlockStmt, symbolTable *SymbolTable) []string {
 	analyzer := NewSemanticAnalyzer(symbolTable)
-	analyzer.analyzeBlockStmt(program)
+	analyzer.analyzeBlockStmt(module)
 	return analyzer.errors
 }
 
@@ -218,4 +218,3 @@ func (sa *SemanticAnalyzer) checkUnreachableCode(block ast.BlockStmt) {
 		}
 	}
 }
-

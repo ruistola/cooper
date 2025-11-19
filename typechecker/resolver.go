@@ -71,8 +71,8 @@ func (st *SymbolTable) LookupFunc(name string) (FuncType, bool) {
 	return FuncType{}, false
 }
 
-// ResolvedProgram represents the result of symbol resolution
-type ResolvedProgram struct {
+// ResolvedModule represents the result of symbol resolution
+type ResolvedModule struct {
 	SymbolTable *SymbolTable
 	Errors      []string
 }
@@ -148,11 +148,11 @@ func (r *Resolver) ResolveType(typeExpr ast.TypeExpr) Type {
 	}
 }
 
-// Resolve performs symbol resolution on the program
-func Resolve(program ast.BlockStmt) *ResolvedProgram {
+// Resolve performs symbol resolution on the module
+func Resolve(module ast.BlockStmt) *ResolvedModule {
 	resolver := NewResolver()
-	resolver.resolveBlockStmt(program)
-	return &ResolvedProgram{
+	resolver.resolveBlockStmt(module)
+	return &ResolvedModule{
 		SymbolTable: resolver.symbolTable,
 		Errors:      resolver.errors,
 	}
@@ -340,4 +340,3 @@ func (r *Resolver) resolveExpr(expr ast.Expr) {
 		r.Err(fmt.Sprintf("unknown expression type: %T", expr))
 	}
 }
-

@@ -259,11 +259,11 @@ func tailPrecedence(tokenType lexer.TokenType) (int, int) {
 // Parse converts a slice of tokens into an AST that can then be used as input for type checking and semantic analysis.
 func Parse(tokens []lexer.Token) ast.BlockStmt {
 	p := newParser(tokens)
-	program := ast.BlockStmt{}
+	module := ast.BlockStmt{}
 	for p.peek().Type != lexer.EOF {
-		program.Statements = append(program.Statements, p.parseStmt())
+		module.Statements = append(module.Statements, p.parseStmt())
 	}
-	return program
+	return module
 }
 
 // parseStmt looks at the current token and invokes the appropriate keyword specific

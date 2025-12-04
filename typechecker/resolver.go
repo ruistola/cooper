@@ -275,10 +275,8 @@ func (r *Resolver) resolveFuncDeclStmt(stmt *ast.FuncDeclStmt) {
 	r.symbolTable = funcScope
 
 	// Process function body statements directly in function scope
-	if bodyBlock, ok := stmt.Body.(*ast.BlockStmt); ok {
-		for _, bodyStmt := range bodyBlock.Statements {
-			r.resolveStmt(bodyStmt)
-		}
+	for _, bodyStmt := range stmt.Body.Statements {
+		r.resolveStmt(bodyStmt)
 	}
 
 	r.symbolTable = oldTable
@@ -297,10 +295,8 @@ func (r *Resolver) resolveIfStmt(stmt *ast.IfStmt) {
 func (r *Resolver) resolveForStmt(stmt *ast.ForStmt) {
 	r.resolveStmt(stmt.Init)
 	r.resolveExpr(stmt.Cond)
-	r.resolveStmt(stmt.Iter)
-	if bodyBlock, ok := stmt.Body.(*ast.BlockStmt); ok {
-		r.resolveBlockStmt(bodyBlock)
-	}
+	r.resolveExpr(stmt.Iter.Expr)
+	r.resolveBlockStmt(stmt.Body)
 }
 
 // resolveReturnStmt resolves a return statement

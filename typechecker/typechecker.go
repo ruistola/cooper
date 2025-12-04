@@ -141,12 +141,8 @@ func (tc *TypeChecker) CheckFuncDeclStmt(stmt *ast.FuncDeclStmt) {
 	tc.symbolTable = funcScope
 
 	// Type check function body statements directly in function scope
-	if bodyBlock, ok := stmt.Body.(*ast.BlockStmt); ok {
-		for _, bodyStmt := range bodyBlock.Statements {
-			tc.CheckStmt(bodyStmt)
-		}
-	} else if stmt.Body != nil {
-		tc.CheckStmt(stmt.Body)
+	for _, bodyStmt := range stmt.Body.Statements {
+		tc.CheckStmt(bodyStmt)
 	}
 
 	// Restore previous context
@@ -380,16 +376,12 @@ func (tc *TypeChecker) CheckStructMemberExpr(expr *ast.StructMemberExpr) Type {
 		tc.Err(fmt.Sprintf("expression of type %s cannot be used as a struct", structTypeValue))
 		return nil
 	}
-	if identExpr, ok := expr.Member.(*ast.IdentExpr); !ok {
-		tc.Err(fmt.Sprintf("expression of type %s cannot be used as a struct", structTypeValue))
+	memberType, ok := structType.Members[expr.Member.Value]
+	if !ok {
+		tc.Err(fmt.Sprintf("%s is not a member of struct %s", expr.Member.Value, structType.Name))
 		return nil
-	} else {
-		memberType, ok := structType.Members[identExpr.Value]
-		if !ok {
-			tc.Err(fmt.Sprintf("%s is not a member of struct %s", identExpr.Value, structType.Name))
-		}
-		return memberType
 	}
+	return memberType
 }
 
 func (tc *TypeChecker) CheckArrayIndexExpr(expr *ast.ArrayIndexExpr) Type {

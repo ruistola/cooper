@@ -91,14 +91,12 @@ func (sa *SemanticAnalyzer) analyzeFuncDeclStmt(stmt *ast.FuncDeclStmt) {
 	}
 
 	// Analyze function body
-	if bodyBlock, ok := stmt.Body.(*ast.BlockStmt); ok {
-		sa.analyzeBlockStmt(bodyBlock)
+	sa.analyzeBlockStmt(stmt.Body)
 
-		// Check that all code paths return a value if needed
-		if funcType.ReturnType != nil && !IsUnit(funcType.ReturnType) {
-			if !sa.blockReturns(bodyBlock) {
-				sa.Err(fmt.Sprintf("function '%s' with return type %s does not return a value in all code paths", stmt.Name, funcType.ReturnType))
-			}
+	// Check that all code paths return a value if needed
+	if funcType.ReturnType != nil && !IsUnit(funcType.ReturnType) {
+		if !sa.blockReturns(stmt.Body) {
+			sa.Err(fmt.Sprintf("function '%s' with return type %s does not return a value in all code paths", stmt.Name, funcType.ReturnType))
 		}
 	}
 }
@@ -116,10 +114,8 @@ func (sa *SemanticAnalyzer) analyzeIfStmt(stmt *ast.IfStmt) {
 func (sa *SemanticAnalyzer) analyzeForStmt(stmt *ast.ForStmt) {
 	sa.analyzeStmt(stmt.Init)
 	sa.analyzeExpr(stmt.Cond)
-	sa.analyzeStmt(stmt.Iter)
-	if bodyBlock, ok := stmt.Body.(*ast.BlockStmt); ok {
-		sa.analyzeBlockStmt(bodyBlock)
-	}
+	sa.analyzeExpr(stmt.Iter.Expr)
+	sa.analyzeBlockStmt(stmt.Body)
 }
 
 // analyzeReturnStmt analyzes return statements for semantic rules
@@ -218,9 +214,7 @@ func (sa *SemanticAnalyzer) checkUnreachableCode(block *ast.BlockStmt) {
 				}
 			}
 		case *ast.ForStmt:
-			if forBlock, ok := s.Body.(*ast.BlockStmt); ok {
-				sa.checkUnreachableCode(forBlock)
-			}
+			sa.checkUnreachableCode(s.Body)
 		}
 	}
 }

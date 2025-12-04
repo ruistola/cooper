@@ -124,7 +124,7 @@ type FuncDeclStmt struct {
 	Name       string
 	Parameters []*TypedIdent
 	ReturnType TypeExpr
-	Body       Stmt
+	Body       *BlockStmt
 }
 
 func (s *FuncDeclStmt) stmt() {}
@@ -152,7 +152,7 @@ func (e *StructLiteralExpr) expr() {}
 
 type StructMemberExpr struct {
 	Struct Expr
-	Member Expr
+	Member *IdentExpr
 }
 
 func (e *StructMemberExpr) expr() {}
@@ -183,8 +183,8 @@ func (s *IfStmt) stmt() {}
 type ForStmt struct {
 	Init Stmt
 	Cond Expr
-	Iter Stmt
-	Body Stmt
+	Iter *ExpressionStmt
+	Body *BlockStmt
 }
 
 func (s *ForStmt) stmt() {}

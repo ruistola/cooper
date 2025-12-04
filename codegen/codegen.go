@@ -16,6 +16,7 @@ func (g *Generator) emit(format string, args ...any) {
 	fmt.Fprintf(&g.buf, format, args...)
 	g.buf.WriteString("\n")
 }
+
 func (g *Generator) String() string {
 	return g.buf.String()
 }
@@ -30,10 +31,8 @@ func (g *Generator) generateFunction(fn *ast.FuncDeclStmt) {
 	// TODO: Prologue
 
 	// Generate function body
-	if bodyBlock, ok := fn.Body.(*ast.BlockStmt); ok {
-		for _, stmt := range bodyBlock.Statements {
-			g.generateStmt(stmt)
-		}
+	for _, stmt := range fn.Body.Statements {
+		g.generateStmt(stmt)
 	}
 
 	// TODO: Epilogue

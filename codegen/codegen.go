@@ -12,16 +12,67 @@ type Generator struct {
 	buf strings.Builder
 }
 
-// func (g *Generator) Emit(format string, args ...any)
-// func (g *Generator) String() string
+func (g *Generator) emit(format string, args ...any) {
+	fmt.Fprintf(&g.buf, format, args...)
+	g.buf.WriteString("\n")
+}
+func (g *Generator) String() string {
+	return g.buf.String()
+}
+
+func (g *Generator) generateFunction(fn ast.FuncDeclStmt) {
+	// macOS requires underscore prefix for symbols
+	g.emit(".global _%s", fn.Name)
+	g.emit(".align 4")
+	g.emit("")
+	g.emit("_%s:", fn.Name)
+
+	// TODO: Prologue
+
+	// Generate function body
+	for _, stmt := range fn.Body.Statements {
+		g.generateStmt(stmt)
+	}
+
+	// TODO: Epilogue
+
+	g.emit("ret")
+}
+
+func (g *Generator) generateStmt(stmt ast.Stmt) {
+	switch s := stmt.(type) {
+	case ast.ReturnStmt:
+		// Evaluate the expression, result in w0
+		g.generateExpr(s.Expr)
+		// ret is emitted by generateFunction epilogue
+	default:
+		panic(fmt.Sprintf("unhandled statement type: %T", stmt))
+	}
+}
+
+func (g *Generator) generateExpr(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case ast.NumberLiteralExpr:
+		g.emit("  mov w0, #%s", e.Value)
+		return "w0"
+	default:
+		panic(fmt.Sprintf("unhandled expression type: %T", expr))
+	}
+}
 
 func GenerateProgram(module ast.BlockStmt) string {
-	return `.global _main
-.align 4
+	g := &Generator{}
 
-_main:
-    mov w0, #42
-    ret`
+	for _, stmt := range module.Statements {
+		switch s := stmt.(type) {
+		case ast.FuncDeclStmt:
+			g.generateFunction(s)
+		default:
+			// TODO: other top-level statements
+		}
+	}
+
+	return g.String()
 }
 
 func Compile(assembly string, workingDir string, outputPath string) error {

@@ -110,21 +110,10 @@ func (r *Resolver) Err(msg string) {
 	r.errors = append(r.errors, coloredMsg)
 }
 
-// openScope creates a new child scope and records it in the scope map
-func (r *Resolver) openScope(node any) {
-	r.symbolTable = NewSymbolTable(r.symbolTable)
-	r.scopes[node] = r.symbolTable
-}
-
-// closeScope returns to the parent scope
-func (r *Resolver) closeScope() {
-	r.symbolTable = r.symbolTable.parent
-}
-
 // ResolveType converts an AST type expression to a concrete Type
 func (r *Resolver) ResolveType(typeExpr ast.TypeExpr) Type {
 	switch e := typeExpr.(type) {
-	case ast.NamedTypeExpr:
+	case *ast.NamedTypeExpr:
 		if prim, ok := r.primitives[e.TypeName]; ok {
 			return prim
 		}
@@ -133,13 +122,13 @@ func (r *Resolver) ResolveType(typeExpr ast.TypeExpr) Type {
 		}
 		r.Err(fmt.Sprintf("undefined type: %s", e.TypeName))
 		return nil
-	case ast.ArrayTypeExpr:
+	case *ast.ArrayTypeExpr:
 		elemType := r.ResolveType(e.UnderlyingType)
 		if elemType == nil {
 			return nil
 		}
 		return ArrayType{ElemType: elemType}
-	case ast.FuncTypeExpr:
+	case *ast.FuncTypeExpr:
 		paramTypes := []Type{}
 		for _, astParamType := range e.ParamTypes {
 			paramType := r.ResolveType(astParamType)
@@ -163,7 +152,7 @@ func (r *Resolver) ResolveType(typeExpr ast.TypeExpr) Type {
 }
 
 // Resolve performs symbol resolution on the module
-func Resolve(module ast.BlockStmt) *ResolvedModule {
+func Resolve(module *ast.BlockStmt) *ResolvedModule {
 	resolver := NewResolver()
 	// Process module statements directly in root scope - don't create a child scope
 	for _, stmt := range module.Statements {
@@ -179,21 +168,21 @@ func Resolve(module ast.BlockStmt) *ResolvedModule {
 // resolveStmt resolves symbols in a statement
 func (r *Resolver) resolveStmt(stmt ast.Stmt) {
 	switch s := stmt.(type) {
-	case ast.BlockStmt:
+	case *ast.BlockStmt:
 		r.resolveBlockStmt(s)
-	case ast.VarDeclStmt:
+	case *ast.VarDeclStmt:
 		r.resolveVarDeclStmt(s)
-	case ast.StructDeclStmt:
+	case *ast.StructDeclStmt:
 		r.resolveStructDeclStmt(s)
-	case ast.FuncDeclStmt:
+	case *ast.FuncDeclStmt:
 		r.resolveFuncDeclStmt(s)
-	case ast.IfStmt:
+	case *ast.IfStmt:
 		r.resolveIfStmt(s)
-	case ast.ForStmt:
+	case *ast.ForStmt:
 		r.resolveForStmt(s)
-	case ast.ReturnStmt:
+	case *ast.ReturnStmt:
 		r.resolveReturnStmt(s)
-	case ast.ExpressionStmt:
+	case *ast.ExpressionStmt:
 		r.resolveExpr(s.Expr)
 	default:
 		r.Err(fmt.Sprintf("unknown statement type: %T", stmt))
@@ -201,7 +190,7 @@ func (r *Resolver) resolveStmt(stmt ast.Stmt) {
 }
 
 // resolveBlockStmt resolves symbols in a block statement
-func (r *Resolver) resolveBlockStmt(block ast.BlockStmt) {
+func (r *Resolver) resolveBlockStmt(block *ast.BlockStmt) {
 	oldTable := r.symbolTable
 	r.symbolTable = NewSymbolTable(oldTable)
 	for _, stmt := range block.Statements {
@@ -211,7 +200,7 @@ func (r *Resolver) resolveBlockStmt(block ast.BlockStmt) {
 }
 
 // resolveVarDeclStmt resolves a variable declaration
-func (r *Resolver) resolveVarDeclStmt(stmt ast.VarDeclStmt) {
+func (r *Resolver) resolveVarDeclStmt(stmt *ast.VarDeclStmt) {
 	declaredType := r.ResolveType(stmt.Var.Type)
 	if declaredType == nil {
 		return
@@ -223,7 +212,7 @@ func (r *Resolver) resolveVarDeclStmt(stmt ast.VarDeclStmt) {
 }
 
 // resolveStructDeclStmt resolves a struct declaration
-func (r *Resolver) resolveStructDeclStmt(stmt ast.StructDeclStmt) {
+func (r *Resolver) resolveStructDeclStmt(stmt *ast.StructDeclStmt) {
 	if _, ok := r.symbolTable.LookupStructType(stmt.Name); ok {
 		r.Err(fmt.Sprintf("redeclared struct %s in the same scope", stmt.Name))
 		return
@@ -248,7 +237,7 @@ func (r *Resolver) resolveStructDeclStmt(stmt ast.StructDeclStmt) {
 }
 
 // resolveFuncDeclStmt resolves a function declaration
-func (r *Resolver) resolveFuncDeclStmt(stmt ast.FuncDeclStmt) {
+func (r *Resolver) resolveFuncDeclStmt(stmt *ast.FuncDeclStmt) {
 	if _, ok := r.symbolTable.LookupFunc(stmt.Name); ok {
 		r.Err(fmt.Sprintf("redeclared function %s in the same scope", stmt.Name))
 		return
@@ -280,22 +269,23 @@ func (r *Resolver) resolveFuncDeclStmt(stmt ast.FuncDeclStmt) {
 	}
 	r.symbolTable.DefineFunc(stmt.Name, funcType)
 
-	// Record function scope in map using function name as key
-	funcScopeKey := "func:" + stmt.Name
-	r.scopes[funcScopeKey] = funcScope
+	// Record function scope in map using statement pointer as key
+	r.scopes[stmt] = funcScope
 	oldTable := r.symbolTable
 	r.symbolTable = funcScope
 
 	// Process function body statements directly in function scope
-	for _, bodyStmt := range stmt.Body.Statements {
-		r.resolveStmt(bodyStmt)
+	if bodyBlock, ok := stmt.Body.(*ast.BlockStmt); ok {
+		for _, bodyStmt := range bodyBlock.Statements {
+			r.resolveStmt(bodyStmt)
+		}
 	}
 
 	r.symbolTable = oldTable
 }
 
 // resolveIfStmt resolves an if statement
-func (r *Resolver) resolveIfStmt(stmt ast.IfStmt) {
+func (r *Resolver) resolveIfStmt(stmt *ast.IfStmt) {
 	r.resolveExpr(stmt.Cond)
 	r.resolveStmt(stmt.Then)
 	if stmt.Else != nil {
@@ -304,15 +294,17 @@ func (r *Resolver) resolveIfStmt(stmt ast.IfStmt) {
 }
 
 // resolveForStmt resolves a for statement
-func (r *Resolver) resolveForStmt(stmt ast.ForStmt) {
+func (r *Resolver) resolveForStmt(stmt *ast.ForStmt) {
 	r.resolveStmt(stmt.Init)
 	r.resolveExpr(stmt.Cond)
 	r.resolveStmt(stmt.Iter)
-	r.resolveBlockStmt(stmt.Body)
+	if bodyBlock, ok := stmt.Body.(*ast.BlockStmt); ok {
+		r.resolveBlockStmt(bodyBlock)
+	}
 }
 
 // resolveReturnStmt resolves a return statement
-func (r *Resolver) resolveReturnStmt(stmt ast.ReturnStmt) {
+func (r *Resolver) resolveReturnStmt(stmt *ast.ReturnStmt) {
 	if stmt.Expr != nil {
 		r.resolveExpr(stmt.Expr)
 	}
@@ -321,9 +313,9 @@ func (r *Resolver) resolveReturnStmt(stmt ast.ReturnStmt) {
 // resolveExpr resolves symbols in an expression
 func (r *Resolver) resolveExpr(expr ast.Expr) {
 	switch e := expr.(type) {
-	case ast.NumberLiteralExpr, ast.StringLiteralExpr, ast.BoolLiteralExpr:
+	case *ast.NumberLiteralExpr, *ast.StringLiteralExpr, *ast.BoolLiteralExpr:
 		// Literals don't need resolution
-	case ast.IdentExpr:
+	case *ast.IdentExpr:
 		// Check if identifier exists in symbol table
 		if _, ok := r.symbolTable.LookupVarType(e.Value); !ok {
 			if _, ok := r.symbolTable.LookupStructType(e.Value); !ok {
@@ -332,32 +324,32 @@ func (r *Resolver) resolveExpr(expr ast.Expr) {
 				}
 			}
 		}
-	case ast.BinaryExpr:
+	case *ast.BinaryExpr:
 		r.resolveExpr(e.Lhs)
 		r.resolveExpr(e.Rhs)
-	case ast.UnaryExpr:
+	case *ast.UnaryExpr:
 		r.resolveExpr(e.Rhs)
-	case ast.GroupExpr:
+	case *ast.GroupExpr:
 		r.resolveExpr(e.Expr)
-	case ast.FuncCallExpr:
+	case *ast.FuncCallExpr:
 		r.resolveExpr(e.Func)
 		for _, arg := range e.Args {
 			r.resolveExpr(arg)
 		}
-	case ast.StructLiteralExpr:
+	case *ast.StructLiteralExpr:
 		r.resolveExpr(e.Struct)
 		for _, member := range e.Members {
 			r.resolveExpr(member.Value)
 		}
-	case ast.StructMemberExpr:
+	case *ast.StructMemberExpr:
 		r.resolveExpr(e.Struct)
-	case ast.ArrayIndexExpr:
+	case *ast.ArrayIndexExpr:
 		r.resolveExpr(e.Array)
 		r.resolveExpr(e.Index)
-	case ast.AssignExpr:
+	case *ast.AssignExpr:
 		r.resolveExpr(e.Assigne)
 		r.resolveExpr(e.AssignedValue)
-	case ast.VarDeclAssignExpr:
+	case *ast.VarDeclAssignExpr:
 		r.resolveExpr(e.AssignedValue)
 		// Define the variable in current scope (type inference will happen in type checker)
 		// For now, we can't determine the type without the type checker

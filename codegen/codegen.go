@@ -20,7 +20,7 @@ func (g *Generator) String() string {
 	return g.buf.String()
 }
 
-func (g *Generator) generateFunction(fn ast.FuncDeclStmt) {
+func (g *Generator) generateFunction(fn *ast.FuncDeclStmt) {
 	// macOS requires underscore prefix for symbols
 	g.emit(".global _%s", fn.Name)
 	g.emit(".align 4")
@@ -30,8 +30,10 @@ func (g *Generator) generateFunction(fn ast.FuncDeclStmt) {
 	// TODO: Prologue
 
 	// Generate function body
-	for _, stmt := range fn.Body.Statements {
-		g.generateStmt(stmt)
+	if bodyBlock, ok := fn.Body.(*ast.BlockStmt); ok {
+		for _, stmt := range bodyBlock.Statements {
+			g.generateStmt(stmt)
+		}
 	}
 
 	// TODO: Epilogue
@@ -41,7 +43,7 @@ func (g *Generator) generateFunction(fn ast.FuncDeclStmt) {
 
 func (g *Generator) generateStmt(stmt ast.Stmt) {
 	switch s := stmt.(type) {
-	case ast.ReturnStmt:
+	case *ast.ReturnStmt:
 		// Evaluate the expression, result in w0
 		g.generateExpr(s.Expr)
 		// ret is emitted by generateFunction epilogue
@@ -52,7 +54,7 @@ func (g *Generator) generateStmt(stmt ast.Stmt) {
 
 func (g *Generator) generateExpr(expr ast.Expr) string {
 	switch e := expr.(type) {
-	case ast.NumberLiteralExpr:
+	case *ast.NumberLiteralExpr:
 		g.emit("  mov w0, #%s", e.Value)
 		return "w0"
 	default:
@@ -60,12 +62,12 @@ func (g *Generator) generateExpr(expr ast.Expr) string {
 	}
 }
 
-func GenerateProgram(module ast.BlockStmt) string {
+func GenerateModuleAsm(module *ast.BlockStmt) string {
 	g := &Generator{}
 
 	for _, stmt := range module.Statements {
 		switch s := stmt.(type) {
-		case ast.FuncDeclStmt:
+		case *ast.FuncDeclStmt:
 			g.generateFunction(s)
 		default:
 			// TODO: other top-level statements
@@ -75,7 +77,7 @@ func GenerateProgram(module ast.BlockStmt) string {
 	return g.String()
 }
 
-func Compile(assembly string, workingDir string, outputPath string) error {
+func CompileAsm(assembly string, workingDir string, outputPath string) error {
 	if workingDir == "" {
 		workingDir = "./"
 	}

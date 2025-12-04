@@ -303,8 +303,8 @@ func TestBlockValueSemantics(t *testing.T) {
 		t.Errorf("Expected 1 statement (the block), got %d", len(parsedAst.Statements))
 	}
 
-	if exprStmt, ok := parsedAst.Statements[0].(ast.ExpressionStmt); ok {
-		if _, ok := exprStmt.Expr.(ast.BlockExpr); !ok {
+	if exprStmt, ok := parsedAst.Statements[0].(*ast.ExpressionStmt); ok {
+		if _, ok := exprStmt.Expr.(*ast.BlockExpr); !ok {
 			t.Errorf("Expected block expression, got %t", exprStmt.Expr)
 		}
 	}

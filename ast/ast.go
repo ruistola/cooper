@@ -20,59 +20,59 @@ type NamedTypeExpr struct {
 	TypeName string
 }
 
-func (t NamedTypeExpr) typeExpr() {}
+func (t *NamedTypeExpr) typeExpr() {}
 
 type ArrayTypeExpr struct {
 	UnderlyingType TypeExpr
 }
 
-func (t ArrayTypeExpr) typeExpr() {}
+func (t *ArrayTypeExpr) typeExpr() {}
 
 type FuncTypeExpr struct {
 	ReturnType TypeExpr
 	ParamTypes []TypeExpr
 }
 
-func (t FuncTypeExpr) typeExpr() {}
+func (t *FuncTypeExpr) typeExpr() {}
 
 type UnitTypeExpr struct{}
 
-func (t UnitTypeExpr) typeExpr() {}
+func (t *UnitTypeExpr) typeExpr() {}
 
 type UnitExpr struct{}
 
-func (e UnitExpr) expr() {}
+func (e *UnitExpr) expr() {}
 
 type BoolLiteralExpr struct {
 	Value bool
 }
 
-func (e BoolLiteralExpr) expr() {}
+func (e *BoolLiteralExpr) expr() {}
 
 type StringLiteralExpr struct {
 	Value string
 }
 
-func (e StringLiteralExpr) expr() {}
+func (e *StringLiteralExpr) expr() {}
 
 type IdentExpr struct {
 	Value string
 }
 
-func (e IdentExpr) expr() {}
+func (e *IdentExpr) expr() {}
 
 type NumberLiteralExpr struct {
 	Value string
 }
 
-func (e NumberLiteralExpr) expr() {}
+func (e *NumberLiteralExpr) expr() {}
 
 type UnaryExpr struct {
 	Operator lexer.Token
 	Rhs      Expr
 }
 
-func (e UnaryExpr) expr() {}
+func (e *UnaryExpr) expr() {}
 
 type BinaryExpr struct {
 	Lhs      Expr
@@ -80,40 +80,40 @@ type BinaryExpr struct {
 	Rhs      Expr
 }
 
-func (e BinaryExpr) expr() {}
+func (e *BinaryExpr) expr() {}
 
 type BlockExpr struct {
 	Statements []Stmt
 	ResultExpr Expr
 }
 
-func (e BlockExpr) expr() {}
+func (e *BlockExpr) expr() {}
 
 type BlockStmt struct {
 	Statements []Stmt
 }
 
-func (s BlockStmt) stmt() {}
+func (s *BlockStmt) stmt() {}
 
 type ExpressionStmt struct {
 	Expr              Expr
 	ExplicitSemicolon bool
 }
 
-func (s ExpressionStmt) stmt() {}
+func (s *ExpressionStmt) stmt() {}
 
 type GroupExpr struct {
 	Expr Expr
 }
 
-func (e GroupExpr) expr() {}
+func (e *GroupExpr) expr() {}
 
 type VarDeclStmt struct {
 	Var     TypedIdent
 	InitVal Expr
 }
 
-func (s VarDeclStmt) stmt() {}
+func (s *VarDeclStmt) stmt() {}
 
 type TypedIdent struct {
 	Name string
@@ -122,47 +122,47 @@ type TypedIdent struct {
 
 type FuncDeclStmt struct {
 	Name       string
-	Parameters []TypedIdent
+	Parameters []*TypedIdent
 	ReturnType TypeExpr
-	Body       BlockStmt
+	Body       Stmt
 }
 
-func (s FuncDeclStmt) stmt() {}
+func (s *FuncDeclStmt) stmt() {}
 
 type FuncCallExpr struct {
 	Func Expr
 	Args []Expr
 }
 
-func (e FuncCallExpr) expr() {}
+func (e *FuncCallExpr) expr() {}
 
 type StructDeclStmt struct {
 	Name    string
-	Members []TypedIdent
+	Members []*TypedIdent
 }
 
-func (s StructDeclStmt) stmt() {}
+func (s *StructDeclStmt) stmt() {}
 
 type StructLiteralExpr struct {
 	Struct  Expr
-	Members []MemberAssignExpr
+	Members []*MemberAssignExpr
 }
 
-func (e StructLiteralExpr) expr() {}
+func (e *StructLiteralExpr) expr() {}
 
 type StructMemberExpr struct {
 	Struct Expr
-	Member IdentExpr
+	Member Expr
 }
 
-func (e StructMemberExpr) expr() {}
+func (e *StructMemberExpr) expr() {}
 
 type ArrayIndexExpr struct {
 	Array Expr
 	Index Expr
 }
 
-func (e ArrayIndexExpr) expr() {}
+func (e *ArrayIndexExpr) expr() {}
 
 type IfExpr struct {
 	Cond Expr
@@ -170,7 +170,7 @@ type IfExpr struct {
 	Else Expr
 }
 
-func (e IfExpr) expr() {}
+func (e *IfExpr) expr() {}
 
 type IfStmt struct {
 	Cond Expr
@@ -178,16 +178,16 @@ type IfStmt struct {
 	Else Stmt
 }
 
-func (s IfStmt) stmt() {}
+func (s *IfStmt) stmt() {}
 
 type ForStmt struct {
 	Init Stmt
 	Cond Expr
-	Iter ExpressionStmt
-	Body BlockStmt
+	Iter Stmt
+	Body Stmt
 }
 
-func (s ForStmt) stmt() {}
+func (s *ForStmt) stmt() {}
 
 type AssignExpr struct {
 	Assigne       Expr
@@ -195,37 +195,37 @@ type AssignExpr struct {
 	AssignedValue Expr
 }
 
-func (e AssignExpr) expr() {}
+func (e *AssignExpr) expr() {}
 
 type MemberAssignExpr struct {
 	Name  string
 	Value Expr
 }
 
-func (e MemberAssignExpr) expr() {}
+func (e *MemberAssignExpr) expr() {}
 
 type VarDeclAssignExpr struct {
 	Name          string
 	AssignedValue Expr
 }
 
-func (e VarDeclAssignExpr) expr() {}
+func (e *VarDeclAssignExpr) expr() {}
 
 type ReturnStmt struct {
 	Expr Expr
 }
 
-func (s ReturnStmt) stmt() {}
+func (s *ReturnStmt) stmt() {}
 
 type UseDeclStmt struct {
-	UseSpecs []UseSpecExpr
+	UseSpecs []*UseSpecExpr
 }
 
-func (s UseDeclStmt) stmt() {}
+func (s *UseDeclStmt) stmt() {}
 
 type UseSpecExpr struct {
 	Name   string
 	Module string //TODO: should this be more structural, like a ModulePath or something?
 }
 
-func (e UseSpecExpr) expr() {}
+func (e *UseSpecExpr) expr() {}

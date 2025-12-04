@@ -22,14 +22,14 @@ func TestCodeGen(t *testing.T) {
 		t.Fatal("typechecking failed")
 	}
 
-	asm := GenerateProgram(module)
+	asm := GenerateModuleAsm(module)
 	if asm == "" {
 		t.Fatal("GenerateProgram failed")
 	} else {
 		t.Logf("Generated assembly:\n%s", asm)
 	}
 
-	err := Compile(asm, "./", "./test")
+	err := CompileAsm(asm, "./", "./test")
 	if err != nil {
 		t.Error("compile failed:", err)
 	}

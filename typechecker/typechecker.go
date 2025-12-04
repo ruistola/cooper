@@ -36,7 +36,7 @@ func (tc *TypeChecker) Err(msg string) {
 	tc.Errors = append(tc.Errors, coloredMsg)
 }
 
-func Check(module ast.BlockStmt) []string {
+func Check(module *ast.BlockStmt) []string {
 	// First pass: Resolve symbols
 	resolved := Resolve(module)
 	allErrors := resolved.Errors
@@ -62,28 +62,28 @@ func Check(module ast.BlockStmt) []string {
 
 func (tc *TypeChecker) CheckStmt(stmt ast.Stmt) {
 	switch s := stmt.(type) {
-	case ast.BlockStmt:
+	case *ast.BlockStmt:
 		tc.CheckBlockStmt(s)
-	case ast.VarDeclStmt:
+	case *ast.VarDeclStmt:
 		tc.CheckVarDeclStmt(s)
-	case ast.StructDeclStmt:
+	case *ast.StructDeclStmt:
 		tc.CheckStructDeclStmt(s)
-	case ast.FuncDeclStmt:
+	case *ast.FuncDeclStmt:
 		tc.CheckFuncDeclStmt(s)
-	case ast.IfStmt:
+	case *ast.IfStmt:
 		tc.CheckIfStmt(s)
-	case ast.ForStmt:
+	case *ast.ForStmt:
 		tc.CheckForStmt(s)
-	case ast.ReturnStmt:
+	case *ast.ReturnStmt:
 		tc.CheckReturnStmt(s)
-	case ast.ExpressionStmt:
+	case *ast.ExpressionStmt:
 		tc.CheckExpr(s.Expr)
 	default:
 		tc.Err(fmt.Sprintf("unknown statement type: %T", stmt))
 	}
 }
 
-func (tc *TypeChecker) CheckBlockStmt(block ast.BlockStmt) {
+func (tc *TypeChecker) CheckBlockStmt(block *ast.BlockStmt) {
 	oldTable := tc.symbolTable
 	tc.symbolTable = NewSymbolTable(oldTable)
 	for _, stmt := range block.Statements {
@@ -92,7 +92,7 @@ func (tc *TypeChecker) CheckBlockStmt(block ast.BlockStmt) {
 	tc.symbolTable = oldTable
 }
 
-func (tc *TypeChecker) CheckVarDeclStmt(stmt ast.VarDeclStmt) {
+func (tc *TypeChecker) CheckVarDeclStmt(stmt *ast.VarDeclStmt) {
 	// Type already resolved by resolver, just get it from symbol table
 	declaredType, ok := tc.symbolTable.LookupVarType(stmt.Var.Name)
 	if !ok {
@@ -110,7 +110,7 @@ func (tc *TypeChecker) CheckVarDeclStmt(stmt ast.VarDeclStmt) {
 	}
 }
 
-func (tc *TypeChecker) CheckStructDeclStmt(stmt ast.StructDeclStmt) {
+func (tc *TypeChecker) CheckStructDeclStmt(stmt *ast.StructDeclStmt) {
 	// Struct already declared by resolver, just verify it exists
 	if _, ok := tc.symbolTable.LookupStructType(stmt.Name); !ok {
 		tc.Err(fmt.Sprintf("struct %s not found in symbol table", stmt.Name))
@@ -119,7 +119,7 @@ func (tc *TypeChecker) CheckStructDeclStmt(stmt ast.StructDeclStmt) {
 	// Additional type checking for struct members can be added here if needed
 }
 
-func (tc *TypeChecker) CheckFuncDeclStmt(stmt ast.FuncDeclStmt) {
+func (tc *TypeChecker) CheckFuncDeclStmt(stmt *ast.FuncDeclStmt) {
 	// Function already declared by resolver, get its type
 	funcType, ok := tc.symbolTable.LookupFunc(stmt.Name)
 	if !ok {
@@ -127,9 +127,8 @@ func (tc *TypeChecker) CheckFuncDeclStmt(stmt ast.FuncDeclStmt) {
 		return
 	}
 
-	// Get the function scope from the resolver's scope map using function name
-	funcScopeKey := "func:" + stmt.Name
-	funcScope, ok := tc.scopes[funcScopeKey]
+	// Get the function scope from the resolver's scope map using statement pointer
+	funcScope, ok := tc.scopes[stmt]
 	if !ok {
 		tc.Err(fmt.Sprintf("function %s scope not found in scope map", stmt.Name))
 		return
@@ -142,8 +141,12 @@ func (tc *TypeChecker) CheckFuncDeclStmt(stmt ast.FuncDeclStmt) {
 	tc.symbolTable = funcScope
 
 	// Type check function body statements directly in function scope
-	for _, bodyStmt := range stmt.Body.Statements {
-		tc.CheckStmt(bodyStmt)
+	if bodyBlock, ok := stmt.Body.(*ast.BlockStmt); ok {
+		for _, bodyStmt := range bodyBlock.Statements {
+			tc.CheckStmt(bodyStmt)
+		}
+	} else if stmt.Body != nil {
+		tc.CheckStmt(stmt.Body)
 	}
 
 	// Restore previous context
@@ -151,7 +154,7 @@ func (tc *TypeChecker) CheckFuncDeclStmt(stmt ast.FuncDeclStmt) {
 	tc.symbolTable = oldTable
 }
 
-func (tc *TypeChecker) CheckIfStmt(stmt ast.IfStmt) {
+func (tc *TypeChecker) CheckIfStmt(stmt *ast.IfStmt) {
 	condType := tc.CheckExpr(stmt.Cond)
 	if !IsPrimitive(condType, "bool") {
 		tc.Err("if- statement condition does not evaluate to a boolean type")
@@ -162,17 +165,17 @@ func (tc *TypeChecker) CheckIfStmt(stmt ast.IfStmt) {
 	}
 }
 
-func (tc *TypeChecker) CheckForStmt(stmt ast.ForStmt) {
+func (tc *TypeChecker) CheckForStmt(stmt *ast.ForStmt) {
 	tc.CheckStmt(stmt.Init)
 	condType := tc.CheckExpr(stmt.Cond)
 	if !IsPrimitive(condType, "bool") {
 		tc.Err("for- statement condition does not evaluate to a boolean type")
 	}
 	tc.CheckStmt(stmt.Iter)
-	tc.CheckBlockStmt(stmt.Body)
+	tc.CheckStmt(stmt.Body)
 }
 
-func (tc *TypeChecker) CheckReturnStmt(stmt ast.ReturnStmt) {
+func (tc *TypeChecker) CheckReturnStmt(stmt *ast.ReturnStmt) {
 	if tc.currentFuncReturnType == nil {
 		tc.Err("return statement outside of function")
 		return
@@ -197,13 +200,13 @@ func (tc *TypeChecker) CheckReturnStmt(stmt ast.ReturnStmt) {
 
 func (tc *TypeChecker) CheckExpr(expr ast.Expr) Type {
 	switch e := expr.(type) {
-	case ast.NumberLiteralExpr:
+	case *ast.NumberLiteralExpr:
 		return tc.primitives["i32"] // todo; evaluate the number literal to determine exact type
-	case ast.StringLiteralExpr:
+	case *ast.StringLiteralExpr:
 		return tc.primitives["string"]
-	case ast.BoolLiteralExpr:
+	case *ast.BoolLiteralExpr:
 		return tc.primitives["bool"]
-	case ast.IdentExpr:
+	case *ast.IdentExpr:
 		if varType, ok := tc.symbolTable.LookupVarType(e.Value); ok {
 			return varType
 		}
@@ -215,23 +218,23 @@ func (tc *TypeChecker) CheckExpr(expr ast.Expr) Type {
 		}
 		tc.Err(fmt.Sprintf("undefined variable: %s", e.Value))
 		return nil
-	case ast.BinaryExpr:
+	case *ast.BinaryExpr:
 		return tc.CheckBinaryExpr(e)
-	case ast.UnaryExpr:
+	case *ast.UnaryExpr:
 		return tc.CheckUnaryExpr(e)
-	case ast.GroupExpr:
+	case *ast.GroupExpr:
 		return tc.CheckExpr(e.Expr)
-	case ast.FuncCallExpr:
+	case *ast.FuncCallExpr:
 		return tc.CheckFuncCallExpr(e)
-	case ast.StructLiteralExpr:
+	case *ast.StructLiteralExpr:
 		return tc.CheckStructLiteralExpr(e)
-	case ast.StructMemberExpr:
+	case *ast.StructMemberExpr:
 		return tc.CheckStructMemberExpr(e)
-	case ast.ArrayIndexExpr:
+	case *ast.ArrayIndexExpr:
 		return tc.CheckArrayIndexExpr(e)
-	case ast.AssignExpr:
+	case *ast.AssignExpr:
 		return tc.CheckAssignExpr(e)
-	case ast.VarDeclAssignExpr:
+	case *ast.VarDeclAssignExpr:
 		return tc.CheckVarDeclAssignExpr(e)
 	default:
 		tc.Err(fmt.Sprintf("unknown expression type: %T", expr))
@@ -239,7 +242,7 @@ func (tc *TypeChecker) CheckExpr(expr ast.Expr) Type {
 	}
 }
 
-func (tc *TypeChecker) CheckBinaryExpr(expr ast.BinaryExpr) Type {
+func (tc *TypeChecker) CheckBinaryExpr(expr *ast.BinaryExpr) Type {
 	leftType := tc.CheckExpr(expr.Lhs)
 	rightType := tc.CheckExpr(expr.Rhs)
 	if leftType == nil || rightType == nil {
@@ -279,7 +282,7 @@ func (tc *TypeChecker) CheckBinaryExpr(expr ast.BinaryExpr) Type {
 	}
 }
 
-func (tc *TypeChecker) CheckUnaryExpr(expr ast.UnaryExpr) Type {
+func (tc *TypeChecker) CheckUnaryExpr(expr *ast.UnaryExpr) Type {
 	operandType := tc.CheckExpr(expr.Rhs)
 	if operandType == nil {
 		return nil
@@ -303,7 +306,7 @@ func (tc *TypeChecker) CheckUnaryExpr(expr ast.UnaryExpr) Type {
 	}
 }
 
-func (tc *TypeChecker) CheckFuncCallExpr(expr ast.FuncCallExpr) Type {
+func (tc *TypeChecker) CheckFuncCallExpr(expr *ast.FuncCallExpr) Type {
 	funcType := tc.CheckExpr(expr.Func)
 	if funcType == nil {
 		return nil
@@ -330,7 +333,7 @@ func (tc *TypeChecker) CheckFuncCallExpr(expr ast.FuncCallExpr) Type {
 	return ft.ReturnType
 }
 
-func (tc *TypeChecker) CheckStructLiteralExpr(expr ast.StructLiteralExpr) Type {
+func (tc *TypeChecker) CheckStructLiteralExpr(expr *ast.StructLiteralExpr) Type {
 	var structType StructType
 	structTypeValue := tc.CheckExpr(expr.Struct)
 	structType, ok := structTypeValue.(StructType)
@@ -370,21 +373,26 @@ func (tc *TypeChecker) CheckStructLiteralExpr(expr ast.StructLiteralExpr) Type {
 	return structType
 }
 
-func (tc *TypeChecker) CheckStructMemberExpr(expr ast.StructMemberExpr) Type {
+func (tc *TypeChecker) CheckStructMemberExpr(expr *ast.StructMemberExpr) Type {
 	structTypeValue := tc.CheckExpr(expr.Struct)
 	structType, ok := structTypeValue.(StructType)
 	if !ok {
 		tc.Err(fmt.Sprintf("expression of type %s cannot be used as a struct", structTypeValue))
 		return nil
 	}
-	memberType, ok := structType.Members[expr.Member.Value]
-	if !ok {
-		tc.Err(fmt.Sprintf("%s is not a member of struct %s", expr.Member.Value, structType.Name))
+	if identExpr, ok := expr.Member.(*ast.IdentExpr); !ok {
+		tc.Err(fmt.Sprintf("expression of type %s cannot be used as a struct", structTypeValue))
+		return nil
+	} else {
+		memberType, ok := structType.Members[identExpr.Value]
+		if !ok {
+			tc.Err(fmt.Sprintf("%s is not a member of struct %s", identExpr.Value, structType.Name))
+		}
+		return memberType
 	}
-	return memberType
 }
 
-func (tc *TypeChecker) CheckArrayIndexExpr(expr ast.ArrayIndexExpr) Type {
+func (tc *TypeChecker) CheckArrayIndexExpr(expr *ast.ArrayIndexExpr) Type {
 	if !IsNumeric(tc.CheckExpr(expr.Index)) {
 		tc.Err(fmt.Sprintf("array index expression does not result in a numeric type: %s", expr.Index))
 		return nil
@@ -401,7 +409,7 @@ func (tc *TypeChecker) CheckArrayIndexExpr(expr ast.ArrayIndexExpr) Type {
 	return arrayType.ElemType
 }
 
-func (tc *TypeChecker) CheckAssignExpr(expr ast.AssignExpr) Type {
+func (tc *TypeChecker) CheckAssignExpr(expr *ast.AssignExpr) Type {
 	assigneType := tc.CheckExpr(expr.Assigne)
 	assignedValueType := tc.CheckExpr(expr.AssignedValue)
 	switch expr.Operator.Type {
@@ -424,7 +432,7 @@ func (tc *TypeChecker) CheckAssignExpr(expr ast.AssignExpr) Type {
 	return assigneType
 }
 
-func (tc *TypeChecker) CheckVarDeclAssignExpr(expr ast.VarDeclAssignExpr) Type {
+func (tc *TypeChecker) CheckVarDeclAssignExpr(expr *ast.VarDeclAssignExpr) Type {
 	assignedValueType := tc.CheckExpr(expr.AssignedValue)
 	tc.symbolTable.DefineVar(expr.Name, assignedValueType)
 	return assignedValueType

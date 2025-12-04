@@ -8,15 +8,17 @@ import (
 
 type TypeChecker struct {
 	Errors                []string
-	symbolTable           *SymbolTable
+	symbolTable           *SymbolTable         // Current scope during traversal
+	scopes                map[any]*SymbolTable // AST nodes to their scopes (from resolver)
 	primitives            map[string]Type
 	currentFuncReturnType Type
 }
 
-func NewTypeChecker(symbolTable *SymbolTable) *TypeChecker {
+func NewTypeChecker(symbolTable *SymbolTable, scopes map[any]*SymbolTable) *TypeChecker {
 	return &TypeChecker{
 		Errors:      []string{},
 		symbolTable: symbolTable,
+		scopes:      scopes,
 		primitives: map[string]Type{
 			"bool":   PrimitiveType{Name: "bool"},
 			"string": PrimitiveType{Name: "string"},
@@ -41,13 +43,16 @@ func Check(module ast.BlockStmt) []string {
 
 	// Second pass: Type checking
 	if len(resolved.Errors) == 0 {
-		tc := NewTypeChecker(resolved.SymbolTable)
-		tc.CheckBlockStmt(module)
+		tc := NewTypeChecker(resolved.RootScope, resolved.Scopes)
+		// Process module statements directly in root scope
+		for _, stmt := range module.Statements {
+			tc.CheckStmt(stmt)
+		}
 		allErrors = append(allErrors, tc.Errors...)
 
 		// Third pass: Semantic analysis (only if type checking passed)
 		if len(tc.Errors) == 0 {
-			semanticErrors := AnalyzeSemantics(module, resolved.SymbolTable)
+			semanticErrors := AnalyzeSemantics(module, resolved.RootScope)
 			allErrors = append(allErrors, semanticErrors...)
 		}
 	}
@@ -122,15 +127,28 @@ func (tc *TypeChecker) CheckFuncDeclStmt(stmt ast.FuncDeclStmt) {
 		return
 	}
 
-	// Set up function context for return type checking
+	// Get the function scope from the resolver's scope map using function name
+	funcScopeKey := "func:" + stmt.Name
+	funcScope, ok := tc.scopes[funcScopeKey]
+	if !ok {
+		tc.Err(fmt.Sprintf("function %s scope not found in scope map", stmt.Name))
+		return
+	}
+
+	// Set up function context
 	oldReturnType := tc.currentFuncReturnType
 	tc.currentFuncReturnType = funcType.ReturnType
+	oldTable := tc.symbolTable
+	tc.symbolTable = funcScope
 
-	// Type check the function body
-	tc.CheckBlockStmt(stmt.Body)
+	// Type check function body statements directly in function scope
+	for _, bodyStmt := range stmt.Body.Statements {
+		tc.CheckStmt(bodyStmt)
+	}
 
-	// Restore previous function context
+	// Restore previous context
 	tc.currentFuncReturnType = oldReturnType
+	tc.symbolTable = oldTable
 }
 
 func (tc *TypeChecker) CheckIfStmt(stmt ast.IfStmt) {

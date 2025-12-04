@@ -73,14 +73,16 @@ func (st *SymbolTable) LookupFunc(name string) (FuncType, bool) {
 
 // ResolvedModule represents the result of symbol resolution
 type ResolvedModule struct {
-	SymbolTable *SymbolTable
-	Errors      []string
+	RootScope *SymbolTable         // Module-level scope
+	Scopes    map[any]*SymbolTable // Maps AST nodes to their scopes
+	Errors    []string
 }
 
 // Resolver handles symbol resolution and builds symbol tables
 type Resolver struct {
 	errors      []string
-	symbolTable *SymbolTable
+	symbolTable *SymbolTable         // Current scope during traversal
+	scopes      map[any]*SymbolTable // Maps AST nodes to their scopes
 	primitives  map[string]Type
 }
 
@@ -89,6 +91,7 @@ func NewResolver() *Resolver {
 	return &Resolver{
 		errors:      []string{},
 		symbolTable: NewSymbolTable(nil),
+		scopes:      make(map[any]*SymbolTable),
 		primitives: map[string]Type{
 			"bool":   PrimitiveType{Name: "bool"},
 			"string": PrimitiveType{Name: "string"},
@@ -105,6 +108,17 @@ func NewResolver() *Resolver {
 func (r *Resolver) Err(msg string) {
 	coloredMsg := fmt.Sprintf("\033[31mResolve Error: %s\033[0m", msg)
 	r.errors = append(r.errors, coloredMsg)
+}
+
+// openScope creates a new child scope and records it in the scope map
+func (r *Resolver) openScope(node any) {
+	r.symbolTable = NewSymbolTable(r.symbolTable)
+	r.scopes[node] = r.symbolTable
+}
+
+// closeScope returns to the parent scope
+func (r *Resolver) closeScope() {
+	r.symbolTable = r.symbolTable.parent
 }
 
 // ResolveType converts an AST type expression to a concrete Type
@@ -151,10 +165,14 @@ func (r *Resolver) ResolveType(typeExpr ast.TypeExpr) Type {
 // Resolve performs symbol resolution on the module
 func Resolve(module ast.BlockStmt) *ResolvedModule {
 	resolver := NewResolver()
-	resolver.resolveBlockStmt(module)
+	// Process module statements directly in root scope - don't create a child scope
+	for _, stmt := range module.Statements {
+		resolver.resolveStmt(stmt)
+	}
 	return &ResolvedModule{
-		SymbolTable: resolver.symbolTable,
-		Errors:      resolver.errors,
+		RootScope: resolver.symbolTable,
+		Scopes:    resolver.scopes,
+		Errors:    resolver.errors,
 	}
 }
 
@@ -245,7 +263,7 @@ func (r *Resolver) resolveFuncDeclStmt(stmt ast.FuncDeclStmt) {
 	}
 
 	paramTypes := make([]Type, 0, len(stmt.Parameters))
-	funcBodyTable := NewSymbolTable(r.symbolTable)
+	funcScope := NewSymbolTable(r.symbolTable)
 
 	for _, param := range stmt.Parameters {
 		paramType := r.ResolveType(param.Type)
@@ -253,7 +271,7 @@ func (r *Resolver) resolveFuncDeclStmt(stmt ast.FuncDeclStmt) {
 			return
 		}
 		paramTypes = append(paramTypes, paramType)
-		funcBodyTable.DefineVar(param.Name, paramType)
+		funcScope.DefineVar(param.Name, paramType)
 	}
 
 	funcType := FuncType{
@@ -262,10 +280,17 @@ func (r *Resolver) resolveFuncDeclStmt(stmt ast.FuncDeclStmt) {
 	}
 	r.symbolTable.DefineFunc(stmt.Name, funcType)
 
-	// Resolve function body in new scope
+	// Record function scope in map using function name as key
+	funcScopeKey := "func:" + stmt.Name
+	r.scopes[funcScopeKey] = funcScope
 	oldTable := r.symbolTable
-	r.symbolTable = funcBodyTable
-	r.resolveBlockStmt(stmt.Body)
+	r.symbolTable = funcScope
+
+	// Process function body statements directly in function scope
+	for _, bodyStmt := range stmt.Body.Statements {
+		r.resolveStmt(bodyStmt)
+	}
+
 	r.symbolTable = oldTable
 }
 

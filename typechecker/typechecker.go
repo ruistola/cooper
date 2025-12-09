@@ -8,17 +8,17 @@ import (
 
 type TypeChecker struct {
 	Errors                []string
-	symbolTable           *SymbolTable         // Current scope during traversal
-	scopes                map[any]*SymbolTable // AST nodes to their scopes (from resolver)
+	currScope             *Scope         // Current scope during traversal
+	scopes                map[any]*Scope // AST nodes to their scopes (from resolver)
 	primitives            map[string]Type
 	currentFuncReturnType Type
 }
 
-func NewTypeChecker(symbolTable *SymbolTable, scopes map[any]*SymbolTable) *TypeChecker {
+func NewTypeChecker(rootScope *Scope, scopes map[any]*Scope) *TypeChecker {
 	return &TypeChecker{
-		Errors:      []string{},
-		symbolTable: symbolTable,
-		scopes:      scopes,
+		Errors:    []string{},
+		currScope: rootScope,
+		scopes:    scopes,
 		primitives: map[string]Type{
 			"bool":   PrimitiveType{Name: "bool"},
 			"string": PrimitiveType{Name: "string"},
@@ -84,19 +84,18 @@ func (tc *TypeChecker) CheckStmt(stmt ast.Stmt) {
 }
 
 func (tc *TypeChecker) CheckBlockStmt(block *ast.BlockStmt) {
-	oldTable := tc.symbolTable
-	tc.symbolTable = NewSymbolTable(oldTable)
+	oldTable := tc.currScope
+	tc.currScope = NewScope(oldTable)
 	for _, stmt := range block.Statements {
 		tc.CheckStmt(stmt)
 	}
-	tc.symbolTable = oldTable
+	tc.currScope = oldTable
 }
 
 func (tc *TypeChecker) CheckVarDeclStmt(stmt *ast.VarDeclStmt) {
-	// Type already resolved by resolver, just get it from symbol table
-	declaredType, ok := tc.symbolTable.LookupVarType(stmt.Var.Name)
+	declaredType, ok := tc.currScope.LookupVarType(stmt.Var.Name)
 	if !ok {
-		tc.Err(fmt.Sprintf("variable %s not found in symbol table", stmt.Var.Name))
+		tc.Err(fmt.Sprintf("unknown variable: %s", stmt.Var.Name))
 		return
 	}
 	if stmt.InitVal != nil {
@@ -111,19 +110,17 @@ func (tc *TypeChecker) CheckVarDeclStmt(stmt *ast.VarDeclStmt) {
 }
 
 func (tc *TypeChecker) CheckStructDeclStmt(stmt *ast.StructDeclStmt) {
-	// Struct already declared by resolver, just verify it exists
-	if _, ok := tc.symbolTable.LookupStructType(stmt.Name); !ok {
-		tc.Err(fmt.Sprintf("struct %s not found in symbol table", stmt.Name))
+	if _, ok := tc.currScope.LookupStructType(stmt.Name); !ok {
+		tc.Err(fmt.Sprintf("unknown struct: %s", stmt.Name))
 		return
 	}
 	// Additional type checking for struct members can be added here if needed
 }
 
 func (tc *TypeChecker) CheckFuncDeclStmt(stmt *ast.FuncDeclStmt) {
-	// Function already declared by resolver, get its type
-	funcType, ok := tc.symbolTable.LookupFunc(stmt.Name)
+	funcType, ok := tc.currScope.LookupFunc(stmt.Name)
 	if !ok {
-		tc.Err(fmt.Sprintf("function %s not found in symbol table", stmt.Name))
+		tc.Err(fmt.Sprintf("unknown function: %s", stmt.Name))
 		return
 	}
 
@@ -137,8 +134,8 @@ func (tc *TypeChecker) CheckFuncDeclStmt(stmt *ast.FuncDeclStmt) {
 	// Set up function context
 	oldReturnType := tc.currentFuncReturnType
 	tc.currentFuncReturnType = funcType.ReturnType
-	oldTable := tc.symbolTable
-	tc.symbolTable = funcScope
+	oldTable := tc.currScope
+	tc.currScope = funcScope
 
 	// Type check function body statements directly in function scope
 	for _, bodyStmt := range stmt.Body.Statements {
@@ -147,7 +144,7 @@ func (tc *TypeChecker) CheckFuncDeclStmt(stmt *ast.FuncDeclStmt) {
 
 	// Restore previous context
 	tc.currentFuncReturnType = oldReturnType
-	tc.symbolTable = oldTable
+	tc.currScope = oldTable
 }
 
 func (tc *TypeChecker) CheckIfStmt(stmt *ast.IfStmt) {
@@ -203,13 +200,13 @@ func (tc *TypeChecker) CheckExpr(expr ast.Expr) Type {
 	case *ast.BoolLiteralExpr:
 		return tc.primitives["bool"]
 	case *ast.IdentExpr:
-		if varType, ok := tc.symbolTable.LookupVarType(e.Value); ok {
+		if varType, ok := tc.currScope.LookupVarType(e.Value); ok {
 			return varType
 		}
-		if structType, ok := tc.symbolTable.LookupStructType(e.Value); ok {
+		if structType, ok := tc.currScope.LookupStructType(e.Value); ok {
 			return structType
 		}
-		if funcType, ok := tc.symbolTable.LookupFunc(e.Value); ok {
+		if funcType, ok := tc.currScope.LookupFunc(e.Value); ok {
 			return funcType
 		}
 		tc.Err(fmt.Sprintf("undefined variable: %s", e.Value))
@@ -426,6 +423,6 @@ func (tc *TypeChecker) CheckAssignExpr(expr *ast.AssignExpr) Type {
 
 func (tc *TypeChecker) CheckVarDeclAssignExpr(expr *ast.VarDeclAssignExpr) Type {
 	assignedValueType := tc.CheckExpr(expr.AssignedValue)
-	tc.symbolTable.DefineVar(expr.Name, assignedValueType)
+	tc.currScope.DefineVar(expr.Name, assignedValueType)
 	return assignedValueType
 }

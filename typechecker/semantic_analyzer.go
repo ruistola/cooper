@@ -9,11 +9,11 @@ import (
 // SemanticAnalyzer handles semantic validation and control flow analysis
 type SemanticAnalyzer struct {
 	errors      []string
-	symbolTable *SymbolTable
+	symbolTable *Scope
 }
 
 // NewSemanticAnalyzer creates a new semantic analyzer
-func NewSemanticAnalyzer(symbolTable *SymbolTable) *SemanticAnalyzer {
+func NewSemanticAnalyzer(symbolTable *Scope) *SemanticAnalyzer {
 	return &SemanticAnalyzer{
 		errors:      []string{},
 		symbolTable: symbolTable,
@@ -27,7 +27,7 @@ func (sa *SemanticAnalyzer) Err(msg string) {
 }
 
 // AnalyzeSemantics performs semantic analysis on the module
-func AnalyzeSemantics(module *ast.BlockStmt, symbolTable *SymbolTable) []string {
+func AnalyzeSemantics(module *ast.BlockStmt, symbolTable *Scope) []string {
 	analyzer := NewSemanticAnalyzer(symbolTable)
 	analyzer.analyzeBlockStmt(module)
 	return analyzer.errors

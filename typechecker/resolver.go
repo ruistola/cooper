@@ -5,17 +5,17 @@ import (
 	"github.com/ruistola/cooper/ast"
 )
 
-// SymbolTable represents a symbol table with parent-child relationships for scoping
-type SymbolTable struct {
-	parent      *SymbolTable
+// Scope represents a lexical scope, with parent being nil if this is the module top scope
+type Scope struct {
+	parent      *Scope
 	vars        map[string]Type
 	structTypes map[string]StructType
 	funcs       map[string]FuncType
 }
 
-// NewSymbolTable creates a new symbol table with optional parent
-func NewSymbolTable(parent *SymbolTable) *SymbolTable {
-	return &SymbolTable{
+// NewScope creates a new scope with optional parent
+func NewScope(parent *Scope) *Scope {
+	return &Scope{
 		parent:      parent,
 		vars:        make(map[string]Type),
 		structTypes: make(map[string]StructType),
@@ -24,74 +24,74 @@ func NewSymbolTable(parent *SymbolTable) *SymbolTable {
 }
 
 // DefineVar adds a variable to the current scope
-func (st *SymbolTable) DefineVar(name string, varType Type) {
-	st.vars[name] = varType
+func (s *Scope) DefineVar(name string, varType Type) {
+	s.vars[name] = varType
 }
 
 // LookupVarType looks up a variable type, checking parent scopes if not found
-func (st *SymbolTable) LookupVarType(name string) (Type, bool) {
-	if varType, ok := st.vars[name]; ok {
+func (s *Scope) LookupVarType(name string) (Type, bool) {
+	if varType, ok := s.vars[name]; ok {
 		return varType, true
 	}
-	if st.parent != nil {
-		return st.parent.LookupVarType(name)
+	if s.parent != nil {
+		return s.parent.LookupVarType(name)
 	}
 	return nil, false
 }
 
 // DefineStructType adds a struct type to the current scope
-func (st *SymbolTable) DefineStructType(name string, structType StructType) {
-	st.structTypes[name] = structType
+func (s *Scope) DefineStructType(name string, structType StructType) {
+	s.structTypes[name] = structType
 }
 
 // LookupStructType looks up a struct type, checking parent scopes if not found
-func (st *SymbolTable) LookupStructType(name string) (StructType, bool) {
-	if structType, ok := st.structTypes[name]; ok {
+func (s *Scope) LookupStructType(name string) (StructType, bool) {
+	if structType, ok := s.structTypes[name]; ok {
 		return structType, true
 	}
-	if st.parent != nil {
-		return st.parent.LookupStructType(name)
+	if s.parent != nil {
+		return s.parent.LookupStructType(name)
 	}
 	return StructType{}, false
 }
 
 // DefineFunc adds a function to the current scope
-func (st *SymbolTable) DefineFunc(name string, funcType FuncType) {
-	st.funcs[name] = funcType
+func (s *Scope) DefineFunc(name string, funcType FuncType) {
+	s.funcs[name] = funcType
 }
 
 // LookupFunc looks up a function, checking parent scopes if not found
-func (st *SymbolTable) LookupFunc(name string) (FuncType, bool) {
-	if funcType, ok := st.funcs[name]; ok {
+func (s *Scope) LookupFunc(name string) (FuncType, bool) {
+	if funcType, ok := s.funcs[name]; ok {
 		return funcType, true
 	}
-	if st.parent != nil {
-		return st.parent.LookupFunc(name)
+	if s.parent != nil {
+		return s.parent.LookupFunc(name)
 	}
 	return FuncType{}, false
 }
 
 // ResolvedModule represents the result of symbol resolution
 type ResolvedModule struct {
-	RootScope *SymbolTable         // Module-level scope
-	Scopes    map[any]*SymbolTable // Maps AST nodes to their scopes
+	RootScope *Scope         // Module-level scope
+	Scopes    map[any]*Scope // Maps AST nodes to their scopes
 	Errors    []string
 }
 
 // Resolver handles symbol resolution and builds symbol tables
 type Resolver struct {
-	errors      []string
-	symbolTable *SymbolTable         // Current scope during traversal
-	scopes      map[any]*SymbolTable // Maps AST nodes to their scopes
-	primitives  map[string]Type
+	errors     []string
+	currScope  *Scope         // Current scope during traversal
+	scopes     map[any]*Scope // Maps AST nodes to their scopes
+	primitives map[string]Type
 }
 
 // NewResolver creates a new resolver with built-in primitive types
 func NewResolver() *Resolver {
 	return &Resolver{
-		errors:      []string{},
-		symbolTable: NewSymbolTable(nil),
-		scopes:      make(map[any]*SymbolTable),
+		errors:    []string{},
+		currScope: NewScope(nil),
+		scopes:    make(map[any]*Scope),
 		primitives: map[string]Type{
 			"bool":   PrimitiveType{Name: "bool"},
 			"string": PrimitiveType{Name: "string"},
@@ -117,7 +117,7 @@ func (r *Resolver) ResolveType(typeExpr ast.TypeExpr) Type {
 		if prim, ok := r.primitives[e.TypeName]; ok {
 			return prim
 		}
-		if structType, ok := r.symbolTable.LookupStructType(e.TypeName); ok {
+		if structType, ok := r.currScope.LookupStructType(e.TypeName); ok {
 			return structType
 		}
 		r.Err(fmt.Sprintf("undefined type: %s", e.TypeName))
@@ -159,7 +159,7 @@ func Resolve(module *ast.BlockStmt) *ResolvedModule {
 		resolver.resolveStmt(stmt)
 	}
 	return &ResolvedModule{
-		RootScope: resolver.symbolTable,
+		RootScope: resolver.currScope,
 		Scopes:    resolver.scopes,
 		Errors:    resolver.errors,
 	}
@@ -191,12 +191,12 @@ func (r *Resolver) resolveStmt(stmt ast.Stmt) {
 
 // resolveBlockStmt resolves symbols in a block statement
 func (r *Resolver) resolveBlockStmt(block *ast.BlockStmt) {
-	oldTable := r.symbolTable
-	r.symbolTable = NewSymbolTable(oldTable)
+	oldTable := r.currScope
+	r.currScope = NewScope(oldTable)
 	for _, stmt := range block.Statements {
 		r.resolveStmt(stmt)
 	}
-	r.symbolTable = oldTable
+	r.currScope = oldTable
 }
 
 // resolveVarDeclStmt resolves a variable declaration
@@ -208,12 +208,12 @@ func (r *Resolver) resolveVarDeclStmt(stmt *ast.VarDeclStmt) {
 	if stmt.InitVal != nil {
 		r.resolveExpr(stmt.InitVal)
 	}
-	r.symbolTable.DefineVar(stmt.Var.Name, declaredType)
+	r.currScope.DefineVar(stmt.Var.Name, declaredType)
 }
 
 // resolveStructDeclStmt resolves a struct declaration
 func (r *Resolver) resolveStructDeclStmt(stmt *ast.StructDeclStmt) {
-	if _, ok := r.symbolTable.LookupStructType(stmt.Name); ok {
+	if _, ok := r.currScope.LookupStructType(stmt.Name); ok {
 		r.Err(fmt.Sprintf("redeclared struct %s in the same scope", stmt.Name))
 		return
 	}
@@ -230,7 +230,7 @@ func (r *Resolver) resolveStructDeclStmt(stmt *ast.StructDeclStmt) {
 			memberNames[member.Name] = true
 		}
 	}
-	r.symbolTable.DefineStructType(stmt.Name, StructType{
+	r.currScope.DefineStructType(stmt.Name, StructType{
 		Name:    stmt.Name,
 		Members: members,
 	})
@@ -238,7 +238,7 @@ func (r *Resolver) resolveStructDeclStmt(stmt *ast.StructDeclStmt) {
 
 // resolveFuncDeclStmt resolves a function declaration
 func (r *Resolver) resolveFuncDeclStmt(stmt *ast.FuncDeclStmt) {
-	if _, ok := r.symbolTable.LookupFunc(stmt.Name); ok {
+	if _, ok := r.currScope.LookupFunc(stmt.Name); ok {
 		r.Err(fmt.Sprintf("redeclared function %s in the same scope", stmt.Name))
 		return
 	}
@@ -252,7 +252,7 @@ func (r *Resolver) resolveFuncDeclStmt(stmt *ast.FuncDeclStmt) {
 	}
 
 	paramTypes := make([]Type, 0, len(stmt.Parameters))
-	funcScope := NewSymbolTable(r.symbolTable)
+	funcScope := NewScope(r.currScope)
 
 	for _, param := range stmt.Parameters {
 		paramType := r.ResolveType(param.Type)
@@ -267,19 +267,19 @@ func (r *Resolver) resolveFuncDeclStmt(stmt *ast.FuncDeclStmt) {
 		ReturnType: returnType,
 		ParamTypes: paramTypes,
 	}
-	r.symbolTable.DefineFunc(stmt.Name, funcType)
+	r.currScope.DefineFunc(stmt.Name, funcType)
 
 	// Record function scope in map using statement pointer as key
 	r.scopes[stmt] = funcScope
-	oldTable := r.symbolTable
-	r.symbolTable = funcScope
+	oldTable := r.currScope
+	r.currScope = funcScope
 
 	// Process function body statements directly in function scope
 	for _, bodyStmt := range stmt.Body.Statements {
 		r.resolveStmt(bodyStmt)
 	}
 
-	r.symbolTable = oldTable
+	r.currScope = oldTable
 }
 
 // resolveIfStmt resolves an if statement
@@ -313,9 +313,9 @@ func (r *Resolver) resolveExpr(expr ast.Expr) {
 		// Literals don't need resolution
 	case *ast.IdentExpr:
 		// Check if identifier exists in symbol table
-		if _, ok := r.symbolTable.LookupVarType(e.Value); !ok {
-			if _, ok := r.symbolTable.LookupStructType(e.Value); !ok {
-				if _, ok := r.symbolTable.LookupFunc(e.Value); !ok {
+		if _, ok := r.currScope.LookupVarType(e.Value); !ok {
+			if _, ok := r.currScope.LookupStructType(e.Value); !ok {
+				if _, ok := r.currScope.LookupFunc(e.Value); !ok {
 					r.Err(fmt.Sprintf("undefined identifier: %s", e.Value))
 				}
 			}

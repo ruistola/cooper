@@ -1,15 +1,3 @@
-# The Cooper programming language
-
-A project written in the Go programming language for a compiled, statically typed, general purpose programming language.
-This is primarily a project for learning programming language design and to study how compilers are implemented, but
-the compiler is still built according to known best practices and industry standards.
-
-No decision has been made on the compiler backend yet. Potentially could use an off-the-shelf backend like LLVM or QBE,
-but for the purpose of learning, the project may end up at least experimenting with a proprietary backend.
-
-The development environment is macOS, git for version control, Neovim as the IDE. Code is mostly typed in by hand, but
-LLMs are heavily utilized in validating ideas and designs, applying code refactorings, and test code generation.
-
 ## Compiler project structure
 
 * main.go - a thin entry point for the compiler for now

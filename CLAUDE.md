@@ -1,3 +1,9 @@
+# Working title: Cooper
+
+A project written in the Go programming language for a compiled, statically typed, general purpose programming language.
+This is primarily a project for learning programming language design and to study how compilers are implemented, but the
+compiler is still being built according to known best practices and industry standards.
+
 ## Compiler project structure
 
 * main.go - a thin entry point for the compiler for now
@@ -80,6 +86,21 @@
 
 ### Some notes on individual considerations and design specifics
 
+* Semicolon acts as a statement separator and/or terminator
+    * However, an endline can be automatically converted into a semicolon
+    * One reason to type an explicit semicolon is when a function or a block expression is intended to return nothing
+        * the return type of a block expression or function body ending with `foo` is the type of `foo` (e.g. i32)
+        * the return type of a similar block ending with `foo;` is `()` (Unit type)
+* Semicolon inference is based on the Ahnfelt variant of the Scala implementation:
+    * If two consecutive tokens `a` and `b` are separated by an `EOL` token (endline), and
+    * if `a` is in the `beforeSemicolon` category (if `a` immediately followed by a semicolon is syntactically valid),
+    and
+    * if `b` is in the `afterSemicolon` category (if a semicolon immediately followed by `b` is syntactically valid),
+    then
+    * the `EOL` token is converted into a semicolon
+* Redundant consecutive endlines are eliminated in the tokenization phase, as are all other kinds of whitespace
+* Some other details also apply to semicolon inference, such as endline conversions being disabled within parentheses
+
 * Program sources are UTF-8
   * TODO: Current lexer only tokenizes a narrow ASCII subset
 * Strings are by default encoded in UTF-8
@@ -87,14 +108,25 @@
 
 ## Coding guidelines
 
-**Pause and Report Pattern**: If you find yourself stuck and running in circles due to unexpected or unexplainable results from tools, or due to some missing configuration in the runtime environment, stop! Report your status to the user instead of trying to power through. Also, proactively pause after completing logical milestones or subtasks (typically every few minutes of work). Report what you've accomplished, what you plan to do next, and any blocking issues or decisions needed. This checkpoint pattern preserves progress and allows the user to steer the process.
+**Pause and Report Pattern**: If you find yourself stuck and running in circles due to unexpected or unexplainable
+results from tools, or due to some missing configuration in the runtime environment, stop! Report your status to the
+user instead of trying to power through. Also, proactively pause after completing logical milestones or subtasks
+(typically every few minutes of work). Report what you've accomplished, what you plan to do next, and report any
+blocking issues or decisions needed. This checkpoint pattern preserves progress and allows the user to steer the
+process.
 
 Follow general Go coding guidelines. Follow established patterns, naming conventions, and the general style of existing
-code in the project. Do **not** proactively author tests with each coding task; the user will explicitly ask for tests
-as a separate task, when new code reaches sufficient maturity to become a permanent addition to the project.
+code in the project. Do notify the user however, if there is a significant discrepancy in the project style vs idiomatic
+Go.
 
-Prefer concise code, modifying existing packages rather and appending them with new functionality when feasible, as long as the package remains cohesive.
+Do **not** proactively author tests with each coding task; the user will explicitly ask for tests as a separate task,
+when new code reaches sufficient maturity to become a permanent addition to the project.
 
-Only establish new packages, functions and structures, when it is worth the added complexity in terms of "glue code" for making the new components communicate with the rest of the system.
+Prefer concise code, modifying existing packages by appending them with new functionality when feasible, as long as the
+package remains cohesive. Only establish new packages, functions and structures, when it is worth the added complexity
+or "glue code" required in order to make new components communicate with the rest of the system.
 
-Don't export by default. Only expose the minimum public API. Prefer white-box (same-package) tests for verification of package core functionality. Black-box testing across packages should rely on the public API only. Adding exported (public) functions intended for test-only mocking and cleanup is potentially dangerous and obfuscates the API proper, so only add such extensions when absolutely necessary.
+Don't export package functions, types or variables by default. Only expose the minimum public API. Prefer white-box
+(same-package) tests for verification of package core functionality. Black-box testing across packages should rely on
+the public API only. Adding exported (public) functions intended for test-only mocking and cleanup is potentially
+dangerous and obfuscates the API proper, so only add such extensions when absolutely necessary.

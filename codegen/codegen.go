@@ -76,7 +76,7 @@ func GenerateModuleAsm(module *ast.BlockStmt) string {
 	return g.String()
 }
 
-func CompileAsm(assembly string, workingDir string, outputPath string) error {
+func CompileAsm(assembly string, workingDir string, outputPath string) (err error) {
 	if workingDir == "" {
 		workingDir = "./"
 	}
@@ -91,7 +91,7 @@ func CompileAsm(assembly string, workingDir string, outputPath string) error {
 		cmd = exec.Command("rm", "-rf", fmt.Sprintf("%s/build", workingDir))
 		out, err = cmd.Output()
 		if err != nil {
-			fmt.Printf("failed to clean up temporary build directory: %s", err)
+			err = fmt.Errorf("failed to clean up temporary build directory: %s", err)
 		}
 		fmt.Printf("Cleaned up: %s", out)
 	}()

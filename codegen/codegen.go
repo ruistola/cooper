@@ -81,12 +81,20 @@ func CompileAsm(assembly string, workingDir string, outputPath string) error {
 		workingDir = "./"
 	}
 
-	// Create a temporary `build/` directory
+	// Create a temporary `build/` directory (defer cleanup)
 	cmd := exec.Command("mkdir", "-p", fmt.Sprintf("%s/build", workingDir))
 	out, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("failed to create a temporary build directory: %w", err)
 	}
+	defer func() {
+		cmd = exec.Command("rm", "-rf", fmt.Sprintf("%s/build", workingDir))
+		out, err = cmd.Output()
+		if err != nil {
+			fmt.Printf("failed to clean up temporary build directory: %s", err)
+		}
+		fmt.Printf("Cleaned up: %s", out)
+	}()
 	fmt.Printf("Created temporary build directory: %s", out)
 
 	// Write the assembly into a file (no unique name needed when it goes into an empty directory just created
@@ -113,14 +121,6 @@ func CompileAsm(assembly string, workingDir string, outputPath string) error {
 		return fmt.Errorf("linker error: %w", err)
 	}
 	fmt.Printf("Compiled: %s", out)
-
-	// Clean up the build directory
-	cmd = exec.Command("rm", "-rf", fmt.Sprintf("%s/build", workingDir))
-	out, err = cmd.Output()
-	if err != nil {
-		return fmt.Errorf("failed to clean up temporary build directory: %w", err)
-	}
-	fmt.Printf("Cleaned up: %s", out)
 
 	return nil
 }

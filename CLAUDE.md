@@ -90,7 +90,7 @@ compiler is still being built according to known best practices and industry sta
     * However, an endline can be automatically converted into a semicolon
     * One reason to type an explicit semicolon is when a function or a block expression is intended to return nothing
         * the return type of a block expression or function body ending with `foo` is the type of `foo` (e.g. i32)
-        * the return type of a similar block ending with `foo;` is `()` (Unit type)
+        * the return type of a similar block ending with `foo;` is the unit type
 * Semicolon inference is based on the Ahnfelt variant of the Scala implementation:
     * If two consecutive tokens `a` and `b` are separated by an `EOL` token (endline), and
     * if `a` is in the `beforeSemicolon` category (if `a` immediately followed by a semicolon is syntactically valid),

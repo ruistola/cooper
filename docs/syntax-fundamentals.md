@@ -36,12 +36,6 @@ then the `EOL` token is converted into a semicolon.
 * Endline-to-semicolon conversions are disabled within parentheses (allowing multi-line
   expressions without escaping).
 
-## Naming conventions
-
-* **Types**: PascalCase (e.g., `MyStruct`, `Color`). Capitalization disambiguates types from instances.
-* **Functions, methods, variables, fields**: camelCase (e.g., `myFunc`, `isValid`).
-* **Visibility**: Not determined by capitalization (unlike Go). Separate mechanism TBD.
-
 ## Function type expressions
 
 Function type expressions carry only the parameter types and return type — no parameter names:

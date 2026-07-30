@@ -36,7 +36,28 @@ then the `EOL` token is converted into a semicolon.
 * Endline-to-semicolon conversions are disabled within parentheses (allowing multi-line
   expressions without escaping).
 
-## Function type expressions
+## Naming conventions
+
+* **Types**: PascalCase (e.g., `MyStruct`, `Color`). Capitalization disambiguates types from
+  instances — not used for visibility/access control (unlike Go).
+* **Functions, methods, variables, fields**: camelCase (e.g., `myFunc`, `isValid`).
+* **Visibility**: Not determined by capitalization. Separate mechanism TBD.
+
+## Type expressions
+
+### Slice/array notation
+
+Cooper uses postfix bracket notation for collection types:
+
+```
+let items: i32[]
+let matrix: i32[][]
+let callbacks: func(i32)[]
+```
+
+This follows C#/TypeScript convention (`Type[]`) rather than Go's prefix (`[]Type`).
+
+### Function type expressions
 
 Function type expressions carry only the parameter types and return type — no parameter names:
 

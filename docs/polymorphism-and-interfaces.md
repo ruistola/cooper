@@ -28,17 +28,17 @@ can achieve similar expressiveness with less machinery:
 
 ```
 // Named function type — documentation and intent, compile-time only
-type Reader = func([]u8): (i32, Error)
+type Reader = func(u8[]): (i32, Error)
 
 // Functions accept capabilities explicitly
 func process(read: Reader) {
-    n, err := read(buf)
-    // ...
+  n, err := read(buf)
+  // ...
 }
 
 // Call sites are explicit about what capability they provide
-process(myfile.read)                           // method binding → closure
-process(func(b: []u8): (i32, Error) { ... })   // ad hoc lambda
+process(myFile.read)                           // method binding → closure
+process(func(b: u8[]): (i32, Error) { ... })   // ad hoc lambda
 process(myMockRead)                            // any matching function
 ```
 
@@ -93,22 +93,40 @@ compiler can verify completeness at compile time and generate a tag-based branch
 table) — no itable, no pointer chasing.
 
 ```
-enum Color {
-  Red(RedPayload),
-  Green(GreenPayload),
-  Blue(BluePayload),
+struct Melee {
+  damage: i32,
+  range: f32,
 }
 
-// If all payload types define is_valid(): bool, then:
-func validate(colors: Color[]) {
-    for c in colors {
-        check(c.is_valid)  // compiler generates tag dispatch, binds variant method
-    }
+func (m: Melee).isLethal(): bool {
+  m.damage > 100
+}
+
+struct Ranged {
+  damage: i32,
+  accuracy: f32,
+}
+
+func (r: Ranged).isLethal(): bool {
+  r.damage > 50 and r.accuracy > 0.9
+}
+
+enum Attack {
+  Melee(Melee),
+  Ranged(Ranged),
+}
+
+// All variants define isLethal(): bool, so this compiles:
+func anyLethal(attacks: Attack[]): bool {
+  for a in attacks {
+    if a.isLethal() then return true
+  }
+  false
 }
 ```
 
 If a variant lacks the required method, the compiler emits an error:
-`not all variants of Color define is_valid(): bool`.
+`not all variants of Attack define isLethal(): bool`.
 
 This is an interface-like compile-time contract with zero runtime abstraction cost — just a
 branch on a tag, which modern CPUs predict well.

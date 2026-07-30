@@ -6,18 +6,47 @@ Cooper has both free functions and methods. Methods are syntactic sugar for func
 distinguished first argument (the receiver). They exist primarily for ergonomic dot-notation
 chaining and subject-verb-object readability.
 
-## Method declaration syntax
+## Function declarations
+
+```
+func add(x: i32, y: i32): i32 {
+  x + y
+}
+
+func greet(name: string) {
+  print("hello, " + name)
+}
+```
+
+Parameters use `name: Type` syntax. Return type follows the parameter list as `: Type`.
+Omitting the return type indicates the unit type. The last expression in a function body
+(without a trailing semicolon) is the return value.
+
+## Method declarations
 
 Methods are declared separately from their associated type, with an explicit receiver:
 
 ```
-func (r: RedPayload).isValid(): bool {
-    r.price > 0
+struct Product {
+  name: string,
+  price: i32,
+  weight: f32,
+}
+
+func (p: Product).isAffordable(budget: i32): bool {
+  p.price <= budget
+}
+
+func (p: Product).shippingCost(ratePerKg: f32): f32 {
+  p.weight * ratePerKg
 }
 ```
 
 This is the **only** form of method declaration. There is no embedded/inline method syntax
 within struct declarations.
+
+The receiver is **not** part of the method's signature from a type-compatibility perspective.
+See [Runtime representation](#runtime-representation) below.
 
 ## Struct declarations are data only
 
@@ -25,17 +54,23 @@ Struct declarations contain only data fields (including function-typed fields, w
 stored per-instance as pointers):
 
 ```
-struct MyStruct {
-    myField: i32,
-    callback: func(i32): bool,   // function-typed field (per-instance data)
+struct Monster {
+  name: string,
+  health: i32,
+  onDeath: func(string),
 }
 ```
 
 Methods are always declared outside the struct body:
 
 ```
-func (m: MyStruct).compute(x: i32): i32 {
-    m.myField + x
+func (m: Monster).isAlive(): bool {
+  m.health > 0
+}
+
+func (m: Monster).takeDamage(amount: i32) {
+  m.health -= amount
+  if m.health <= 0 then m.onDeath(m.name)
 }
 ```
 
@@ -45,13 +80,10 @@ We explored and rejected declaring methods inside struct bodies (making the stru
 a lexical scope where fields are accessible without a receiver prefix). While aesthetically
 appealing in small examples, it introduces problems at scale:
 
-* **Shadowing ambiguity.** Without an explicit receiver, a method parameter with the same name
-  as a field creates silent confusion. Requiring a compile error on collision helps, but then
-  method-to-method calls within the struct also need resolution rules (does a bare `helper()`
-  call the sibling method on the same receiver, or a module-level function?).
-
-* **Receiver semantics become implicit.** With embedded declarations, there's no natural place
-  to express value vs pointer receiver. The separate declaration syntax makes this explicit.
+* **Method-to-method resolution.** Without an explicit receiver, a bare `helper()` call inside
+  a method body is ambiguous: does it call a sibling method on the same receiver, or a
+  module-level function? Introducing resolution rules adds implicit behavior — the opposite
+  of Cooper's design goal.
 
 * **Multiple declaration sites.** If methods can be declared both inline and separately, readers
   must check two locations. A single declaration form means one place to look.
@@ -78,12 +110,58 @@ Rationale:
 Accessing a method via dot notation on an instance creates a closure:
 
 ```
-let reader: func([]u8): (i32, Error) = myfile.read
+type ReadFn = func(u8[]): i32
+
+let read: ReadFn = myFile.read
 ```
 
 This closure captures the instance as its environment. It can be passed anywhere a matching
 function type is expected — this is the primary mechanism for polymorphism in Cooper (see
 [Polymorphism and Interfaces](./polymorphism-and-interfaces.md)).
+
+```
+func process(read: func(u8[]): i32) {
+  let buf: u8[] = makeBuffer(1024)
+  let n: i32 = read(buf)
+  // ...
+}
+
+process(myFile.read)      // method binding: captures myFile
+process(mySocket.read)    // same signature, different implementation
+process(func(buf: u8[]): i32 { 0 })  // ad hoc lambda also works
+```
+
+## Runtime representation
+
+All function-typed values share a uniform runtime representation: a pair of pointers.
+
+```
+// Conceptual internal layout (not user-visible syntax)
+//   code: pointer to the executable code
+//   env:  pointer to captured environment (or null)
+```
+
+| Source expression | `code` points to | `env` points to |
+|-------------------|-----------------|-----------------|
+| Free function `sqrt` | sqrt implementation | null |
+| Lambda `func(x: i32): i32 { x + y }` | lambda body | captured variables (e.g., y) |
+| Method binding `product.isAffordable` | Product.isAffordable code | the product instance |
+
+The calling convention always passes `env` as a hidden first argument. Free functions
+receive it and ignore it. This means:
+
+* **The method receiver is not part of the function type signature.** A method
+  `func (p: Product).isAffordable(budget: i32): bool` produces, when bound via
+  `myProduct.isAffordable`, a value of type `func(i32): bool`. The receiver becomes
+  the captured environment — invisible to the caller.
+
+* **No special dispatch machinery is needed.** Calling a function value is always the same
+  operation: load the code pointer, load the env pointer, call with env as hidden first arg
+  followed by the explicit arguments.
+
+* **One fewer indirection than Go interfaces.** Go interface calls chase a pointer to an
+  itable, then load the method address from the table (sequential dependent loads). Cooper
+  function values load code and env from adjacent memory (same cache line, parallel loads).
 
 ## Methods on types from other modules
 
@@ -102,6 +180,22 @@ The distinction is clear and semantically significant:
 | Call cost | Direct call (or tag dispatch through union) | Indirect call through pointer |
 | Use case | Behavior inherent to the type | Per-instance strategy/callback |
 
+Example combining both:
+
+```
+struct Button {
+  label: string,
+  onClick: func(),
+}
+
+func (b: Button).render() {
+  drawText(b.label)
+}
+
+// onClick is per-instance (each button does something different)
+// render is shared (all buttons draw the same way)
+```
+
 ## Shadowing rules
 
 * **Same-scope rebinding** (re-declaring a name in the same block): Allowed. Useful for
@@ -109,6 +203,3 @@ The distinction is clear and semantically significant:
 * **Cross-scope shadowing** (inner scope hides outer scope variable): Allowed. Banning this
   generally would be impractical — adding a variable to a parent scope shouldn't break all
   downstream code.
-* **Method parameter shadowing a receiver field**: Compile error. Since the receiver prefix
-  (`r.field`) makes field access explicit, this case is unambiguous in practice, but the
-  error prevents accidental misreads.

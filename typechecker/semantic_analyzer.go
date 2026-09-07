@@ -81,10 +81,17 @@ func (sa *SemanticAnalyzer) analyzeStructDeclStmt(stmt *ast.StructDeclStmt) {
 	// For example: checking for recursive struct definitions, etc.
 }
 
-// analyzeFuncDeclStmt analyzes function declarations for semantic rules
+// analyzeFuncDeclStmt analyzes function and method declarations for semantic rules
 func (sa *SemanticAnalyzer) analyzeFuncDeclStmt(stmt *ast.FuncDeclStmt) {
-	// Get function type from symbol table
-	funcType, ok := sa.symbolTable.LookupFunc(stmt.Name)
+	// Get the declared signature from the symbol table (methods are keyed by
+	// their receiver struct type, free functions by name).
+	var funcType FuncType
+	var ok bool
+	if stmt.Receiver != nil {
+		funcType, ok = sa.symbolTable.LookupMethod(namedTypeName(stmt.Receiver.Type), stmt.Name)
+	} else {
+		funcType, ok = sa.symbolTable.LookupFunc(stmt.Name)
+	}
 	if !ok {
 		sa.Err(fmt.Sprintf("function %s not found in symbol table during semantic analysis", stmt.Name))
 		return

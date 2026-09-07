@@ -118,7 +118,13 @@ func (tc *TypeChecker) CheckStructDeclStmt(stmt *ast.StructDeclStmt) {
 }
 
 func (tc *TypeChecker) CheckFuncDeclStmt(stmt *ast.FuncDeclStmt) {
-	funcType, ok := tc.currScope.LookupFunc(stmt.Name)
+	var funcType FuncType
+	var ok bool
+	if stmt.Receiver != nil {
+		funcType, ok = tc.currScope.LookupMethod(namedTypeName(stmt.Receiver.Type), stmt.Name)
+	} else {
+		funcType, ok = tc.currScope.LookupFunc(stmt.Name)
+	}
 	if !ok {
 		tc.Err(fmt.Sprintf("unknown function: %s", stmt.Name))
 		return
@@ -375,6 +381,14 @@ func (tc *TypeChecker) CheckStructMemberExpr(expr *ast.StructMemberExpr) Type {
 	}
 	memberType, ok := structType.Members[expr.Member.Value]
 	if !ok {
+		// Not a data field: fall back to a method on this struct type. A bound
+		// method has its receiver stripped from the signature (the receiver
+		// becomes the captured environment), so it is usable anywhere a matching
+		// function type is expected, and `x.method(args)` type checks through the
+		// ordinary call path.
+		if methodType, ok := tc.currScope.LookupMethod(structType.Name, expr.Member.Value); ok {
+			return methodType
+		}
 		tc.Err(fmt.Sprintf("%s is not a member of struct %s", expr.Member.Value, structType.Name))
 		return nil
 	}

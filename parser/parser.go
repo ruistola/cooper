@@ -115,6 +115,35 @@ func (p *parser) nextToken() lexer.Token {
 	return result
 }
 
+// lookahead returns up to n upcoming tokens starting at the current position.
+// When skipInsignificant is true, EOL and COMMENT tokens are omitted so callers
+// can reason about the next significant tokens regardless of formatting. Unlike
+// peek, this is purely read-only: it neither mutates the token stream nor
+// performs EOL-to-semicolon conversion, making it safe for speculative dispatch.
+func (p *parser) lookahead(n int, skipInsignificant bool) []lexer.Token {
+	result := make([]lexer.Token, 0, n)
+	for i := p.pos; i < len(p.tokens) && len(result) < n; i++ {
+		t := p.tokens[i]
+		if skipInsignificant && (t.Type == lexer.EOL || t.Type == lexer.COMMENT) {
+			continue
+		}
+		result = append(result, t)
+	}
+	return result
+}
+
+// isMethodDeclAhead reports whether the upcoming tokens open a method declaration
+// receiver clause of the form `( ident : ...`. This is unambiguous: no expression
+// can begin with `( ident :`, and the COLON discriminates a receiver from a
+// grouped walrus declaration `( ident := ... )`.
+func (p *parser) isMethodDeclAhead() bool {
+	ahead := p.lookahead(3, true)
+	return len(ahead) == 3 &&
+		ahead[0].Type == lexer.OPEN_PAREN &&
+		ahead[1].Type == lexer.IDENTIFIER &&
+		ahead[2].Type == lexer.COLON
+}
+
 // Returns the current token without advancing the parser position.
 // Converts EOL to semicolon when applicable, deletes as whitespace otherwise.
 // Redundant consecutive EOLs have already been omitted by the lexer.
@@ -271,6 +300,12 @@ func Parse(tokens []lexer.Token) *ast.BlockStmt {
 // defaults to expression parsing where the expression is handled as a statement,
 // ignoring the expression value.
 func (p *parser) parseStmt() ast.Stmt {
+	// A statement leading with `( ident :` is a method declaration (a receiver
+	// clause preceding `func`). This is the one statement form that is not
+	// keyword-led; every other non-keyword statement is an expression statement.
+	if p.peek().Type == lexer.OPEN_PAREN && p.isMethodDeclAhead() {
+		return p.parseFuncDeclStmt()
+	}
 	switch p.peek().Type {
 	case lexer.FOR:
 		return p.parseForStmt()
@@ -536,6 +571,21 @@ func (p *parser) parseVarDeclStmt() *ast.VarDeclStmt {
 }
 
 func (p *parser) parseFuncDeclStmt() *ast.FuncDeclStmt {
+	// An optional receiver clause `( ident : Type )` preceding `func` marks a
+	// method declaration. Its legality (e.g. same-module, struct-only receiver)
+	// is enforced later in semantic analysis, not here.
+	var receiver *ast.TypedIdent
+	if p.peek().Type == lexer.OPEN_PAREN {
+		p.consume(lexer.OPEN_PAREN)
+		receiverName := p.consume(lexer.IDENTIFIER).Value
+		p.consume(lexer.COLON)
+		receiverType := p.parseTypeExpr()
+		p.consume(lexer.CLOSE_PAREN)
+		receiver = &ast.TypedIdent{
+			Name: receiverName,
+			Type: receiverType,
+		}
+	}
 	p.consume(lexer.FUNC)
 	name := p.consume(lexer.IDENTIFIER).Value
 	p.consume(lexer.OPEN_PAREN)
@@ -561,7 +611,9 @@ func (p *parser) parseFuncDeclStmt() *ast.FuncDeclStmt {
 	p.consume(lexer.OPEN_CURLY)
 	funcBody := p.parseBlockStmt()
 	p.consume(lexer.CLOSE_CURLY)
+	p.consumeStatementTerminator()
 	return &ast.FuncDeclStmt{
+		Receiver:   receiver,
 		Name:       name,
 		Parameters: params,
 		ReturnType: returnType,
@@ -596,6 +648,7 @@ func (p *parser) parseStructDeclStmt() *ast.StructDeclStmt {
 		}
 	}
 	p.consume(lexer.CLOSE_CURLY)
+	p.consumeStatementTerminator()
 	return &ast.StructDeclStmt{
 		Name:    name,
 		Members: members,

@@ -291,6 +291,86 @@ y = x + 5`,
 	}
 }
 
+func TestMethodDeclParsesReceiver(t *testing.T) {
+	src := `struct Product {
+  price: i32,
+}
+(p: Product) func isAffordable(budget: i32): bool {
+  return p.price <= budget
+}`
+	module := Parse(lexer.Tokenize(src))
+	if testing.Verbose() {
+		godump.Dump(module)
+	}
+	if len(module.Statements) != 2 {
+		t.Fatalf("expected 2 statements (struct, method), got %d", len(module.Statements))
+	}
+	fn, ok := module.Statements[1].(*ast.FuncDeclStmt)
+	if !ok {
+		t.Fatalf("expected second statement to be *ast.FuncDeclStmt, got %T", module.Statements[1])
+	}
+	if fn.Receiver == nil {
+		t.Fatal("expected method to have a receiver, got nil")
+	}
+	if fn.Receiver.Name != "p" {
+		t.Errorf("expected receiver name 'p', got %q", fn.Receiver.Name)
+	}
+	named, ok := fn.Receiver.Type.(*ast.NamedTypeExpr)
+	if !ok || named.TypeName != "Product" {
+		t.Errorf("expected receiver type 'Product', got %+v", fn.Receiver.Type)
+	}
+	if fn.Name != "isAffordable" {
+		t.Errorf("expected method name 'isAffordable', got %q", fn.Name)
+	}
+}
+
+func TestFreeFuncHasNilReceiver(t *testing.T) {
+	module := Parse(lexer.Tokenize("func add(x: i32, y: i32): i32 {\n  return x + y\n}"))
+	fn, ok := module.Statements[0].(*ast.FuncDeclStmt)
+	if !ok {
+		t.Fatalf("expected *ast.FuncDeclStmt, got %T", module.Statements[0])
+	}
+	if fn.Receiver != nil {
+		t.Errorf("expected free function to have nil receiver, got %+v", fn.Receiver)
+	}
+}
+
+// A leading `( ident := ... )` must remain a grouped walrus expression, not be
+// mistaken for a method receiver clause. The COLON vs COLON_EQUALS token is the
+// sole discriminator.
+func TestGroupedWalrusNotMistakenForMethod(t *testing.T) {
+	module := Parse(lexer.Tokenize("(x := 5)"))
+	stmt, ok := module.Statements[0].(*ast.ExpressionStmt)
+	if !ok {
+		t.Fatalf("expected *ast.ExpressionStmt, got %T", module.Statements[0])
+	}
+	group, ok := stmt.Expr.(*ast.GroupExpr)
+	if !ok {
+		t.Fatalf("expected *ast.GroupExpr, got %T", stmt.Expr)
+	}
+	if _, ok := group.Expr.(*ast.VarDeclAssignExpr); !ok {
+		t.Errorf("expected grouped *ast.VarDeclAssignExpr, got %T", group.Expr)
+	}
+}
+
+// Two consecutive top-level declarations must both parse: declarations consume
+// their trailing (inferred) statement terminator.
+func TestConsecutiveTopLevelDecls(t *testing.T) {
+	src := `struct P {
+  price: i32,
+}
+(p: P) func cost(): i32 {
+  return p.price
+}
+func main() {
+  return
+}`
+	module := Parse(lexer.Tokenize(src))
+	if len(module.Statements) != 3 {
+		t.Fatalf("expected 3 top-level statements, got %d", len(module.Statements))
+	}
+}
+
 func TestBlockValueSemantics(t *testing.T) {
 	src := `{
   let a: i32 = 5

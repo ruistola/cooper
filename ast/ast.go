@@ -121,6 +121,7 @@ type TypedIdent struct {
 }
 
 type FuncDeclStmt struct {
+	Receiver   *TypedIdent // nil for free functions, non-nil for methods
 	Name       string
 	Parameters []*TypedIdent
 	ReturnType TypeExpr

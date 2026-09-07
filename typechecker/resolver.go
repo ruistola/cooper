@@ -11,6 +11,9 @@ type Scope struct {
 	vars        map[string]Type
 	structTypes map[string]StructType
 	funcs       map[string]FuncType
+	// methods maps a receiver struct type name to that type's method set
+	// (method name -> bound signature, i.e. parameters excluding the receiver).
+	methods map[string]map[string]FuncType
 }
 
 // NewScope creates a new scope with optional parent
@@ -20,6 +23,7 @@ func NewScope(parent *Scope) *Scope {
 		vars:        make(map[string]Type),
 		structTypes: make(map[string]StructType),
 		funcs:       make(map[string]FuncType),
+		methods:     make(map[string]map[string]FuncType),
 	}
 }
 
@@ -69,6 +73,37 @@ func (s *Scope) LookupFunc(name string) (FuncType, bool) {
 		return s.parent.LookupFunc(name)
 	}
 	return FuncType{}, false
+}
+
+// DefineMethod registers a method (bound signature) on a receiver struct type
+func (s *Scope) DefineMethod(recvType string, name string, funcType FuncType) {
+	if s.methods[recvType] == nil {
+		s.methods[recvType] = make(map[string]FuncType)
+	}
+	s.methods[recvType][name] = funcType
+}
+
+// LookupMethod looks up a method by receiver type and method name, checking parent scopes
+func (s *Scope) LookupMethod(recvType string, name string) (FuncType, bool) {
+	if byName, ok := s.methods[recvType]; ok {
+		if funcType, ok := byName[name]; ok {
+			return funcType, true
+		}
+	}
+	if s.parent != nil {
+		return s.parent.LookupMethod(recvType, name)
+	}
+	return FuncType{}, false
+}
+
+// namedTypeName returns the type name of a NamedTypeExpr, or "" for other type
+// expressions. Method receivers resolve to struct types, whose declarations use
+// a named type expression, so this recovers the receiver's type name.
+func namedTypeName(typeExpr ast.TypeExpr) string {
+	if named, ok := typeExpr.(*ast.NamedTypeExpr); ok {
+		return named.TypeName
+	}
+	return ""
 }
 
 // ResolvedModule represents the result of symbol resolution
@@ -236,13 +271,8 @@ func (r *Resolver) resolveStructDeclStmt(stmt *ast.StructDeclStmt) {
 	})
 }
 
-// resolveFuncDeclStmt resolves a function declaration
+// resolveFuncDeclStmt resolves a function or method declaration
 func (r *Resolver) resolveFuncDeclStmt(stmt *ast.FuncDeclStmt) {
-	if _, ok := r.currScope.LookupFunc(stmt.Name); ok {
-		r.Err(fmt.Sprintf("redeclared function %s in the same scope", stmt.Name))
-		return
-	}
-
 	var returnType Type = UnitType{}
 	if stmt.ReturnType != nil {
 		returnType = r.ResolveType(stmt.ReturnType)
@@ -254,6 +284,23 @@ func (r *Resolver) resolveFuncDeclStmt(stmt *ast.FuncDeclStmt) {
 	paramTypes := make([]Type, 0, len(stmt.Parameters))
 	funcScope := NewScope(r.currScope)
 
+	// A method binds its receiver as a local variable in the function scope.
+	// The receiver must be a struct type declared in this module.
+	var receiverType *StructType
+	if stmt.Receiver != nil {
+		recvType := r.ResolveType(stmt.Receiver.Type)
+		if recvType == nil {
+			return
+		}
+		structType, ok := recvType.(StructType)
+		if !ok {
+			r.Err(fmt.Sprintf("method receiver %s must be a struct type, found %s", stmt.Receiver.Name, recvType))
+			return
+		}
+		receiverType = &structType
+		funcScope.DefineVar(stmt.Receiver.Name, structType)
+	}
+
 	for _, param := range stmt.Parameters {
 		paramType := r.ResolveType(param.Type)
 		if paramType == nil {
@@ -263,11 +310,30 @@ func (r *Resolver) resolveFuncDeclStmt(stmt *ast.FuncDeclStmt) {
 		funcScope.DefineVar(param.Name, paramType)
 	}
 
+	// The bound signature excludes the receiver: `product.isAffordable` has type
+	// func(i32): bool, with the receiver captured as the closure environment.
 	funcType := FuncType{
 		ReturnType: returnType,
 		ParamTypes: paramTypes,
 	}
-	r.currScope.DefineFunc(stmt.Name, funcType)
+
+	if receiverType != nil {
+		if _, ok := receiverType.Members[stmt.Name]; ok {
+			r.Err(fmt.Sprintf("method %s collides with a field of struct %s", stmt.Name, receiverType.Name))
+			return
+		}
+		if _, ok := r.currScope.LookupMethod(receiverType.Name, stmt.Name); ok {
+			r.Err(fmt.Sprintf("redeclared method %s on struct %s", stmt.Name, receiverType.Name))
+			return
+		}
+		r.currScope.DefineMethod(receiverType.Name, stmt.Name, funcType)
+	} else {
+		if _, ok := r.currScope.LookupFunc(stmt.Name); ok {
+			r.Err(fmt.Sprintf("redeclared function %s in the same scope", stmt.Name))
+			return
+		}
+		r.currScope.DefineFunc(stmt.Name, funcType)
+	}
 
 	// Record function scope in map using statement pointer as key
 	r.scopes[stmt] = funcScope

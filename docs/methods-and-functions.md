@@ -10,7 +10,7 @@ chaining and subject-verb-object readability.
 
 ```
 func add(x: i32, y: i32): i32 {
-  x + y
+  return x + y
 }
 
 func greet(name: string) {
@@ -19,8 +19,10 @@ func greet(name: string) {
 ```
 
 Parameters use `name: Type` syntax. Return type follows the parameter list as `: Type`.
-Omitting the return type indicates the unit type. The last expression in a function body
-(without a trailing semicolon) is the return value.
+Omitting the return type indicates the unit type. In general, the last expression
+within a block expression is the value of that block, and function bodies could be
+considered a kind of block expression; however, for clarity, use of `return` is
+mandatory to exit the function body with a non-unit value.
 
 ## Method declarations
 
@@ -33,12 +35,12 @@ struct Product {
   weight: f32,
 }
 
-func (p: Product).isAffordable(budget: i32): bool {
-  p.price <= budget
+(p: Product) func isAffordable(budget: i32): bool {
+  return p.price <= budget
 }
 
-func (p: Product).shippingCost(ratePerKg: f32): f32 {
-  p.weight * ratePerKg
+(p: Product) func shippingCost(ratePerKg: f32): f32 {
+  return p.weight * ratePerKg
 }
 ```
 
@@ -64,11 +66,11 @@ struct Monster {
 Methods are always declared outside the struct body:
 
 ```
-func (m: Monster).isAlive(): bool {
-  m.health > 0
+(m: Monster) func isAlive(): bool {
+  return m.health > 0
 }
 
-func (m: Monster).takeDamage(amount: i32) {
+(m: Monster) func takeDamage(amount: i32) {
   m.health -= amount
   if m.health <= 0 then m.onDeath(m.name)
 }
@@ -151,7 +153,7 @@ The calling convention always passes `env` as a hidden first argument. Free func
 receive it and ignore it. This means:
 
 * **The method receiver is not part of the function type signature.** A method
-  `func (p: Product).isAffordable(budget: i32): bool` produces, when bound via
+  `(p: Product) func isAffordable(budget: i32): bool` produces, when bound via
   `myProduct.isAffordable`, a value of type `func(i32): bool`. The receiver becomes
   the captured environment — invisible to the caller.
 
@@ -188,7 +190,7 @@ struct Button {
   onClick: func(),
 }
 
-func (b: Button).render() {
+(b: Button) func render() {
   drawText(b.label)
 }
 

@@ -24,6 +24,7 @@ Each subdirectory under a project defines a **module** with a matching name:
 * `auth/` → module `auth`
 * `server/auth/` → module `server.auth`
 * Exception: an implicit module `main` sits at the project root, regardless of directory name.
+* Exception: attribute `module_root` in `project.toml` can be defined, example: `module_root = "src"`
 
 All `.coop` source files in a module directory (including `main` at project root) belong to that module.
 No need to declare the module name in source code — it's unambiguously implied from the directory structure.
@@ -55,10 +56,13 @@ Key principles:
 
 ## The `use` declaration
 
-Source-level dependencies are declared with top-of-file use blocks:
+Source-level dependencies are declared with top-of-file use blocks (trailing comma is mandatory; reduces diff noise):
 
 ```
-use { std.io, http }
+use {
+  std.io,
+  http,
+}
 ```
 
 Terminology matters: _importing_ happens at project level; modules _use_ other modules.
@@ -66,15 +70,15 @@ Terminology matters: _importing_ happens at project level; modules _use_ other m
 ### Rules
 
 * A module must explicitly declare all its individual module dependencies.
-  * `use { server }` does **not** include `server.auth` — use doesn't propagate transitively.
+  * `use { server, }` does **not** include `server.auth` — use doesn't propagate transitively.
 * The scope of a `use` declaration is the **source file**, not the module.
   * Better for visibility and IDE/editor UX when following the trail to a definition.
   * No jumping across files to determine origin of types or functions.
-* A use declaration may define a local alias: `use { io: std.io, http, auth: server.auth }`
+* A use declaration may define a local alias: `use { io: std.io, http, auth: server.auth, }`
   * Aliases only apply within the scope of the source file.
 
 ### Resolution order
 
 1. Starts with `std` → Standard library (e.g., `std.io`).
-2. Relative module path → local to project (e.g., `server.auth` → `<project root>/server/auth`).
+2. Relative module path → local to project (e.g., `server.auth` → `<project root>/<module_root>/server/auth`).
 3. Otherwise → search `project.toml` for a matching identifier declaring an external dependency.

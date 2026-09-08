@@ -4,6 +4,7 @@ import (
 	"github.com/ruistola/cooper/ast"
 	"github.com/ruistola/cooper/lexer"
 	"github.com/yassinebenaid/godump"
+	"slices"
 	"testing"
 )
 
@@ -432,5 +433,57 @@ func TestBlockValueSemantics(t *testing.T) {
 		if _, ok := exprStmt.Expr.(*ast.BlockExpr); !ok {
 			t.Errorf("Expected block expression, got %t", exprStmt.Expr)
 		}
+	}
+}
+
+func TestUseDeclParsesPathsAndAliases(t *testing.T) {
+	src := `use {
+  std.io,
+  http,
+  auth: server.auth,
+}`
+	module := Parse(lexer.Tokenize(src))
+	if len(module.Statements) != 1 {
+		t.Fatalf("expected 1 statement (use block), got %d", len(module.Statements))
+	}
+	use, ok := module.Statements[0].(*ast.UseDeclStmt)
+	if !ok {
+		t.Fatalf("expected *ast.UseDeclStmt, got %T", module.Statements[0])
+	}
+	if len(use.UseSpecs) != 3 {
+		t.Fatalf("expected 3 use specs, got %d", len(use.UseSpecs))
+	}
+
+	assertSpec := func(i int, alias string, path ...string) {
+		spec := use.UseSpecs[i]
+		if spec.Alias != alias {
+			t.Errorf("spec %d: expected alias %q, got %q", i, alias, spec.Alias)
+		}
+		if !slices.Equal(spec.Path, path) {
+			t.Errorf("spec %d: expected path %v, got %v", i, path, spec.Path)
+		}
+	}
+	assertSpec(0, "", "std", "io")
+	assertSpec(1, "", "http")
+	assertSpec(2, "auth", "server", "auth")
+}
+
+// The structure is fixed regardless of formatting: a single-line use block parses
+// identically to its multi-line counterpart.
+func TestUseDeclOneLinerMatchesMultiline(t *testing.T) {
+	src := `use { io: std.io, http, }`
+	module := Parse(lexer.Tokenize(src))
+	use, ok := module.Statements[0].(*ast.UseDeclStmt)
+	if !ok {
+		t.Fatalf("expected *ast.UseDeclStmt, got %T", module.Statements[0])
+	}
+	if len(use.UseSpecs) != 2 {
+		t.Fatalf("expected 2 use specs, got %d", len(use.UseSpecs))
+	}
+	if use.UseSpecs[0].Alias != "io" || !slices.Equal(use.UseSpecs[0].Path, []string{"std", "io"}) {
+		t.Errorf("unexpected first spec: %+v", use.UseSpecs[0])
+	}
+	if use.UseSpecs[1].Alias != "" || !slices.Equal(use.UseSpecs[1].Path, []string{"http"}) {
+		t.Errorf("unexpected second spec: %+v", use.UseSpecs[1])
 	}
 }

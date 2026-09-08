@@ -225,8 +225,8 @@ type UseDeclStmt struct {
 func (s *UseDeclStmt) stmt() {}
 
 type UseSpecExpr struct {
-	Name   string
-	Module string //TODO: should this be more structural, like a ModulePath or something?
+	Alias string   // optional local alias; empty when absent
+	Path  []string // period-separated module path segments (at least one)
 }
 
 func (e *UseSpecExpr) expr() {}

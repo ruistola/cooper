@@ -882,28 +882,46 @@ func (p *parser) parseBlockExpr() *ast.BlockExpr {
 
 // Always required to be a use block, to minimize diff noise from when the number of declared uses
 // goes from 1 -> 2. Like struct declarations and struct literals, trailing comma is mandatory,
-// for the same reason: consistency and less noise in diffs.
+// for the same reason: consistency and less noise in diffs. Each spec is a module path (a
+// period-separated chain of identifiers) with an optional leading alias:
 //
 //	use {
-//	  moduleNameOrPath,
-//	  alias: moduleNameOrPath,
+//	  path.to.module,
+//	  alias: path.to.other.module,
 //	}
 func (p *parser) parseUseDeclStmt() *ast.UseDeclStmt {
 	specs := make([]*ast.UseSpecExpr, 0)
 	p.consume(lexer.USE)
 	p.consume(lexer.OPEN_CURLY)
+	// Suppress EOL-to-semicolon inference inside the block so newlines between
+	// comma-terminated specs are treated as insignificant whitespace.
+	p.parenStack = append(p.parenStack, lexer.OPEN_CURLY)
 	for p.peek().Type != lexer.CLOSE_CURLY {
-		name := p.consume(lexer.IDENTIFIER).Value
-		p.consume(lexer.COLON)
-		module := p.consume(lexer.IDENTIFIER).Value
-		specs = append(specs, &ast.UseSpecExpr{
-			Name:   name,
-			Module: module,
-		})
+		spec := &ast.UseSpecExpr{}
+		// Both `alias: path` and a bare `path` begin with an identifier; a following
+		// COLON marks that identifier as an alias, otherwise it is the first path segment.
+		ahead := p.lookahead(2, true)
+		if len(ahead) == 2 && ahead[0].Type == lexer.IDENTIFIER && ahead[1].Type == lexer.COLON {
+			spec.Alias = p.consume(lexer.IDENTIFIER).Value
+			p.consume(lexer.COLON)
+		}
+		spec.Path = p.parseModulePath()
+		specs = append(specs, spec)
 		p.consume(lexer.COMMA)
 	}
 	p.consume(lexer.CLOSE_CURLY)
 	return &ast.UseDeclStmt{
 		UseSpecs: specs,
 	}
+}
+
+// parseModulePath parses a period-separated chain of identifiers (e.g. `std.io`)
+// into its segments, requiring at least one segment.
+func (p *parser) parseModulePath() []string {
+	path := []string{p.consume(lexer.IDENTIFIER).Value}
+	for p.peek().Type == lexer.DOT {
+		p.consume(lexer.DOT)
+		path = append(path, p.consume(lexer.IDENTIFIER).Value)
+	}
+	return path
 }

@@ -64,6 +64,7 @@ const (
 	FUNC
 	IF
 	LET
+	NIL
 	OR
 	RETURN
 	STRUCT
@@ -141,6 +142,7 @@ var reservedKeywords map[string]TokenType = map[string]TokenType{
 	"func":   FUNC,
 	"if":     IF,
 	"let":    LET,
+	"nil":    NIL,
 	"or":     OR,
 	"return": RETURN,
 	"struct": STRUCT,
@@ -212,6 +214,7 @@ var tokenDisplayNames map[TokenType]string = map[TokenType]string{
 	FOR:    "for",
 	RETURN: "return",
 	USE:    "use",
+	NIL:    "nil",
 }
 
 // Implement Stringer for TokenType.

@@ -205,6 +205,8 @@ func (tc *TypeChecker) CheckExpr(expr ast.Expr) Type {
 		return tc.primitives["string"]
 	case *ast.BoolLiteralExpr:
 		return tc.primitives["bool"]
+	case *ast.NilLiteralExpr:
+		return NilType{}
 	case *ast.IdentExpr:
 		if varType, ok := tc.currScope.LookupVarType(e.Value); ok {
 			return varType
@@ -231,6 +233,10 @@ func (tc *TypeChecker) CheckExpr(expr ast.Expr) Type {
 		return tc.CheckStructMemberExpr(e)
 	case *ast.ArrayIndexExpr:
 		return tc.CheckArrayIndexExpr(e)
+	case *ast.AddressOfExpr:
+		return tc.CheckAddressOfExpr(e)
+	case *ast.DerefExpr:
+		return tc.CheckDerefExpr(e)
 	case *ast.AssignExpr:
 		return tc.CheckAssignExpr(e)
 	case *ast.VarDeclAssignExpr:
@@ -374,6 +380,11 @@ func (tc *TypeChecker) CheckStructLiteralExpr(expr *ast.StructLiteralExpr) Type 
 
 func (tc *TypeChecker) CheckStructMemberExpr(expr *ast.StructMemberExpr) Type {
 	structTypeValue := tc.CheckExpr(expr.Struct)
+	// Auto-deref: `p.field` and `p.method()` transparently work through a pointer
+	// to a struct, so member access never requires an explicit `p^.field`.
+	if ptr, ok := structTypeValue.(PointerType); ok {
+		structTypeValue = ptr.ElemType
+	}
 	structType, ok := structTypeValue.(StructType)
 	if !ok {
 		tc.Err(fmt.Sprintf("expression of type %s cannot be used as a struct", structTypeValue))
@@ -410,6 +421,53 @@ func (tc *TypeChecker) CheckArrayIndexExpr(expr *ast.ArrayIndexExpr) Type {
 		return nil
 	}
 	return arrayType.ElemType
+}
+
+// CheckAddressOfExpr type checks the prefix `&` operator. The operand must be
+// addressable (a variable, struct field, array element, or dereference), and the
+// result is a pointer to the operand's type.
+func (tc *TypeChecker) CheckAddressOfExpr(expr *ast.AddressOfExpr) Type {
+	if !tc.isAddressable(expr.Operand) {
+		tc.Err("cannot take the address of a non-addressable expression")
+		return nil
+	}
+	operandType := tc.CheckExpr(expr.Operand)
+	if operandType == nil {
+		return nil
+	}
+	return PointerType{ElemType: operandType}
+}
+
+// CheckDerefExpr type checks the postfix `^` operator. The operand must be a
+// pointer, and the result is the pointed-to element type.
+func (tc *TypeChecker) CheckDerefExpr(expr *ast.DerefExpr) Type {
+	operandType := tc.CheckExpr(expr.Operand)
+	if operandType == nil {
+		return nil
+	}
+	ptrType, ok := operandType.(PointerType)
+	if !ok {
+		tc.Err(fmt.Sprintf("cannot dereference non-pointer type %s", operandType))
+		return nil
+	}
+	return ptrType.ElemType
+}
+
+// isAddressable reports whether an expression denotes a storage location whose
+// address can be taken. Temporaries (literals, call results, arithmetic) are not
+// addressable.
+func (tc *TypeChecker) isAddressable(expr ast.Expr) bool {
+	switch e := expr.(type) {
+	case *ast.IdentExpr:
+		_, ok := tc.currScope.LookupVarType(e.Value)
+		return ok
+	case *ast.StructMemberExpr, *ast.ArrayIndexExpr, *ast.DerefExpr:
+		return true
+	case *ast.GroupExpr:
+		return tc.isAddressable(e.Expr)
+	default:
+		return false
+	}
 }
 
 func (tc *TypeChecker) CheckAssignExpr(expr *ast.AssignExpr) Type {

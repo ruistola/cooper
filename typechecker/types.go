@@ -54,6 +54,43 @@ func (a ArrayType) Equals(other Type) bool {
 	return false
 }
 
+// PointerType represents pointer types like T^
+type PointerType struct {
+	ElemType Type
+}
+
+func (p PointerType) String() string {
+	return fmt.Sprintf("%s^", p.ElemType)
+}
+
+// Equals treats a pointer as equal to another pointer with the same element type,
+// and (provisionally) as compatible with the untyped nil literal so that nil may be
+// assigned to or compared against any pointer. The fuller nil strategy is TBD.
+func (p PointerType) Equals(other Type) bool {
+	if o, ok := other.(PointerType); ok {
+		return p.ElemType.Equals(o.ElemType)
+	}
+	if _, ok := other.(NilType); ok {
+		return true
+	}
+	return false
+}
+
+// NilType is the type of the `nil` literal, compatible with any pointer type.
+type NilType struct{}
+
+func (n NilType) String() string {
+	return "nil"
+}
+
+func (n NilType) Equals(other Type) bool {
+	switch other.(type) {
+	case NilType, PointerType:
+		return true
+	}
+	return false
+}
+
 // FuncType represents function types
 type FuncType struct {
 	ReturnType Type

@@ -57,6 +57,39 @@ let callbacks: func(i32)[]
 
 This follows C#/TypeScript convention (`Type[]`) rather than Go's prefix (`[]Type`).
 
+### Pointer notation
+
+Pointers use postfix caret notation, consistent with the postfix array notation
+(the caret is dedicated to pointers, so `^` is never multiplication or bitwise
+operations):
+
+```
+let p: Point^        // pointer to a Point
+let pp: Point^^      // pointer to a pointer to a Point
+let ps: Point^[]     // array of pointers to Point
+let sp: Point[]^     // pointer to an array of Point
+```
+
+The same caret is the postfix dereference operator in value position, mirroring
+how `[]` constructs an array type but indexes an array value:
+
+```
+let x: i32 = p^.value   // dereference (explicit form: (p^).value)
+p^.value = 10           // assign through a pointer
+```
+
+Related operators and values:
+
+* **`&expr`** — prefix address-of, yielding a pointer to an addressable operand (a
+  variable, struct field, array element, or dereference). Temporaries are not addressable.
+* **`p^`** — postfix dereference. Member access auto-dereferences, so `p.value`
+  works directly on a `Point^`; the explicit `p^.value` is equivalent.
+* **`nil`** — the absent value of a pointer type.
+
+Pointers are safe and GC-tracked: no pointer arithmetic and no int/pointer casts
+(those belong to a separate `unsafe` facility, TBD). Whether a pointer is nullable
+and how absence is modelled is subject to the forthcoming nil strategy.
+
 ### Function type expressions
 
 Function type expressions carry only the parameter types and return type — no parameter names:

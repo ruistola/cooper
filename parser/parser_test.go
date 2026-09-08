@@ -487,3 +487,126 @@ func TestUseDeclOneLinerMatchesMultiline(t *testing.T) {
 		t.Errorf("unexpected second spec: %+v", use.UseSpecs[1])
 	}
 }
+
+// --- Pointers ---
+
+// A postfix `^` in a variable type is a pointer type; composing with `[]` follows
+// left-to-right postfix reading.
+func TestPointerTypeExprParsing(t *testing.T) {
+	cases := []struct {
+		src    string
+		verify func(t *testing.T, ty ast.TypeExpr)
+	}{
+		{
+			"let p: Point^",
+			func(t *testing.T, ty ast.TypeExpr) {
+				ptr, ok := ty.(*ast.PointerTypeExpr)
+				if !ok {
+					t.Fatalf("expected *ast.PointerTypeExpr, got %T", ty)
+				}
+				if named, ok := ptr.UnderlyingType.(*ast.NamedTypeExpr); !ok || named.TypeName != "Point" {
+					t.Fatalf("expected pointer to Point, got %+v", ptr.UnderlyingType)
+				}
+			},
+		},
+		{
+			"let pp: Point^^",
+			func(t *testing.T, ty ast.TypeExpr) {
+				outer, ok := ty.(*ast.PointerTypeExpr)
+				if !ok {
+					t.Fatalf("expected outer *ast.PointerTypeExpr, got %T", ty)
+				}
+				if _, ok := outer.UnderlyingType.(*ast.PointerTypeExpr); !ok {
+					t.Fatalf("expected pointer to pointer, got %T", outer.UnderlyingType)
+				}
+			},
+		},
+		{
+			"let ps: Point^[]", // array of pointers
+			func(t *testing.T, ty ast.TypeExpr) {
+				arr, ok := ty.(*ast.ArrayTypeExpr)
+				if !ok {
+					t.Fatalf("expected *ast.ArrayTypeExpr, got %T", ty)
+				}
+				if _, ok := arr.UnderlyingType.(*ast.PointerTypeExpr); !ok {
+					t.Fatalf("expected array of pointers, got %T", arr.UnderlyingType)
+				}
+			},
+		},
+		{
+			"let sp: Point[]^", // pointer to array
+			func(t *testing.T, ty ast.TypeExpr) {
+				ptr, ok := ty.(*ast.PointerTypeExpr)
+				if !ok {
+					t.Fatalf("expected *ast.PointerTypeExpr, got %T", ty)
+				}
+				if _, ok := ptr.UnderlyingType.(*ast.ArrayTypeExpr); !ok {
+					t.Fatalf("expected pointer to array, got %T", ptr.UnderlyingType)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.src, func(t *testing.T) {
+			module := Parse(lexer.Tokenize(tc.src))
+			decl, ok := module.Statements[0].(*ast.VarDeclStmt)
+			if !ok {
+				t.Fatalf("expected *ast.VarDeclStmt, got %T", module.Statements[0])
+			}
+			tc.verify(t, decl.Var.Type)
+		})
+	}
+}
+
+func TestAddressOfAndDerefExprParsing(t *testing.T) {
+	// `&x^` is `&(x^)`: deref binds tighter than address-of.
+	module := Parse(lexer.Tokenize("&x^"))
+	addr, ok := module.Statements[0].(*ast.ExpressionStmt).Expr.(*ast.AddressOfExpr)
+	if !ok {
+		t.Fatalf("expected *ast.AddressOfExpr, got %T", module.Statements[0].(*ast.ExpressionStmt).Expr)
+	}
+	if _, ok := addr.Operand.(*ast.DerefExpr); !ok {
+		t.Fatalf("expected address-of a deref, got %T", addr.Operand)
+	}
+}
+
+// Deref chains through member access: `p^.field` is `(p^).field`, and `p.field^`
+// is `(p.field)^`.
+func TestDerefBindsWithMemberAccess(t *testing.T) {
+	module := Parse(lexer.Tokenize("p^.field"))
+	member, ok := module.Statements[0].(*ast.ExpressionStmt).Expr.(*ast.StructMemberExpr)
+	if !ok {
+		t.Fatalf("expected *ast.StructMemberExpr, got %T", module.Statements[0].(*ast.ExpressionStmt).Expr)
+	}
+	if _, ok := member.Struct.(*ast.DerefExpr); !ok {
+		t.Fatalf("expected member access on a deref, got %T", member.Struct)
+	}
+
+	module = Parse(lexer.Tokenize("p.field^"))
+	deref, ok := module.Statements[0].(*ast.ExpressionStmt).Expr.(*ast.DerefExpr)
+	if !ok {
+		t.Fatalf("expected *ast.DerefExpr, got %T", module.Statements[0].(*ast.ExpressionStmt).Expr)
+	}
+	if _, ok := deref.Operand.(*ast.StructMemberExpr); !ok {
+		t.Fatalf("expected deref of a member access, got %T", deref.Operand)
+	}
+}
+
+// Address-of binds looser than binary arithmetic on its right: `&x + y` is `(&x) + y`.
+func TestAddressOfBindsLooserThanArithmetic(t *testing.T) {
+	module := Parse(lexer.Tokenize("&x + y"))
+	bin, ok := module.Statements[0].(*ast.ExpressionStmt).Expr.(*ast.BinaryExpr)
+	if !ok {
+		t.Fatalf("expected *ast.BinaryExpr at top, got %T", module.Statements[0].(*ast.ExpressionStmt).Expr)
+	}
+	if _, ok := bin.Lhs.(*ast.AddressOfExpr); !ok {
+		t.Fatalf("expected address-of on the left of +, got %T", bin.Lhs)
+	}
+}
+
+func TestNilLiteralParsing(t *testing.T) {
+	module := Parse(lexer.Tokenize("nil"))
+	if _, ok := module.Statements[0].(*ast.ExpressionStmt).Expr.(*ast.NilLiteralExpr); !ok {
+		t.Fatalf("expected *ast.NilLiteralExpr, got %T", module.Statements[0].(*ast.ExpressionStmt).Expr)
+	}
+}

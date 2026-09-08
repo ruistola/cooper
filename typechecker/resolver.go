@@ -163,6 +163,12 @@ func (r *Resolver) ResolveType(typeExpr ast.TypeExpr) Type {
 			return nil
 		}
 		return ArrayType{ElemType: elemType}
+	case *ast.PointerTypeExpr:
+		elemType := r.ResolveType(e.UnderlyingType)
+		if elemType == nil {
+			return nil
+		}
+		return PointerType{ElemType: elemType}
 	case *ast.FuncTypeExpr:
 		paramTypes := []Type{}
 		for _, astParamType := range e.ParamTypes {
@@ -377,6 +383,12 @@ func (r *Resolver) resolveExpr(expr ast.Expr) {
 	switch e := expr.(type) {
 	case *ast.NumberLiteralExpr, *ast.StringLiteralExpr, *ast.BoolLiteralExpr:
 		// Literals don't need resolution
+	case *ast.NilLiteralExpr:
+		// The nil literal needs no resolution
+	case *ast.AddressOfExpr:
+		r.resolveExpr(e.Operand)
+	case *ast.DerefExpr:
+		r.resolveExpr(e.Operand)
 	case *ast.IdentExpr:
 		// Check if identifier exists in symbol table
 		if _, ok := r.currScope.LookupVarType(e.Value); !ok {

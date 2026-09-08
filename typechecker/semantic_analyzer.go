@@ -137,6 +137,12 @@ func (sa *SemanticAnalyzer) analyzeExpr(expr ast.Expr) {
 	switch e := expr.(type) {
 	case *ast.NumberLiteralExpr, *ast.StringLiteralExpr, *ast.BoolLiteralExpr:
 		// Literals don't need semantic analysis
+	case *ast.NilLiteralExpr:
+		// The nil literal needs no semantic analysis
+	case *ast.AddressOfExpr:
+		sa.analyzeExpr(e.Operand)
+	case *ast.DerefExpr:
+		sa.analyzeExpr(e.Operand)
 	case *ast.IdentExpr:
 		// Identifier semantic rules can be added here
 	case *ast.BinaryExpr:

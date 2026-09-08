@@ -28,6 +28,13 @@ type ArrayTypeExpr struct {
 
 func (t *ArrayTypeExpr) typeExpr() {}
 
+// PointerTypeExpr is the postfix `^` pointer type constructor, e.g. `T^`.
+type PointerTypeExpr struct {
+	UnderlyingType TypeExpr
+}
+
+func (t *PointerTypeExpr) typeExpr() {}
+
 type FuncTypeExpr struct {
 	ReturnType TypeExpr
 	ParamTypes []TypeExpr
@@ -66,6 +73,25 @@ type NumberLiteralExpr struct {
 }
 
 func (e *NumberLiteralExpr) expr() {}
+
+// NilLiteralExpr is the `nil` literal, the absent value of a pointer type.
+type NilLiteralExpr struct{}
+
+func (e *NilLiteralExpr) expr() {}
+
+// AddressOfExpr is the prefix `&` operator, yielding a pointer to its operand.
+type AddressOfExpr struct {
+	Operand Expr
+}
+
+func (e *AddressOfExpr) expr() {}
+
+// DerefExpr is the postfix `^` operator, yielding the value a pointer points to.
+type DerefExpr struct {
+	Operand Expr
+}
+
+func (e *DerefExpr) expr() {}
 
 type UnaryExpr struct {
 	Operator lexer.Token

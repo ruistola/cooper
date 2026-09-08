@@ -41,8 +41,10 @@ var (
 		lexer.COMMA,
 		lexer.CLOSE_BRACKET,
 		lexer.CLOSE_PAREN,
+		lexer.CHEVRON,
 		lexer.ELSE,
 		lexer.FALSE,
+		lexer.NIL,
 		lexer.RETURN,
 		lexer.THEN,
 		lexer.TRUE,
@@ -60,12 +62,13 @@ var (
 		lexer.OPEN_CURLY,
 		lexer.CLOSE_CURLY,
 		lexer.OPEN_PAREN,
+		lexer.AMPERSAND,
 		lexer.FALSE,
 		lexer.FOR,
 		lexer.FUNC,
 		lexer.IF,
-		lexer.ELSE,
 		lexer.LET,
+		lexer.NIL,
 		lexer.RETURN,
 		lexer.STRUCT,
 		lexer.TRUE,
@@ -259,6 +262,11 @@ func headPrecedence(tokenType lexer.TokenType) int {
 		return 1
 	case lexer.PLUS, lexer.DASH:
 		return 10
+	case lexer.AMPERSAND:
+		// Prefix address-of. Binds tighter than any binary operator but looser than
+		// postfix operators (`.`, `[]`, call, `^`), so `&a.b[i]` is `&((a.b)[i])`
+		// while `&a + b` is `(&a) + b`.
+		return 12
 	default:
 		panic(fmt.Sprintf("Cannot determine binding power for '%s' as a head token", tokenType))
 	}
@@ -287,7 +295,9 @@ func tailPrecedence(tokenType lexer.TokenType) (int, int) {
 		return 13, 0
 	case lexer.OPEN_PAREN, lexer.OPEN_BRACKET:
 		return 14, 0
-	case lexer.DOT:
+	case lexer.DOT, lexer.CHEVRON:
+		// DOT is a binary tail (member access); CHEVRON is a postfix unary (deref).
+		// Both are the tightest-binding tail operators.
 		return 16, 15
 	default:
 		return 0, 0
@@ -394,6 +404,13 @@ func (p *parser) parseHeadExpr(token lexer.Token) ast.Expr {
 			Operator: token,
 			Rhs:      rhs,
 		}
+	case lexer.AMPERSAND:
+		rbp := headPrecedence(token.Type)
+		return &ast.AddressOfExpr{
+			Operand: p.parseExpr(rbp),
+		}
+	case lexer.NIL:
+		return &ast.NilLiteralExpr{}
 	case lexer.OPEN_PAREN:
 		rbp := headPrecedence(token.Type)
 		rhs := p.parseExpr(rbp)
@@ -457,6 +474,9 @@ func (p *parser) parseTailExpr(head ast.Expr, rbp int) ast.Expr {
 		return p.parseArrayIndexExpr(head)
 	case lexer.DOT:
 		return p.parseStructMemberExpr(head)
+	case lexer.CHEVRON:
+		p.consume(lexer.CHEVRON)
+		return &ast.DerefExpr{Operand: head}
 	default:
 		panic(fmt.Sprintf("Failed to parse tail expression from token %v\n", currToken))
 	}
@@ -490,23 +510,23 @@ func (p *parser) parseTypeExpr() ast.TypeExpr {
 			TypeName: name,
 		}
 	}
-	// If a type expression is followed by square brackets, then the complete type expression is T[]
-	if p.peek().Type == lexer.OPEN_BRACKET {
-		t = p.parseArrayTypeExpr(t)
+	// Parse trailing postfix type constructors left to right: `[]` (array/slice)
+	// and `^` (pointer). Both are postfix to stay consistent with value syntax
+	// (`foo[i]`, `p^`), so e.g. `T^[]` is an array of pointers and `T[]^` a
+	// pointer to an array.
+	for {
+		switch p.peek().Type {
+		case lexer.OPEN_BRACKET:
+			p.consume(lexer.OPEN_BRACKET)
+			p.consume(lexer.CLOSE_BRACKET)
+			t = &ast.ArrayTypeExpr{UnderlyingType: t}
+		case lexer.CHEVRON:
+			p.consume(lexer.CHEVRON)
+			t = &ast.PointerTypeExpr{UnderlyingType: t}
+		default:
+			return t
+		}
 	}
-	return t
-}
-
-func (p *parser) parseArrayTypeExpr(innerType ast.TypeExpr) ast.TypeExpr {
-	p.consume(lexer.OPEN_BRACKET)
-	p.consume(lexer.CLOSE_BRACKET)
-	arrayType := &ast.ArrayTypeExpr{
-		UnderlyingType: innerType,
-	}
-	if p.peek().Type == lexer.OPEN_BRACKET {
-		return p.parseArrayTypeExpr(arrayType)
-	}
-	return arrayType
 }
 
 // For clarification:

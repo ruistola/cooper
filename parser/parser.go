@@ -342,6 +342,17 @@ func (p *parser) parseStmt() ast.Stmt {
 }
 
 // A Pratt parser for parsing expressions.
+//
+// The loop stops on any token that is not a tail (infix/postfix) operator: such a
+// token has a zero binding power and is left unconsumed rather than triggering an
+// error here. This relies on a parser-wide invariant: every parseExpr call is
+// followed by a validating consume of the token that ended the expression, either a
+// delimiter (consume(THEN), consume(CLOSE_PAREN), etc.) or a statement terminator
+// (consumeStatementTerminator). That validation is what actually rejects malformed
+// input, so the invariant must be preserved: an expression is never left "stray".
+// Consequently two complete, back-to-back expressions require a separator between
+// them (`;`, an inferred end-of-line, or a self-terminating block's `}`); inputs
+// like `5 5` or `let x = 5 5` are rejected at the following terminator check.
 func (p *parser) parseExpr(min_bp int) ast.Expr {
 	token := p.consume()
 	leftExpr := p.parseHeadExpr(token)

@@ -30,7 +30,9 @@ func newParser(tokens []lexer.Token) parser {
 }
 
 var (
-	// An EOL may be converted into a semicolon only if the previous token is one of the following:
+	// An EOL may be converted into a semicolon only if the previous token is one of the following.
+	// A closing curly brace is deliberately excluded: a statement whose last token is a block-closing
+	// brace self-terminates (like the C family), so no semicolon is inferred after it.
 	beforeSemicolon []lexer.TokenType = []lexer.TokenType{
 		lexer.NUMBER,
 		lexer.STRING,
@@ -38,7 +40,6 @@ var (
 		lexer.UNDERSCORE,
 		lexer.COMMA,
 		lexer.CLOSE_BRACKET,
-		lexer.CLOSE_CURLY,
 		lexer.CLOSE_PAREN,
 		lexer.ELSE,
 		lexer.FALSE,
@@ -216,13 +217,15 @@ func (p *parser) statementTerminates() bool {
 		// when inside an if-statement, allow the "else" keyword to behave as a terminator for the then-branch
 		return p.inThenBranch
 	default:
-		return false
+		// A statement whose last consumed token is a block-closing brace self-terminates.
+		return p.prevToken().Type == lexer.CLOSE_CURLY
 	}
 }
 
 // Primarily intended for consuming a semicolon, but from the parser point of view,
 // technically EOF and the closing curly brace are also valid (it is up to
-// semantic analysis to determine whether ok in context).
+// semantic analysis to determine whether ok in context). A statement whose last
+// token is a block-closing brace self-terminates and needs no explicit terminator.
 func (p *parser) consumeStatementTerminator() {
 	switch p.peek().Type {
 	case lexer.SEMICOLON:
@@ -238,6 +241,11 @@ func (p *parser) consumeStatementTerminator() {
 		}
 		fallthrough
 	default:
+		// A preceding block-closing brace is an implicit terminator (e.g. a value
+		// block `let x = { 5 }` followed directly by the next statement).
+		if p.prevToken().Type == lexer.CLOSE_CURLY {
+			return
+		}
 		panic("Expected statement terminator")
 	}
 }
@@ -258,10 +266,11 @@ func headPrecedence(tokenType lexer.TokenType) int {
 
 // Binding power of tokens that may appear in the tail position of an expression (Pratt: LED).
 // Unequal left vs right binding power to enforce left or right associativity as appropriate.
+// A token that cannot appear in tail position yields a zero binding power, terminating the
+// expression; the surrounding statement parser then validates the boundary (e.g. a value block
+// `{ 5 }` followed directly by the next statement's leading token).
 func tailPrecedence(tokenType lexer.TokenType) (int, int) {
 	switch tokenType {
-	case lexer.EOF, lexer.SEMICOLON, lexer.CLOSE_PAREN, lexer.COMMA, lexer.CLOSE_CURLY, lexer.CLOSE_BRACKET, lexer.THEN, lexer.ELSE:
-		return 0, 0
 	case lexer.EQUALS, lexer.PLUS_EQUALS, lexer.DASH_EQUALS, lexer.COLON_EQUALS:
 		return 1, 2
 	case lexer.OR, lexer.AND:
@@ -281,7 +290,7 @@ func tailPrecedence(tokenType lexer.TokenType) (int, int) {
 	case lexer.DOT:
 		return 16, 15
 	default:
-		panic(fmt.Sprintf("Cannot determine binding power for '%s' as a tail token", tokenType))
+		return 0, 0
 	}
 }
 
@@ -290,6 +299,12 @@ func Parse(tokens []lexer.Token) *ast.BlockStmt {
 	p := newParser(tokens)
 	module := &ast.BlockStmt{}
 	for p.peek().Type != lexer.EOF {
+		// Skip empty statements: a lone semicolon is a no-op and is pruned rather
+		// than emitted into the AST.
+		if p.peek().Type == lexer.SEMICOLON {
+			p.consume()
+			continue
+		}
 		module.Statements = append(module.Statements, p.parseStmt())
 	}
 	return module
@@ -611,7 +626,6 @@ func (p *parser) parseFuncDeclStmt() *ast.FuncDeclStmt {
 	p.consume(lexer.OPEN_CURLY)
 	funcBody := p.parseBlockStmt()
 	p.consume(lexer.CLOSE_CURLY)
-	p.consumeStatementTerminator()
 	return &ast.FuncDeclStmt{
 		Receiver:   receiver,
 		Name:       name,
@@ -648,7 +662,6 @@ func (p *parser) parseStructDeclStmt() *ast.StructDeclStmt {
 		}
 	}
 	p.consume(lexer.CLOSE_CURLY)
-	p.consumeStatementTerminator()
 	return &ast.StructDeclStmt{
 		Name:    name,
 		Members: members,
@@ -829,6 +842,11 @@ func (p *parser) parseExpressionStmt() ast.Stmt {
 func (p *parser) parseBlockStmt() *ast.BlockStmt {
 	statements := []ast.Stmt{}
 	for token := p.peek(); token.Type != lexer.EOF && token.Type != lexer.CLOSE_CURLY; token = p.peek() {
+		// Skip empty statements: a lone semicolon is a no-op and is pruned.
+		if token.Type == lexer.SEMICOLON {
+			p.consume()
+			continue
+		}
 		statements = append(statements, p.parseStmt())
 	}
 	return &ast.BlockStmt{

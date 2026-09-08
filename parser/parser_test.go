@@ -277,6 +277,51 @@ x + y`,
 x = 10
 y = x + 5`,
 		},
+		{
+			"consecutive func declarations",
+			`func a(): i32 {
+  return 1
+}
+func b(): i32 {
+  return 2
+}`,
+		},
+		{
+			"consecutive struct declarations",
+			`struct A {
+  x: i32,
+}
+struct B {
+  y: i32,
+}`,
+		},
+		{
+			"if-block followed by statement",
+			`if x < 5 then {
+  foo()
+}
+bar()`,
+		},
+		{
+			"for-block followed by statement",
+			`for (i := 0; i < 10; i += 1) {
+  foo()
+}
+bar()`,
+		},
+		{
+			"value block followed by statement",
+			`let x: i32 = {
+  5
+}
+foo()`,
+		},
+		{
+			"empty statements pruned",
+			`;;
+let x: i32 = 5;;
+foo();`,
+		},
 	}
 
 	for _, tc := range testCases {

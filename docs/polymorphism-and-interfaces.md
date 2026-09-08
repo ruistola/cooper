@@ -98,8 +98,8 @@ struct Melee {
   range: f32,
 }
 
-func (m: Melee).isLethal(): bool {
-  m.damage > 100
+(m: Melee) func isLethal(): bool {
+  return m.damage > 100
 }
 
 struct Ranged {
@@ -107,8 +107,8 @@ struct Ranged {
   accuracy: f32,
 }
 
-func (r: Ranged).isLethal(): bool {
-  r.damage > 50 and r.accuracy > 0.9
+(r: Ranged) func isLethal(): bool {
+  return r.damage > 50 and r.accuracy > 0.9
 }
 
 enum Attack {

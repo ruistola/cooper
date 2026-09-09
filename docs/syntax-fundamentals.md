@@ -84,11 +84,10 @@ Related operators and values:
   variable, struct field, array element, or dereference). Temporaries are not addressable.
 * **`p^`** — postfix dereference. Member access auto-dereferences, so `p.value`
   works directly on a `Point^`; the explicit `p^.value` is equivalent.
-* **`nil`** — the absent value of a pointer type.
-
-Pointers are safe and GC-tracked: no pointer arithmetic and no int/pointer casts
-(those belong to a separate `unsafe` facility, TBD). Whether a pointer is nullable
-and how absence is modelled is subject to the forthcoming nil strategy.
+* **`nil`** — the absent value of a pointer type. Dereferencing nil does not panic;
+  it behaves as an inert stand-in yielding zero values. See
+  [Memory and the Object Model](./memory-and-object-model.md) for the semantics of
+  nil, addressability, and how objects live in memory.
 
 ### Function type expressions
 

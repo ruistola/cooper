@@ -55,6 +55,10 @@ a pointer to one element retains the whole backing array. This is the price of a
 indirection into contiguous storage, and it is the intended trade: contiguity and
 interior pointers are more valuable than fine-grained per-element reclamation.
 
+The collector is a span-based tracing GC that does not relocate heap objects, which is
+what lets an arbitrary interior address be resolved back to its containing allocation via
+span metadata.
+
 ## Nil as an inert value
 
 A pointer may be `nil` — the absence of a target. Nil is a valid inhabitant of every
@@ -109,5 +113,3 @@ Left open, to be settled alongside a build-mode concept:
   candidates (debug builds fault eagerly, release builds run the inert/unchecked path).
 * Whether to offer GC opt-out regions (arenas, a `no-gc` annotation) for the constrained
   cases where a tracing collector is unacceptable.
-</parameter>
-</invoke>

@@ -46,9 +46,27 @@ type UnitTypeExpr struct{}
 
 func (t *UnitTypeExpr) typeExpr() {}
 
+// TupleTypeExpr is an anonymous product type `(A, B, ...)` with at least two
+// elements. A single-element parenthesised type collapses to that element and a
+// zero-element one is the unit type, so those never produce a TupleTypeExpr.
+type TupleTypeExpr struct {
+	ElementTypes []TypeExpr
+}
+
+func (t *TupleTypeExpr) typeExpr() {}
+
 type UnitExpr struct{}
 
 func (e *UnitExpr) expr() {}
+
+// TupleLiteralExpr is a tuple value `(a, b, ...)` with at least two elements. A
+// single parenthesised expression is a GroupExpr and empty parens are UnitExpr,
+// so those never produce a TupleLiteralExpr.
+type TupleLiteralExpr struct {
+	Elements []Expr
+}
+
+func (e *TupleLiteralExpr) expr() {}
 
 type BoolLiteralExpr struct {
 	Value bool

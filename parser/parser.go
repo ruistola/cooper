@@ -412,12 +412,28 @@ func (p *parser) parseHeadExpr(token lexer.Token) ast.Expr {
 	case lexer.NIL:
 		return &ast.NilLiteralExpr{}
 	case lexer.OPEN_PAREN:
-		rbp := headPrecedence(token.Type)
-		rhs := p.parseExpr(rbp)
-		p.consume(lexer.CLOSE_PAREN)
-		return &ast.GroupExpr{
-			Expr: rhs,
+		// Unit `()`, a grouped expression `(e)`, or a tuple `(e, e, ...)`,
+		// disambiguated by contents. Commas are not tail operators, so each
+		// element parses cleanly up to the next comma or the closing paren.
+		if p.peek().Type == lexer.CLOSE_PAREN {
+			p.consume(lexer.CLOSE_PAREN)
+			return &ast.UnitExpr{}
 		}
+		first := p.parseExpr(0)
+		if p.peek().Type != lexer.COMMA {
+			p.consume(lexer.CLOSE_PAREN)
+			return &ast.GroupExpr{Expr: first}
+		}
+		elems := []ast.Expr{first}
+		for p.peek().Type == lexer.COMMA {
+			p.consume(lexer.COMMA)
+			if p.peek().Type == lexer.CLOSE_PAREN {
+				break // tolerate a trailing comma
+			}
+			elems = append(elems, p.parseExpr(0))
+		}
+		p.consume(lexer.CLOSE_PAREN)
+		return &ast.TupleLiteralExpr{Elements: elems}
 	case lexer.IF:
 		return p.parseIfExpr()
 	case lexer.OPEN_CURLY:
@@ -489,14 +505,25 @@ func (p *parser) parseTailExpr(head ast.Expr, rbp int) ast.Expr {
 func (p *parser) parseTypeExpr() ast.TypeExpr {
 	var t ast.TypeExpr
 	if p.peek().Type == lexer.OPEN_PAREN {
-		// If a type expression is enclosed in parens:
+		// Parenthesised type: unit `()`, a grouped type `(T)` (collapses to T),
+		// or a tuple type `(A, B, ...)`.
 		p.consume(lexer.OPEN_PAREN)
 		if p.peek().Type == lexer.CLOSE_PAREN {
-			// If empty parens (), it is an explicit unit type expression
 			t = &ast.UnitTypeExpr{}
 		} else {
-			// If non-empty parens, ignore and parse the TypeExpr inside
-			t = p.parseTypeExpr()
+			elems := []ast.TypeExpr{p.parseTypeExpr()}
+			for p.peek().Type == lexer.COMMA {
+				p.consume(lexer.COMMA)
+				if p.peek().Type == lexer.CLOSE_PAREN {
+					break // tolerate a trailing comma
+				}
+				elems = append(elems, p.parseTypeExpr())
+			}
+			if len(elems) == 1 {
+				t = elems[0] // (T) is just T
+			} else {
+				t = &ast.TupleTypeExpr{ElementTypes: elems}
+			}
 		}
 		p.consume(lexer.CLOSE_PAREN)
 	} else if p.peek().Type == lexer.FUNC {

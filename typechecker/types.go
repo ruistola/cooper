@@ -91,6 +91,37 @@ func (n NilType) Equals(other Type) bool {
 	return false
 }
 
+// TupleType represents an anonymous product type (A, B, ...) with at least two
+// elements. One-element and zero-element parenthesised types never reach here:
+// they collapse to the element type and the unit type respectively.
+type TupleType struct {
+	ElementTypes []Type
+}
+
+func (t TupleType) String() string {
+	elems := ""
+	for i, e := range t.ElementTypes {
+		if i > 0 {
+			elems += ", "
+		}
+		elems += e.String()
+	}
+	return fmt.Sprintf("(%s)", elems)
+}
+
+func (t TupleType) Equals(other Type) bool {
+	o, ok := other.(TupleType)
+	if !ok || len(t.ElementTypes) != len(o.ElementTypes) {
+		return false
+	}
+	for i, e := range t.ElementTypes {
+		if !e.Equals(o.ElementTypes[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 // FuncType represents function types
 type FuncType struct {
 	ReturnType Type

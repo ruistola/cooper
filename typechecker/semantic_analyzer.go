@@ -152,6 +152,12 @@ func (sa *SemanticAnalyzer) analyzeExpr(expr ast.Expr) {
 		sa.analyzeExpr(e.Rhs)
 	case *ast.GroupExpr:
 		sa.analyzeExpr(e.Expr)
+	case *ast.TupleLiteralExpr:
+		for _, elem := range e.Elements {
+			sa.analyzeExpr(elem)
+		}
+	case *ast.UnitExpr:
+		// The unit literal needs no semantic analysis
 	case *ast.FuncCallExpr:
 		sa.analyzeExpr(e.Func)
 		for _, arg := range e.Args {

@@ -184,6 +184,18 @@ func (r *Resolver) ResolveType(typeExpr ast.TypeExpr) Type {
 			return nil
 		}
 		return PointerType{ElemType: elemType}
+	case *ast.TupleTypeExpr:
+		elemTypes := make([]Type, 0, len(e.ElementTypes))
+		for _, astElem := range e.ElementTypes {
+			elemType := r.ResolveType(astElem)
+			if elemType == nil {
+				return nil
+			}
+			elemTypes = append(elemTypes, elemType)
+		}
+		return TupleType{ElementTypes: elemTypes}
+	case *ast.UnitTypeExpr:
+		return UnitType{}
 	case *ast.FuncTypeExpr:
 		paramTypes := []Type{}
 		for _, astParamType := range e.ParamTypes {
@@ -422,6 +434,12 @@ func (r *Resolver) resolveExpr(expr ast.Expr) {
 		r.resolveExpr(e.Rhs)
 	case *ast.GroupExpr:
 		r.resolveExpr(e.Expr)
+	case *ast.TupleLiteralExpr:
+		for _, elem := range e.Elements {
+			r.resolveExpr(elem)
+		}
+	case *ast.UnitExpr:
+		// The unit literal needs no resolution
 	case *ast.FuncCallExpr:
 		r.resolveExpr(e.Func)
 		for _, arg := range e.Args {

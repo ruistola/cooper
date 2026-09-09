@@ -207,6 +207,10 @@ func (tc *TypeChecker) CheckExpr(expr ast.Expr) Type {
 		return tc.primitives["bool"]
 	case *ast.NilLiteralExpr:
 		return NilType{}
+	case *ast.UnitExpr:
+		return UnitType{}
+	case *ast.TupleLiteralExpr:
+		return tc.CheckTupleLiteralExpr(e)
 	case *ast.IdentExpr:
 		if varType, ok := tc.currScope.LookupVarType(e.Value); ok {
 			return varType
@@ -451,6 +455,20 @@ func (tc *TypeChecker) CheckDerefExpr(expr *ast.DerefExpr) Type {
 		return nil
 	}
 	return ptrType.ElemType
+}
+
+// CheckTupleLiteralExpr type checks a tuple value `(a, b, ...)`, producing a
+// TupleType from the element types. A nil element type propagates as a failure.
+func (tc *TypeChecker) CheckTupleLiteralExpr(expr *ast.TupleLiteralExpr) Type {
+	elemTypes := make([]Type, 0, len(expr.Elements))
+	for _, elem := range expr.Elements {
+		elemType := tc.CheckExpr(elem)
+		if elemType == nil {
+			return nil
+		}
+		elemTypes = append(elemTypes, elemType)
+	}
+	return TupleType{ElementTypes: elemTypes}
 }
 
 // isAddressable reports whether an expression denotes a storage location whose

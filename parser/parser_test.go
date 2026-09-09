@@ -610,3 +610,103 @@ func TestNilLiteralParsing(t *testing.T) {
 		t.Fatalf("expected *ast.NilLiteralExpr, got %T", module.Statements[0].(*ast.ExpressionStmt).Expr)
 	}
 }
+
+// --- Tuples ---
+
+func exprOf(t *testing.T, src string) ast.Expr {
+	t.Helper()
+	module := Parse(lexer.Tokenize(src))
+	stmt, ok := module.Statements[0].(*ast.ExpressionStmt)
+	if !ok {
+		t.Fatalf("expected *ast.ExpressionStmt, got %T", module.Statements[0])
+	}
+	return stmt.Expr
+}
+
+// `(a, b)` is a tuple; `(a)` collapses to a grouped expression; `()` is unit.
+func TestTupleExprParsing(t *testing.T) {
+	tup, ok := exprOf(t, "(a, b, c)").(*ast.TupleLiteralExpr)
+	if !ok {
+		t.Fatalf("expected *ast.TupleLiteralExpr, got %T", exprOf(t, "(a, b, c)"))
+	}
+	if len(tup.Elements) != 3 {
+		t.Fatalf("expected 3 elements, got %d", len(tup.Elements))
+	}
+
+	if _, ok := exprOf(t, "(a)").(*ast.GroupExpr); !ok {
+		t.Fatalf("expected *ast.GroupExpr for (a), got %T", exprOf(t, "(a)"))
+	}
+	if _, ok := exprOf(t, "()").(*ast.UnitExpr); !ok {
+		t.Fatalf("expected *ast.UnitExpr for (), got %T", exprOf(t, "()"))
+	}
+}
+
+// A trailing comma is tolerated in a tuple expression.
+func TestTupleExprTrailingComma(t *testing.T) {
+	tup, ok := exprOf(t, "(a, b,)").(*ast.TupleLiteralExpr)
+	if !ok {
+		t.Fatalf("expected *ast.TupleLiteralExpr, got %T", exprOf(t, "(a, b,)"))
+	}
+	if len(tup.Elements) != 2 {
+		t.Fatalf("expected 2 elements, got %d", len(tup.Elements))
+	}
+}
+
+// `(A, B)` is a tuple type; `(A)` collapses to A; `()` is the unit type.
+func TestTupleTypeExprParsing(t *testing.T) {
+	cases := []struct {
+		src    string
+		verify func(t *testing.T, ty ast.TypeExpr)
+	}{
+		{
+			"let p: (i32, string)",
+			func(t *testing.T, ty ast.TypeExpr) {
+				tup, ok := ty.(*ast.TupleTypeExpr)
+				if !ok {
+					t.Fatalf("expected *ast.TupleTypeExpr, got %T", ty)
+				}
+				if len(tup.ElementTypes) != 2 {
+					t.Fatalf("expected 2 element types, got %d", len(tup.ElementTypes))
+				}
+			},
+		},
+		{
+			"let p: (i32)", // collapses to i32
+			func(t *testing.T, ty ast.TypeExpr) {
+				if named, ok := ty.(*ast.NamedTypeExpr); !ok || named.TypeName != "i32" {
+					t.Fatalf("expected (i32) to collapse to i32, got %T %+v", ty, ty)
+				}
+			},
+		},
+		{
+			"let u: ()",
+			func(t *testing.T, ty ast.TypeExpr) {
+				if _, ok := ty.(*ast.UnitTypeExpr); !ok {
+					t.Fatalf("expected *ast.UnitTypeExpr, got %T", ty)
+				}
+			},
+		},
+		{
+			"let ps: (i32, string)[]", // array of tuples
+			func(t *testing.T, ty ast.TypeExpr) {
+				arr, ok := ty.(*ast.ArrayTypeExpr)
+				if !ok {
+					t.Fatalf("expected *ast.ArrayTypeExpr, got %T", ty)
+				}
+				if _, ok := arr.UnderlyingType.(*ast.TupleTypeExpr); !ok {
+					t.Fatalf("expected array of tuples, got %T", arr.UnderlyingType)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.src, func(t *testing.T) {
+			module := Parse(lexer.Tokenize(tc.src))
+			decl, ok := module.Statements[0].(*ast.VarDeclStmt)
+			if !ok {
+				t.Fatalf("expected *ast.VarDeclStmt, got %T", module.Statements[0])
+			}
+			tc.verify(t, decl.Var.Type)
+		})
+	}
+}

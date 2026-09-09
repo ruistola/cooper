@@ -93,7 +93,42 @@ func main() {
 func TestMethodOnNonStructReceiverRejected(t *testing.T) {
 	expectErr(t, `(x: i32) func foo(): i32 {
   return x
-}`, "must be a struct type")
+}`, "must be a struct or pointer-to-struct type")
+}
+
+// A pointer receiver `(p: Product^)` keys the same method set as a value
+// receiver and auto-derefs on field access, so mutation through it type checks.
+func TestPointerReceiverTypeChecks(t *testing.T) {
+	expectOK(t, `struct Product {
+  price: i32,
+}
+(p: Product^) func discount(amount: i32) {
+  p.price -= amount
+}
+func main() {
+  let prod: Product = Product{price: 5,}
+  prod.discount(2)
+}`)
+}
+
+// A pointer receiver is bound as a pointer, so it may be dereferenced explicitly.
+func TestPointerReceiverIsPointer(t *testing.T) {
+	expectOK(t, `struct Product {
+  price: i32,
+}
+(p: Product^) func priced(): i32 {
+  return p^.price
+}`)
+}
+
+// A `Product^^` receiver is not a struct or pointer-to-struct and is rejected.
+func TestDoublePointerReceiverRejected(t *testing.T) {
+	expectErr(t, `struct Product {
+  price: i32,
+}
+(p: Product^^) func foo(): i32 {
+  return 0
+}`, "must be a struct or pointer-to-struct type")
 }
 
 func TestMethodNameCollidesWithFieldRejected(t *testing.T) {

@@ -96,14 +96,29 @@ func (s *Scope) LookupMethod(recvType string, name string) (FuncType, bool) {
 	return FuncType{}, false
 }
 
-// namedTypeName returns the type name of a NamedTypeExpr, or "" for other type
-// expressions. Method receivers resolve to struct types, whose declarations use
-// a named type expression, so this recovers the receiver's type name.
+// namedTypeName returns the struct type name a method receiver keys on. A
+// receiver is either a struct value (`(p: Product)`) or a pointer to a struct
+// (`(p: Product^)`); both are keyed under the underlying struct name, so a
+// pointer receiver expression is unwrapped first. Returns "" for anything else.
 func namedTypeName(typeExpr ast.TypeExpr) string {
+	if ptr, ok := typeExpr.(*ast.PointerTypeExpr); ok {
+		typeExpr = ptr.UnderlyingType
+	}
 	if named, ok := typeExpr.(*ast.NamedTypeExpr); ok {
 		return named.TypeName
 	}
 	return ""
+}
+
+// underlyingStruct unwraps a single level of pointer indirection and reports the
+// struct type a receiver keys on, so both `Product` and `Product^` receivers
+// resolve to the Product method set. Returns false for non-struct receivers.
+func underlyingStruct(t Type) (StructType, bool) {
+	if ptr, ok := t.(PointerType); ok {
+		t = ptr.ElemType
+	}
+	s, ok := t.(StructType)
+	return s, ok
 }
 
 // ResolvedModule represents the result of symbol resolution
@@ -290,21 +305,23 @@ func (r *Resolver) resolveFuncDeclStmt(stmt *ast.FuncDeclStmt) {
 	paramTypes := make([]Type, 0, len(stmt.Parameters))
 	funcScope := NewScope(r.currScope)
 
-	// A method binds its receiver as a local variable in the function scope.
-	// The receiver must be a struct type declared in this module.
+	// A method binds its receiver as a local variable in the function scope. The
+	// receiver is either a struct value or a pointer to a struct; both key their
+	// method set under the underlying struct type. A value receiver binds a copy,
+	// a pointer receiver binds the pointer (so mutations through it persist).
 	var receiverType *StructType
 	if stmt.Receiver != nil {
 		recvType := r.ResolveType(stmt.Receiver.Type)
 		if recvType == nil {
 			return
 		}
-		structType, ok := recvType.(StructType)
+		structType, ok := underlyingStruct(recvType)
 		if !ok {
-			r.Err(fmt.Sprintf("method receiver %s must be a struct type, found %s", stmt.Receiver.Name, recvType))
+			r.Err(fmt.Sprintf("method receiver %s must be a struct or pointer-to-struct type, found %s", stmt.Receiver.Name, recvType))
 			return
 		}
 		receiverType = &structType
-		funcScope.DefineVar(stmt.Receiver.Name, structType)
+		funcScope.DefineVar(stmt.Receiver.Name, recvType)
 	}
 
 	for _, param := range stmt.Parameters {

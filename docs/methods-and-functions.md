@@ -70,7 +70,7 @@ Methods are always declared outside the struct body:
   return m.health > 0
 }
 
-(m: Monster) func takeDamage(amount: i32) {
+(m: Monster^) func takeDamage(amount: i32) {
   m.health -= amount
   if m.health <= 0 then m.onDeath(m.name)
 }
@@ -97,15 +97,17 @@ appealing in small examples, it introduces problems at scale:
 
 ## Receivers
 
-All receivers are by reference. The compiler may optimize small types (copy instead of
-dereference) where profitable, but the semantic model is always reference semantics.
+A receiver may be declared by value (`(p: Product)`) or by pointer (`(p: Product^)`), with
+the same semantics those forms carry anywhere else in the language. A value receiver
+operates on a copy, whereas a pointer receiver operates on the caller's object through
+indirection.
 
-Rationale:
-* Eliminates a concept (value vs pointer receiver) that is really about performance, not
-  semantics.
-* Mutability/constness is handled orthogonally (affecting variable bindings and parameters
-  in general, not just method receivers specifically).
-* Consistent with closure environment capture, which is also by reference.
+The choice is the ordinary value-vs-pointer decision, made on two grounds:
+
+* **Mutation.** A method that must modify the receiver takes a pointer receiver. A method
+  that only reads can take either.
+* **Cost.** Even for a read-only method, a large struct may be cheaper to pass by pointer
+  and access field-by-field within the body than to copy wholesale.
 
 ## Method binding
 

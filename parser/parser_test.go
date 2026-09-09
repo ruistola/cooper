@@ -641,6 +641,61 @@ func TestTupleExprParsing(t *testing.T) {
 	}
 }
 
+// parsePanics reports whether parsing src triggers a parser panic.
+func parsePanics(src string) (panicked bool) {
+	defer func() {
+		if recover() != nil {
+			panicked = true
+		}
+	}()
+	Parse(lexer.Tokenize(src))
+	return false
+}
+
+// Across every list-bearing construct, elements are comma-separated, a single
+// trailing comma is optional, and a missing separator is rejected.
+func TestCommaSeparatorConvention(t *testing.T) {
+	accepted := []string{
+		// struct declaration
+		"struct P { x: i32, y: i32 }",
+		"struct P { x: i32, y: i32, }",
+		// function parameters
+		"func f(a: i32, b: i32): i32 { return a }",
+		"func f(a: i32, b: i32,): i32 { return a }",
+		// call arguments
+		"f(a, b)",
+		"f(a, b,)",
+		// struct literal
+		"P{x: 1, y: 2}",
+		"P{x: 1, y: 2,}",
+		// use block
+		"use { std.io, http }",
+		"use { std.io, http, }",
+	}
+	for _, src := range accepted {
+		t.Run("ok/"+src, func(t *testing.T) {
+			if parsePanics(src) {
+				t.Errorf("expected %q to parse, but it panicked", src)
+			}
+		})
+	}
+
+	rejected := []string{
+		"struct P { x: i32 y: i32 }",
+		"func f(a: i32 b: i32): i32 { return a }",
+		"f(a b)",
+		"P{x: 1 y: 2}",
+		"use { std.io http }",
+	}
+	for _, src := range rejected {
+		t.Run("reject/"+src, func(t *testing.T) {
+			if !parsePanics(src) {
+				t.Errorf("expected %q to be rejected, but it parsed", src)
+			}
+		})
+	}
+}
+
 // A trailing comma is tolerated in a tuple expression.
 func TestTupleExprTrailingComma(t *testing.T) {
 	tup, ok := exprOf(t, "(a, b,)").(*ast.TupleLiteralExpr)

@@ -56,12 +56,12 @@ Key principles:
 
 ## The `use` declaration
 
-Source-level dependencies are declared with top-of-file use blocks (trailing comma is mandatory; reduces diff noise):
+Source-level dependencies are declared with top-of-file use blocks (entries are comma-separated; a trailing comma is optional):
 
 ```
 use {
   std.io,
-  http,
+  http
 }
 ```
 
@@ -70,11 +70,11 @@ Terminology matters: _importing_ happens at project level; modules _use_ other m
 ### Rules
 
 * A module must explicitly declare all its individual module dependencies.
-  * `use { server, }` does **not** include `server.auth` — use doesn't propagate transitively.
+  * `use { server }` does **not** include `server.auth` — use doesn't propagate transitively.
 * The scope of a `use` declaration is the **source file**, not the module.
   * Better for visibility and IDE/editor UX when following the trail to a definition.
   * No jumping across files to determine origin of types or functions.
-* A use declaration may define a local alias: `use { io: std.io, http, auth: server.auth, }`
+* A use declaration may define a local alias: `use { io: std.io, http, auth: server.auth }`
   * Aliases only apply within the scope of the source file.
 
 ### Resolution order

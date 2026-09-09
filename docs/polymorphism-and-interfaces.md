@@ -95,7 +95,7 @@ table) — no itable, no pointer chasing.
 ```
 struct Melee {
   damage: i32,
-  range: f32,
+  range: f32
 }
 
 (m: Melee) func isLethal(): bool {
@@ -104,7 +104,7 @@ struct Melee {
 
 struct Ranged {
   damage: i32,
-  accuracy: f32,
+  accuracy: f32
 }
 
 (r: Ranged) func isLethal(): bool {
@@ -113,7 +113,7 @@ struct Ranged {
 
 enum Attack {
   Melee(Melee),
-  Ranged(Ranged),
+  Ranged(Ranged)
 }
 
 // All variants define isLethal(): bool, so this compiles:

@@ -32,7 +32,7 @@ Methods are declared separately from their associated type, with an explicit rec
 struct Product {
   name: string,
   price: i32,
-  weight: f32,
+  weight: f32
 }
 
 (p: Product) func isAffordable(budget: i32): bool {
@@ -59,7 +59,7 @@ stored per-instance as pointers):
 struct Monster {
   name: string,
   health: i32,
-  onDeath: func(string),
+  onDeath: func(string)
 }
 ```
 
@@ -189,7 +189,7 @@ Example combining both:
 ```
 struct Button {
   label: string,
-  onClick: func(),
+  onClick: func()
 }
 
 (b: Button) func render() {

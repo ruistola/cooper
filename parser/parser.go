@@ -673,6 +673,8 @@ func (p *parser) parseFuncDeclStmt() *ast.FuncDeclStmt {
 		})
 		if p.peek().Type == lexer.COMMA {
 			p.consume(lexer.COMMA)
+		} else {
+			break
 		}
 	}
 	p.consume(lexer.CLOSE_PAREN)
@@ -717,6 +719,8 @@ func (p *parser) parseStructDeclStmt() *ast.StructDeclStmt {
 		members = append(members, newMember)
 		if p.peek().Type == lexer.COMMA {
 			p.consume(lexer.COMMA)
+		} else {
+			break
 		}
 	}
 	p.consume(lexer.CLOSE_CURLY)
@@ -827,6 +831,8 @@ func (p *parser) parseFuncCallExpr(left ast.Expr) *ast.FuncCallExpr {
 		args = append(args, p.parseExpr(0))
 		if p.peek().Type == lexer.COMMA {
 			p.consume(lexer.COMMA)
+		} else {
+			break
 		}
 	}
 	p.consume(lexer.CLOSE_PAREN)
@@ -847,7 +853,11 @@ func (p *parser) parseStructLiteralExpr(left ast.Expr) *ast.StructLiteralExpr {
 			Name:  memberName,
 			Value: p.parseExpr(0),
 		})
-		p.consume(lexer.COMMA)
+		if p.peek().Type == lexer.COMMA {
+			p.consume(lexer.COMMA)
+		} else {
+			break
+		}
 	}
 	p.consume(lexer.CLOSE_CURLY)
 	return &ast.StructLiteralExpr{
@@ -941,7 +951,7 @@ func (p *parser) parseUseDeclStmt() *ast.UseDeclStmt {
 	p.consume(lexer.USE)
 	p.consume(lexer.OPEN_CURLY)
 	// Suppress EOL-to-semicolon inference inside the block so newlines between
-	// comma-terminated specs are treated as insignificant whitespace.
+	// comma-separated specs are treated as insignificant whitespace.
 	p.parenStack = append(p.parenStack, lexer.OPEN_CURLY)
 	for p.peek().Type != lexer.CLOSE_CURLY {
 		spec := &ast.UseSpecExpr{}
@@ -954,7 +964,11 @@ func (p *parser) parseUseDeclStmt() *ast.UseDeclStmt {
 		}
 		spec.Path = p.parseModulePath()
 		specs = append(specs, spec)
-		p.consume(lexer.COMMA)
+		if p.peek().Type == lexer.COMMA {
+			p.consume(lexer.COMMA)
+		} else {
+			break
+		}
 	}
 	p.consume(lexer.CLOSE_CURLY)
 	return &ast.UseDeclStmt{

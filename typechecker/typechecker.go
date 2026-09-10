@@ -12,6 +12,13 @@ type TypeChecker struct {
 	scopes                map[any]*Scope // AST nodes to their scopes (from resolver)
 	primitives            map[string]Type
 	currentFuncReturnType Type
+	// expectedType is the type an expression is being checked against, when known
+	// from immediate context (an annotated `let` initializer or a `return` value).
+	// It supplies the type arguments a generic variant construction cannot infer
+	// from its payload alone (e.g. `Result.Ok(5)` needs the E from the context, and
+	// `Maybe.None` needs both). It applies only to the checked expression's head and
+	// is consumed (cleared) before checking sub-expressions.
+	expectedType Type
 }
 
 func NewTypeChecker(rootScope *Scope, scopes map[any]*Scope) *TypeChecker {
@@ -68,6 +75,8 @@ func (tc *TypeChecker) CheckStmt(stmt ast.Stmt) {
 		tc.CheckVarDeclStmt(s)
 	case *ast.StructDeclStmt:
 		tc.CheckStructDeclStmt(s)
+	case *ast.OneofDeclStmt:
+		tc.CheckOneofDeclStmt(s)
 	case *ast.FuncDeclStmt:
 		tc.CheckFuncDeclStmt(s)
 	case *ast.IfStmt:
@@ -99,6 +108,7 @@ func (tc *TypeChecker) CheckVarDeclStmt(stmt *ast.VarDeclStmt) {
 		return
 	}
 	if stmt.InitVal != nil {
+		tc.expectedType = declaredType
 		initType := tc.CheckExpr(stmt.InitVal)
 		if initType == nil {
 			return
@@ -115,6 +125,13 @@ func (tc *TypeChecker) CheckStructDeclStmt(stmt *ast.StructDeclStmt) {
 		return
 	}
 	// Additional type checking for struct members can be added here if needed
+}
+
+// CheckOneofDeclStmt verifies the sum type was registered during resolution.
+func (tc *TypeChecker) CheckOneofDeclStmt(stmt *ast.OneofDeclStmt) {
+	if _, ok := tc.currScope.LookupOneofType(stmt.Name); !ok {
+		tc.Err(fmt.Sprintf("unknown sum type: %s", stmt.Name))
+	}
 }
 
 func (tc *TypeChecker) CheckFuncDeclStmt(stmt *ast.FuncDeclStmt) {
@@ -186,6 +203,7 @@ func (tc *TypeChecker) CheckReturnStmt(stmt *ast.ReturnStmt) {
 		}
 		return
 	}
+	tc.expectedType = tc.currentFuncReturnType
 	exprType := tc.CheckExpr(stmt.Expr)
 	switch {
 	case exprType == nil:
@@ -198,6 +216,11 @@ func (tc *TypeChecker) CheckReturnStmt(stmt *ast.ReturnStmt) {
 }
 
 func (tc *TypeChecker) CheckExpr(expr ast.Expr) Type {
+	// expectedType is a head-only hint: capture it for this expression and clear
+	// it so it never leaks into sub-expressions. Only the dispatches that can act
+	// on it (variant access and construction) restore it before recursing.
+	expected := tc.expectedType
+	tc.expectedType = nil
 	switch e := expr.(type) {
 	case *ast.NumberLiteralExpr:
 		return tc.primitives["i32"] // todo; evaluate the number literal to determine exact type
@@ -218,6 +241,9 @@ func (tc *TypeChecker) CheckExpr(expr ast.Expr) Type {
 		if structType, ok := tc.currScope.LookupStructType(e.Value); ok {
 			return structType
 		}
+		if oneofType, ok := tc.currScope.LookupOneofType(e.Value); ok {
+			return oneofType
+		}
 		if funcType, ok := tc.currScope.LookupFunc(e.Value); ok {
 			return funcType
 		}
@@ -230,10 +256,12 @@ func (tc *TypeChecker) CheckExpr(expr ast.Expr) Type {
 	case *ast.GroupExpr:
 		return tc.CheckExpr(e.Expr)
 	case *ast.FuncCallExpr:
+		tc.expectedType = expected
 		return tc.CheckFuncCallExpr(e)
 	case *ast.StructLiteralExpr:
 		return tc.CheckStructLiteralExpr(e)
 	case *ast.StructMemberExpr:
+		tc.expectedType = expected
 		return tc.CheckStructMemberExpr(e)
 	case *ast.ArrayIndexExpr:
 		return tc.CheckArrayIndexExpr(e)
@@ -318,6 +346,16 @@ func (tc *TypeChecker) CheckUnaryExpr(expr *ast.UnaryExpr) Type {
 }
 
 func (tc *TypeChecker) CheckFuncCallExpr(expr *ast.FuncCallExpr) Type {
+	// A call whose callee is a variant access (`Maybe.Some(5)`) is sum-type
+	// construction, not an ordinary function call: its type arguments are inferred
+	// by unifying the payload slots against the arguments.
+	if member, ok := expr.Func.(*ast.StructMemberExpr); ok {
+		expected := tc.expectedType
+		if oneofType, ok := tc.CheckExpr(member.Struct).(OneofType); ok {
+			tc.expectedType = expected
+			return tc.checkVariantConstruction(oneofType, member.Member.Value, expr.Args)
+		}
+	}
 	funcType := tc.CheckExpr(expr.Func)
 	if funcType == nil {
 		return nil
@@ -342,6 +380,120 @@ func (tc *TypeChecker) CheckFuncCallExpr(expr *ast.FuncCallExpr) Type {
 		}
 	}
 	return ft.ReturnType
+}
+
+// checkVariantAccess type checks a bare variant access `Oneof.Variant`. A
+// payload-free variant is a complete value of the sum type; a variant with a
+// payload yields its constructor as a function type (its payload slots as
+// parameters, the sum type as the result). For a generic sum type, a payload-free
+// variant cannot have its type arguments inferred here, so its arguments must be
+// determinable — until bidirectional checking lands, that means only non-generic
+// payload-free variants type check standalone.
+func (tc *TypeChecker) checkVariantAccess(oneof OneofType, variantName string) Type {
+	expected := tc.expectedType
+	tc.expectedType = nil
+	payload, ok := oneof.Variants[variantName]
+	if !ok {
+		tc.Err(fmt.Sprintf("%s is not a variant of sum type %s", variantName, oneof.Name))
+		return nil
+	}
+	if len(payload) == 0 {
+		if len(oneof.TypeParams) > 0 {
+			subst := make(map[string]Type)
+			if !tc.seedSubstFromExpected(oneof, expected, subst) {
+				tc.Err(fmt.Sprintf("cannot infer type arguments for payload-free variant %s.%s; an explicit annotation is required", oneof.Name, variantName))
+				return nil
+			}
+			return tc.instantiateOneof(oneof, subst)
+		}
+		return oneof
+	}
+	return FuncType{ReturnType: oneof, ParamTypes: payload}
+}
+
+// checkVariantConstruction type checks a variant construction `Oneof.Variant(args)`.
+// The argument count must match the variant's payload arity; for a generic sum type
+// the type arguments are inferred by unifying each payload slot against the
+// corresponding argument, and every parameter must be determined.
+func (tc *TypeChecker) checkVariantConstruction(oneof OneofType, variantName string, args []ast.Expr) Type {
+	expected := tc.expectedType
+	tc.expectedType = nil
+	payload, ok := oneof.Variants[variantName]
+	if !ok {
+		tc.Err(fmt.Sprintf("%s is not a variant of sum type %s", variantName, oneof.Name))
+		return nil
+	}
+	if len(args) != len(payload) {
+		tc.Err(fmt.Sprintf("variant %s.%s expects %d argument(s), got %d", oneof.Name, variantName, len(payload), len(args)))
+		return nil
+	}
+	subst := make(map[string]Type)
+	tc.seedSubstFromExpected(oneof, expected, subst)
+	for i, arg := range args {
+		argType := tc.CheckExpr(arg)
+		if argType == nil {
+			return nil
+		}
+		if !unify(payload[i], argType, subst) {
+			tc.Err(fmt.Sprintf("argument %d to variant %s.%s type mismatch: expected %s, found %s", i+1, oneof.Name, variantName, substitute(payload[i], subst), argType))
+			return nil
+		}
+	}
+	if len(oneof.TypeParams) == 0 {
+		return oneof
+	}
+	return tc.instantiateOneof(oneof, subst)
+}
+
+// seedSubstFromExpected fills a substitution map with type arguments taken from an
+// expected sum-type instantiation, letting a generic variant construction obtain
+// the arguments its payload cannot determine (e.g. the E of `Result.Ok(5)` or both
+// arguments of `Maybe.None`). It reports true when the expected type is a matching
+// instantiation of the same generic sum type (same name and parameter arity) that
+// carries concrete type arguments, populating one entry per type parameter.
+func (tc *TypeChecker) seedSubstFromExpected(oneof OneofType, expected Type, subst map[string]Type) bool {
+	exp, ok := expected.(OneofType)
+	if !ok {
+		return false
+	}
+	if exp.Name != oneof.Name || len(exp.TypeArgs) != len(oneof.TypeParams) {
+		return false
+	}
+	for i, param := range oneof.TypeParams {
+		subst[param] = exp.TypeArgs[i]
+	}
+	return true
+}
+
+// instantiateOneof builds a concrete instantiation of a generic sum type from an
+// inferred substitution, requiring every type parameter to be determined and
+// substituting each variant's payload slots. On an underdetermined parameter it
+// reports an error and returns nil.
+func (tc *TypeChecker) instantiateOneof(oneof OneofType, subst map[string]Type) Type {
+	typeArgs := make([]Type, 0, len(oneof.TypeParams))
+	for _, param := range oneof.TypeParams {
+		arg, ok := subst[param]
+		if !ok {
+			tc.Err(fmt.Sprintf("cannot infer type argument %s for sum type %s", param, oneof.Name))
+			return nil
+		}
+		typeArgs = append(typeArgs, arg)
+	}
+	variants := make(map[string][]Type, len(oneof.Variants))
+	for name, slots := range oneof.Variants {
+		substituted := make([]Type, len(slots))
+		for i, slot := range slots {
+			substituted[i] = substitute(slot, subst)
+		}
+		variants[name] = substituted
+	}
+	return OneofType{
+		Name:         oneof.Name,
+		Variants:     variants,
+		VariantOrder: oneof.VariantOrder,
+		TypeParams:   oneof.TypeParams,
+		TypeArgs:     typeArgs,
+	}
 }
 
 func (tc *TypeChecker) CheckStructLiteralExpr(expr *ast.StructLiteralExpr) Type {
@@ -424,7 +576,16 @@ func (tc *TypeChecker) instantiateFromSubst(template StructType, subst map[strin
 }
 
 func (tc *TypeChecker) CheckStructMemberExpr(expr *ast.StructMemberExpr) Type {
+	expected := tc.expectedType
 	structTypeValue := tc.CheckExpr(expr.Struct)
+	// A member access whose base is a sum type names a variant constructor, e.g.
+	// `Maybe.Some` or `Maybe.None`. A payload-free variant is a complete value
+	// here; a variant with payload is constructed via a call (handled in
+	// CheckFuncCallExpr), so accessing it uncalled yields its constructor signature.
+	if oneofType, ok := structTypeValue.(OneofType); ok {
+		tc.expectedType = expected
+		return tc.checkVariantAccess(oneofType, expr.Member.Value)
+	}
 	// Auto-deref: `p.field` and `p.method()` transparently work through a pointer
 	// to a struct, so member access never requires an explicit `p^.field`.
 	if ptr, ok := structTypeValue.(PointerType); ok {

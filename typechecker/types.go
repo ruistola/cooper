@@ -209,6 +209,45 @@ func (s StructType) Equals(other Type) bool {
 	return true
 }
 
+// OneofType represents a user-defined sum type (tagged union). Each variant maps
+// to its ordered list of positional payload slot types (empty for a payload-free
+// variant). Like a struct it is nominal by Name and, for a generic instantiation,
+// by TypeArgs; TypeParams records the declared binders of a generic template.
+type OneofType struct {
+	Name         string
+	Variants     map[string][]Type
+	VariantOrder []string // declaration order of the variant names
+	TypeParams   []string
+	TypeArgs     []Type
+}
+
+func (o OneofType) String() string {
+	if len(o.TypeArgs) == 0 {
+		return o.Name
+	}
+	args := ""
+	for i, a := range o.TypeArgs {
+		if i > 0 {
+			args += " "
+		}
+		args += a.String()
+	}
+	return fmt.Sprintf("%s %s", o.Name, args)
+}
+
+func (o OneofType) Equals(other Type) bool {
+	ot, ok := other.(OneofType)
+	if !ok || o.Name != ot.Name || len(o.TypeArgs) != len(ot.TypeArgs) {
+		return false
+	}
+	for i, a := range o.TypeArgs {
+		if !a.Equals(ot.TypeArgs[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 // TypeParamType is a reference to a bound type parameter (e.g. `T` inside
 // `struct Box T { value: T }`). It is a placeholder that substitution replaces
 // with a concrete argument type at instantiation. Two type parameters are equal
@@ -264,6 +303,23 @@ func substitute(t Type, subst map[string]Type) Type {
 			members[name] = substitute(m, subst)
 		}
 		return StructType{Name: ty.Name, Members: members, TypeParams: ty.TypeParams, TypeArgs: args}
+	case OneofType:
+		if len(ty.TypeArgs) == 0 {
+			return ty
+		}
+		args := make([]Type, len(ty.TypeArgs))
+		for i, a := range ty.TypeArgs {
+			args[i] = substitute(a, subst)
+		}
+		variants := make(map[string][]Type, len(ty.Variants))
+		for name, payload := range ty.Variants {
+			slots := make([]Type, len(payload))
+			for i, slot := range payload {
+				slots[i] = substitute(slot, subst)
+			}
+			variants[name] = slots
+		}
+		return OneofType{Name: ty.Name, Variants: variants, VariantOrder: ty.VariantOrder, TypeParams: ty.TypeParams, TypeArgs: args}
 	default:
 		return t
 	}

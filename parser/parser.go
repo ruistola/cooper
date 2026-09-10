@@ -71,6 +71,7 @@ var (
 		lexer.NIL,
 		lexer.RETURN,
 		lexer.STRUCT,
+		lexer.ONEOF,
 		lexer.TRUE,
 		lexer.USE,
 	}
@@ -344,6 +345,8 @@ func (p *parser) parseStmt() ast.Stmt {
 		return p.parseReturnStmt()
 	case lexer.STRUCT:
 		return p.parseStructDeclStmt()
+	case lexer.ONEOF:
+		return p.parseOneofDeclStmt()
 	case lexer.USE:
 		return p.parseUseDeclStmt()
 	default:
@@ -503,6 +506,37 @@ func (p *parser) parseTailExpr(head ast.Expr, rbp int) ast.Expr {
 // -----------------
 
 func (p *parser) parseTypeExpr() ast.TypeExpr {
+	// A type expression is a spine of atoms applied by juxtaposition, e.g.
+	// `Map string i32`. The first atom is the constructor; any following atoms are
+	// arguments. Postfix `[]`/`^` bind tighter than application (each atom absorbs
+	// its own postfix) and application does not reapply postfix afterwards, so a
+	// compound result must be parenthesised (`(Map string i32)[]`).
+	head := p.parseTypeAtom()
+	if !p.nextStartsTypeAtom() {
+		return head
+	}
+	args := []ast.TypeExpr{}
+	for p.nextStartsTypeAtom() {
+		args = append(args, p.parseTypeAtom())
+	}
+	return &ast.TypeApplicationExpr{Constructor: head, Args: args}
+}
+
+// nextStartsTypeAtom reports whether the next token can begin a type atom, i.e. a
+// juxtaposition argument. Identifiers, parenthesised/tuple types, and `func` types
+// qualify; anything else terminates an application spine.
+func (p *parser) nextStartsTypeAtom() bool {
+	switch p.peek().Type {
+	case lexer.IDENTIFIER, lexer.OPEN_PAREN, lexer.FUNC:
+		return true
+	default:
+		return false
+	}
+}
+
+// parseTypeAtom parses a single primary type (named, parenthesised/tuple/unit, or
+// function type) together with its own trailing postfix `[]`/`^` constructors.
+func (p *parser) parseTypeAtom() ast.TypeExpr {
 	var t ast.TypeExpr
 	if p.peek().Type == lexer.OPEN_PAREN {
 		// Parenthesised type: unit `()`, a grouped type `(T)` (collapses to T),
@@ -719,6 +753,13 @@ func (p *parser) parseFuncDeclStmt() *ast.FuncDeclStmt {
 	}
 	p.consume(lexer.FUNC)
 	name := p.consume(lexer.IDENTIFIER).Value
+	// Optional method-local type-parameter binders follow the name by
+	// juxtaposition, e.g. `func map T U (...)`. Receiver type parameters (for
+	// methods) are bound separately by the receiver pattern.
+	typeParams := make([]string, 0)
+	for p.peek().Type == lexer.IDENTIFIER {
+		typeParams = append(typeParams, p.consume(lexer.IDENTIFIER).Value)
+	}
 	p.consume(lexer.OPEN_PAREN)
 	params := make([]*ast.TypedIdent, 0)
 	for p.peek().Type != lexer.CLOSE_PAREN {
@@ -747,6 +788,7 @@ func (p *parser) parseFuncDeclStmt() *ast.FuncDeclStmt {
 	return &ast.FuncDeclStmt{
 		Receiver:   receiver,
 		Name:       name,
+		TypeParams: typeParams,
 		Parameters: params,
 		ReturnType: returnType,
 		Body:       funcBody,
@@ -763,6 +805,13 @@ func (p *parser) parseFuncDeclStmt() *ast.FuncDeclStmt {
 func (p *parser) parseStructDeclStmt() *ast.StructDeclStmt {
 	p.consume(lexer.STRUCT)
 	name := p.consume(lexer.IDENTIFIER).Value
+	// Optional type-parameter binders follow the name by juxtaposition, e.g.
+	// `struct Map K V {`. They bind per-declaration; validity (PascalCase, no
+	// duplicates) is checked later, not here.
+	typeParams := make([]string, 0)
+	for p.peek().Type == lexer.IDENTIFIER {
+		typeParams = append(typeParams, p.consume(lexer.IDENTIFIER).Value)
+	}
 	p.consume(lexer.OPEN_CURLY)
 	p.parenStack = append(p.parenStack, lexer.OPEN_CURLY)
 	members := make([]*ast.TypedIdent, 0)
@@ -783,8 +832,64 @@ func (p *parser) parseStructDeclStmt() *ast.StructDeclStmt {
 	}
 	p.consume(lexer.CLOSE_CURLY)
 	return &ast.StructDeclStmt{
-		Name:    name,
-		Members: members,
+		Name:       name,
+		TypeParams: typeParams,
+		Members:    members,
+	}
+}
+
+// A sum type (tagged union) declaration.
+// Example:
+//
+//	oneof Result T E {
+//	  Ok(T),
+//	  Err(E),
+//	}
+//
+// Type-parameter binders follow the name by juxtaposition (as with structs). Each
+// variant is a name optionally followed by a parenthesised, comma-delimited list
+// of positional payload slot types. Variants are comma-separated with an optional
+// trailing comma.
+func (p *parser) parseOneofDeclStmt() *ast.OneofDeclStmt {
+	p.consume(lexer.ONEOF)
+	name := p.consume(lexer.IDENTIFIER).Value
+	typeParams := make([]string, 0)
+	for p.peek().Type == lexer.IDENTIFIER {
+		typeParams = append(typeParams, p.consume(lexer.IDENTIFIER).Value)
+	}
+	p.consume(lexer.OPEN_CURLY)
+	p.parenStack = append(p.parenStack, lexer.OPEN_CURLY)
+	variants := make([]*ast.VariantDef, 0)
+	for p.peek().Type != lexer.CLOSE_CURLY {
+		variantName := p.consume(lexer.IDENTIFIER).Value
+		payload := make([]ast.TypeExpr, 0)
+		if p.peek().Type == lexer.OPEN_PAREN {
+			p.consume(lexer.OPEN_PAREN)
+			for p.peek().Type != lexer.CLOSE_PAREN {
+				payload = append(payload, p.parseTypeExpr())
+				if p.peek().Type == lexer.COMMA {
+					p.consume(lexer.COMMA)
+				} else {
+					break
+				}
+			}
+			p.consume(lexer.CLOSE_PAREN)
+		}
+		variants = append(variants, &ast.VariantDef{
+			Name:    variantName,
+			Payload: payload,
+		})
+		if p.peek().Type == lexer.COMMA {
+			p.consume(lexer.COMMA)
+		} else {
+			break
+		}
+	}
+	p.consume(lexer.CLOSE_CURLY)
+	return &ast.OneofDeclStmt{
+		Name:       name,
+		TypeParams: typeParams,
+		Variants:   variants,
 	}
 }
 

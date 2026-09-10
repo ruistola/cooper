@@ -46,6 +46,18 @@ type UnitTypeExpr struct{}
 
 func (t *UnitTypeExpr) typeExpr() {}
 
+// TypeApplicationExpr applies a type constructor to one or more argument types by
+// juxtaposition, e.g. `Map string i32` or `Box i32`. The spine is parsed
+// left-associatively; the constructor is typically a NamedTypeExpr and arity is
+// checked later by the resolver. Postfix `[]`/`^` bind tighter than application,
+// so compound arguments must be parenthesised (`(Map string i32)[]`).
+type TypeApplicationExpr struct {
+	Constructor TypeExpr
+	Args        []TypeExpr
+}
+
+func (t *TypeApplicationExpr) typeExpr() {}
+
 // TupleTypeExpr is an anonymous product type `(A, B, ...)` with at least two
 // elements. A single-element parenthesised type collapses to that element and a
 // zero-element one is the unit type, so those never produce a TupleTypeExpr.
@@ -167,6 +179,7 @@ type TypedIdent struct {
 type FuncDeclStmt struct {
 	Receiver   *TypedIdent // nil for free functions, non-nil for methods
 	Name       string
+	TypeParams []string // type-parameter binders declared after the name (free functions and methods)
 	Parameters []*TypedIdent
 	ReturnType TypeExpr
 	Body       *BlockStmt
@@ -182,11 +195,37 @@ type FuncCallExpr struct {
 func (e *FuncCallExpr) expr() {}
 
 type StructDeclStmt struct {
-	Name    string
-	Members []*TypedIdent
+	Name       string
+	TypeParams []string // type-parameter binders declared after the name, e.g. `struct Map K V`
+	Members    []*TypedIdent
 }
 
 func (s *StructDeclStmt) stmt() {}
+
+// OneofDeclStmt declares a sum type (tagged union), e.g.
+//
+//	oneof Result T E {
+//	  Ok(T),
+//	  Err(E),
+//	}
+//
+// Type-parameter binders follow the name by juxtaposition (as with structs). Each
+// variant carries an ordered, comma-delimited list of positional payload slots;
+// an empty list (`None`) is a payload-free variant.
+type OneofDeclStmt struct {
+	Name       string
+	TypeParams []string
+	Variants   []*VariantDef
+}
+
+func (s *OneofDeclStmt) stmt() {}
+
+// VariantDef is a single variant of a sum type: a name plus an ordered list of
+// positional payload slot types (empty for a payload-free variant).
+type VariantDef struct {
+	Name    string
+	Payload []TypeExpr
+}
 
 type StructLiteralExpr struct {
 	Struct  Expr

@@ -42,6 +42,8 @@ func (sa *SemanticAnalyzer) analyzeStmt(stmt ast.Stmt) {
 		sa.analyzeVarDeclStmt(s)
 	case *ast.StructDeclStmt:
 		sa.analyzeStructDeclStmt(s)
+	case *ast.OneofDeclStmt:
+		sa.analyzeOneofDeclStmt(s)
 	case *ast.FuncDeclStmt:
 		sa.analyzeFuncDeclStmt(s)
 	case *ast.IfStmt:
@@ -79,6 +81,12 @@ func (sa *SemanticAnalyzer) analyzeVarDeclStmt(stmt *ast.VarDeclStmt) {
 func (sa *SemanticAnalyzer) analyzeStructDeclStmt(stmt *ast.StructDeclStmt) {
 	// Struct declaration semantic rules can be added here
 	// For example: checking for recursive struct definitions, etc.
+}
+
+// analyzeOneofDeclStmt analyzes sum type declarations for semantic rules.
+func (sa *SemanticAnalyzer) analyzeOneofDeclStmt(stmt *ast.OneofDeclStmt) {
+	// Sum type declaration semantic rules can be added here
+	// (e.g. exhaustiveness prerequisites once pattern matching lands).
 }
 
 // analyzeFuncDeclStmt analyzes function and method declarations for semantic rules

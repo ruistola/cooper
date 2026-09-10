@@ -10,6 +10,7 @@ type Scope struct {
 	parent      *Scope
 	vars        map[string]Type
 	structTypes map[string]StructType
+	oneofTypes  map[string]OneofType
 	funcs       map[string]FuncType
 	// methods maps a receiver struct type name to that type's method set
 	// (method name -> bound signature, i.e. parameters excluding the receiver).
@@ -22,6 +23,7 @@ func NewScope(parent *Scope) *Scope {
 		parent:      parent,
 		vars:        make(map[string]Type),
 		structTypes: make(map[string]StructType),
+		oneofTypes:  make(map[string]OneofType),
 		funcs:       make(map[string]FuncType),
 		methods:     make(map[string]map[string]FuncType),
 	}
@@ -57,6 +59,22 @@ func (s *Scope) LookupStructType(name string) (StructType, bool) {
 		return s.parent.LookupStructType(name)
 	}
 	return StructType{}, false
+}
+
+// DefineOneofType adds a sum type to the current scope
+func (s *Scope) DefineOneofType(name string, oneofType OneofType) {
+	s.oneofTypes[name] = oneofType
+}
+
+// LookupOneofType looks up a sum type, checking parent scopes if not found
+func (s *Scope) LookupOneofType(name string) (OneofType, bool) {
+	if oneofType, ok := s.oneofTypes[name]; ok {
+		return oneofType, true
+	}
+	if s.parent != nil {
+		return s.parent.LookupOneofType(name)
+	}
+	return OneofType{}, false
 }
 
 // DefineFunc adds a function to the current scope
@@ -104,10 +122,36 @@ func namedTypeName(typeExpr ast.TypeExpr) string {
 	if ptr, ok := typeExpr.(*ast.PointerTypeExpr); ok {
 		typeExpr = ptr.UnderlyingType
 	}
+	// A generic receiver such as `(m: Map K V)` is a type application; it keys on
+	// its constructor's name (Map), the same name the struct type registers under.
+	if app, ok := typeExpr.(*ast.TypeApplicationExpr); ok {
+		typeExpr = app.Constructor
+	}
 	if named, ok := typeExpr.(*ast.NamedTypeExpr); ok {
 		return named.TypeName
 	}
 	return ""
+}
+
+// receiverPatternParams returns the type-parameter names a method receiver binds
+// by the receiver-pattern rule: the bare-identifier arguments of a generic
+// receiver such as `(m: Map K V)`, which introduces fresh parameters K and V. A
+// non-generic receiver binds none. A pointer receiver is unwrapped first.
+func receiverPatternParams(typeExpr ast.TypeExpr) []string {
+	if ptr, ok := typeExpr.(*ast.PointerTypeExpr); ok {
+		typeExpr = ptr.UnderlyingType
+	}
+	app, ok := typeExpr.(*ast.TypeApplicationExpr)
+	if !ok {
+		return nil
+	}
+	names := make([]string, 0, len(app.Args))
+	for _, arg := range app.Args {
+		if named, ok := arg.(*ast.NamedTypeExpr); ok {
+			names = append(names, named.TypeName)
+		}
+	}
+	return names
 }
 
 // underlyingStruct unwraps a single level of pointer indirection and reports the
@@ -134,6 +178,10 @@ type Resolver struct {
 	currScope  *Scope         // Current scope during traversal
 	scopes     map[any]*Scope // Maps AST nodes to their scopes
 	primitives map[string]Type
+	// typeParams holds the type-parameter names in scope for the declaration
+	// currently being resolved (a struct's or function's binders). A NamedTypeExpr
+	// matching one of these resolves to a TypeParamType rather than a concrete type.
+	typeParams map[string]bool
 }
 
 // NewResolver creates a new resolver with built-in primitive types
@@ -164,14 +212,30 @@ func (r *Resolver) Err(msg string) {
 func (r *Resolver) ResolveType(typeExpr ast.TypeExpr) Type {
 	switch e := typeExpr.(type) {
 	case *ast.NamedTypeExpr:
+		if r.typeParams[e.TypeName] {
+			return TypeParamType{Name: e.TypeName}
+		}
 		if prim, ok := r.primitives[e.TypeName]; ok {
 			return prim
 		}
 		if structType, ok := r.currScope.LookupStructType(e.TypeName); ok {
+			if len(structType.TypeParams) > 0 {
+				r.Err(fmt.Sprintf("generic type %s requires %d type argument(s)", e.TypeName, len(structType.TypeParams)))
+				return nil
+			}
 			return structType
+		}
+		if oneofType, ok := r.currScope.LookupOneofType(e.TypeName); ok {
+			if len(oneofType.TypeParams) > 0 {
+				r.Err(fmt.Sprintf("generic type %s requires %d type argument(s)", e.TypeName, len(oneofType.TypeParams)))
+				return nil
+			}
+			return oneofType
 		}
 		r.Err(fmt.Sprintf("undefined type: %s", e.TypeName))
 		return nil
+	case *ast.TypeApplicationExpr:
+		return r.resolveTypeApplication(e)
 	case *ast.ArrayTypeExpr:
 		elemType := r.ResolveType(e.UnderlyingType)
 		if elemType == nil {
@@ -219,6 +283,77 @@ func (r *Resolver) ResolveType(typeExpr ast.TypeExpr) Type {
 	}
 }
 
+// resolveTypeApplication resolves a juxtaposition type application such as
+// `Box i32` or `Map string i32`. The constructor must name a generic struct whose
+// declared arity matches the number of arguments; the result is an instantiation
+// whose members have every type parameter substituted for the concrete arguments.
+func (r *Resolver) resolveTypeApplication(e *ast.TypeApplicationExpr) Type {
+	named, ok := e.Constructor.(*ast.NamedTypeExpr)
+	if !ok {
+		r.Err("type application requires a named type constructor")
+		return nil
+	}
+	// The constructor names either a generic struct or a generic sum type; both
+	// are instantiated by substituting the arguments for the declared parameters.
+	var typeParams []string
+	if structType, ok := r.currScope.LookupStructType(named.TypeName); ok {
+		typeParams = structType.TypeParams
+	} else if oneofType, ok := r.currScope.LookupOneofType(named.TypeName); ok {
+		typeParams = oneofType.TypeParams
+	} else {
+		r.Err(fmt.Sprintf("undefined generic type: %s", named.TypeName))
+		return nil
+	}
+	if len(typeParams) == 0 {
+		r.Err(fmt.Sprintf("type %s is not generic and takes no type arguments", named.TypeName))
+		return nil
+	}
+	if len(e.Args) != len(typeParams) {
+		r.Err(fmt.Sprintf("generic type %s expects %d type argument(s), got %d", named.TypeName, len(typeParams), len(e.Args)))
+		return nil
+	}
+	argTypes := make([]Type, 0, len(e.Args))
+	for _, arg := range e.Args {
+		argType := r.ResolveType(arg)
+		if argType == nil {
+			return nil
+		}
+		argTypes = append(argTypes, argType)
+	}
+	subst := make(map[string]Type, len(typeParams))
+	for i, name := range typeParams {
+		subst[name] = argTypes[i]
+	}
+	if structType, ok := r.currScope.LookupStructType(named.TypeName); ok {
+		members := make(map[string]Type, len(structType.Members))
+		for name, m := range structType.Members {
+			members[name] = substitute(m, subst)
+		}
+		return StructType{
+			Name:       structType.Name,
+			Members:    members,
+			TypeParams: structType.TypeParams,
+			TypeArgs:   argTypes,
+		}
+	}
+	oneofType, _ := r.currScope.LookupOneofType(named.TypeName)
+	variants := make(map[string][]Type, len(oneofType.Variants))
+	for name, payload := range oneofType.Variants {
+		slots := make([]Type, len(payload))
+		for i, slot := range payload {
+			slots[i] = substitute(slot, subst)
+		}
+		variants[name] = slots
+	}
+	return OneofType{
+		Name:         oneofType.Name,
+		Variants:     variants,
+		VariantOrder: oneofType.VariantOrder,
+		TypeParams:   oneofType.TypeParams,
+		TypeArgs:     argTypes,
+	}
+}
+
 // Resolve performs symbol resolution on the module
 func Resolve(module *ast.BlockStmt) *ResolvedModule {
 	resolver := NewResolver()
@@ -242,6 +377,8 @@ func (r *Resolver) resolveStmt(stmt ast.Stmt) {
 		r.resolveVarDeclStmt(s)
 	case *ast.StructDeclStmt:
 		r.resolveStructDeclStmt(s)
+	case *ast.OneofDeclStmt:
+		r.resolveOneofDeclStmt(s)
 	case *ast.FuncDeclStmt:
 		r.resolveFuncDeclStmt(s)
 	case *ast.IfStmt:
@@ -287,6 +424,12 @@ func (r *Resolver) resolveStructDeclStmt(stmt *ast.StructDeclStmt) {
 	}
 	members := make(map[string]Type)
 	memberNames := make(map[string]bool)
+	// The struct's binders are in scope while resolving its members, so a member
+	// typed `T` resolves to a TypeParamType rather than an undefined type.
+	r.typeParams = make(map[string]bool, len(stmt.TypeParams))
+	for _, tp := range stmt.TypeParams {
+		r.typeParams[tp] = true
+	}
 	for _, member := range stmt.Members {
 		if memberNames[member.Name] {
 			r.Err(fmt.Sprintf("duplicate member %s in struct %s", member.Name, stmt.Name))
@@ -298,14 +441,73 @@ func (r *Resolver) resolveStructDeclStmt(stmt *ast.StructDeclStmt) {
 			memberNames[member.Name] = true
 		}
 	}
+	r.typeParams = nil
 	r.currScope.DefineStructType(stmt.Name, StructType{
-		Name:    stmt.Name,
-		Members: members,
+		Name:       stmt.Name,
+		Members:    members,
+		TypeParams: stmt.TypeParams,
+	})
+}
+
+// resolveOneofDeclStmt resolves a sum type declaration
+func (r *Resolver) resolveOneofDeclStmt(stmt *ast.OneofDeclStmt) {
+	if _, ok := r.currScope.LookupOneofType(stmt.Name); ok {
+		r.Err(fmt.Sprintf("redeclared sum type %s in the same scope", stmt.Name))
+		return
+	}
+	if _, ok := r.currScope.LookupStructType(stmt.Name); ok {
+		r.Err(fmt.Sprintf("sum type %s collides with a struct of the same name", stmt.Name))
+		return
+	}
+	// The type parameters are in scope while resolving variant payload slots.
+	r.typeParams = make(map[string]bool, len(stmt.TypeParams))
+	for _, tp := range stmt.TypeParams {
+		r.typeParams[tp] = true
+	}
+	variants := make(map[string][]Type, len(stmt.Variants))
+	order := make([]string, 0, len(stmt.Variants))
+	for _, variant := range stmt.Variants {
+		if _, ok := variants[variant.Name]; ok {
+			r.Err(fmt.Sprintf("duplicate variant %s in sum type %s", variant.Name, stmt.Name))
+			continue
+		}
+		slots := make([]Type, 0, len(variant.Payload))
+		for _, slotExpr := range variant.Payload {
+			slotType := r.ResolveType(slotExpr)
+			if slotType == nil {
+				continue
+			}
+			slots = append(slots, slotType)
+		}
+		variants[variant.Name] = slots
+		order = append(order, variant.Name)
+	}
+	r.typeParams = nil
+	r.currScope.DefineOneofType(stmt.Name, OneofType{
+		Name:         stmt.Name,
+		Variants:     variants,
+		VariantOrder: order,
+		TypeParams:   stmt.TypeParams,
 	})
 }
 
 // resolveFuncDeclStmt resolves a function or method declaration
 func (r *Resolver) resolveFuncDeclStmt(stmt *ast.FuncDeclStmt) {
+	// The declaration's type parameters are in scope for its receiver, parameter,
+	// and return types. A free function or method binds them after the name; a
+	// method additionally binds receiver-pattern parameters (the bare-identifier
+	// arguments of a generic receiver like `(m: Map K V)`).
+	r.typeParams = make(map[string]bool)
+	for _, tp := range stmt.TypeParams {
+		r.typeParams[tp] = true
+	}
+	if stmt.Receiver != nil {
+		for _, name := range receiverPatternParams(stmt.Receiver.Type) {
+			r.typeParams[name] = true
+		}
+	}
+	defer func() { r.typeParams = nil }()
+
 	var returnType Type = UnitType{}
 	if stmt.ReturnType != nil {
 		returnType = r.ResolveType(stmt.ReturnType)
@@ -422,8 +624,10 @@ func (r *Resolver) resolveExpr(expr ast.Expr) {
 		// Check if identifier exists in symbol table
 		if _, ok := r.currScope.LookupVarType(e.Value); !ok {
 			if _, ok := r.currScope.LookupStructType(e.Value); !ok {
-				if _, ok := r.currScope.LookupFunc(e.Value); !ok {
-					r.Err(fmt.Sprintf("undefined identifier: %s", e.Value))
+				if _, ok := r.currScope.LookupOneofType(e.Value); !ok {
+					if _, ok := r.currScope.LookupFunc(e.Value); !ok {
+						r.Err(fmt.Sprintf("undefined identifier: %s", e.Value))
+					}
 				}
 			}
 		}

@@ -460,8 +460,26 @@ func (r *Resolver) resolveExpr(expr ast.Expr) {
 		r.resolveExpr(e.AssignedValue)
 	case *ast.VarDeclAssignExpr:
 		r.resolveExpr(e.AssignedValue)
-		// Define the variable in current scope (type inference will happen in type checker)
-		// For now, we can't determine the type without the type checker
+		// The binding's type is inferred later by the type checker; define it now
+		// with a placeholder so subsequent references resolve during this pass.
+		r.currScope.DefineVar(e.Name, UnknownType{})
+	case *ast.TupleDeclAssignExpr:
+		r.resolveExpr(e.AssignedValue)
+		// A type annotation (from a `let`) fixes each element type up front;
+		// otherwise the type checker infers them from the initializer.
+		var declaredElems []Type
+		if e.Type != nil {
+			if tupleType, ok := r.ResolveType(e.Type).(TupleType); ok {
+				declaredElems = tupleType.ElementTypes
+			}
+		}
+		for i, name := range e.Names {
+			if i < len(declaredElems) {
+				r.currScope.DefineVar(name, declaredElems[i])
+			} else {
+				r.currScope.DefineVar(name, UnknownType{})
+			}
+		}
 	default:
 		r.Err(fmt.Sprintf("unknown expression type: %T", expr))
 	}

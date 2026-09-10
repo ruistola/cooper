@@ -8,6 +8,20 @@ type Type interface {
 	Equals(other Type) bool
 }
 
+// UnknownType is a placeholder used by the resolver for variables whose type is
+// inferred later by the type checker (walrus and tuple-destructuring bindings). It
+// exists only to satisfy identifier-existence checks during the resolve pass and is
+// overwritten with the concrete type during type checking, so it never participates
+// in a real equality check.
+type UnknownType struct{}
+
+func (t UnknownType) String() string { return "<unknown>" }
+
+func (t UnknownType) Equals(other Type) bool {
+	_, ok := other.(UnknownType)
+	return ok
+}
+
 // UnitType represents the unit type ()
 type UnitType struct{}
 

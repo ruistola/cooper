@@ -707,6 +707,46 @@ func TestTupleExprTrailingComma(t *testing.T) {
 	}
 }
 
+// A walrus with a parenthesised pattern parses as a tuple-destructuring binding.
+func TestTupleWalrusDestructureParsing(t *testing.T) {
+	decl, ok := exprOf(t, "(a, b) := pair()").(*ast.TupleDeclAssignExpr)
+	if !ok {
+		t.Fatalf("expected *ast.TupleDeclAssignExpr, got %T", exprOf(t, "(a, b) := pair()"))
+	}
+	if len(decl.Names) != 2 || decl.Names[0] != "a" || decl.Names[1] != "b" {
+		t.Fatalf("expected names [a b], got %v", decl.Names)
+	}
+	if decl.Type != nil {
+		t.Fatalf("expected no type annotation on a walrus pattern, got %T", decl.Type)
+	}
+}
+
+// `let (a, b): (A, B) = rhs` carries the type annotation on the `let`, not the pattern.
+func TestLetDestructureParsing(t *testing.T) {
+	module := Parse(lexer.Tokenize(`let (a, b): (i32, string) = pair()`))
+	stmt, ok := module.Statements[0].(*ast.ExpressionStmt)
+	if !ok {
+		t.Fatalf("expected *ast.ExpressionStmt, got %T", module.Statements[0])
+	}
+	decl, ok := stmt.Expr.(*ast.TupleDeclAssignExpr)
+	if !ok {
+		t.Fatalf("expected *ast.TupleDeclAssignExpr, got %T", stmt.Expr)
+	}
+	if len(decl.Names) != 2 {
+		t.Fatalf("expected 2 names, got %d", len(decl.Names))
+	}
+	if _, ok := decl.Type.(*ast.TupleTypeExpr); !ok {
+		t.Fatalf("expected a *ast.TupleTypeExpr annotation, got %T", decl.Type)
+	}
+}
+
+// A non-identifier element in a walrus pattern is rejected.
+func TestNonIdentDestructurePatternRejected(t *testing.T) {
+	if !parsePanics("(a, 1) := pair()") {
+		t.Fatal("expected a non-identifier pattern element to be rejected")
+	}
+}
+
 // `(A, B)` is a tuple type; `(A)` collapses to A; `()` is the unit type.
 func TestTupleTypeExprParsing(t *testing.T) {
 	cases := []struct {

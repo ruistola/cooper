@@ -178,6 +178,8 @@ func (sa *SemanticAnalyzer) analyzeExpr(expr ast.Expr) {
 		sa.analyzeExpr(e.AssignedValue)
 	case *ast.VarDeclAssignExpr:
 		sa.analyzeExpr(e.AssignedValue)
+	case *ast.TupleDeclAssignExpr:
+		sa.analyzeExpr(e.AssignedValue)
 	default:
 		sa.Err(fmt.Sprintf("unknown expression type for semantic analysis: %T", expr))
 	}

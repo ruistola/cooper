@@ -245,6 +245,8 @@ func (tc *TypeChecker) CheckExpr(expr ast.Expr) Type {
 		return tc.CheckAssignExpr(e)
 	case *ast.VarDeclAssignExpr:
 		return tc.CheckVarDeclAssignExpr(e)
+	case *ast.TupleDeclAssignExpr:
+		return tc.CheckTupleDeclAssignExpr(e)
 	default:
 		tc.Err(fmt.Sprintf("unknown expression type: %T", expr))
 		return nil
@@ -515,4 +517,36 @@ func (tc *TypeChecker) CheckVarDeclAssignExpr(expr *ast.VarDeclAssignExpr) Type 
 	assignedValueType := tc.CheckExpr(expr.AssignedValue)
 	tc.currScope.DefineVar(expr.Name, assignedValueType)
 	return assignedValueType
+}
+
+// CheckTupleDeclAssignExpr type checks a tuple-destructuring binding. The
+// initializer must be a tuple whose arity matches the pattern. When the `let` form
+// carries a type annotation, each element is checked against the declared type the
+// resolver bound; otherwise each name is inferred from the corresponding element.
+func (tc *TypeChecker) CheckTupleDeclAssignExpr(expr *ast.TupleDeclAssignExpr) Type {
+	rhsType := tc.CheckExpr(expr.AssignedValue)
+	if rhsType == nil {
+		return nil
+	}
+	tupleType, ok := rhsType.(TupleType)
+	if !ok {
+		tc.Err(fmt.Sprintf("cannot destructure non-tuple value of type %s", rhsType))
+		return nil
+	}
+	if len(tupleType.ElementTypes) != len(expr.Names) {
+		tc.Err(fmt.Sprintf("destructuring pattern binds %d names but value has %d elements", len(expr.Names), len(tupleType.ElementTypes)))
+		return nil
+	}
+	for i, name := range expr.Names {
+		elemType := tupleType.ElementTypes[i]
+		if expr.Type != nil {
+			declaredType, ok := tc.currScope.LookupVarType(name)
+			if ok && !declaredType.Equals(elemType) {
+				tc.Err(fmt.Sprintf("type mismatch: %s declared as %s but bound to %s", name, declaredType, elemType))
+			}
+		} else {
+			tc.currScope.DefineVar(name, elemType)
+		}
+	}
+	return rhsType
 }

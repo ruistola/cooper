@@ -256,6 +256,20 @@ type VarDeclAssignExpr struct {
 
 func (e *VarDeclAssignExpr) expr() {}
 
+// TupleDeclAssignExpr destructures a tuple-typed initializer, declaring each name
+// and binding it to the corresponding element positionally. It backs both the
+// walrus form `(a, b) := rhs` (Type nil; element types inferred from rhs) and the
+// `let (a, b): (A, B) = rhs` form (Type set; element types taken from and checked
+// against the annotation). Patterns are untyped: any type annotation lives on the
+// enclosing `let`, never inside the pattern.
+type TupleDeclAssignExpr struct {
+	Names         []string
+	Type          TypeExpr
+	AssignedValue Expr
+}
+
+func (e *TupleDeclAssignExpr) expr() {}
+
 type ReturnStmt struct {
 	Expr Expr
 }

@@ -607,21 +607,47 @@ func (p *parser) parseFuncTypeExpr() *ast.FuncTypeExpr {
 	}
 }
 
-func (p *parser) parseDeclAssignExpr(expr ast.Expr) *ast.VarDeclAssignExpr {
+func (p *parser) parseDeclAssignExpr(expr ast.Expr) ast.Expr {
 	p.consume(lexer.COLON_EQUALS)
-	if identExpr, ok := expr.(*ast.IdentExpr); ok {
+	switch lhs := expr.(type) {
+	case *ast.IdentExpr:
 		return &ast.VarDeclAssignExpr{
-			Name:          identExpr.Value,
+			Name:          lhs.Value,
 			AssignedValue: p.parseExpr(0),
 		}
-	} else {
-		panic("The left-hand side of a declaration-assignment must be an identifier")
+	case *ast.TupleLiteralExpr:
+		// A parenthesised group on the left of `:=` is a destructuring pattern.
+		// The pattern is untyped: every element must be a bare identifier.
+		return &ast.TupleDeclAssignExpr{
+			Names:         patternNames(lhs),
+			AssignedValue: p.parseExpr(0),
+		}
+	default:
+		panic("The left-hand side of a declaration-assignment must be an identifier or a tuple pattern")
 	}
 }
 
-// A variable declaration with a let- statement.
-func (p *parser) parseVarDeclStmt() *ast.VarDeclStmt {
+// patternNames extracts the binding names from a parenthesised destructuring
+// pattern, requiring every element to be a bare identifier.
+func patternNames(pattern *ast.TupleLiteralExpr) []string {
+	names := make([]string, 0, len(pattern.Elements))
+	for _, elem := range pattern.Elements {
+		ident, ok := elem.(*ast.IdentExpr)
+		if !ok {
+			panic("a destructuring pattern may only bind identifiers")
+		}
+		names = append(names, ident.Value)
+	}
+	return names
+}
+
+// A variable declaration with a let- statement. Binds either a single name
+// (`let x: T = e`) or a tuple-destructuring pattern (`let (a, b): (A, B) = e`).
+func (p *parser) parseVarDeclStmt() ast.Stmt {
 	p.consume(lexer.LET)
+	if p.peek().Type == lexer.OPEN_PAREN {
+		return &ast.ExpressionStmt{Expr: p.parseLetDestructure()}
+	}
 	varName := p.consume(lexer.IDENTIFIER).Value
 	var varType ast.TypeExpr = nil
 	if p.peek().Type == lexer.COLON {
@@ -640,6 +666,38 @@ func (p *parser) parseVarDeclStmt() *ast.VarDeclStmt {
 			Type: varType,
 		},
 		InitVal: initVal,
+	}
+}
+
+// parseLetDestructure parses the pattern-bearing form of a `let`, i.e.
+// `let (a, b): (A, B) = rhs`. The pattern is a parenthesised identifier list; a
+// type annotation is optional and, when present, lives on the `let` rather than
+// inside the pattern. An initializer is mandatory: a pattern has nothing to bind
+// without one.
+func (p *parser) parseLetDestructure() *ast.TupleDeclAssignExpr {
+	p.consume(lexer.OPEN_PAREN)
+	names := make([]string, 0, 2)
+	for p.peek().Type != lexer.CLOSE_PAREN {
+		names = append(names, p.consume(lexer.IDENTIFIER).Value)
+		if p.peek().Type == lexer.COMMA {
+			p.consume(lexer.COMMA)
+		} else {
+			break
+		}
+	}
+	p.consume(lexer.CLOSE_PAREN)
+	var patternType ast.TypeExpr
+	if p.peek().Type == lexer.COLON {
+		p.consume(lexer.COLON)
+		patternType = p.parseTypeExpr()
+	}
+	p.consume(lexer.EQUALS)
+	initVal := p.parseExpr(0)
+	p.consumeStatementTerminator()
+	return &ast.TupleDeclAssignExpr{
+		Names:         names,
+		Type:          patternType,
+		AssignedValue: initVal,
 	}
 }
 

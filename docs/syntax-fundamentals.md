@@ -108,3 +108,54 @@ func process(req: Request, timeout: Duration): Response { ... }
 // Function type expression — types only
 type ProcessFn = func(Request, Duration): Response
 ```
+
+### Tuple types
+
+A tuple is an anonymous, structural product type written as a parenthesised list of
+element types. Tuples are compared by shape: arity and element types, positionally.
+
+```
+let pair: (i32, string)          // a 2-tuple
+let nested: (i32, (string, bool)) // tuples nest
+let pairs: (i32, string)[]       // array of tuples
+```
+
+Parentheses without a comma are not tuples: `(T)` collapses to `T` (grouping) and
+`()` is the unit type. A tuple therefore always has at least two elements. Tuple
+_values_ mirror the type syntax: `(1, "a")` is a `(i32, string)`.
+
+## Variable bindings
+
+A `let` binds a name with an explicit type, an optional initializer, or both:
+
+```
+let count: i32 = 0
+let name: string        // declared, no initializer
+```
+
+The walrus operator `:=` declares and initializes in one step, inferring the type
+from the right-hand side (no annotation is permitted):
+
+```
+total := 0              // total: i32
+label := "start"        // label: string
+```
+
+### Destructuring
+
+A parenthesised pattern binds the elements of a tuple positionally. Patterns are
+untyped — any type annotation lives on the enclosing `let`, never inside the
+pattern. The pattern's arity must match the tuple's.
+
+```
+(x, y) := origin()              // types inferred from the result tuple
+let (a, b): (i32, string) = row // annotation on the `let`, checked element-wise
+```
+
+The same pattern shape reassigns existing variables when the left of `=` is a tuple
+of assignable targets:
+
+```
+(a, b) = (b, a)                 // positional reassignment
+```
+

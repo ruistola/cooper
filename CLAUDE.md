@@ -15,6 +15,7 @@ Detailed language design notes live in `docs/`:
 * [Methods and Functions](docs/methods-and-functions.md) — method declaration, receivers, struct declarations
 * [Memory and the Object Model](docs/memory-and-object-model.md) — value layout, storage, pointers, inert nil
 * [Generics](docs/generics.md) — juxtaposition type application, type-parameter binders, generic methods
+* [Type System](docs/type-system.md) — nominal/structural, no subtyping/variance, constraints as sugar over passing
 
 ## Coding guidelines
 

@@ -173,17 +173,145 @@ func (f FuncType) Equals(other Type) bool {
 type StructType struct {
 	Name    string
 	Members map[string]Type
+	// TypeParams are the declared type-parameter names for a generic struct
+	// template, e.g. ["T"] for `struct Box T`. Empty for non-generic structs.
+	TypeParams []string
+	// TypeArgs are the concrete arguments of an instantiation, e.g. [i32] for
+	// `Box i32`. Empty for a template or a non-generic struct. A struct is
+	// nominal by Name and TypeArgs, so `Box i32` and `Box string` differ.
+	TypeArgs []Type
 }
 
 func (s StructType) String() string {
-	return s.Name
+	if len(s.TypeArgs) == 0 {
+		return s.Name
+	}
+	args := ""
+	for i, a := range s.TypeArgs {
+		if i > 0 {
+			args += " "
+		}
+		args += a.String()
+	}
+	return fmt.Sprintf("%s %s", s.Name, args)
 }
 
 func (s StructType) Equals(other Type) bool {
-	if o, ok := other.(StructType); ok {
-		return s.Name == o.Name
+	o, ok := other.(StructType)
+	if !ok || s.Name != o.Name || len(s.TypeArgs) != len(o.TypeArgs) {
+		return false
 	}
-	return false
+	for i, a := range s.TypeArgs {
+		if !a.Equals(o.TypeArgs[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// TypeParamType is a reference to a bound type parameter (e.g. `T` inside
+// `struct Box T { value: T }`). It is a placeholder that substitution replaces
+// with a concrete argument type at instantiation. Two type parameters are equal
+// only when they share a name, but a template is never compared directly against
+// an instantiation: substitution eliminates every TypeParamType first.
+type TypeParamType struct {
+	Name string
+}
+
+func (t TypeParamType) String() string { return t.Name }
+
+func (t TypeParamType) Equals(other Type) bool {
+	o, ok := other.(TypeParamType)
+	return ok && t.Name == o.Name
+}
+
+// substitute replaces every TypeParamType in t according to the given mapping of
+// parameter name to concrete argument type, returning the resulting type. Types
+// with no type parameters are returned structurally unchanged.
+func substitute(t Type, subst map[string]Type) Type {
+	switch ty := t.(type) {
+	case TypeParamType:
+		if replacement, ok := subst[ty.Name]; ok {
+			return replacement
+		}
+		return ty
+	case ArrayType:
+		return ArrayType{ElemType: substitute(ty.ElemType, subst)}
+	case PointerType:
+		return PointerType{ElemType: substitute(ty.ElemType, subst)}
+	case TupleType:
+		elems := make([]Type, len(ty.ElementTypes))
+		for i, e := range ty.ElementTypes {
+			elems[i] = substitute(e, subst)
+		}
+		return TupleType{ElementTypes: elems}
+	case FuncType:
+		params := make([]Type, len(ty.ParamTypes))
+		for i, p := range ty.ParamTypes {
+			params[i] = substitute(p, subst)
+		}
+		return FuncType{ReturnType: substitute(ty.ReturnType, subst), ParamTypes: params}
+	case StructType:
+		if len(ty.TypeArgs) == 0 {
+			return ty
+		}
+		args := make([]Type, len(ty.TypeArgs))
+		for i, a := range ty.TypeArgs {
+			args[i] = substitute(a, subst)
+		}
+		members := make(map[string]Type, len(ty.Members))
+		for name, m := range ty.Members {
+			members[name] = substitute(m, subst)
+		}
+		return StructType{Name: ty.Name, Members: members, TypeParams: ty.TypeParams, TypeArgs: args}
+	default:
+		return t
+	}
+}
+
+// unify matches a template type (which may contain TypeParamType placeholders)
+// against a concrete type, recording each parameter's inferred binding in subst.
+// It reports false on a structural mismatch or a parameter bound inconsistently to
+// two different types. Concrete-vs-concrete positions are compared with Equals.
+func unify(template Type, concrete Type, subst map[string]Type) bool {
+	switch tt := template.(type) {
+	case TypeParamType:
+		if bound, ok := subst[tt.Name]; ok {
+			return bound.Equals(concrete)
+		}
+		subst[tt.Name] = concrete
+		return true
+	case ArrayType:
+		ct, ok := concrete.(ArrayType)
+		return ok && unify(tt.ElemType, ct.ElemType, subst)
+	case PointerType:
+		ct, ok := concrete.(PointerType)
+		return ok && unify(tt.ElemType, ct.ElemType, subst)
+	case TupleType:
+		ct, ok := concrete.(TupleType)
+		if !ok || len(tt.ElementTypes) != len(ct.ElementTypes) {
+			return false
+		}
+		for i := range tt.ElementTypes {
+			if !unify(tt.ElementTypes[i], ct.ElementTypes[i], subst) {
+				return false
+			}
+		}
+		return true
+	case FuncType:
+		ct, ok := concrete.(FuncType)
+		if !ok || len(tt.ParamTypes) != len(ct.ParamTypes) {
+			return false
+		}
+		for i := range tt.ParamTypes {
+			if !unify(tt.ParamTypes[i], ct.ParamTypes[i], subst) {
+				return false
+			}
+		}
+		return unify(tt.ReturnType, ct.ReturnType, subst)
+	default:
+		return template.Equals(concrete)
+	}
 }
 
 // Type utility functions

@@ -352,6 +352,11 @@ func (tc *TypeChecker) CheckStructLiteralExpr(expr *ast.StructLiteralExpr) Type 
 		tc.Err(fmt.Sprintf("expression of type %s cannot be used as a struct", structTypeValue))
 		return nil
 	}
+	// A generic struct is constructed against its template (type parameters
+	// unbound); each member assignment constrains the type arguments, which are
+	// inferred by unifying the member's template type against the assigned value.
+	isGeneric := len(structType.TypeParams) > 0 && len(structType.TypeArgs) == 0
+	subst := make(map[string]Type)
 	assignedMembers := make(map[string]bool, len(structType.Members))
 	for memberName := range structType.Members {
 		assignedMembers[memberName] = false
@@ -370,7 +375,12 @@ func (tc *TypeChecker) CheckStructLiteralExpr(expr *ast.StructLiteralExpr) Type 
 		if assignedValueType == nil {
 			continue
 		}
-		if !assigneType.Equals(assignedValueType) {
+		if isGeneric {
+			if !unify(assigneType, assignedValueType, subst) {
+				tc.Err(fmt.Sprintf("cannot assign %s to member %s of generic struct %s", assignedValueType, member.Name, structType.Name))
+				continue
+			}
+		} else if !assigneType.Equals(assignedValueType) {
 			tc.Err(fmt.Sprintf("cannot assign %s to %s of struct member %s", assignedValueType, assigneType, member.Name))
 			continue
 		}
@@ -381,7 +391,36 @@ func (tc *TypeChecker) CheckStructLiteralExpr(expr *ast.StructLiteralExpr) Type 
 			tc.Err(fmt.Sprintf("struct member %s is not assigned a value", memberName))
 		}
 	}
+	if isGeneric {
+		return tc.instantiateFromSubst(structType, subst)
+	}
 	return structType
+}
+
+// instantiateFromSubst builds a concrete instantiation of a generic struct
+// template from an inferred parameter substitution, requiring every type
+// parameter to have been determined by the member assignments. On an
+// underdetermined parameter it reports an error and returns the template unchanged.
+func (tc *TypeChecker) instantiateFromSubst(template StructType, subst map[string]Type) Type {
+	typeArgs := make([]Type, 0, len(template.TypeParams))
+	for _, param := range template.TypeParams {
+		arg, ok := subst[param]
+		if !ok {
+			tc.Err(fmt.Sprintf("cannot infer type argument %s for generic struct %s", param, template.Name))
+			return template
+		}
+		typeArgs = append(typeArgs, arg)
+	}
+	members := make(map[string]Type, len(template.Members))
+	for name, m := range template.Members {
+		members[name] = substitute(m, subst)
+	}
+	return StructType{
+		Name:       template.Name,
+		Members:    members,
+		TypeParams: template.TypeParams,
+		TypeArgs:   typeArgs,
+	}
 }
 
 func (tc *TypeChecker) CheckStructMemberExpr(expr *ast.StructMemberExpr) Type {

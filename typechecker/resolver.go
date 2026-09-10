@@ -104,10 +104,36 @@ func namedTypeName(typeExpr ast.TypeExpr) string {
 	if ptr, ok := typeExpr.(*ast.PointerTypeExpr); ok {
 		typeExpr = ptr.UnderlyingType
 	}
+	// A generic receiver such as `(m: Map K V)` is a type application; it keys on
+	// its constructor's name (Map), the same name the struct type registers under.
+	if app, ok := typeExpr.(*ast.TypeApplicationExpr); ok {
+		typeExpr = app.Constructor
+	}
 	if named, ok := typeExpr.(*ast.NamedTypeExpr); ok {
 		return named.TypeName
 	}
 	return ""
+}
+
+// receiverPatternParams returns the type-parameter names a method receiver binds
+// by the receiver-pattern rule: the bare-identifier arguments of a generic
+// receiver such as `(m: Map K V)`, which introduces fresh parameters K and V. A
+// non-generic receiver binds none. A pointer receiver is unwrapped first.
+func receiverPatternParams(typeExpr ast.TypeExpr) []string {
+	if ptr, ok := typeExpr.(*ast.PointerTypeExpr); ok {
+		typeExpr = ptr.UnderlyingType
+	}
+	app, ok := typeExpr.(*ast.TypeApplicationExpr)
+	if !ok {
+		return nil
+	}
+	names := make([]string, 0, len(app.Args))
+	for _, arg := range app.Args {
+		if named, ok := arg.(*ast.NamedTypeExpr); ok {
+			names = append(names, named.TypeName)
+		}
+	}
+	return names
 }
 
 // underlyingStruct unwraps a single level of pointer indirection and reports the
@@ -134,6 +160,10 @@ type Resolver struct {
 	currScope  *Scope         // Current scope during traversal
 	scopes     map[any]*Scope // Maps AST nodes to their scopes
 	primitives map[string]Type
+	// typeParams holds the type-parameter names in scope for the declaration
+	// currently being resolved (a struct's or function's binders). A NamedTypeExpr
+	// matching one of these resolves to a TypeParamType rather than a concrete type.
+	typeParams map[string]bool
 }
 
 // NewResolver creates a new resolver with built-in primitive types
@@ -164,14 +194,23 @@ func (r *Resolver) Err(msg string) {
 func (r *Resolver) ResolveType(typeExpr ast.TypeExpr) Type {
 	switch e := typeExpr.(type) {
 	case *ast.NamedTypeExpr:
+		if r.typeParams[e.TypeName] {
+			return TypeParamType{Name: e.TypeName}
+		}
 		if prim, ok := r.primitives[e.TypeName]; ok {
 			return prim
 		}
 		if structType, ok := r.currScope.LookupStructType(e.TypeName); ok {
+			if len(structType.TypeParams) > 0 {
+				r.Err(fmt.Sprintf("generic type %s requires %d type argument(s)", e.TypeName, len(structType.TypeParams)))
+				return nil
+			}
 			return structType
 		}
 		r.Err(fmt.Sprintf("undefined type: %s", e.TypeName))
 		return nil
+	case *ast.TypeApplicationExpr:
+		return r.resolveTypeApplication(e)
 	case *ast.ArrayTypeExpr:
 		elemType := r.ResolveType(e.UnderlyingType)
 		if elemType == nil {
@@ -216,6 +255,53 @@ func (r *Resolver) ResolveType(typeExpr ast.TypeExpr) Type {
 	default:
 		r.Err(fmt.Sprintf("unknown type: %T", typeExpr))
 		return nil
+	}
+}
+
+// resolveTypeApplication resolves a juxtaposition type application such as
+// `Box i32` or `Map string i32`. The constructor must name a generic struct whose
+// declared arity matches the number of arguments; the result is an instantiation
+// whose members have every type parameter substituted for the concrete arguments.
+func (r *Resolver) resolveTypeApplication(e *ast.TypeApplicationExpr) Type {
+	named, ok := e.Constructor.(*ast.NamedTypeExpr)
+	if !ok {
+		r.Err("type application requires a named type constructor")
+		return nil
+	}
+	structType, ok := r.currScope.LookupStructType(named.TypeName)
+	if !ok {
+		r.Err(fmt.Sprintf("undefined generic type: %s", named.TypeName))
+		return nil
+	}
+	if len(structType.TypeParams) == 0 {
+		r.Err(fmt.Sprintf("type %s is not generic and takes no type arguments", named.TypeName))
+		return nil
+	}
+	if len(e.Args) != len(structType.TypeParams) {
+		r.Err(fmt.Sprintf("generic type %s expects %d type argument(s), got %d", named.TypeName, len(structType.TypeParams), len(e.Args)))
+		return nil
+	}
+	argTypes := make([]Type, 0, len(e.Args))
+	for _, arg := range e.Args {
+		argType := r.ResolveType(arg)
+		if argType == nil {
+			return nil
+		}
+		argTypes = append(argTypes, argType)
+	}
+	subst := make(map[string]Type, len(structType.TypeParams))
+	for i, name := range structType.TypeParams {
+		subst[name] = argTypes[i]
+	}
+	members := make(map[string]Type, len(structType.Members))
+	for name, m := range structType.Members {
+		members[name] = substitute(m, subst)
+	}
+	return StructType{
+		Name:       structType.Name,
+		Members:    members,
+		TypeParams: structType.TypeParams,
+		TypeArgs:   argTypes,
 	}
 }
 
@@ -287,6 +373,12 @@ func (r *Resolver) resolveStructDeclStmt(stmt *ast.StructDeclStmt) {
 	}
 	members := make(map[string]Type)
 	memberNames := make(map[string]bool)
+	// The struct's binders are in scope while resolving its members, so a member
+	// typed `T` resolves to a TypeParamType rather than an undefined type.
+	r.typeParams = make(map[string]bool, len(stmt.TypeParams))
+	for _, tp := range stmt.TypeParams {
+		r.typeParams[tp] = true
+	}
 	for _, member := range stmt.Members {
 		if memberNames[member.Name] {
 			r.Err(fmt.Sprintf("duplicate member %s in struct %s", member.Name, stmt.Name))
@@ -298,14 +390,31 @@ func (r *Resolver) resolveStructDeclStmt(stmt *ast.StructDeclStmt) {
 			memberNames[member.Name] = true
 		}
 	}
+	r.typeParams = nil
 	r.currScope.DefineStructType(stmt.Name, StructType{
-		Name:    stmt.Name,
-		Members: members,
+		Name:       stmt.Name,
+		Members:    members,
+		TypeParams: stmt.TypeParams,
 	})
 }
 
 // resolveFuncDeclStmt resolves a function or method declaration
 func (r *Resolver) resolveFuncDeclStmt(stmt *ast.FuncDeclStmt) {
+	// The declaration's type parameters are in scope for its receiver, parameter,
+	// and return types. A free function or method binds them after the name; a
+	// method additionally binds receiver-pattern parameters (the bare-identifier
+	// arguments of a generic receiver like `(m: Map K V)`).
+	r.typeParams = make(map[string]bool)
+	for _, tp := range stmt.TypeParams {
+		r.typeParams[tp] = true
+	}
+	if stmt.Receiver != nil {
+		for _, name := range receiverPatternParams(stmt.Receiver.Type) {
+			r.typeParams[name] = true
+		}
+	}
+	defer func() { r.typeParams = nil }()
+
 	var returnType Type = UnitType{}
 	if stmt.ReturnType != nil {
 		returnType = r.ResolveType(stmt.ReturnType)

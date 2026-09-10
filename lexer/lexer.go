@@ -68,6 +68,7 @@ const (
 	OR
 	RETURN
 	STRUCT
+	ONEOF
 	THEN
 	TRUE
 	USE
@@ -146,6 +147,7 @@ var reservedKeywords map[string]TokenType = map[string]TokenType{
 	"or":     OR,
 	"return": RETURN,
 	"struct": STRUCT,
+	"oneof":  ONEOF,
 	"then":   THEN,
 	"true":   TRUE,
 	"use":    USE,
@@ -203,6 +205,7 @@ var tokenDisplayNames map[TokenType]string = map[TokenType]string{
 	// Reserved keywords
 	LET:    "let",
 	STRUCT: "struct",
+	ONEOF:  "oneof",
 	TRUE:   "true",
 	FALSE:  "false",
 	FUNC:   "func",

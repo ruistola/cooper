@@ -202,6 +202,31 @@ type StructDeclStmt struct {
 
 func (s *StructDeclStmt) stmt() {}
 
+// OneofDeclStmt declares a sum type (tagged union), e.g.
+//
+//	oneof Result T E {
+//	  Ok(T),
+//	  Err(E),
+//	}
+//
+// Type-parameter binders follow the name by juxtaposition (as with structs). Each
+// variant carries an ordered, comma-delimited list of positional payload slots;
+// an empty list (`None`) is a payload-free variant.
+type OneofDeclStmt struct {
+	Name       string
+	TypeParams []string
+	Variants   []*VariantDef
+}
+
+func (s *OneofDeclStmt) stmt() {}
+
+// VariantDef is a single variant of a sum type: a name plus an ordered list of
+// positional payload slot types (empty for a payload-free variant).
+type VariantDef struct {
+	Name    string
+	Payload []TypeExpr
+}
+
 type StructLiteralExpr struct {
 	Struct  Expr
 	Members []*MemberAssignExpr

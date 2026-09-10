@@ -71,6 +71,7 @@ var (
 		lexer.NIL,
 		lexer.RETURN,
 		lexer.STRUCT,
+		lexer.ONEOF,
 		lexer.TRUE,
 		lexer.USE,
 	}
@@ -344,6 +345,8 @@ func (p *parser) parseStmt() ast.Stmt {
 		return p.parseReturnStmt()
 	case lexer.STRUCT:
 		return p.parseStructDeclStmt()
+	case lexer.ONEOF:
+		return p.parseOneofDeclStmt()
 	case lexer.USE:
 		return p.parseUseDeclStmt()
 	default:
@@ -832,6 +835,61 @@ func (p *parser) parseStructDeclStmt() *ast.StructDeclStmt {
 		Name:       name,
 		TypeParams: typeParams,
 		Members:    members,
+	}
+}
+
+// A sum type (tagged union) declaration.
+// Example:
+//
+//	oneof Result T E {
+//	  Ok(T),
+//	  Err(E),
+//	}
+//
+// Type-parameter binders follow the name by juxtaposition (as with structs). Each
+// variant is a name optionally followed by a parenthesised, comma-delimited list
+// of positional payload slot types. Variants are comma-separated with an optional
+// trailing comma.
+func (p *parser) parseOneofDeclStmt() *ast.OneofDeclStmt {
+	p.consume(lexer.ONEOF)
+	name := p.consume(lexer.IDENTIFIER).Value
+	typeParams := make([]string, 0)
+	for p.peek().Type == lexer.IDENTIFIER {
+		typeParams = append(typeParams, p.consume(lexer.IDENTIFIER).Value)
+	}
+	p.consume(lexer.OPEN_CURLY)
+	p.parenStack = append(p.parenStack, lexer.OPEN_CURLY)
+	variants := make([]*ast.VariantDef, 0)
+	for p.peek().Type != lexer.CLOSE_CURLY {
+		variantName := p.consume(lexer.IDENTIFIER).Value
+		payload := make([]ast.TypeExpr, 0)
+		if p.peek().Type == lexer.OPEN_PAREN {
+			p.consume(lexer.OPEN_PAREN)
+			for p.peek().Type != lexer.CLOSE_PAREN {
+				payload = append(payload, p.parseTypeExpr())
+				if p.peek().Type == lexer.COMMA {
+					p.consume(lexer.COMMA)
+				} else {
+					break
+				}
+			}
+			p.consume(lexer.CLOSE_PAREN)
+		}
+		variants = append(variants, &ast.VariantDef{
+			Name:    variantName,
+			Payload: payload,
+		})
+		if p.peek().Type == lexer.COMMA {
+			p.consume(lexer.COMMA)
+		} else {
+			break
+		}
+	}
+	p.consume(lexer.CLOSE_CURLY)
+	return &ast.OneofDeclStmt{
+		Name:       name,
+		TypeParams: typeParams,
+		Variants:   variants,
 	}
 }
 

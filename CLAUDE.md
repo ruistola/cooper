@@ -14,6 +14,7 @@ Detailed language design notes live in `docs/`:
 * [Polymorphism and Interfaces](docs/polymorphism-and-interfaces.md) — why Cooper has no interface construct
 * [Methods and Functions](docs/methods-and-functions.md) — method declaration, receivers, struct declarations
 * [Memory and the Object Model](docs/memory-and-object-model.md) — value layout, storage, pointers, inert nil
+* [Generics](docs/generics.md) — juxtaposition type application, type-parameter binders, generic methods
 
 ## Coding guidelines
 

@@ -119,24 +119,65 @@ pointers for free, so no spare-pointer-bit tagging or per-dereference masking is
 tag bits only help conservative collectors, which this is not. A dynamic check, where one
 is ever required, is a region/page test against allocator metadata, not a pointer flag.
 
-The sketch, for posterity:
+### The model
 
 * A pointer into manually managed memory has a distinct type, written `NoGC T` as sugar
   for a non-collected `T^` (`NoGC` is pointer-only, so the caret is implicit). Assigning
   between `T^` and `NoGC T` is a type error in either direction: the two live in
   different regions and the language keeps them apart.
-* `NoGC` is **infectious**: a pointer reached through an unmanaged structure is itself
-  unmanaged, without re-annotation. A data type is declared once and used in either
-  region — no managed/unmanaged twin structs, and no forcing every field to be spelled
-  `NoGC` (the way `Maybe Foo` would not force every field to be `Maybe`).
-* The load-bearing rule: **an unmanaged region may not hold a managed pointer.** This is
-  what makes arenas fully opaque to the collector — it never has to trace into unmanaged
-  memory — and it is enforced by the infectious typing above. Freeing unmanaged memory is
-  the programmer's responsibility.
-* This static membrane is what powers build-mode conveniences: a `--no-gc` mode is a pure
-  compile-time reachability check (does the program contain any managed allocation?), and
-  a debug `--trace-leaks` mode reuses the collector's reachability machinery to report
-  `NoGC` pointers that became unreachable without being freed.
+* A data type is declared **once** and used in either region. Region is not written into
+  the declaration; it is an implicit parameter, inferred from where a value is allocated
+  and propagated from there — much as a type parameter is. So `struct Node { next: Node^ }`
+  needs no annotation, and there are no managed/unmanaged twin structs.
+* Region is **infectious**: inside an unmanaged value, every interior pointer is itself
+  unmanaged, on both read and write. Reading `p.next` through a `NoGC Node` yields a
+  `NoGC Node`; storing a managed pointer into that same field is rejected. These are one
+  rule seen from two sides.
+* The load-bearing invariant: **an unmanaged region may not hold a managed pointer.** This
+  is what keeps arenas fully opaque to the collector — it never has to trace into
+  unmanaged memory — and it is exactly the infectious typing above. Freeing unmanaged
+  memory is the programmer's responsibility.
+
+### Where the boundary bites — and where it does not
+
+The point of GC is to let the programmer think about the problem, not the allocations, and
+`NoGC` keeps that property for the overwhelming majority of code. The membrane is felt only
+at one specific place: a **durable, stored reference that crosses regions**. Everything
+short of that is unremarkable.
+
+* **Functions are region-polymorphic.** Logic written against `T^` runs unchanged on a
+  `NoGC T`, in place, with no copy. A function that only reads or mutates through its
+  pointer parameters never mentions regions at all — each parameter simply carries its
+  own. So the bulk of the code — the "business logic proper" — is written once and is
+  region-agnostic.
+* **Locals, arguments, and returns are free** in the common case. Taking a pointer into an
+  arena, passing it around, dereferencing it, computing with it: none of this asks the
+  programmer to stop and reason about memory strategy.
+* **The friction is durable cross-region storage:** trying to keep a managed pointer inside
+  an arena object (forbidden outright), or a `NoGC` pointer inside a managed object that
+  outlives the arena (permitted, but it can dangle — ordinary manual-memory
+  responsibility). When two regions must refer to each other durably, the idioms are
+  **handles/indices** (an `i32` index into a side table — invisible to the GC, no dangling
+  pointer, a stale index is a logic bug rather than memory corruption) and, more rarely,
+  an **explicit boundary copy** that deep-copies a subgraph from one region into the other.
+
+### Surprises to expect
+
+* *Coming from a GC-only language:* a `NoGC` pointer is **not** kept alive by the
+  collector. Dropping the last managed reference to an arena does not free the arena, and
+  holding an arena pointer does not keep the arena alive — that lifetime is yours. The
+  reflex "if I can still reach it, it's safe" does not hold across the membrane.
+* *Coming from a manual-memory language:* you **cannot** freely stash a managed pointer
+  into arena memory to "wire things together," and you cannot cast between the two pointer
+  worlds. Cross-region wiring goes through indices or copies by design, not by pointer.
+  The two regions are islands connected by handles and copies, never by shared pointers.
+
+### Tooling this unlocks
+
+Because the membrane is entirely static, build modes fall out of it: a `--no-gc` mode is a
+pure compile-time reachability check (does the program contain any managed allocation at
+all?), and a debug `--trace-leaks` mode reuses the collector's reachability machinery to
+report `NoGC` pointers that became unreachable without being freed.
 
 Also left open, to be settled alongside a build-mode concept: whether compiler flags
 should let the programmer trade safety for speed per build — panic-on-nil-dereference and

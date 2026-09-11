@@ -121,9 +121,80 @@ variants; the type checker enforces variant existence, payload arity, argument t
 and argument inference. An unknown variant, a wrong arity, a mismatched payload, or an
 under-determined instantiation are all **type errors**.
 
+## Deconstruction with `match`
+
+A sum-type value is taken apart with `match`, which tests a scrutinee against a set
+of arms and runs the one whose pattern matches. The scrutinee expression is
+separated from the arm body by the **`with`** keyword, mirroring `if … then`:
+
+```
+match shape with {
+  Shape.Circle(r) => area := pi * r * r
+  Shape.Rect(w, h) => area := w * h
+}
+```
+
+The `with` keyword also removes the ambiguity between the arm-body braces and a
+struct literal in the scrutinee: the scrutinee is parsed up to `with`, and the body
+always begins at the following `{`.
+
+### Arms and patterns
+
+Each arm is `Pattern => body`. The fat arrow `=>` separates the two because a
+pattern is a richer sublanguage than a struct key — it carries its own parentheses
+and, in future, its own colons — and `=>` is the established pattern-matching
+separator. There is no fallthrough, so the C `switch` colon does not apply.
+
+A pattern is one of:
+
+* a **type-qualified variant pattern** `Type.Variant` or `Type.Variant(binders…)`,
+  where each binder is a camelCase name that binds the corresponding positional
+  payload slot, or `_` to ignore that slot;
+* the **wildcard** `_`, a catch-all that matches any value and binds nothing.
+
+```
+Shape.Circle(r)      // binds r to the single payload slot
+Shape.Rect(w, _)     // binds w, ignores the second slot
+_                    // catch-all
+```
+
+Payload binders are scoped to their own arm: a name bound in one arm is not visible
+in another, and each binder takes the type of the slot it names.
+
+An arm body follows the same rule as an `if` branch: a single expression or
+statement, or a braced `{ block }`. Arms are separated by inferred newlines or
+explicit semicolons; a braced-block arm self-terminates. There are no commas.
+
+### Statement and expression forms
+
+Like `if`, `match` exists in two forms chosen by position. In statement position
+the arm bodies are statements whose values are discarded. In expression position
+the arm bodies are expressions whose types must unify, and that common type is the
+type of the whole `match`:
+
+```
+kind := match shape with {
+  Shape.Circle(r) => 1
+  Shape.Rect(w, h) => 2
+}
+```
+
+### Exhaustiveness
+
+A `match` must be **exhaustive** in both forms: the arms must cover every variant of
+the sum type, or end with a wildcard `_`. A match that leaves a variant unhandled
+without a wildcard is a type error. An exhaustive match whose every arm returns
+counts as returning on all paths, so it satisfies a function's return obligation.
+
+Pattern validity, binder arity, binder types, arm-type unification, and
+exhaustiveness are all **type errors**: the parser accepts the general form and the
+type checker enforces the rest.
+
 ## Deferred
 
 * **Named-field payloads**, tied to the anonymous-struct / `type` decision.
 * **Bare / unqualified variant forms** (writing `None` where a `Maybe` is expected),
   which depend on the `use` name-binding system; no mandatory leading-dot syntax.
-* **`match`** and exhaustiveness checking.
+* **Richer patterns**: nested sub-patterns, literal patterns, or-patterns (`A | B`),
+  guards (`if cond`), and `@`-bindings. The first iteration of `match` is flat.
+

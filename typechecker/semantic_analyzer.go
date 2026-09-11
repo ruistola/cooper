@@ -48,6 +48,11 @@ func (sa *SemanticAnalyzer) analyzeStmt(stmt ast.Stmt) {
 		sa.analyzeFuncDeclStmt(s)
 	case *ast.IfStmt:
 		sa.analyzeIfStmt(s)
+	case *ast.MatchStmt:
+		sa.analyzeExpr(s.Scrutinee)
+		for _, arm := range s.Arms {
+			sa.analyzeStmt(arm.Body)
+		}
 	case *ast.ForStmt:
 		sa.analyzeForStmt(s)
 	case *ast.ReturnStmt:
@@ -188,6 +193,11 @@ func (sa *SemanticAnalyzer) analyzeExpr(expr ast.Expr) {
 		sa.analyzeExpr(e.AssignedValue)
 	case *ast.TupleDeclAssignExpr:
 		sa.analyzeExpr(e.AssignedValue)
+	case *ast.MatchExpr:
+		sa.analyzeExpr(e.Scrutinee)
+		for _, arm := range e.Arms {
+			sa.analyzeExpr(arm.Body)
+		}
 	default:
 		sa.Err(fmt.Sprintf("unknown expression type for semantic analysis: %T", expr))
 	}
@@ -205,6 +215,16 @@ func (sa *SemanticAnalyzer) stmtReturns(stmt ast.Stmt) bool {
 			return false
 		}
 		return sa.stmtReturns(s.Then) && sa.stmtReturns(s.Else)
+	case *ast.MatchStmt:
+		// A match is exhaustive by the time semantic analysis runs (the type
+		// checker rejects non-exhaustive matches), so it returns in all paths
+		// exactly when every arm does.
+		if len(s.Arms) == 0 {
+			return false
+		}
+		return !slices.ContainsFunc(s.Arms, func(arm *ast.MatchStmtArm) bool {
+			return !sa.stmtReturns(arm.Body)
+		})
 	}
 	return false
 }

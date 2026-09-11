@@ -68,6 +68,7 @@ var (
 		lexer.FUNC,
 		lexer.IF,
 		lexer.LET,
+		lexer.MATCH,
 		lexer.NIL,
 		lexer.RETURN,
 		lexer.STRUCT,
@@ -341,6 +342,8 @@ func (p *parser) parseStmt() ast.Stmt {
 		return p.parseIfStmt()
 	case lexer.LET:
 		return p.parseVarDeclStmt()
+	case lexer.MATCH:
+		return p.parseMatchStmt()
 	case lexer.RETURN:
 		return p.parseReturnStmt()
 	case lexer.STRUCT:
@@ -439,6 +442,8 @@ func (p *parser) parseHeadExpr(token lexer.Token) ast.Expr {
 		return &ast.TupleLiteralExpr{Elements: elems}
 	case lexer.IF:
 		return p.parseIfExpr()
+	case lexer.MATCH:
+		return p.parseMatchExpr()
 	case lexer.OPEN_CURLY:
 		rhs := p.parseBlockExpr()
 		p.consume(lexer.CLOSE_CURLY)
@@ -965,6 +970,111 @@ func (p *parser) parseIfStmt() ast.Stmt {
 		Cond: cond,
 		Then: thenStmt,
 		Else: elseStmt,
+	}
+}
+
+// parsePattern parses a single flat match-arm pattern: the wildcard `_`, or a
+// type-qualified variant pattern `Type.Variant` optionally binding positional
+// payload slots as `Type.Variant(binder, ...)`. Each binder is a name or `_`.
+func (p *parser) parsePattern() ast.Pattern {
+	if p.peek().Type == lexer.IDENTIFIER && p.peek().Value == "_" {
+		p.consume(lexer.IDENTIFIER)
+		return &ast.WildcardPattern{}
+	}
+	typeName := p.consume(lexer.IDENTIFIER).Value
+	p.consume(lexer.DOT)
+	variant := p.consume(lexer.IDENTIFIER).Value
+	pattern := &ast.VariantPattern{
+		TypeName: typeName,
+		Variant:  variant,
+	}
+	if p.peek().Type == lexer.OPEN_PAREN {
+		p.consume(lexer.OPEN_PAREN)
+		for p.peek().Type != lexer.CLOSE_PAREN {
+			pattern.Binders = append(pattern.Binders, p.consume(lexer.IDENTIFIER).Value)
+			if p.peek().Type == lexer.COMMA {
+				p.consume(lexer.COMMA)
+			} else {
+				break
+			}
+		}
+		p.consume(lexer.CLOSE_PAREN)
+	}
+	return pattern
+}
+
+// Example:
+//
+//	match shape with {
+//	  Shape.Circle(r) => area := pi * r * r
+//	  _ => area := 0
+//	}
+//
+// Statement form: arm bodies are statements and produce no value.
+func (p *parser) parseMatchStmt() ast.Stmt {
+	p.consume(lexer.MATCH)
+	scrutinee := p.parseExpr(0)
+	p.consume(lexer.WITH)
+	p.consume(lexer.OPEN_CURLY)
+	arms := []*ast.MatchStmtArm{}
+	for p.peek().Type != lexer.CLOSE_CURLY && p.peek().Type != lexer.EOF {
+		if p.peek().Type == lexer.SEMICOLON {
+			p.consume()
+			continue
+		}
+		pattern := p.parsePattern()
+		p.consume(lexer.FAT_ARROW)
+		var body ast.Stmt
+		if p.peek().Type == lexer.OPEN_CURLY {
+			p.consume(lexer.OPEN_CURLY)
+			body = p.parseBlockStmt()
+			p.consume(lexer.CLOSE_CURLY)
+		} else {
+			body = p.parseStmt()
+		}
+		arms = append(arms, &ast.MatchStmtArm{Pattern: pattern, Body: body})
+	}
+	p.consume(lexer.CLOSE_CURLY)
+	return &ast.MatchStmt{
+		Scrutinee: scrutinee,
+		Arms:      arms,
+	}
+}
+
+// Expression form (MATCH already consumed by the head dispatch): arm bodies are
+// expressions and their types unify to the match's type.
+//
+//	let a = match shape with {
+//	  Shape.Circle(r) => pi * r * r
+//	  _ => 0
+//	}
+func (p *parser) parseMatchExpr() *ast.MatchExpr {
+	scrutinee := p.parseExpr(0)
+	p.consume(lexer.WITH)
+	p.consume(lexer.OPEN_CURLY)
+	arms := []*ast.MatchExprArm{}
+	for p.peek().Type != lexer.CLOSE_CURLY && p.peek().Type != lexer.EOF {
+		if p.peek().Type == lexer.SEMICOLON {
+			p.consume()
+			continue
+		}
+		pattern := p.parsePattern()
+		p.consume(lexer.FAT_ARROW)
+		var body ast.Expr
+		if p.peek().Type == lexer.OPEN_CURLY {
+			p.consume(lexer.OPEN_CURLY)
+			body = p.parseBlockExpr()
+			p.consume(lexer.CLOSE_CURLY)
+		} else {
+			body = p.parseExpr(0)
+		}
+		arms = append(arms, &ast.MatchExprArm{Pattern: pattern, Body: body})
+		p.consumeStatementTerminator()
+	}
+	p.consume(lexer.CLOSE_CURLY)
+	return &ast.MatchExpr{
+		Scrutinee: scrutinee,
+		Arms:      arms,
 	}
 }
 

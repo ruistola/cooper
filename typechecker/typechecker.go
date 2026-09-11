@@ -81,6 +81,8 @@ func (tc *TypeChecker) CheckStmt(stmt ast.Stmt) {
 		tc.CheckFuncDeclStmt(s)
 	case *ast.IfStmt:
 		tc.CheckIfStmt(s)
+	case *ast.MatchStmt:
+		tc.CheckMatchStmt(s)
 	case *ast.ForStmt:
 		tc.CheckForStmt(s)
 	case *ast.ReturnStmt:
@@ -181,6 +183,130 @@ func (tc *TypeChecker) CheckIfStmt(stmt *ast.IfStmt) {
 	}
 }
 
+// checkMatchArmPattern validates a single arm pattern against the scrutinee's sum
+// type and binds its payload slots in the current scope. It reports the covered
+// variant name (empty for a wildcard) and whether the pattern is the catch-all `_`.
+func (tc *TypeChecker) checkMatchArmPattern(oneof OneofType, pattern ast.Pattern) (string, bool) {
+	switch p := pattern.(type) {
+	case *ast.WildcardPattern:
+		return "", true
+	case *ast.VariantPattern:
+		if p.TypeName != oneof.Name {
+			tc.Err(fmt.Sprintf("pattern names sum type %s but the scrutinee has type %s", p.TypeName, oneof.Name))
+			return "", false
+		}
+		payload, ok := oneof.Variants[p.Variant]
+		if !ok {
+			tc.Err(fmt.Sprintf("%s is not a variant of sum type %s", p.Variant, oneof.Name))
+			return "", false
+		}
+		if len(p.Binders) != len(payload) {
+			tc.Err(fmt.Sprintf("variant pattern %s.%s binds %d slot(s) but the variant has %d", oneof.Name, p.Variant, len(p.Binders), len(payload)))
+			return p.Variant, false
+		}
+		for i, binder := range p.Binders {
+			if binder != "_" {
+				tc.currScope.DefineVar(binder, payload[i])
+			}
+		}
+		return p.Variant, false
+	default:
+		tc.Err(fmt.Sprintf("unsupported pattern type: %T", pattern))
+		return "", false
+	}
+}
+
+// checkMatchExhaustiveness reports an error unless the arms cover every variant of
+// the sum type, either explicitly or through a trailing wildcard `_`.
+func (tc *TypeChecker) checkMatchExhaustiveness(oneof OneofType, covered map[string]bool, hasWildcard bool) {
+	if hasWildcard {
+		return
+	}
+	missing := []string{}
+	for _, variant := range oneof.VariantOrder {
+		if !covered[variant] {
+			missing = append(missing, variant)
+		}
+	}
+	if len(missing) > 0 {
+		tc.Err(fmt.Sprintf("non-exhaustive match on sum type %s: missing variant(s) %v", oneof.Name, missing))
+	}
+}
+
+// CheckMatchStmt type checks a statement-position match. The scrutinee must be a
+// sum type; each arm pattern is validated and its binders scoped to that arm's
+// body, and the arms must exhaustively cover the sum type. Arm bodies are
+// statements whose values are discarded.
+func (tc *TypeChecker) CheckMatchStmt(stmt *ast.MatchStmt) {
+	scrutineeType := tc.CheckExpr(stmt.Scrutinee)
+	if scrutineeType == nil {
+		return
+	}
+	oneof, ok := scrutineeType.(OneofType)
+	if !ok {
+		tc.Err(fmt.Sprintf("cannot match on non-sum-type value of type %s", scrutineeType))
+		return
+	}
+	covered := make(map[string]bool)
+	hasWildcard := false
+	for _, arm := range stmt.Arms {
+		oldScope := tc.currScope
+		tc.currScope = NewScope(oldScope)
+		variant, wildcard := tc.checkMatchArmPattern(oneof, arm.Pattern)
+		if wildcard {
+			hasWildcard = true
+		} else if variant != "" {
+			covered[variant] = true
+		}
+		tc.CheckStmt(arm.Body)
+		tc.currScope = oldScope
+	}
+	tc.checkMatchExhaustiveness(oneof, covered, hasWildcard)
+}
+
+// CheckMatchExpr type checks an expression-position match. Beyond the rules of the
+// statement form, every arm body is an expression and their types must unify: the
+// match's type is that common arm type.
+func (tc *TypeChecker) CheckMatchExpr(expr *ast.MatchExpr) Type {
+	scrutineeType := tc.CheckExpr(expr.Scrutinee)
+	if scrutineeType == nil {
+		return nil
+	}
+	oneof, ok := scrutineeType.(OneofType)
+	if !ok {
+		tc.Err(fmt.Sprintf("cannot match on non-sum-type value of type %s", scrutineeType))
+		return nil
+	}
+	covered := make(map[string]bool)
+	hasWildcard := false
+	var matchType Type
+	for _, arm := range expr.Arms {
+		oldScope := tc.currScope
+		tc.currScope = NewScope(oldScope)
+		variant, wildcard := tc.checkMatchArmPattern(oneof, arm.Pattern)
+		if wildcard {
+			hasWildcard = true
+		} else if variant != "" {
+			covered[variant] = true
+		}
+		armType := tc.CheckExpr(arm.Body)
+		tc.currScope = oldScope
+		if armType == nil {
+			continue
+		}
+		if matchType == nil {
+			matchType = armType
+		} else if !matchType.Equals(armType) {
+			tc.Err(fmt.Sprintf("match arms have mismatched types: %s and %s", matchType, armType))
+		}
+	}
+	tc.checkMatchExhaustiveness(oneof, covered, hasWildcard)
+	if matchType == nil {
+		return UnitType{}
+	}
+	return matchType
+}
+
 func (tc *TypeChecker) CheckForStmt(stmt *ast.ForStmt) {
 	tc.CheckStmt(stmt.Init)
 	condType := tc.CheckExpr(stmt.Cond)
@@ -275,6 +401,8 @@ func (tc *TypeChecker) CheckExpr(expr ast.Expr) Type {
 		return tc.CheckVarDeclAssignExpr(e)
 	case *ast.TupleDeclAssignExpr:
 		return tc.CheckTupleDeclAssignExpr(e)
+	case *ast.MatchExpr:
+		return tc.CheckMatchExpr(e)
 	default:
 		tc.Err(fmt.Sprintf("unknown expression type: %T", expr))
 		return nil

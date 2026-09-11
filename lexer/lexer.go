@@ -21,6 +21,7 @@ const (
 
 	// Multicharacter tokens
 	COLON_EQUALS   // :=
+	FAT_ARROW      // =>
 	DOUBLE_EQUALS  // ==
 	NOT_EQUALS     // !=
 	LESS_EQUALS    // <=
@@ -72,6 +73,8 @@ const (
 	THEN
 	TRUE
 	USE
+	MATCH
+	WITH
 
 	// Sentinel value
 	NUM_TOKENS
@@ -99,6 +102,7 @@ var tokenPatterns []tokenPattern = []tokenPattern{
 
 	// Multicharacter tokens
 	{COLON_EQUALS, regexp.MustCompile(`^:=`)},
+	{FAT_ARROW, regexp.MustCompile(`^=>`)},
 	{DOUBLE_EQUALS, regexp.MustCompile(`^==`)},
 	{NOT_EQUALS, regexp.MustCompile(`^!=`)},
 	{LESS_EQUALS, regexp.MustCompile(`^<=`)},
@@ -151,6 +155,8 @@ var reservedKeywords map[string]TokenType = map[string]TokenType{
 	"then":   THEN,
 	"true":   TRUE,
 	"use":    USE,
+	"match":  MATCH,
+	"with":   WITH,
 }
 
 // A lookup table for the Stringer interface implementation
@@ -167,6 +173,7 @@ var tokenDisplayNames map[TokenType]string = map[TokenType]string{
 
 	// Multicharacter tokens
 	COLON_EQUALS:   "colon_equals",
+	FAT_ARROW:      "fat_arrow",
 	DOUBLE_EQUALS:  "double_equals",
 	NOT_EQUALS:     "not_equals",
 	LESS_EQUALS:    "less_equals",
@@ -218,6 +225,8 @@ var tokenDisplayNames map[TokenType]string = map[TokenType]string{
 	RETURN: "return",
 	USE:    "use",
 	NIL:    "nil",
+	MATCH:  "match",
+	WITH:   "with",
 }
 
 // Implement Stringer for TokenType.

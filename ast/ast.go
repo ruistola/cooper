@@ -273,6 +273,59 @@ type ForStmt struct {
 
 func (s *ForStmt) stmt() {}
 
+// Pattern is a match-arm pattern. In the first iteration patterns are flat: a
+// type-qualified variant pattern (optionally binding positional payload slots) or
+// the wildcard `_`.
+type Pattern interface {
+	pattern()
+}
+
+// VariantPattern matches a single sum-type variant, written type-qualified as
+// `Type.Variant` or `Type.Variant(binders...)`. Each binder names a positional
+// payload slot; the binder `_` ignores that slot. A payload-free variant is
+// written without parentheses and has no binders.
+type VariantPattern struct {
+	TypeName string
+	Variant  string
+	Binders  []string
+}
+
+func (p *VariantPattern) pattern() {}
+
+// WildcardPattern is the catch-all `_` arm, matching any scrutinee value and
+// binding nothing.
+type WildcardPattern struct{}
+
+func (p *WildcardPattern) pattern() {}
+
+// MatchExpr matches a scrutinee against a set of arms in expression position:
+// every arm body is an expression and their types unify to the match's type.
+type MatchExpr struct {
+	Scrutinee Expr
+	Arms      []*MatchExprArm
+}
+
+func (e *MatchExpr) expr() {}
+
+type MatchExprArm struct {
+	Pattern Pattern
+	Body    Expr
+}
+
+// MatchStmt matches a scrutinee against a set of arms in statement position:
+// every arm body is a statement and arm values are discarded.
+type MatchStmt struct {
+	Scrutinee Expr
+	Arms      []*MatchStmtArm
+}
+
+func (s *MatchStmt) stmt() {}
+
+type MatchStmtArm struct {
+	Pattern Pattern
+	Body    Stmt
+}
+
 type AssignExpr struct {
 	Assigne       Expr
 	Operator      lexer.Token

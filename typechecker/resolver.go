@@ -383,6 +383,8 @@ func (r *Resolver) resolveStmt(stmt ast.Stmt) {
 		r.resolveFuncDeclStmt(s)
 	case *ast.IfStmt:
 		r.resolveIfStmt(s)
+	case *ast.MatchStmt:
+		r.resolveMatchStmt(s)
 	case *ast.ForStmt:
 		r.resolveForStmt(s)
 	case *ast.ReturnStmt:
@@ -602,6 +604,46 @@ func (r *Resolver) resolveForStmt(stmt *ast.ForStmt) {
 	r.resolveBlockStmt(stmt.Body)
 }
 
+// resolvePatternBinders opens a child scope and defines every payload binder a
+// variant pattern introduces. Binder types are unknown until type checking, so
+// each name is bound to a placeholder; the wildcard binder `_` introduces nothing.
+// The caller is responsible for restoring the previous scope.
+func (r *Resolver) resolvePatternBinders(pattern ast.Pattern) {
+	if variant, ok := pattern.(*ast.VariantPattern); ok {
+		for _, binder := range variant.Binders {
+			if binder != "_" {
+				r.currScope.DefineVar(binder, UnknownType{})
+			}
+		}
+	}
+}
+
+// resolveMatchStmt resolves a statement-position match: the scrutinee, then each
+// arm body in a fresh scope holding that arm's pattern binders.
+func (r *Resolver) resolveMatchStmt(stmt *ast.MatchStmt) {
+	r.resolveExpr(stmt.Scrutinee)
+	for _, arm := range stmt.Arms {
+		oldScope := r.currScope
+		r.currScope = NewScope(oldScope)
+		r.resolvePatternBinders(arm.Pattern)
+		r.resolveStmt(arm.Body)
+		r.currScope = oldScope
+	}
+}
+
+// resolveMatchExpr resolves an expression-position match, mirroring
+// resolveMatchStmt but with expression arm bodies.
+func (r *Resolver) resolveMatchExpr(expr *ast.MatchExpr) {
+	r.resolveExpr(expr.Scrutinee)
+	for _, arm := range expr.Arms {
+		oldScope := r.currScope
+		r.currScope = NewScope(oldScope)
+		r.resolvePatternBinders(arm.Pattern)
+		r.resolveExpr(arm.Body)
+		r.currScope = oldScope
+	}
+}
+
 // resolveReturnStmt resolves a return statement
 func (r *Resolver) resolveReturnStmt(stmt *ast.ReturnStmt) {
 	if stmt.Expr != nil {
@@ -684,6 +726,8 @@ func (r *Resolver) resolveExpr(expr ast.Expr) {
 				r.currScope.DefineVar(name, UnknownType{})
 			}
 		}
+	case *ast.MatchExpr:
+		r.resolveMatchExpr(e)
 	default:
 		r.Err(fmt.Sprintf("unknown expression type: %T", expr))
 	}

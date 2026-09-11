@@ -1,6 +1,6 @@
 # Working title: Cooper
 
-A project written in the Go programming language for a compiled, statically typed, general purpose programming language.
+A compiler, written in the Rust programming language, for a compiled, statically typed, general purpose programming language.
 This is primarily a project for learning programming language design and to study how compilers are implemented, but the
 compiler is still being built according to known best practices and industry standards.
 
@@ -8,7 +8,7 @@ compiler is still being built according to known best practices and industry sta
 
 Detailed language design notes live in `docs/`:
 
-* [Compiler Architecture](docs/compiler-architecture.md) — Go package structure and pipeline stages
+* [Compiler Architecture](docs/compiler-architecture.md) — Rust module structure and pipeline stages
 * [Modules and Projects](docs/modules-and-projects.md) — project layout, module system, dependency management
 * [Syntax Fundamentals](docs/syntax-fundamentals.md) — semicolon inference, naming conventions, type expressions
 * [Polymorphism and Interfaces](docs/polymorphism-and-interfaces.md) — why Cooper has no interface construct
@@ -23,15 +23,15 @@ Detailed language design notes live in `docs/`:
 Do **not** proactively author tests with each coding task; the user will explicitly ask for tests as a separate task,
 when new code reaches sufficient maturity to become a permanent addition to the project.
 
-Prefer concise code, modifying existing packages by appending them with new functionality when feasible, as long as the
-package remains cohesive. Only establish new packages, functions and structures, when it is worth the added complexity
+Prefer concise code, modifying existing modules by appending them with new functionality when feasible, as long as the
+module remains cohesive. Only establish new modules, functions and structures, when it is worth the added complexity
 or "glue code" required in order to make new components communicate with the rest of the system.
 
 Do not leave breadcrumbs in comments or docs; always describe the implementation in absolute terms instead of as a
 delta. By default, when existing behavior changes, do not leave the old implementation in the codebase for "backwards
 compatibility" unless explicitly requested.
 
-Don't export package functions, types or variables by default. Only expose the minimum public API. Prefer white-box
-(same-package) tests for verification of package core functionality. Black-box testing across packages should rely on
-the public API only. Adding exported (public) functions intended for test-only mocking and cleanup is potentially
-dangerous and obfuscates the API proper, so only add such extensions when absolutely necessary.
+Don't expose module items (`pub`) by default. Only expose the minimum public API. Prefer white-box (same-module) unit
+tests for verification of a module's core functionality. Black-box testing across the crate boundary (in `tests/`) should
+rely on the public API only. Adding public functions intended for test-only mocking and cleanup is potentially dangerous
+and obfuscates the API proper, so only add such extensions when absolutely necessary.

@@ -1,6 +1,1 @@
-dist/
-
-# Build artifacts
-/cooper
-codegen/test
-
+/target

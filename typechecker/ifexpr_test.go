@@ -42,6 +42,52 @@ func TestBlockExprResultType(t *testing.T) {
 }`)
 }
 
+// A value block may contain statements before its trailing result expression,
+// terminated by newlines; its locals are visible to the result expression.
+func TestBlockExprStatementsThenResult(t *testing.T) {
+	expectOK(t, `func f(): i32 {
+  x := {
+    y := 1
+    y
+  }
+  return x
+}`)
+}
+
+// The same block written with explicit semicolon terminators.
+func TestBlockExprSemicolonTerminated(t *testing.T) {
+	expectOK(t, `func f(): i32 {
+  x := { y := 1; y }
+  return x
+}`)
+}
+
+// A value block opens its own scope, so a local binding shadows an outer name
+// without leaking back out.
+func TestBlockExprShadowsOuterScope(t *testing.T) {
+	expectOK(t, `func f(): i32 {
+  y := 9
+  x := {
+    y := 1
+    y
+  }
+  return x
+}`)
+}
+
+// If-expression branches may be multi-statement value blocks.
+func TestIfExprBlockBranchesWithStatements(t *testing.T) {
+	expectOK(t, `func f(b: bool): i32 {
+  x := if b then {
+    y := 1
+    y
+  } else {
+    2
+  }
+  return x
+}`)
+}
+
 // A match expression with braced-body arms type checks: block-body expression
 // arms produce a BlockExpr whose type is its result expression.
 func TestMatchExprBracedArmBodies(t *testing.T) {

@@ -1,9 +1,11 @@
 use cooper::ast::{Expr, Stmt};
-use cooper::run;
+use cooper::{lexer, parser};
 
-/// Parse `src`, asserting it produces no diagnostics, and return the module.
+/// Lex and parse `src` (without resolution), asserting it produces no diagnostics,
+/// and return the module.
 fn ok(src: &str) -> Vec<Stmt> {
-    let result = run(src);
+    let tokens = lexer::tokenize(src).expect("lexing succeeds");
+    let result = parser::parse(tokens);
     assert!(
         result.errors.is_empty(),
         "expected no errors, got: {:?}",
@@ -12,9 +14,10 @@ fn ok(src: &str) -> Vec<Stmt> {
     result.module
 }
 
-/// Parse `src`, asserting at least one diagnostic mentions `needle`.
+/// Lex and parse `src`, asserting at least one diagnostic mentions `needle`.
 fn err(src: &str, needle: &str) {
-    let result = run(src);
+    let tokens = lexer::tokenize(src).expect("lexing succeeds");
+    let result = parser::parse(tokens);
     assert!(
         result.errors.iter().any(|d| d.message.contains(needle)),
         "expected an error containing {needle:?}, got: {:?}",
@@ -72,7 +75,8 @@ fn missing_terminator_is_reported_not_panicked() {
 fn recovers_and_reports_multiple_errors() {
     // Two separate malformed declarations (missing binding name); recovery should
     // surface both and still recover the well-formed third.
-    let result = run("let = 1\nlet = 2\nlet z = 3\n");
+    let tokens = lexer::tokenize("let = 1\nlet = 2\nlet z = 3\n").expect("lexing succeeds");
+    let result = parser::parse(tokens);
     assert!(
         result.errors.len() >= 2,
         "expected multiple errors, got {}: {:?}",

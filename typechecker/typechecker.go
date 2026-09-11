@@ -307,6 +307,41 @@ func (tc *TypeChecker) CheckMatchExpr(expr *ast.MatchExpr) Type {
 	return matchType
 }
 
+// CheckIfExpr type checks an if-expression `if c then a else b`. The condition
+// must be boolean, and both branches (the else is mandatory in expression
+// position) must have the same type, which is the type of the whole expression.
+func (tc *TypeChecker) CheckIfExpr(expr *ast.IfExpr) Type {
+	condType := tc.CheckExpr(expr.Cond)
+	if !IsPrimitive(condType, "bool") {
+		tc.Err("if-expression condition does not evaluate to a boolean type")
+	}
+	thenType := tc.CheckExpr(expr.Then)
+	elseType := tc.CheckExpr(expr.Else)
+	if thenType == nil || elseType == nil {
+		return nil
+	}
+	if !thenType.Equals(elseType) {
+		tc.Err(fmt.Sprintf("if-expression branches have mismatched types: %s and %s", thenType, elseType))
+		return nil
+	}
+	return thenType
+}
+
+// CheckBlockExpr type checks a value block in its own child scope. Its type is the
+// type of the trailing result expression, or unit when the block produces no value.
+func (tc *TypeChecker) CheckBlockExpr(block *ast.BlockExpr) Type {
+	oldScope := tc.currScope
+	tc.currScope = NewScope(oldScope)
+	defer func() { tc.currScope = oldScope }()
+	for _, stmt := range block.Statements {
+		tc.CheckStmt(stmt)
+	}
+	if block.ResultExpr == nil {
+		return UnitType{}
+	}
+	return tc.CheckExpr(block.ResultExpr)
+}
+
 func (tc *TypeChecker) CheckForStmt(stmt *ast.ForStmt) {
 	tc.CheckStmt(stmt.Init)
 	condType := tc.CheckExpr(stmt.Cond)
@@ -403,6 +438,10 @@ func (tc *TypeChecker) CheckExpr(expr ast.Expr) Type {
 		return tc.CheckTupleDeclAssignExpr(e)
 	case *ast.MatchExpr:
 		return tc.CheckMatchExpr(e)
+	case *ast.IfExpr:
+		return tc.CheckIfExpr(e)
+	case *ast.BlockExpr:
+		return tc.CheckBlockExpr(e)
 	default:
 		tc.Err(fmt.Sprintf("unknown expression type: %T", expr))
 		return nil

@@ -728,7 +728,28 @@ func (r *Resolver) resolveExpr(expr ast.Expr) {
 		}
 	case *ast.MatchExpr:
 		r.resolveMatchExpr(e)
+	case *ast.IfExpr:
+		r.resolveExpr(e.Cond)
+		r.resolveExpr(e.Then)
+		r.resolveExpr(e.Else)
+	case *ast.BlockExpr:
+		r.resolveBlockExpr(e)
 	default:
 		r.Err(fmt.Sprintf("unknown expression type: %T", expr))
 	}
+}
+
+// resolveBlockExpr resolves a value block in its own child scope: the statements
+// bind their names locally, and the trailing result expression is resolved in the
+// same scope so it can reference them.
+func (r *Resolver) resolveBlockExpr(block *ast.BlockExpr) {
+	oldScope := r.currScope
+	r.currScope = NewScope(oldScope)
+	for _, stmt := range block.Statements {
+		r.resolveStmt(stmt)
+	}
+	if block.ResultExpr != nil {
+		r.resolveExpr(block.ResultExpr)
+	}
+	r.currScope = oldScope
 }

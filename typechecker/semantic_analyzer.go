@@ -198,6 +198,17 @@ func (sa *SemanticAnalyzer) analyzeExpr(expr ast.Expr) {
 		for _, arm := range e.Arms {
 			sa.analyzeExpr(arm.Body)
 		}
+	case *ast.IfExpr:
+		sa.analyzeExpr(e.Cond)
+		sa.analyzeExpr(e.Then)
+		sa.analyzeExpr(e.Else)
+	case *ast.BlockExpr:
+		for _, stmt := range e.Statements {
+			sa.analyzeStmt(stmt)
+		}
+		if e.ResultExpr != nil {
+			sa.analyzeExpr(e.ResultExpr)
+		}
 	default:
 		sa.Err(fmt.Sprintf("unknown expression type for semantic analysis: %T", expr))
 	}

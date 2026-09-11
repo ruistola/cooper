@@ -1,0 +1,9 @@
+func f(): i32 {
+  x := { y := 1 y }
+  return x
+}
+
+func g(): i32 {
+  let = 2
+  return 0
+}

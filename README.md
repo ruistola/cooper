@@ -1,6 +1,6 @@
 # Working title: Cooper
 
-A project written in the Go programming language for a compiled, statically typed, general purpose programming language.
+A compiler, written in Rust, for a compiled, statically typed, general purpose programming language.
 This is primarily a project for learning programming language design and to study how compilers are implemented, but
 the compiler is still being built according to known best practices and industry standards.
 

@@ -30,9 +30,9 @@ escapes through a returned pointer). The decision is made by escape analysis; th
 programmer writes the same code either way.
 
 Heap memory is reclaimed by a garbage collector. There is no manual free, and no
-lifetime annotations in the common case. (Whether the language should also offer opt-out
-mechanisms — arenas, a `no-gc` region annotation — is an open question deferred to a
-later design pass.)
+lifetime annotations in the common case. A type-system-based escape hatch for the
+constrained cases where a tracing collector is unacceptable is a planned future
+direction (see "Escaping the collector" below).
 
 ## Pointers and addressability
 
@@ -101,15 +101,44 @@ success/failure signal. Those constructs (planned separately) model *semantic* a
 nil models *referential* absence, and inertness is simply how it behaves under
 dereference.
 
-## Safety and open questions
+## Safety
 
 Pointers are safe and GC-tracked: no pointer arithmetic, no integer/pointer casts. Raw,
 unchecked pointers — if offered at all — belong to a separate `unsafe` facility (TBD).
 
-Left open, to be settled alongside a build-mode concept:
+## Escaping the collector (future direction)
 
-* Whether compiler flags should let the programmer trade safety for speed on a
-  per-build basis — panic-on-nil-dereference and array bounds checking are the obvious
-  candidates (debug builds fault eagerly, release builds run the inert/unchecked path).
-* Whether to offer GC opt-out regions (arenas, a `no-gc` annotation) for the constrained
-  cases where a tracing collector is unacceptable.
+GC-by-default with a manual escape hatch — a managed core with an unmanaged shell — is
+the intended shape. The escape hatch is expressed **in the type system**, not through
+runtime pointer tricks.
+
+The distinction is a *static* one. Because Cooper has a precise, monomorphizing tracing
+GC, the compiler always knows which words are pointers from type layout alone; it never
+guesses from bit patterns. That same static knowledge lets the collector skip unmanaged
+pointers for free, so no spare-pointer-bit tagging or per-dereference masking is needed —
+tag bits only help conservative collectors, which this is not. A dynamic check, where one
+is ever required, is a region/page test against allocator metadata, not a pointer flag.
+
+The sketch, for posterity:
+
+* A pointer into manually managed memory has a distinct type, written `NoGC T` as sugar
+  for a non-collected `T^` (`NoGC` is pointer-only, so the caret is implicit). Assigning
+  between `T^` and `NoGC T` is a type error in either direction: the two live in
+  different regions and the language keeps them apart.
+* `NoGC` is **infectious**: a pointer reached through an unmanaged structure is itself
+  unmanaged, without re-annotation. A data type is declared once and used in either
+  region — no managed/unmanaged twin structs, and no forcing every field to be spelled
+  `NoGC` (the way `Maybe Foo` would not force every field to be `Maybe`).
+* The load-bearing rule: **an unmanaged region may not hold a managed pointer.** This is
+  what makes arenas fully opaque to the collector — it never has to trace into unmanaged
+  memory — and it is enforced by the infectious typing above. Freeing unmanaged memory is
+  the programmer's responsibility.
+* This static membrane is what powers build-mode conveniences: a `--no-gc` mode is a pure
+  compile-time reachability check (does the program contain any managed allocation?), and
+  a debug `--trace-leaks` mode reuses the collector's reachability machinery to report
+  `NoGC` pointers that became unreachable without being freed.
+
+Also left open, to be settled alongside a build-mode concept: whether compiler flags
+should let the programmer trade safety for speed per build — panic-on-nil-dereference and
+array bounds checking are the obvious candidates (debug builds fault eagerly, release
+builds run the inert/unchecked path).

@@ -19,7 +19,7 @@ let maybe: Maybe bool = Some(true)            // constructor; type args inferred
   or a turbofish. It is also the "ASCII art" the language tries to avoid.
 * `[]` is out for Cooper specifically: postfix `[]` is already array construction
   and indexing. `Foo[Bar]` would collide with "array of Foo" and, in value
-  position, with indexing. Overloading the most load-bearing bracket is worse here
+  position, with indexing. Overloading the most heavily used bracket is worse here
   than in languages that do not use `[]` for arrays.
 * Call-style `Map(string, i32)` parses fine in type position but looks like a
   function call, overloads parentheses (already tuples, grouping, unit, calls, and

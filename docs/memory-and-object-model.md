@@ -95,8 +95,8 @@ check for nil explicitly — the same check as before, now a domain decision rat
 language mandate.
 
 Nil is confined to this role: "a pointer legitimately has no target." It is not the tool
-for modelling optional-ness or errors in general. A "maybe a bool" is an `Option<bool>`, not
-a `bool^`; a fallible computation should return a `Result<T,E>`, not a bare pointer as a
+for modelling optional-ness or errors in general. A "maybe a bool" is an `Option bool`, not
+a `bool^`; a fallible computation should return a `Result T E`, not a bare pointer as a
 success/failure signal. Those constructs (planned separately) model *semantic* absence;
 nil models *referential* absence, and inertness is simply how it behaves under
 dereference.
@@ -122,9 +122,10 @@ is ever required, is a region/page test against allocator metadata, not a pointe
 ### The model
 
 * A pointer into manually managed memory has a distinct type, written `NoGC T` as sugar
-  for a non-collected `T^` (`NoGC` is pointer-only, so the caret is implicit). Assigning
-  between `T^` and `NoGC T` is a type error in either direction: the two live in
-  different regions and the language keeps them apart.
+  for a non-collected `T^` (`NoGC` is pointer-only, so the caret is implicit).
+* **Assignment between `T^` and `NoGC T` is a type error in both directions.** The two
+  live in different regions and the language keeps them apart, which is what stops a
+  durable reference from silently crossing the membrane.
 * A data type is declared **once** and used in either region. Region is not written into
   the declaration; it is an implicit parameter, inferred from where a value is allocated
   and propagated from there — much as a type parameter is. So `struct Node { next: Node^ }`
@@ -133,7 +134,7 @@ is ever required, is a region/page test against allocator metadata, not a pointe
   unmanaged, on both read and write. Reading `p.next` through a `NoGC Node` yields a
   `NoGC Node`; storing a managed pointer into that same field is rejected. These are one
   rule seen from two sides.
-* The load-bearing invariant: **an unmanaged region may not hold a managed pointer.** This
+* The governing invariant: **an unmanaged region may not hold a managed pointer.** This
   is what keeps arenas fully opaque to the collector — it never has to trace into
   unmanaged memory — and it is exactly the infectious typing above. Freeing unmanaged
   memory is the programmer's responsibility.

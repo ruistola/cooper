@@ -19,19 +19,16 @@ fn main() -> ExitCode {
         }
     };
 
-    let result = cooper::run(&source);
+    let diagnostics = cooper::analyze(&source);
 
-    if result.errors.is_empty() {
-        println!("parsed {} top-level statement(s):\n", result.module.len());
-        for stmt in &result.module {
-            println!("{stmt:#?}");
-        }
+    if diagnostics.is_empty() {
+        println!("no errors.");
         ExitCode::SUCCESS
     } else {
-        for diag in &result.errors {
+        for diag in &diagnostics {
             eprint!("{}", diag.render(&path, &source));
         }
-        eprintln!("\n{} error(s) reported.", result.errors.len());
+        eprintln!("\n{} error(s) reported.", diagnostics.len());
         ExitCode::FAILURE
     }
 }

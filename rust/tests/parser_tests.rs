@@ -1,4 +1,4 @@
-use cooper::ast::{Expr, Stmt};
+use cooper::ast::{ExprKind, Stmt, StmtKind};
 use cooper::{lexer, parser};
 
 /// Lex and parse `src` (without resolution), asserting it produces no diagnostics,
@@ -29,13 +29,13 @@ fn err(src: &str, needle: &str) {
 fn parses_free_function() {
     let m = ok("func add(x: i32, y: i32): i32 {\n  return x + y\n}");
     assert_eq!(m.len(), 1);
-    assert!(matches!(&m[0], Stmt::FuncDecl(f) if f.name == "add" && f.params.len() == 2));
+    assert!(matches!(&m[0].kind, StmtKind::FuncDecl(f) if f.name == "add" && f.params.len() == 2));
 }
 
 #[test]
 fn parses_method_declaration() {
     let m = ok("(p: Point) func norm(): i32 {\n  return p.x\n}");
-    assert!(matches!(&m[0], Stmt::FuncDecl(f) if f.receiver.is_some()));
+    assert!(matches!(&m[0].kind, StmtKind::FuncDecl(f) if f.receiver.is_some()));
 }
 
 #[test]
@@ -62,7 +62,7 @@ fn parses_oneof_and_match_expression_with_braced_arms() {
 #[test]
 fn parses_generics_and_tuples() {
     let m = ok("struct Pair K V {\n  key: K,\n  val: V,\n}");
-    assert!(matches!(&m[0], Stmt::StructDecl { type_params, .. } if type_params.len() == 2));
+    assert!(matches!(&m[0].kind, StmtKind::StructDecl { type_params, .. } if type_params.len() == 2));
 }
 
 #[test]
@@ -87,15 +87,17 @@ fn recovers_and_reports_multiple_errors() {
     assert!(result
         .module
         .iter()
-        .any(|s| matches!(s, Stmt::VarDecl { name, .. } if name == "z")));
+        .any(|s| matches!(&s.kind, StmtKind::VarDecl { name, .. } if name == "z")));
 }
 
 #[test]
 fn walrus_binds_identifier() {
     let m = ok("func f() {\n  x := 41 + 1\n}");
-    if let Stmt::FuncDecl(f) = &m[0] {
-        assert!(matches!(&f.body[0], Stmt::Expression { expr: Expr::VarDeclAssign { name, .. }, .. } if name == "x"));
-    } else {
+    let StmtKind::FuncDecl(f) = &m[0].kind else {
         panic!("expected a function declaration");
-    }
+    };
+    assert!(matches!(
+        &f.body[0].kind,
+        StmtKind::Expression(e) if matches!(&e.kind, ExprKind::Let { name, .. } if name == "x")
+    ));
 }

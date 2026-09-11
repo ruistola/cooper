@@ -1,32 +1,38 @@
+//! A hand-written recursive-descent parser with Pratt expression parsing.
+//!
+//! The parser collects diagnostics and recovers at statement boundaries instead
+//! of bailing on the first error, so one run reports as many problems as it can.
+//! Every produced node carries the source span it was parsed from.
+
 use crate::ast::*;
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{Token, TokenKind};
 
 use TokenKind::*;
 
-/// A marker that unwinds the current parse to the nearest recovery point. The
-/// actual diagnostic has already been recorded in `Parser::errors` by the time an
-/// `Err(Recover)` is produced, so recovery sites only need to resynchronize.
-#[derive(Debug, Clone, Copy)]
-pub struct Recover;
-
-type PResult<T> = Result<T, Recover>;
-
-/// The result of parsing: the recovered module plus every diagnostic collected
-/// along the way. A non-empty `errors` means the module is best-effort.
+/// The outcome of parsing: a best-effort module plus any diagnostics. A non-empty
+/// `errors` means some nodes were recovered rather than cleanly parsed.
 pub struct Parsed {
     pub module: Vec<Stmt>,
     pub errors: Vec<Diagnostic>,
 }
 
+/// Parse a token stream into a module.
 pub fn parse(tokens: Vec<Token>) -> Parsed {
-    let mut p = Parser::new(tokens);
-    let module = p.parse_module();
+    let mut parser = Parser::new(tokens);
+    let module = parser.parse_module();
     Parsed {
         module,
-        errors: p.errors,
+        errors: parser.errors,
     }
 }
+
+/// Unwinds the current production to the nearest recovery point. The diagnostic is
+/// already recorded by the time this is returned, so recovery sites only need to
+/// resynchronize.
+struct Recover;
+
+type PResult<T> = Result<T, Recover>;
 
 struct Parser {
     tokens: Vec<Token>,
@@ -36,13 +42,13 @@ struct Parser {
     errors: Vec<Diagnostic>,
 }
 
-/// An end-of-line may become a semicolon only when the preceding token is one of
-/// these (mirrors the Go `beforeSemicolon` set).
-fn can_precede_semicolon(k: TokenKind) -> bool {
+/// An end-of-line becomes a semicolon only when the preceding token can end a
+/// statement.
+fn can_precede_semicolon(kind: TokenKind) -> bool {
     matches!(
-        k,
+        kind,
         Number
-            | String
+            | Str
             | Identifier
             | Comma
             | CloseBracket
@@ -57,13 +63,12 @@ fn can_precede_semicolon(k: TokenKind) -> bool {
     )
 }
 
-/// An end-of-line may become a semicolon only when the following token is one of
-/// these (mirrors the Go `afterSemicolon` set).
-fn can_follow_semicolon(k: TokenKind) -> bool {
+/// An end-of-line becomes a semicolon only when the following token can begin one.
+fn can_follow_semicolon(kind: TokenKind) -> bool {
     matches!(
-        k,
+        kind,
         Eof | Number
-            | String
+            | Str
             | Identifier
             | Semicolon
             | OpenCurly
@@ -85,20 +90,20 @@ fn can_follow_semicolon(k: TokenKind) -> bool {
     )
 }
 
-/// Right binding power of a prefix operator in head (NUD) position.
-fn prefix_bp(k: TokenKind) -> i32 {
-    match k {
-        Plus | Dash => 10,
+/// Right binding power of a prefix operator.
+fn prefix_bp(kind: TokenKind) -> i32 {
+    match kind {
+        Plus | Dash | Not => 10,
         Ampersand => 12,
         _ => 0,
     }
 }
 
-/// (left, right) binding power of a token in tail (LED) position. A zero left
+/// `(left, right)` binding power of a token in infix/postfix position. A zero left
 /// binding power terminates the expression.
-fn tail_bp(k: TokenKind) -> (i32, i32) {
-    match k {
-        Equals | PlusEquals | DashEquals | ColonEquals => (1, 2),
+fn tail_bp(kind: TokenKind) -> (i32, i32) {
+    match kind {
+        Equals | PlusEquals | DashEquals | StarEquals | SlashEquals | ColonEquals => (1, 2),
         Or | And => (4, 3),
         DoubleEquals | NotEquals => (5, 6),
         Less | LessEquals | Greater | GreaterEquals => (8, 7),
@@ -109,6 +114,36 @@ fn tail_bp(k: TokenKind) -> (i32, i32) {
         Dot | Chevron => (16, 15),
         _ => (0, 0),
     }
+}
+
+fn binary_op(kind: TokenKind) -> Option<BinaryOp> {
+    Some(match kind {
+        Plus => BinaryOp::Add,
+        Dash => BinaryOp::Sub,
+        Star => BinaryOp::Mul,
+        Slash => BinaryOp::Div,
+        Percent => BinaryOp::Rem,
+        DoubleEquals => BinaryOp::Eq,
+        NotEquals => BinaryOp::Ne,
+        Less => BinaryOp::Lt,
+        LessEquals => BinaryOp::Le,
+        Greater => BinaryOp::Gt,
+        GreaterEquals => BinaryOp::Ge,
+        And => BinaryOp::And,
+        Or => BinaryOp::Or,
+        _ => return None,
+    })
+}
+
+fn assign_op(kind: TokenKind) -> Option<AssignOp> {
+    Some(match kind {
+        Equals => AssignOp::Assign,
+        PlusEquals => AssignOp::Add,
+        DashEquals => AssignOp::Sub,
+        StarEquals => AssignOp::Mul,
+        SlashEquals => AssignOp::Div,
+        _ => return None,
+    })
 }
 
 impl Parser {
@@ -128,7 +163,7 @@ impl Parser {
         let end = self.tokens.last().map(|t| t.span.end).unwrap_or(0);
         Token {
             kind: Eof,
-            text: std::string::String::new(),
+            text: String::new(),
             span: Span::new(end, end),
         }
     }
@@ -155,25 +190,18 @@ impl Parser {
             .unwrap_or_else(|| self.eof_token())
     }
 
-    /// Read-only lookahead over the next `n` significant tokens (end-of-line
-    /// tokens skipped). Never mutates the stream, so it is safe for speculative
-    /// dispatch.
+    /// Read-only lookahead over the next `n` significant tokens (end-of-line tokens
+    /// skipped), never mutating the stream.
     fn lookahead(&self, n: usize) -> Vec<Token> {
-        let mut out = Vec::with_capacity(n);
-        let mut i = self.pos;
-        while i < self.tokens.len() && out.len() < n {
-            let t = &self.tokens[i];
-            if t.kind == Eol {
-                i += 1;
-                continue;
-            }
-            out.push(t.clone());
-            i += 1;
-        }
-        out
+        self.tokens[self.pos..]
+            .iter()
+            .filter(|t| t.kind != Eol)
+            .take(n)
+            .cloned()
+            .collect()
     }
 
-    /// A statement leading with `( ident :` is a method declaration receiver.
+    /// Whether the upcoming tokens form a method receiver `( ident :`.
     fn is_method_decl_ahead(&self) -> bool {
         let ahead = self.lookahead(3);
         ahead.len() == 3
@@ -182,15 +210,15 @@ impl Parser {
             && ahead[2].kind == Colon
     }
 
-    /// Returns the current token, performing end-of-line-to-semicolon inference:
-    /// an `Eol` is rewritten to a `Semicolon` where a statement can terminate, and
-    /// otherwise dropped as insignificant whitespace. This keeps the rest of the
-    /// parser whitespace-agnostic.
+    /// The current token, with end-of-line-to-semicolon inference applied: an
+    /// `Eol` is rewritten to a `Semicolon` where a statement may terminate, and
+    /// dropped as insignificant otherwise. This keeps the rest of the parser
+    /// whitespace-agnostic.
     fn peek(&mut self) -> Token {
         let curr = self.current_token();
         if curr.kind == Eol {
             // Never infer a terminator right before a closing brace: a block's
-            // final value must be kept unless an explicit `;` discards it.
+            // trailing value must survive unless an explicit `;` discards it.
             if self.next_token().kind == CloseCurly {
                 self.tokens.remove(self.pos);
                 return self.peek();
@@ -218,11 +246,7 @@ impl Parser {
         match t.kind {
             OpenParen | OpenBracket => self.paren_stack.push(t.kind),
             CloseParen | CloseBracket => self.pop_paren(t.kind),
-            CloseCurly => {
-                if self.paren_stack.last() == Some(&OpenCurly) {
-                    self.pop_paren(CloseCurly);
-                }
-            }
+            CloseCurly if self.paren_stack.last() == Some(&OpenCurly) => self.pop_paren(CloseCurly),
             _ => {}
         }
         self.pos += 1;
@@ -240,27 +264,27 @@ impl Parser {
     }
 
     fn pop_paren(&mut self, closing: TokenKind) {
-        let matches = match self.paren_stack.last() {
-            Some(OpenParen) => closing == CloseParen,
-            Some(OpenBracket) => closing == CloseBracket,
-            Some(OpenCurly) => closing == CloseCurly,
-            _ => false,
-        };
-        if matches {
+        let matched = matches!(
+            (self.paren_stack.last(), closing),
+            (Some(OpenParen), CloseParen)
+                | (Some(OpenBracket), CloseBracket)
+                | (Some(OpenCurly), CloseCurly)
+        );
+        if matched {
             self.paren_stack.pop();
         } else {
-            let sp = self.current_token().span;
-            self.error(sp, format!("unmatched {}", closing));
+            let span = self.current_token().span;
+            self.error(span, format!("unmatched {}", closing));
         }
     }
 
-    fn error(&mut self, span: Span, message: impl Into<std::string::String>) -> Recover {
+    fn error(&mut self, span: Span, message: impl Into<String>) -> Recover {
         self.errors.push(Diagnostic::error(span, message));
         Recover
     }
 
     /// Skip tokens until the next plausible statement boundary so parsing can
-    /// resume after an error. This is what lets one run report many errors.
+    /// resume after an error.
     fn synchronize(&mut self) {
         loop {
             match self.peek().kind {
@@ -288,21 +312,18 @@ impl Parser {
     }
 
     fn consume_statement_terminator(&mut self) -> PResult<()> {
-        let k = self.peek().kind;
-        match k {
+        match self.peek().kind {
             Semicolon => {
                 self.advance();
-                return Ok(());
+                Ok(())
             }
-            Eof | CloseCurly => return Ok(()),
-            Else if self.in_then_branch => return Ok(()),
-            _ => {}
-        }
-        if self.prev_token().kind == CloseCurly {
-            Ok(())
-        } else {
-            let sp = self.peek().span;
-            Err(self.error(sp, "expected statement terminator"))
+            Eof | CloseCurly => Ok(()),
+            Else if self.in_then_branch => Ok(()),
+            _ if self.prev_token().kind == CloseCurly => Ok(()),
+            _ => {
+                let span = self.peek().span;
+                Err(self.error(span, "expected statement terminator"))
+            }
         }
     }
 
@@ -325,11 +346,23 @@ impl Parser {
 
     fn parse_stmt(&mut self) -> PResult<Stmt> {
         if self.peek().kind == OpenParen && self.is_method_decl_ahead() {
-            return Ok(Stmt::FuncDecl(self.parse_func_decl()?));
+            let decl = self.parse_func_decl()?;
+            let span = decl.span;
+            return Ok(Stmt {
+                kind: StmtKind::FuncDecl(decl),
+                span,
+            });
         }
         match self.peek().kind {
             For => self.parse_for_stmt(),
-            Func => Ok(Stmt::FuncDecl(self.parse_func_decl()?)),
+            Func => {
+                let decl = self.parse_func_decl()?;
+                let span = decl.span;
+                Ok(Stmt {
+                    kind: StmtKind::FuncDecl(decl),
+                    span,
+                })
+            }
             If => self.parse_if_stmt(),
             Let => self.parse_var_decl_stmt(),
             Match => self.parse_match_stmt(),
@@ -347,8 +380,7 @@ impl Parser {
         let token = self.advance();
         let mut left = self.parse_head_expr(token)?;
         loop {
-            let token = self.peek();
-            let (lbp, rbp) = tail_bp(token.kind);
+            let (lbp, rbp) = tail_bp(self.peek().kind);
             if lbp <= min_bp {
                 break;
             }
@@ -358,48 +390,57 @@ impl Parser {
     }
 
     fn parse_head_expr(&mut self, token: Token) -> PResult<Expr> {
-        match token.kind {
-            Number => Ok(Expr::Number(token.text)),
-            String => Ok(Expr::Str(token.text)),
-            Identifier => Ok(Expr::Ident(token.text)),
-            True | False => Ok(Expr::Bool(token.kind == True)),
-            Plus | Dash => {
-                let rhs = self.parse_expr(prefix_bp(token.kind))?;
-                Ok(Expr::Unary {
-                    op: token.kind,
-                    rhs: Box::new(rhs),
-                })
+        let start = token.span;
+        let kind = match token.kind {
+            Number => ExprKind::Number(token.text),
+            Str => ExprKind::Str(token.text),
+            Identifier => ExprKind::Ident(token.text),
+            True | False => ExprKind::Bool(token.kind == True),
+            Plus | Dash | Not => {
+                let op = match token.kind {
+                    Plus => UnaryOp::Pos,
+                    Dash => UnaryOp::Neg,
+                    _ => UnaryOp::Not,
+                };
+                let operand = self.parse_expr(prefix_bp(token.kind))?;
+                ExprKind::Unary {
+                    op,
+                    operand: Box::new(operand),
+                }
             }
             Ampersand => {
                 let operand = self.parse_expr(prefix_bp(token.kind))?;
-                Ok(Expr::AddressOf(Box::new(operand)))
+                ExprKind::AddressOf(Box::new(operand))
             }
-            Nil => Ok(Expr::Nil),
-            OpenParen => self.parse_paren_head(),
-            If => self.parse_if_expr(),
-            Match => self.parse_match_expr(),
+            Nil => ExprKind::Nil,
+            OpenParen => self.parse_paren_head()?,
+            If => self.parse_if_expr()?,
+            Match => self.parse_match_expr()?,
             OpenCurly => {
                 let block = self.parse_block_expr();
                 self.expect(CloseCurly)?;
-                Ok(Expr::Block(block))
+                ExprKind::Block(block)
             }
-            _ => Err(self.error(
-                token.span,
-                format!("expected an expression, found {}", token.kind),
-            )),
-        }
+            other => {
+                return Err(self.error(start, format!("expected an expression, found {}", other)));
+            }
+        };
+        Ok(Expr {
+            kind,
+            span: start.to(self.prev_token().span),
+        })
     }
 
     /// `()` unit, `(e)` group, or `(e, e, ...)` tuple, disambiguated by contents.
-    fn parse_paren_head(&mut self) -> PResult<Expr> {
+    fn parse_paren_head(&mut self) -> PResult<ExprKind> {
         if self.peek().kind == CloseParen {
             self.expect(CloseParen)?;
-            return Ok(Expr::Unit);
+            return Ok(ExprKind::Unit);
         }
         let first = self.parse_expr(0)?;
         if self.peek().kind != Comma {
             self.expect(CloseParen)?;
-            return Ok(Expr::Group(Box::new(first)));
+            return Ok(ExprKind::Group(Box::new(first)));
         }
         let mut elems = vec![first];
         while self.peek().kind == Comma {
@@ -410,45 +451,48 @@ impl Parser {
             elems.push(self.parse_expr(0)?);
         }
         self.expect(CloseParen)?;
-        Ok(Expr::Tuple(elems))
+        Ok(ExprKind::Tuple(elems))
     }
 
     fn parse_tail_expr(&mut self, head: Expr, rbp: i32) -> PResult<Expr> {
-        let curr = self.peek();
-        match curr.kind {
-            ColonEquals => self.parse_decl_assign_expr(head),
-            Equals | PlusEquals | DashEquals | StarEquals | SlashEquals => {
-                let op = self.advance().kind;
-                let rhs = self.parse_expr(rbp)?;
-                Ok(Expr::Assign {
+        let start = head.span;
+        let kind = match self.peek().kind {
+            ColonEquals => return self.parse_decl_assign_expr(head),
+            k if assign_op(k).is_some() => {
+                let op = assign_op(self.advance().kind).unwrap();
+                let value = self.parse_expr(rbp)?;
+                ExprKind::Assign {
+                    op,
                     target: Box::new(head),
-                    op,
-                    value: Box::new(rhs),
-                })
+                    value: Box::new(value),
+                }
             }
-            Plus | Dash | Star | Slash | Percent | Less | LessEquals | Greater | GreaterEquals
-            | Or | And | DoubleEquals | NotEquals => {
-                let op = self.advance().kind;
+            k if binary_op(k).is_some() => {
+                let op = binary_op(self.advance().kind).unwrap();
                 let rhs = self.parse_expr(rbp)?;
-                Ok(Expr::Binary {
-                    lhs: Box::new(head),
+                ExprKind::Binary {
                     op,
+                    lhs: Box::new(head),
                     rhs: Box::new(rhs),
-                })
+                }
             }
-            OpenParen => self.parse_func_call_expr(head),
-            OpenCurly => self.parse_struct_literal_expr(head),
-            OpenBracket => self.parse_array_index_expr(head),
-            Dot => self.parse_struct_member_expr(head),
+            OpenParen => self.parse_call_args(head)?,
+            OpenCurly => self.parse_struct_literal(head)?,
+            OpenBracket => self.parse_index(head)?,
+            Dot => self.parse_field(head)?,
             Chevron => {
                 self.expect(Chevron)?;
-                Ok(Expr::Deref(Box::new(head)))
+                ExprKind::Deref(Box::new(head))
             }
-            _ => Err(self.error(
-                curr.span,
-                format!("{} cannot continue an expression", curr.kind),
-            )),
-        }
+            other => {
+                let span = self.peek().span;
+                return Err(self.error(span, format!("{} cannot continue an expression", other)));
+            }
+        };
+        Ok(Expr {
+            kind,
+            span: start.to(self.prev_token().span),
+        })
     }
 
     // --- type expressions ---
@@ -458,13 +502,17 @@ impl Parser {
         if !self.next_starts_type_atom() {
             return Ok(head);
         }
+        let start = head.span;
         let mut args = Vec::new();
         while self.next_starts_type_atom() {
             args.push(self.parse_type_atom()?);
         }
-        Ok(TypeExpr::Application {
-            constructor: Box::new(head),
-            args,
+        Ok(TypeExpr {
+            kind: TypeExprKind::Application {
+                constructor: Box::new(head),
+                args,
+            },
+            span: start.to(self.prev_token().span),
         })
     }
 
@@ -473,10 +521,11 @@ impl Parser {
     }
 
     fn parse_type_atom(&mut self) -> PResult<TypeExpr> {
-        let mut t = if self.peek().kind == OpenParen {
+        let start = self.peek().span;
+        let mut kind = if self.peek().kind == OpenParen {
             self.expect(OpenParen)?;
             let inner = if self.peek().kind == CloseParen {
-                TypeExpr::Unit
+                TypeExprKind::Unit
             } else {
                 let mut elems = vec![self.parse_type_expr()?];
                 while self.peek().kind == Comma {
@@ -487,9 +536,9 @@ impl Parser {
                     elems.push(self.parse_type_expr()?);
                 }
                 if elems.len() == 1 {
-                    elems.pop().unwrap()
+                    elems.pop().unwrap().kind
                 } else {
-                    TypeExpr::Tuple(elems)
+                    TypeExprKind::Tuple(elems)
                 }
             };
             self.expect(CloseParen)?;
@@ -497,40 +546,50 @@ impl Parser {
         } else if self.peek().kind == Func {
             self.parse_func_type_expr()?
         } else {
-            let name = self.expect(Identifier)?.text;
-            TypeExpr::Named(name)
+            TypeExprKind::Named(self.expect(Identifier)?.text)
+        };
+        let mut ty = TypeExpr {
+            kind,
+            span: start.to(self.prev_token().span),
         };
         loop {
-            match self.peek().kind {
+            kind = match self.peek().kind {
                 OpenBracket => {
                     self.expect(OpenBracket)?;
                     self.expect(CloseBracket)?;
-                    t = TypeExpr::Array(Box::new(t));
+                    TypeExprKind::Array(Box::new(ty))
                 }
                 Chevron => {
                     self.expect(Chevron)?;
-                    t = TypeExpr::Pointer(Box::new(t));
+                    TypeExprKind::Pointer(Box::new(ty))
                 }
-                _ => return Ok(t),
-            }
+                _ => return Ok(ty),
+            };
+            ty = TypeExpr {
+                kind,
+                span: start.to(self.prev_token().span),
+            };
         }
     }
 
-    fn parse_func_type_expr(&mut self) -> PResult<TypeExpr> {
+    fn parse_func_type_expr(&mut self) -> PResult<TypeExprKind> {
         self.expect(Func)?;
         self.expect(OpenParen)?;
-        let mut param_types = Vec::new();
+        let mut params = Vec::new();
         while self.peek().kind != CloseParen {
             if self.peek().kind == Identifier {
-                let name = self.expect(Identifier)?.text;
+                let name_tok = self.expect(Identifier)?;
                 if self.peek().kind == Colon {
                     self.expect(Colon)?;
-                    param_types.push(self.parse_type_expr()?);
+                    params.push(self.parse_type_expr()?);
                 } else {
-                    param_types.push(TypeExpr::Named(name));
+                    params.push(TypeExpr {
+                        kind: TypeExprKind::Named(name_tok.text),
+                        span: name_tok.span,
+                    });
                 }
             } else {
-                param_types.push(self.parse_type_expr()?);
+                params.push(self.parse_type_expr()?);
             }
             if self.peek().kind == Comma {
                 self.expect(Comma)?;
@@ -539,68 +598,74 @@ impl Parser {
             }
         }
         self.expect(CloseParen)?;
-        let return_type = if self.peek().kind == Colon {
+        let ret = if self.peek().kind == Colon {
             self.expect(Colon)?;
             self.parse_type_expr()?
         } else {
-            TypeExpr::Unit
+            let span = self.prev_token().span;
+            TypeExpr {
+                kind: TypeExprKind::Unit,
+                span,
+            }
         };
-        Ok(TypeExpr::Func {
-            return_type: Box::new(return_type),
-            param_types,
+        Ok(TypeExprKind::Func {
+            params,
+            ret: Box::new(ret),
         })
     }
 
     // --- declaration-assignment ---
 
     fn parse_decl_assign_expr(&mut self, head: Expr) -> PResult<Expr> {
+        let start = head.span;
         self.expect(ColonEquals)?;
-        match head {
-            Expr::Ident(name) => Ok(Expr::VarDeclAssign {
+        let kind = match head.kind {
+            ExprKind::Ident(name) => ExprKind::Let {
                 name,
                 value: Box::new(self.parse_expr(0)?),
-            }),
-            Expr::Tuple(elems) => {
+            },
+            ExprKind::Tuple(elems) => {
                 let names = self.pattern_names(elems)?;
-                Ok(Expr::TupleDeclAssign {
+                ExprKind::LetTuple {
                     names,
                     ty: None,
                     value: Box::new(self.parse_expr(0)?),
-                })
-            }
-            _ => {
-                let sp = self.current_token().span;
-                Err(self.error(
-                    sp,
-                    "the left-hand side of ':=' must be an identifier or a tuple pattern",
-                ))
-            }
-        }
-    }
-
-    fn pattern_names(&mut self, elems: Vec<Expr>) -> PResult<Vec<std::string::String>> {
-        let mut names = Vec::with_capacity(elems.len());
-        for elem in elems {
-            match elem {
-                Expr::Ident(name) => names.push(name),
-                _ => {
-                    let sp = self.current_token().span;
-                    return Err(self.error(sp, "a destructuring pattern may only bind identifiers"));
                 }
             }
-        }
-        Ok(names)
+            _ => {
+                return Err(self.error(
+                    head.span,
+                    "the left-hand side of ':=' must be an identifier or a tuple pattern",
+                ));
+            }
+        };
+        Ok(Expr {
+            kind,
+            span: start.to(self.prev_token().span),
+        })
+    }
+
+    fn pattern_names(&mut self, elems: Vec<Expr>) -> PResult<Vec<String>> {
+        elems
+            .into_iter()
+            .map(|elem| match elem.kind {
+                ExprKind::Ident(name) => Ok(name),
+                _ => Err(self.error(elem.span, "a destructuring pattern may only bind identifiers")),
+            })
+            .collect()
     }
 
     // --- statements ---
 
     fn parse_var_decl_stmt(&mut self) -> PResult<Stmt> {
+        let start = self.peek().span;
         self.expect(Let)?;
         if self.peek().kind == OpenParen {
-            let expr = self.parse_let_destructure()?;
-            return Ok(Stmt::Expression {
-                expr,
-                explicit_semicolon: false,
+            let expr = self.parse_let_destructure(start)?;
+            let span = expr.span;
+            return Ok(Stmt {
+                kind: StmtKind::Expression(expr),
+                span,
             });
         }
         let name = self.expect(Identifier)?.text;
@@ -610,17 +675,20 @@ impl Parser {
         } else {
             None
         };
-        let init = if !self.statement_terminates() {
+        let init = if self.statement_terminates() {
+            None
+        } else {
             self.expect(Equals)?;
             Some(self.parse_expr(0)?)
-        } else {
-            None
         };
         self.consume_statement_terminator()?;
-        Ok(Stmt::VarDecl { name, ty, init })
+        Ok(Stmt {
+            kind: StmtKind::VarDecl { name, ty, init },
+            span: start.to(self.prev_token().span),
+        })
     }
 
-    fn parse_let_destructure(&mut self) -> PResult<Expr> {
+    fn parse_let_destructure(&mut self, start: Span) -> PResult<Expr> {
         self.expect(OpenParen)?;
         let mut names = Vec::new();
         while self.peek().kind != CloseParen {
@@ -641,21 +709,30 @@ impl Parser {
         self.expect(Equals)?;
         let value = self.parse_expr(0)?;
         self.consume_statement_terminator()?;
-        Ok(Expr::TupleDeclAssign {
-            names,
-            ty,
-            value: Box::new(value),
+        Ok(Expr {
+            kind: ExprKind::LetTuple {
+                names,
+                ty,
+                value: Box::new(value),
+            },
+            span: start.to(self.prev_token().span),
         })
     }
 
     fn parse_func_decl(&mut self) -> PResult<FuncDecl> {
+        let start = self.peek().span;
         let receiver = if self.peek().kind == OpenParen {
+            let rstart = self.peek().span;
             self.expect(OpenParen)?;
             let name = self.expect(Identifier)?.text;
             self.expect(Colon)?;
             let ty = self.parse_type_expr()?;
             self.expect(CloseParen)?;
-            Some(TypedIdent { name, ty })
+            Some(TypedIdent {
+                name,
+                ty,
+                span: rstart.to(self.prev_token().span),
+            })
         } else {
             None
         };
@@ -668,12 +745,14 @@ impl Parser {
         self.expect(OpenParen)?;
         let mut params = Vec::new();
         while self.peek().kind != CloseParen {
+            let pstart = self.peek().span;
             let param_name = self.expect(Identifier)?.text;
             self.expect(Colon)?;
             let param_type = self.parse_type_expr()?;
             params.push(TypedIdent {
                 name: param_name,
                 ty: param_type,
+                span: pstart.to(self.prev_token().span),
             });
             if self.peek().kind == Comma {
                 self.expect(Comma)?;
@@ -698,10 +777,12 @@ impl Parser {
             params,
             return_type,
             body,
+            span: start.to(self.prev_token().span),
         })
     }
 
     fn parse_struct_decl_stmt(&mut self) -> PResult<Stmt> {
+        let start = self.peek().span;
         self.expect(Struct)?;
         let name = self.expect(Identifier)?.text;
         let mut type_params = Vec::new();
@@ -712,12 +793,14 @@ impl Parser {
         self.paren_stack.push(OpenCurly);
         let mut members = Vec::new();
         while self.peek().kind != CloseCurly {
+            let mstart = self.peek().span;
             let member_name = self.expect(Identifier)?.text;
             self.expect(Colon)?;
             let member_type = self.parse_type_expr()?;
             members.push(TypedIdent {
                 name: member_name,
                 ty: member_type,
+                span: mstart.to(self.prev_token().span),
             });
             if self.peek().kind == Comma {
                 self.expect(Comma)?;
@@ -726,14 +809,18 @@ impl Parser {
             }
         }
         self.expect(CloseCurly)?;
-        Ok(Stmt::StructDecl {
-            name,
-            type_params,
-            members,
+        Ok(Stmt {
+            kind: StmtKind::StructDecl {
+                name,
+                type_params,
+                members,
+            },
+            span: start.to(self.prev_token().span),
         })
     }
 
     fn parse_oneof_decl_stmt(&mut self) -> PResult<Stmt> {
+        let start = self.peek().span;
         self.expect(Oneof)?;
         let name = self.expect(Identifier)?.text;
         let mut type_params = Vec::new();
@@ -744,6 +831,7 @@ impl Parser {
         self.paren_stack.push(OpenCurly);
         let mut variants = Vec::new();
         while self.peek().kind != CloseCurly {
+            let vstart = self.peek().span;
             let variant_name = self.expect(Identifier)?.text;
             let mut payload = Vec::new();
             if self.peek().kind == OpenParen {
@@ -761,6 +849,7 @@ impl Parser {
             variants.push(VariantDef {
                 name: variant_name,
                 payload,
+                span: vstart.to(self.prev_token().span),
             });
             if self.peek().kind == Comma {
                 self.expect(Comma)?;
@@ -769,82 +858,98 @@ impl Parser {
             }
         }
         self.expect(CloseCurly)?;
-        Ok(Stmt::OneofDecl {
-            name,
-            type_params,
-            variants,
+        Ok(Stmt {
+            kind: StmtKind::OneofDecl {
+                name,
+                type_params,
+                variants,
+            },
+            span: start.to(self.prev_token().span),
         })
     }
 
-    fn parse_if_expr(&mut self) -> PResult<Expr> {
+    fn parse_if_expr(&mut self) -> PResult<ExprKind> {
         let cond = self.parse_expr(0)?;
         self.expect(Then)?;
         let then = self.parse_branch_expr()?;
-        // A semicolon may have been inferred before `else`; swallow it.
         if self.peek().kind == Semicolon {
             self.expect(Semicolon)?;
         }
         self.expect(Else)?;
         let els = self.parse_branch_expr()?;
-        Ok(Expr::If {
+        Ok(ExprKind::If {
             cond: Box::new(cond),
             then: Box::new(then),
             els: Box::new(els),
         })
     }
 
-    /// A branch of an if-expression: either a braced value block or a bare expr.
+    /// A branch of an if-expression: a braced value block or a bare expression.
     fn parse_branch_expr(&mut self) -> PResult<Expr> {
         if self.peek().kind == OpenCurly {
+            let start = self.peek().span;
             self.expect(OpenCurly)?;
             let block = self.parse_block_expr();
             self.expect(CloseCurly)?;
-            Ok(Expr::Block(block))
+            Ok(Expr {
+                kind: ExprKind::Block(block),
+                span: start.to(self.prev_token().span),
+            })
         } else {
             self.parse_expr(0)
         }
     }
 
     fn parse_if_stmt(&mut self) -> PResult<Stmt> {
+        let start = self.peek().span;
         self.expect(If)?;
         let cond = self.parse_expr(0)?;
         self.expect(Then)?;
-        let then = if self.peek().kind == OpenCurly {
-            self.expect(OpenCurly)?;
-            let body = self.parse_block_stmt();
-            self.expect(CloseCurly)?;
-            Stmt::Block(body)
-        } else {
-            self.in_then_branch = true;
-            let s = self.parse_stmt()?;
-            self.in_then_branch = false;
-            s
-        };
+        let then = self.parse_branch_stmt()?;
         let els = if self.peek().kind == Else {
             self.expect(Else)?;
-            let s = if self.peek().kind == OpenCurly {
-                self.expect(OpenCurly)?;
-                let body = self.parse_block_stmt();
-                self.expect(CloseCurly)?;
-                Stmt::Block(body)
-            } else {
-                self.parse_stmt()?
-            };
-            Some(Box::new(s))
+            Some(Box::new(self.parse_branch_stmt()?))
         } else {
             None
         };
-        Ok(Stmt::If {
-            cond,
-            then: Box::new(then),
-            els,
+        Ok(Stmt {
+            kind: StmtKind::If {
+                cond,
+                then: Box::new(then),
+                els,
+            },
+            span: start.to(self.prev_token().span),
         })
     }
 
+    /// A branch of an if-statement: a braced block or a single guarded statement.
+    fn parse_branch_stmt(&mut self) -> PResult<Stmt> {
+        if self.peek().kind == OpenCurly {
+            let start = self.peek().span;
+            self.expect(OpenCurly)?;
+            let body = self.parse_block_stmt();
+            self.expect(CloseCurly)?;
+            Ok(Stmt {
+                kind: StmtKind::Block(body),
+                span: start.to(self.prev_token().span),
+            })
+        } else {
+            let was_then = self.in_then_branch;
+            self.in_then_branch = true;
+            let s = self.parse_stmt();
+            self.in_then_branch = was_then;
+            s
+        }
+    }
+
     fn parse_pattern(&mut self) -> PResult<Pattern> {
+        let start = self.peek().span;
         if self.peek().kind == Identifier && self.peek().text == "_" {
             self.expect(Identifier)?;
-            return Ok(Pattern::Wildcard);
+            return Ok(Pattern {
+                kind: PatternKind::Wildcard,
+                span: start,
+            });
         }
         let type_name = self.expect(Identifier)?.text;
         self.expect(Dot)?;
@@ -862,14 +967,18 @@ impl Parser {
             }
             self.expect(CloseParen)?;
         }
-        Ok(Pattern::Variant {
-            type_name,
-            variant,
-            binders,
+        Ok(Pattern {
+            kind: PatternKind::Variant {
+                type_name,
+                variant,
+                binders,
+            },
+            span: start.to(self.prev_token().span),
         })
     }
 
     fn parse_match_stmt(&mut self) -> PResult<Stmt> {
+        let start = self.peek().span;
         self.expect(Match)?;
         let scrutinee = self.parse_expr(0)?;
         self.expect(With)?;
@@ -882,21 +991,17 @@ impl Parser {
             }
             let pattern = self.parse_pattern()?;
             self.expect(FatArrow)?;
-            let body = if self.peek().kind == OpenCurly {
-                self.expect(OpenCurly)?;
-                let body = self.parse_block_stmt();
-                self.expect(CloseCurly)?;
-                Stmt::Block(body)
-            } else {
-                self.parse_stmt()?
-            };
-            arms.push(MatchStmtArm { pattern, body });
+            let body = self.parse_branch_stmt()?;
+            arms.push(StmtArm { pattern, body });
         }
         self.expect(CloseCurly)?;
-        Ok(Stmt::Match { scrutinee, arms })
+        Ok(Stmt {
+            kind: StmtKind::Match { scrutinee, arms },
+            span: start.to(self.prev_token().span),
+        })
     }
 
-    fn parse_match_expr(&mut self) -> PResult<Expr> {
+    fn parse_match_expr(&mut self) -> PResult<ExprKind> {
         let scrutinee = self.parse_expr(0)?;
         self.expect(With)?;
         self.expect(OpenCurly)?;
@@ -909,38 +1014,42 @@ impl Parser {
             let pattern = self.parse_pattern()?;
             self.expect(FatArrow)?;
             let body = self.parse_branch_expr()?;
-            arms.push(MatchExprArm { pattern, body });
+            arms.push(ExprArm { pattern, body });
             self.consume_statement_terminator()?;
         }
         self.expect(CloseCurly)?;
-        Ok(Expr::Match {
+        Ok(ExprKind::Match {
             scrutinee: Box::new(scrutinee),
             arms,
         })
     }
 
     fn parse_for_stmt(&mut self) -> PResult<Stmt> {
+        let start = self.peek().span;
         self.expect(For)?;
         self.expect(OpenParen)?;
         let init = self.parse_stmt()?;
-        let cond = match self.parse_expression_stmt()? {
-            Stmt::Expression { expr, .. } => expr,
-            _ => unreachable!("parse_expression_stmt always yields an expression statement"),
+        let cond = match self.parse_expression_stmt()?.kind {
+            StmtKind::Expression(expr) => expr,
+            _ => unreachable!("parse_expression_stmt yields an expression statement"),
         };
         let iter = self.parse_expr(0)?;
         self.expect(CloseParen)?;
         self.expect(OpenCurly)?;
         let body = self.parse_block_stmt();
         self.expect(CloseCurly)?;
-        Ok(Stmt::For {
-            init: Box::new(init),
-            cond,
-            iter,
-            body,
+        Ok(Stmt {
+            kind: StmtKind::For {
+                init: Box::new(init),
+                cond,
+                iter,
+                body,
+            },
+            span: start.to(self.prev_token().span),
         })
     }
 
-    fn parse_func_call_expr(&mut self, func: Expr) -> PResult<Expr> {
+    fn parse_call_args(&mut self, callee: Expr) -> PResult<ExprKind> {
         self.expect(OpenParen)?;
         let mut args = Vec::new();
         while self.peek().kind != CloseParen {
@@ -952,22 +1061,25 @@ impl Parser {
             }
         }
         self.expect(CloseParen)?;
-        Ok(Expr::FuncCall {
-            func: Box::new(func),
+        Ok(ExprKind::Call {
+            callee: Box::new(callee),
             args,
         })
     }
 
-    fn parse_struct_literal_expr(&mut self, target: Expr) -> PResult<Expr> {
+    fn parse_struct_literal(&mut self, target: Expr) -> PResult<ExprKind> {
         self.expect(OpenCurly)?;
         self.paren_stack.push(OpenCurly);
         let mut members = Vec::new();
         while self.peek().kind != CloseCurly {
+            let mstart = self.peek().span;
             let member_name = self.expect(Identifier)?.text;
             self.expect(Colon)?;
-            members.push(MemberAssign {
+            let value = self.parse_expr(0)?;
+            members.push(MemberInit {
                 name: member_name,
-                value: self.parse_expr(0)?,
+                value,
+                span: mstart.to(self.prev_token().span),
             });
             if self.peek().kind == Comma {
                 self.expect(Comma)?;
@@ -976,83 +1088,98 @@ impl Parser {
             }
         }
         self.expect(CloseCurly)?;
-        Ok(Expr::StructLiteral {
+        Ok(ExprKind::StructLiteral {
             target: Box::new(target),
             members,
         })
     }
 
-    fn parse_struct_member_expr(&mut self, target: Expr) -> PResult<Expr> {
+    fn parse_field(&mut self, target: Expr) -> PResult<ExprKind> {
         self.expect(Dot)?;
-        let member = self.expect(Identifier)?.text;
-        Ok(Expr::StructMember {
+        let name = self.expect(Identifier)?.text;
+        Ok(ExprKind::Field {
             target: Box::new(target),
-            member,
+            name,
         })
     }
 
-    fn parse_array_index_expr(&mut self, array: Expr) -> PResult<Expr> {
+    fn parse_index(&mut self, array: Expr) -> PResult<ExprKind> {
         self.expect(OpenBracket)?;
         let index = self.parse_expr(0)?;
         self.expect(CloseBracket)?;
-        Ok(Expr::ArrayIndex {
+        Ok(ExprKind::Index {
             array: Box::new(array),
             index: Box::new(index),
         })
     }
 
     fn parse_return_stmt(&mut self) -> PResult<Stmt> {
+        let start = self.peek().span;
         self.expect(Return)?;
-        if self.statement_terminates() {
-            self.consume_statement_terminator()?;
-            return Ok(Stmt::Return(None));
-        }
-        let expr = self.parse_expr(0)?;
+        let value = if self.statement_terminates() {
+            None
+        } else {
+            Some(self.parse_expr(0)?)
+        };
         self.consume_statement_terminator()?;
-        Ok(Stmt::Return(Some(expr)))
-    }
-
-    fn parse_expression_stmt(&mut self) -> PResult<Stmt> {
-        let expr = self.parse_expr(0)?;
-        let explicit_semicolon = self.peek().kind == Semicolon;
-        self.consume_statement_terminator()?;
-        Ok(Stmt::Expression {
-            expr,
-            explicit_semicolon,
+        Ok(Stmt {
+            kind: StmtKind::Return(value),
+            span: start.to(self.prev_token().span),
         })
     }
 
-    /// Parse statements up to a closing brace or end of input, recovering past
-    /// any statement that fails so the block still yields as much as possible.
+    fn parse_expression_stmt(&mut self) -> PResult<Stmt> {
+        let start = self.peek().span;
+        let expr = self.parse_expr(0)?;
+        self.consume_statement_terminator()?;
+        Ok(Stmt {
+            kind: StmtKind::Expression(expr),
+            span: start.to(self.prev_token().span),
+        })
+    }
+
+    /// Parse statements up to a closing brace or end of input, recovering past any
+    /// failed statement so the block still yields as much as possible.
     fn parse_block_stmt(&mut self) -> Vec<Stmt> {
         let mut statements = Vec::new();
         loop {
-            let k = self.peek().kind;
-            if k == Eof || k == CloseCurly {
-                break;
-            }
-            if k == Semicolon {
-                self.advance();
-                continue;
-            }
-            match self.parse_stmt() {
-                Ok(s) => statements.push(s),
-                Err(_) => self.synchronize(),
+            match self.peek().kind {
+                Eof | CloseCurly => break,
+                Semicolon => {
+                    self.advance();
+                }
+                _ => match self.parse_stmt() {
+                    Ok(s) => statements.push(s),
+                    Err(_) => self.synchronize(),
+                },
             }
         }
         statements
     }
 
-    /// A value block: its trailing expression statement (if any) becomes the
-    /// result; otherwise the block yields unit.
+    /// A value block: a trailing expression statement becomes the result;
+    /// otherwise the block yields unit.
     fn parse_block_expr(&mut self) -> Block {
         let mut statements = self.parse_block_stmt();
-        let mut result = Expr::Unit;
-        if let Some(Stmt::Expression { .. }) = statements.last() {
-            if let Some(Stmt::Expression { expr, .. }) = statements.pop() {
-                result = expr;
+        let result = match statements.last() {
+            Some(Stmt {
+                kind: StmtKind::Expression(_),
+                ..
+            }) => match statements.pop() {
+                Some(Stmt {
+                    kind: StmtKind::Expression(expr),
+                    ..
+                }) => expr,
+                _ => unreachable!(),
+            },
+            _ => {
+                let span = self.prev_token().span;
+                Expr {
+                    kind: ExprKind::Unit,
+                    span,
+                }
             }
-        }
+        };
         Block {
             statements,
             result: Box::new(result),
@@ -1060,15 +1187,14 @@ impl Parser {
     }
 
     fn parse_use_decl_stmt(&mut self) -> PResult<Stmt> {
+        let start = self.peek().span;
         self.expect(Use)?;
         self.expect(OpenCurly)?;
         self.paren_stack.push(OpenCurly);
         let mut specs = Vec::new();
         while self.peek().kind != CloseCurly {
             let ahead = self.lookahead(2);
-            let alias = if ahead.len() == 2
-                && ahead[0].kind == Identifier
-                && ahead[1].kind == Colon
+            let alias = if ahead.len() == 2 && ahead[0].kind == Identifier && ahead[1].kind == Colon
             {
                 let a = self.expect(Identifier)?.text;
                 self.expect(Colon)?;
@@ -1085,10 +1211,13 @@ impl Parser {
             }
         }
         self.expect(CloseCurly)?;
-        Ok(Stmt::Use(specs))
+        Ok(Stmt {
+            kind: StmtKind::Use(specs),
+            span: start.to(self.prev_token().span),
+        })
     }
 
-    fn parse_module_path(&mut self) -> PResult<Vec<std::string::String>> {
+    fn parse_module_path(&mut self) -> PResult<Vec<String>> {
         let mut path = vec![self.expect(Identifier)?.text];
         while self.peek().kind == Dot {
             self.expect(Dot)?;

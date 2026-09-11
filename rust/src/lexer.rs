@@ -1,9 +1,8 @@
 use logos::Logos;
 
-use crate::diag::Span;
+use crate::diag::{Diagnostic, Span};
 
-/// The lexical token kinds. `logos` compiles these annotations into a single fast
-/// state machine, replacing the hand-rolled ordered-regex loop of the Go lexer.
+/// The lexical token kinds.
 ///
 /// Horizontal whitespace and `//` line comments are skipped outright. End-of-line
 /// is kept as a token because semicolon inference in the parser depends on it.
@@ -18,7 +17,7 @@ pub enum TokenKind {
     #[regex(r"0[xX][0-9a-fA-F](_?[0-9a-fA-F])*|0[bB][01](_?[01])*|[0-9](_?[0-9])*(\.([0-9](_?[0-9])*)?)?([eE][+-]?[0-9](_?[0-9])*)?")]
     Number,
     #[regex(r#""([^"\\]|\\.)*""#)]
-    String,
+    Str,
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*")]
     Identifier,
 
@@ -138,7 +137,7 @@ impl std::fmt::Display for TokenKind {
         let name = match self {
             Eol => "end of line",
             Number => "number",
-            String => "string",
+            Str => "string",
             Identifier => "identifier",
             ColonEquals => "':='",
             FatArrow => "'=>'",
@@ -207,18 +206,16 @@ pub struct Token {
 /// Tokenize `src`. Repeated end-of-line tokens are collapsed to one (so blank
 /// lines never produce spurious statement terminators), horizontal whitespace and
 /// comments are dropped, and a trailing `Eof` token is appended. An unexpected
-/// character yields a diagnostic-bearing `Err` carrying its span.
-pub fn tokenize(src: &str) -> Result<Vec<Token>, Span> {
+/// character yields an `Err` diagnostic locating it.
+pub fn tokenize(src: &str) -> Result<Vec<Token>, Diagnostic> {
     let mut tokens: Vec<Token> = Vec::new();
     let mut lex = TokenKind::lexer(src);
     while let Some(result) = lex.next() {
         let span: Span = lex.span().into();
-        let kind = result.map_err(|_| span)?;
+        let kind = result.map_err(|_| Diagnostic::error(span, "unexpected character"))?;
         // Collapse consecutive end-of-line tokens into a single one.
-        if kind == TokenKind::Eol {
-            if matches!(tokens.last(), Some(t) if t.kind == TokenKind::Eol) {
-                continue;
-            }
+        if kind == TokenKind::Eol && matches!(tokens.last(), Some(t) if t.kind == TokenKind::Eol) {
+            continue;
         }
         tokens.push(Token {
             kind,

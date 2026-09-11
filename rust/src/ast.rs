@@ -1,19 +1,109 @@
-use crate::lexer::TokenKind;
+//! The abstract syntax tree.
+//!
+//! Every node records the [`Span`] of the source it was parsed from, so later
+//! passes can attach precise diagnostics. Each syntactic category is split into a
+//! `*Kind` enum (the shape) paired with a wrapper struct that adds the span; the
+//! closed enums make every downstream `match` exhaustiveness-checked.
 
-/// Type expressions. Mirrors the Go `ast.TypeExpr` interface, but as a closed
-/// `enum` so every `match` over it is checked for exhaustiveness at compile time.
+use crate::diag::Span;
+
+/// A binary operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    And,
+    Or,
+}
+
+impl BinaryOp {
+    pub fn symbol(self) -> &'static str {
+        match self {
+            BinaryOp::Add => "+",
+            BinaryOp::Sub => "-",
+            BinaryOp::Mul => "*",
+            BinaryOp::Div => "/",
+            BinaryOp::Rem => "%",
+            BinaryOp::Eq => "==",
+            BinaryOp::Ne => "!=",
+            BinaryOp::Lt => "<",
+            BinaryOp::Le => "<=",
+            BinaryOp::Gt => ">",
+            BinaryOp::Ge => ">=",
+            BinaryOp::And => "and",
+            BinaryOp::Or => "or",
+        }
+    }
+}
+
+/// A prefix unary operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    Neg,
+    Pos,
+    Not,
+}
+
+impl UnaryOp {
+    pub fn symbol(self) -> &'static str {
+        match self {
+            UnaryOp::Neg => "-",
+            UnaryOp::Pos => "+",
+            UnaryOp::Not => "!",
+        }
+    }
+}
+
+/// A (possibly compound) assignment operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssignOp {
+    Assign,
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+impl AssignOp {
+    pub fn symbol(self) -> &'static str {
+        match self {
+            AssignOp::Assign => "=",
+            AssignOp::Add => "+=",
+            AssignOp::Sub => "-=",
+            AssignOp::Mul => "*=",
+            AssignOp::Div => "/=",
+        }
+    }
+}
+
+/// A type expression, e.g. `i32`, `T^`, `Map string i32`, or `(A, B)`.
 #[derive(Debug, Clone, PartialEq)]
-pub enum TypeExpr {
+pub struct TypeExpr {
+    pub kind: TypeExprKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeExprKind {
     Named(String),
     Array(Box<TypeExpr>),
-    /// Postfix `^` pointer constructor, e.g. `T^`.
+    /// Postfix `^` pointer, e.g. `T^`.
     Pointer(Box<TypeExpr>),
     Func {
-        return_type: Box<TypeExpr>,
-        param_types: Vec<TypeExpr>,
+        params: Vec<TypeExpr>,
+        ret: Box<TypeExpr>,
     },
     Unit,
-    /// Type application by juxtaposition, e.g. `Map string i32`.
+    /// Juxtaposition type application, e.g. `Map string i32`.
     Application {
         constructor: Box<TypeExpr>,
         args: Vec<TypeExpr>,
@@ -22,25 +112,28 @@ pub enum TypeExpr {
     Tuple(Vec<TypeExpr>),
 }
 
-/// A name paired with its declared type (struct member, parameter, receiver).
+/// A name paired with its declared type (struct member, parameter, or receiver).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedIdent {
     pub name: String,
     pub ty: TypeExpr,
+    pub span: Span,
 }
 
-/// A single variant of a sum type: a name plus positional payload slot types.
+/// One variant of a sum type: a name and its positional payload slot types.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VariantDef {
     pub name: String,
     pub payload: Vec<TypeExpr>,
+    pub span: Span,
 }
 
 /// A `name: value` initializer inside a struct literal.
 #[derive(Debug, Clone, PartialEq)]
-pub struct MemberAssign {
+pub struct MemberInit {
     pub name: String,
     pub value: Expr,
+    pub span: Span,
 }
 
 /// A value block: statements followed by a trailing result expression (unit when
@@ -51,10 +144,16 @@ pub struct Block {
     pub result: Box<Expr>,
 }
 
-/// A match-arm pattern. Flat in this iteration: a type-qualified variant pattern
-/// (optionally binding positional payload slots) or the wildcard `_`.
+/// A match-arm pattern: a type-qualified variant (optionally binding positional
+/// payload slots) or the wildcard `_`.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Pattern {
+pub struct Pattern {
+    pub kind: PatternKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PatternKind {
     Variant {
         type_name: String,
         variant: String,
@@ -63,26 +162,35 @@ pub enum Pattern {
     Wildcard,
 }
 
+/// A match arm whose body is an expression.
 #[derive(Debug, Clone, PartialEq)]
-pub struct MatchExprArm {
+pub struct ExprArm {
     pub pattern: Pattern,
     pub body: Expr,
 }
 
+/// A match arm whose body is a statement.
 #[derive(Debug, Clone, PartialEq)]
-pub struct MatchStmtArm {
+pub struct StmtArm {
     pub pattern: Pattern,
     pub body: Stmt,
 }
 
-/// Expressions.
+/// An expression.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Expr {
+pub struct Expr {
+    pub kind: ExprKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExprKind {
     Unit,
     Tuple(Vec<Expr>),
     Bool(bool),
     Str(String),
     Ident(String),
+    /// A numeric literal, kept as its source text pending literal typing.
     Number(String),
     Nil,
     /// Prefix `&`.
@@ -90,29 +198,29 @@ pub enum Expr {
     /// Postfix `^`.
     Deref(Box<Expr>),
     Unary {
-        op: TokenKind,
-        rhs: Box<Expr>,
+        op: UnaryOp,
+        operand: Box<Expr>,
     },
     Binary {
+        op: BinaryOp,
         lhs: Box<Expr>,
-        op: TokenKind,
         rhs: Box<Expr>,
     },
     Block(Block),
     Group(Box<Expr>),
-    FuncCall {
-        func: Box<Expr>,
+    Call {
+        callee: Box<Expr>,
         args: Vec<Expr>,
     },
     StructLiteral {
         target: Box<Expr>,
-        members: Vec<MemberAssign>,
+        members: Vec<MemberInit>,
     },
-    StructMember {
+    Field {
         target: Box<Expr>,
-        member: String,
+        name: String,
     },
-    ArrayIndex {
+    Index {
         array: Box<Expr>,
         index: Box<Expr>,
     },
@@ -123,18 +231,20 @@ pub enum Expr {
     },
     Match {
         scrutinee: Box<Expr>,
-        arms: Vec<MatchExprArm>,
+        arms: Vec<ExprArm>,
     },
     Assign {
+        op: AssignOp,
         target: Box<Expr>,
-        op: TokenKind,
         value: Box<Expr>,
     },
-    VarDeclAssign {
+    /// Walrus binding `name := value`.
+    Let {
         name: String,
         value: Box<Expr>,
     },
-    TupleDeclAssign {
+    /// Tuple-destructuring binding `(a, b) := value` or `let (a, b): T = value`.
+    LetTuple {
         names: Vec<String>,
         ty: Option<TypeExpr>,
         value: Box<Expr>,
@@ -151,23 +261,27 @@ pub struct FuncDecl {
     pub params: Vec<TypedIdent>,
     pub return_type: Option<TypeExpr>,
     pub body: Vec<Stmt>,
+    pub span: Span,
 }
 
-/// A `use` specifier: an optional local alias plus a dotted module path.
+/// A `use` specifier: an optional local alias and a dotted module path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UseSpec {
     pub alias: Option<String>,
     pub path: Vec<String>,
 }
 
-/// Statements.
+/// A statement.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Stmt {
+pub struct Stmt {
+    pub kind: StmtKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StmtKind {
     Block(Vec<Stmt>),
-    Expression {
-        expr: Expr,
-        explicit_semicolon: bool,
-    },
+    Expression(Expr),
     VarDecl {
         name: String,
         ty: Option<TypeExpr>,
@@ -197,7 +311,7 @@ pub enum Stmt {
     },
     Match {
         scrutinee: Expr,
-        arms: Vec<MatchStmtArm>,
+        arms: Vec<StmtArm>,
     },
     Return(Option<Expr>),
     Use(Vec<UseSpec>),

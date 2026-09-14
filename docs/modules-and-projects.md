@@ -67,6 +67,49 @@ use {
 
 Terminology matters: _importing_ happens at project level; modules _use_ other modules.
 
+### Binding granularity
+
+A `use` clause binds one of two things, decided by the **kind of its final path segment**:
+
+* **Module binding** — the final segment names a module. The module name enters
+  local scope and its members are reached through it, qualified:
+
+  ```
+  use { std.io }        // usage: std.io.print("hello")
+  ```
+
+* **Name binding** — the final segment names an item *exported by* a module (a type,
+  a function). That name enters local scope directly and is used **bare**, exactly as
+  if it were declared in this file:
+
+  ```
+  use { std.types.Result }   // usage: let x: Result i32
+  ```
+
+  Several names from one module are grouped with braces on the trailing position:
+
+  ```
+  use { std.types.{ Maybe, Result } }   // both Maybe and Result usable bare
+  ```
+
+A bare-bound name occupies a top-level name in this file's namespace, sharing that
+namespace with local `struct` and `oneof` declarations. Two things claiming the same
+name — two `use` bindings, or a `use` binding and a local declaration — are a
+**name collision**, reported at the `use` site and resolved with an alias.
+
+### Aliasing
+
+Any binding — module or name, single or grouped — may be renamed with the **`as`**
+keyword. The alias is the only local spelling and applies solely within this file:
+
+```
+use {
+  http as web,                              // module alias: web.serve()
+  std.types.Result as CoreResult,           // name alias
+  std.types.{ Maybe, Result as CoreResult },// alias inside a group
+}
+```
+
 ### Rules
 
 * A module must explicitly declare all its individual module dependencies.
@@ -74,8 +117,10 @@ Terminology matters: _importing_ happens at project level; modules _use_ other m
 * The scope of a `use` declaration is the **source file**, not the module.
   * Better for visibility and IDE/editor UX when following the trail to a definition.
   * No jumping across files to determine origin of types or functions.
-* A use declaration may define a local alias: `use { io: std.io, http, auth: server.auth }`
-  * Aliases only apply within the scope of the source file.
+  * A bare name is therefore always resolvable from the top of the same file — no
+    cross-file jumping and no editor tooling required to recover provenance.
+* Bare-bound names and aliases affect only the local surface spelling. Resolution maps
+  them back to the full module path for name mangling and the C ABI.
 
 ### Resolution order
 

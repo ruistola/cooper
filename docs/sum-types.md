@@ -82,9 +82,39 @@ Maybe.Some(5)
 Maybe.None
 ```
 
-Construction is always qualified by the **type**, never by a module. A payload-free
+Construction is qualified by the **type**, never by a module. A payload-free
 variant (`Color.Green`, `Maybe.None`) is a complete value on its own; a variant with
-a payload is completed by a call whose arguments fill its slots.
+a payload is completed by a call whose arguments fill its slots. The type name is the
+canonical spelling: once `Result` is brought into a file's scope by a name-binding
+`use` (`use { std.types.Result }`), one writes `Result.Ok(5)` — never the module path
+`std.types.Result.Ok(5)`.
+
+## Bare variants under an expected type
+
+The type qualifier may be **dropped** wherever the surrounding context already fixes
+which sum type is expected. There a bare variant names the variant directly:
+
+```
+let x: Result i32 string = Ok(5)              // annotation fixes the type
+func f(): Maybe i32 { return None }           // return type fixes the type
+match r with { Ok(n) => …, Err(e) => … }      // scrutinee fixes the type
+```
+
+This is not the numeric-literal case, where a literal is inherently a number and
+context only chooses a width. A variant name like `Ok` is inherently nothing — it may
+belong to many sum types — so the qualifier is droppable **only** when an expected
+type pins the sum type down. With no expected type there is nothing to disambiguate
+against, and the bare form is a type error; the qualified form is required:
+
+```
+let x = Ok(5)     // error: ambiguous variant; write Result.Ok(5)
+```
+
+The expected type is supplied by the same head-only mechanism that drives inference
+(annotated `let` initializers, `return` under a declared return type, call arguments
+against their parameter types). There is **no** leading-dot syntax: a bare variant is
+written as the plain variant name, and its sum type — carrying `Result` into scope —
+comes from the name-binding `use` described in *Modules and Projects*.
 
 ## Inference and expected types
 
@@ -193,8 +223,6 @@ type checker enforces the rest.
 ## Deferred
 
 * **Named-field payloads**, tied to the anonymous-struct / `type` decision.
-* **Bare / unqualified variant forms** (writing `None` where a `Maybe` is expected),
-  which depend on the `use` name-binding system; no mandatory leading-dot syntax.
 * **Richer patterns**: nested sub-patterns, literal patterns, or-patterns (`A | B`),
   guards (`if cond`), and `@`-bindings. The first iteration of `match` is flat.
 

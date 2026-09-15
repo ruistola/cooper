@@ -128,13 +128,16 @@ inferred. Two sources feed the inference:
    the parameters the payload cannot:
 
 ```
-func good(): Result i32 string { return Result.Ok(5) }    // payload fixes T, context fixes E
-func empty(): Maybe i32 { return Maybe.None }             // context fixes T
+func good(): Result i32 string { return Ok(5) }    // payload fixes T, context fixes E
+func empty(): Maybe i32 { return None }            // context fixes T
 ```
 
+Both returns sit under a declared return type, so the sum type is fixed and the
+variants are written bare; the qualified `Result.Ok(5)` / `Maybe.None` remain valid.
 The expected type is a **head-only** hint: it applies to the construction being
 checked and is not propagated into sub-expressions. Without it, a construction whose
-payload under-determines the parameters is rejected:
+payload under-determines the parameters is rejected — and with no expected type there
+is also nothing to resolve a bare variant against, so it must be qualified:
 
 ```
 func f() { m := Maybe.None }   // error: cannot infer type arguments for Maybe.None
@@ -159,8 +162,8 @@ separated from the arm body by the **`with`** keyword, mirroring `if … then`:
 
 ```
 match shape with {
-  Shape.Circle(r) => area := pi * r * r
-  Shape.Rect(w, h) => area := w * h
+  Circle(r) => area := pi * r * r
+  Rect(w, h) => area := w * h
 }
 ```
 
@@ -177,15 +180,16 @@ separator. There is no fallthrough, so the C `switch` colon does not apply.
 
 A pattern is one of:
 
-* a **type-qualified variant pattern** `Type.Variant` or `Type.Variant(binders…)`,
-  where each binder is a camelCase name that binds the corresponding positional
-  payload slot, or `_` to ignore that slot;
+* a **variant pattern** `Variant` or `Variant(binders…)`, where each binder is a
+  camelCase name that binds the corresponding positional payload slot, or `_` to
+  ignore that slot. The scrutinee fixes the sum type, so the variant is normally
+  written bare; a type-qualified `Type.Variant` is also accepted;
 * the **wildcard** `_`, a catch-all that matches any value and binds nothing.
 
 ```
-Shape.Circle(r)      // binds r to the single payload slot
-Shape.Rect(w, _)     // binds w, ignores the second slot
-_                    // catch-all
+Circle(r)      // binds r to the single payload slot
+Rect(w, _)     // binds w, ignores the second slot
+_              // catch-all
 ```
 
 Payload binders are scoped to their own arm: a name bound in one arm is not visible
@@ -204,8 +208,8 @@ type of the whole `match`:
 
 ```
 kind := match shape with {
-  Shape.Circle(r) => 1
-  Shape.Rect(w, h) => 2
+  Circle(r) => 1
+  Rect(w, h) => 2
 }
 ```
 

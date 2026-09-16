@@ -951,9 +951,13 @@ impl Parser {
                 span: start,
             });
         }
-        let type_name = self.expect(Identifier)?.text;
-        self.expect(Dot)?;
-        let variant = self.expect(Identifier)?.text;
+        let first = self.expect(Identifier)?.text;
+        let (type_name, variant) = if self.peek().kind == Dot {
+            self.expect(Dot)?;
+            (Some(first), self.expect(Identifier)?.text)
+        } else {
+            (None, first)
+        };
         let mut binders = Vec::new();
         if self.peek().kind == OpenParen {
             self.expect(OpenParen)?;

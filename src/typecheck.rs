@@ -306,14 +306,16 @@ impl<'g> TypeChecker<'g> {
                 variant,
                 binders,
             } => {
-                if type_name != oneof_name {
-                    self.err(
-                        pattern.span,
-                        format!(
-                            "pattern names sum type {type_name} but the scrutinee has type {oneof_name}"
-                        ),
-                    );
-                    return ArmCover::None;
+                if let Some(type_name) = type_name {
+                    if type_name != oneof_name {
+                        self.err(
+                            pattern.span,
+                            format!(
+                                "pattern names sum type {type_name} but the scrutinee has type {oneof_name}"
+                            ),
+                        );
+                        return ArmCover::None;
+                    }
                 }
                 let Some(payload) = variants.get(variant).cloned() else {
                     self.err(
@@ -389,7 +391,14 @@ impl<'g> TypeChecker<'g> {
                 }
                 Some(Type::Tuple(elem_types))
             }
-            ExprKind::Ident(name) => self.check_ident(name, expr.span),
+            ExprKind::Ident(name) => {
+                // Restore the hint so a bare payload-free variant can see it, but
+                // clear it afterwards so an ordinary identifier never lets it leak.
+                self.expected = expected;
+                let t = self.check_ident(name, expr.span);
+                self.expected = None;
+                t
+            }
             ExprKind::Binary { op, lhs, rhs } => self.check_binary(*op, lhs, rhs, expr.span),
             ExprKind::Unary { op, operand } => self.check_unary(*op, operand, expr.span),
             ExprKind::Group(inner) => self.check_expr(inner),
@@ -433,8 +442,47 @@ impl<'g> TypeChecker<'g> {
         if let Some(t) = self.globals.lookup_func(name) {
             return Some(t.clone());
         }
+        // A bare name may be a variant of the expected sum type (`None` where a
+        // `Maybe` is wanted). `check_variant_access` consumes `self.expected`.
+        if let Some(oneof) = self.expected_variant_oneof(name) {
+            return self.check_variant_access(&oneof, name, span);
+        }
+        if self.any_oneof_with_variant(name).is_some() {
+            self.err(
+                span,
+                format!(
+                    "cannot infer sum type for bare variant {name}; qualify it as Type.{name} or add a type annotation"
+                ),
+            );
+            return None;
+        }
         self.err(span, format!("undefined variable: {name}"));
         None
+    }
+
+    /// The generic template of the currently expected sum type, but only when that
+    /// type names `variant` among its variants. This is the hook that lets a bare
+    /// variant resolve against context; `self.expected` is left intact for the
+    /// caller to consume when seeding type arguments.
+    fn expected_variant_oneof(&self, variant: &str) -> Option<Type> {
+        let Some(Type::Oneof { name, .. }) = &self.expected else {
+            return None;
+        };
+        match self.globals.lookup_oneof(name) {
+            Some(t @ Type::Oneof { variants, .. }) if variants.contains_key(variant) => {
+                Some(t.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// The name of any declared sum type carrying `variant`, used only to phrase a
+    /// targeted error when a bare variant appears with no expected type to fix it.
+    fn any_oneof_with_variant(&self, variant: &str) -> Option<String> {
+        self.globals.oneofs.iter().find_map(|(name, ty)| match ty {
+            Type::Oneof { variants, .. } if variants.contains_key(variant) => Some(name.clone()),
+            _ => None,
+        })
     }
 
     fn check_binary(&mut self, op: BinaryOp, lhs: &Expr, rhs: &Expr, span: Span) -> Option<Type> {
@@ -524,6 +572,26 @@ impl<'g> TypeChecker<'g> {
                 return self.check_variant_construction(&oneof, name, args, callee.span);
             }
         }
+        // A bare callee (`Ok(5)`) is variant construction when the expected type is a
+        // sum type owning that variant; otherwise, if it merely matches some variant,
+        // there is no context to pick a type and that is a hard error.
+        if let ExprKind::Ident(name) = &callee.kind {
+            if let Some(oneof) = self.expected_variant_oneof(name) {
+                return self.check_variant_construction(&oneof, name, args, callee.span);
+            }
+            if self.lookup_var(name).is_none()
+                && self.globals.lookup_func(name).is_none()
+                && self.any_oneof_with_variant(name).is_some()
+            {
+                self.err(
+                    callee.span,
+                    format!(
+                        "cannot infer sum type for bare variant {name}; qualify it as Type.{name} or add a type annotation"
+                    ),
+                );
+                return None;
+            }
+        }
         let callee_type = self.check_expr(callee)?;
         let Type::Func {
             return_type,
@@ -544,12 +612,13 @@ impl<'g> TypeChecker<'g> {
             );
             return None;
         }
-        for (i, (arg, expected)) in args.iter().zip(param_types).enumerate() {
+        for (i, (arg, param)) in args.iter().zip(param_types).enumerate() {
+            self.expected = Some(param.clone());
             let arg_type = self.check_expr(arg)?;
-            if !expected.equals(&arg_type) {
+            if !param.equals(&arg_type) {
                 self.err(
                     arg.span,
-                    format!("argument {} type mismatch: expected {expected}, found {arg_type}", i + 1),
+                    format!("argument {} type mismatch: expected {param}, found {arg_type}", i + 1),
                 );
                 return None;
             }

@@ -23,6 +23,20 @@ Detailed language design notes live in `docs/`:
 Do **not** proactively author tests with each coding task; the user will explicitly ask for tests as a separate task,
 when new code reaches sufficient maturity to become a permanent addition to the project.
 
+### Testing philosophy
+
+Agents have **autonomy within reason**. Lean on Rust's type system to make whole categories of error unrepresentable
+(exhaustive `match`, `Option`/`Result`, newtypes, non-optional fields) rather than writing tests to police what the
+compiler already guarantees. A test earns its place only when it is:
+
+* **documentation** — a runnable example of how a feature is meant to be used; or
+* **a requirements specification** — a concrete statement of what the compiler must accept or reject; or
+* **an empirical check** — a case where we *believe* the compiler decides one way, but can only be certain by running it.
+
+Do not enumerate technically-plausible permutations that carry little practical value. A handful of representative
+cases per feature — the primary happy paths and the diagnostics a user would actually hit — is the target, not
+exhaustive coverage of the input space.
+
 Prefer concise code, modifying existing modules by appending them with new functionality when feasible, as long as the
 module remains cohesive. Only establish new modules, functions and structures, when it is worth the added complexity
 or "glue code" required in order to make new components communicate with the rest of the system.

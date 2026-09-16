@@ -155,7 +155,7 @@ pub struct Pattern {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PatternKind {
     Variant {
-        type_name: String,
+        type_name: Option<String>,
         variant: String,
         binders: Vec<String>,
     },

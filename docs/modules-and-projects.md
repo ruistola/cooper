@@ -115,10 +115,16 @@ use {
 * A module must explicitly declare all its individual module dependencies.
   * `use { server }` does **not** include `server.auth` — use doesn't propagate transitively.
 * The scope of a `use` declaration is the **source file**, not the module.
-  * Better for visibility and IDE/editor UX when following the trail to a definition.
-  * No jumping across files to determine origin of types or functions.
-  * A bare name is therefore always resolvable from the top of the same file — no
-    cross-file jumping and no editor tooling required to recover provenance.
+  * Better for visibility and IDE/editor UX when tracing a name back to another module.
+  * Every name that crosses a **module** boundary appears in this file's `use` block, so
+    a bare name is either listed there or declared somewhere in *this* module — it is
+    never silently pulled from a module the file does not name. Recovering *which module*
+    a name comes from therefore needs only the top of the same file, no cross-module
+    jumping and no editor tooling.
+  * This does not extend to files: like Go's packages, a module's top-level
+    declarations share one namespace across all its files, so a bare name may be defined
+    in a sibling file (and a name declared twice across sibling files is a redeclaration
+    error). Provenance is recoverable to the *module*, not to the file.
 * Bare-bound names and aliases affect only the local surface spelling. Resolution maps
   them back to the full module path for name mangling and the C ABI.
 

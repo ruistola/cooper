@@ -96,6 +96,53 @@ fn rejects_bare_top_level_expression() {
     err("2 + 2\n", "top-level declaration");
 }
 
+/// Parse a use block and return its flattened bindings.
+fn uses(src: &str) -> Vec<cooper::ast::UseSpec> {
+    let tokens = lexer::tokenize(src).expect("lexing succeeds");
+    let result = parser::parse(tokens);
+    assert!(
+        result.errors.is_empty(),
+        "expected no errors, got: {:?}",
+        result.errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    result.uses
+}
+
+#[test]
+fn parses_use_paths_groups_and_aliases() {
+    // A group flattens into one binding per item; `as` renames the local surface
+    // name; a bare path defaults its local name to the final segment.
+    let specs = uses(
+        "use {\n  std.io,\n  http as web,\n  std.types.{ Maybe, Result as CoreResult },\n}\n",
+    );
+    let bindings: Vec<(Vec<&str>, &str)> = specs
+        .iter()
+        .map(|s| {
+            (
+                s.path.iter().map(String::as_str).collect::<Vec<_>>(),
+                s.local_name(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        bindings,
+        vec![
+            (vec!["std", "io"], "io"),
+            (vec!["http"], "web"),
+            (vec!["std", "types", "Maybe"], "Maybe"),
+            (vec!["std", "types", "Result"], "CoreResult"),
+        ]
+    );
+}
+
+#[test]
+fn use_after_declaration_is_rejected() {
+    err(
+        "func f() {}\nuse {\n  std.io,\n}\n",
+        "use declarations must appear at the top of the file",
+    );
+}
+
 #[test]
 fn walrus_binds_identifier() {
     let m = ok("func f() {\n  x := 41 + 1\n}");

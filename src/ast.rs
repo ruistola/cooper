@@ -264,11 +264,32 @@ pub struct FuncDecl {
     pub span: Span,
 }
 
-/// A `use` specifier: an optional local alias and a dotted module path.
+/// A single `use` binding, normalized to bind exactly one local name.
+///
+/// `path` is the dotted trail as written, including the final item segment; for a
+/// grouped entry (`a.b.{ x, y }`) the group is flattened into one `UseSpec` per
+/// item, each carrying the full path (`a.b.x`, `a.b.y`). Whether the final segment
+/// names a module (module binding) or an exported item (name binding) is decided
+/// during resolution against the project's known modules. `alias` is the explicit
+/// `as` rename, if any; otherwise the local surface name is the final segment.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UseSpec {
-    pub alias: Option<String>,
     pub path: Vec<String>,
+    pub alias: Option<String>,
+    pub span: Span,
+}
+
+impl UseSpec {
+    /// The local surface name this binding introduces: its explicit alias, or the
+    /// final path segment.
+    pub fn local_name(&self) -> &str {
+        self.alias.as_deref().unwrap_or_else(|| {
+            self.path
+                .last()
+                .map(String::as_str)
+                .expect("a use path has at least one segment")
+        })
+    }
 }
 
 /// A statement.

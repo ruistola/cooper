@@ -94,6 +94,8 @@ pub enum TokenKind {
     // Reserved keywords
     #[token("and")]
     And,
+    #[token("as")]
+    As,
     #[token("else")]
     Else,
     #[token("false")]
@@ -173,6 +175,7 @@ impl std::fmt::Display for TokenKind {
             OpenParen => "'('",
             CloseParen => "')'",
             And => "'and'",
+            As => "'as'",
             Else => "'else'",
             False => "'false'",
             For => "'for'",

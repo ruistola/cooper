@@ -1257,17 +1257,7 @@ impl Parser {
         self.paren_stack.push(OpenCurly);
         let mut specs = Vec::new();
         while self.peek().kind != CloseCurly {
-            let ahead = self.lookahead(2);
-            let alias = if ahead.len() == 2 && ahead[0].kind == Identifier && ahead[1].kind == Colon
-            {
-                let a = self.expect(Identifier)?.text;
-                self.expect(Colon)?;
-                Some(a)
-            } else {
-                None
-            };
-            let path = self.parse_module_path()?;
-            specs.push(UseSpec { alias, path });
+            self.parse_use_entry(&mut specs)?;
             if self.peek().kind == Comma {
                 self.expect(Comma)?;
             } else {
@@ -1278,12 +1268,61 @@ impl Parser {
         Ok(specs)
     }
 
-    fn parse_module_path(&mut self) -> PResult<Vec<String>> {
-        let mut path = vec![self.expect(Identifier)?.text];
-        while self.peek().kind == Dot {
+    /// Parse one comma-separated entry of a use block. An entry is a dotted path
+    /// with an optional trailing `as` rename, or a path prefix followed by a braced
+    /// group (`prefix.{ a, b as c }`) that expands into one binding per item. Every
+    /// resulting binding is appended to `specs`, flattening groups away.
+    fn parse_use_entry(&mut self, specs: &mut Vec<UseSpec>) -> PResult<()> {
+        let start = self.peek().span;
+        let mut prefix = vec![self.expect(Identifier)?.text];
+        loop {
+            if self.peek().kind != Dot {
+                break;
+            }
             self.expect(Dot)?;
-            path.push(self.expect(Identifier)?.text);
+            if self.peek().kind == OpenCurly {
+                return self.parse_use_group(&prefix, specs);
+            }
+            prefix.push(self.expect(Identifier)?.text);
         }
-        Ok(path)
+        let alias = self.parse_use_alias()?;
+        let span = Span::new(start.start, self.current_token().span.end);
+        specs.push(UseSpec {
+            path: prefix,
+            alias,
+            span,
+        });
+        Ok(())
+    }
+
+    /// Parse a braced group of item bindings sharing `prefix` as their module path,
+    /// appending one flattened `UseSpec` per item.
+    fn parse_use_group(&mut self, prefix: &[String], specs: &mut Vec<UseSpec>) -> PResult<()> {
+        self.expect(OpenCurly)?;
+        while self.peek().kind != CloseCurly {
+            let item = self.expect(Identifier)?;
+            let alias = self.parse_use_alias()?;
+            let span = Span::new(item.span.start, self.current_token().span.end);
+            let mut path = prefix.to_vec();
+            path.push(item.text);
+            specs.push(UseSpec { path, alias, span });
+            if self.peek().kind == Comma {
+                self.expect(Comma)?;
+            } else {
+                break;
+            }
+        }
+        self.expect(CloseCurly)?;
+        Ok(())
+    }
+
+    /// Parse an optional `as <identifier>` rename, returning the alias if present.
+    fn parse_use_alias(&mut self) -> PResult<Option<String>> {
+        if self.peek().kind == As {
+            self.expect(As)?;
+            Ok(Some(self.expect(Identifier)?.text))
+        } else {
+            Ok(None)
+        }
     }
 }

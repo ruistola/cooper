@@ -18,13 +18,18 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{Stmt, UseSpec};
-use crate::diag::Diagnostic;
+use crate::ast::{Stmt, StmtKind, UseSpec};
+use crate::diag::{Diagnostic, Span};
 use crate::lexer;
 use crate::parser;
 use crate::project::{Module, ModulePath, Project};
 use crate::resolve::{self, Globals};
 use crate::{semantic, typecheck};
+
+/// The dependency edges of the module graph: for each module, the set of modules it
+/// depends on, keyed by their index and tagged with the span and file of a `use` that
+/// induced the edge so a cycle can be reported at the source that closes it.
+type Edges = Vec<HashMap<usize, (Span, String)>>;
 
 /// Analyze every module of `project`, returning all diagnostics. Modules are parsed
 /// first; if any file fails to lex or parse the analysis stops there, since a
@@ -147,31 +152,41 @@ fn classify(spec: &UseSpec, known: &HashSet<ModulePath>) -> Option<UseTarget> {
     None
 }
 
-/// Build the dependency edges (module index -> depended-on module indices) from every
-/// module's `use` bindings, reporting any binding that names no known module.
+/// Build the dependency edges from every module's `use` bindings, reporting any
+/// binding that names no known module. Each edge (module index -> depended-on module
+/// index) carries the span and file of a `use` that induced it, so a dependency cycle
+/// can be reported at the source that closes it.
 fn build_edges(
     parsed: &[ParsedModule],
     known: &HashSet<ModulePath>,
-) -> (Vec<HashSet<usize>>, Vec<Diagnostic>) {
+) -> (Edges, Vec<Diagnostic>) {
     let index_of: HashMap<&ModulePath, usize> =
         parsed.iter().enumerate().map(|(i, m)| (&m.path, i)).collect();
-    let mut edges = vec![HashSet::new(); parsed.len()];
+    let mut edges = vec![HashMap::new(); parsed.len()];
     let mut diags = Vec::new();
     for (i, module) in parsed.iter().enumerate() {
-        for spec in module.files.iter().flat_map(|f| &f.uses) {
-            let target = match classify(spec, known) {
-                Some(UseTarget::Module(path)) | Some(UseTarget::Name { module: path, .. }) => path,
-                None => {
-                    diags.push(Diagnostic::error(
-                        spec.span,
-                        format!("no module `{}` in this project", spec.path.join(".")),
-                    ));
-                    continue;
-                }
-            };
-            if let Some(&j) = index_of.get(&target) {
-                if j != i {
-                    edges[i].insert(j);
+        for file in &module.files {
+            for spec in &file.uses {
+                let target = match classify(spec, known) {
+                    Some(UseTarget::Module(path))
+                    | Some(UseTarget::Name { module: path, .. }) => path,
+                    None => {
+                        diags.push(
+                            Diagnostic::error(
+                                spec.span,
+                                format!("no module `{}` in this project", spec.path.join(".")),
+                            )
+                            .in_file(&file.name),
+                        );
+                        continue;
+                    }
+                };
+                if let Some(&j) = index_of.get(&target) {
+                    if j != i {
+                        edges[i]
+                            .entry(j)
+                            .or_insert_with(|| (spec.span, file.name.clone()));
+                    }
                 }
             }
         }
@@ -184,7 +199,7 @@ fn build_edges(
 /// module initialization order both require an acyclic graph.
 fn topological_order(
     parsed: &[ParsedModule],
-    edges: &[HashSet<usize>],
+    edges: &Edges,
 ) -> Result<Vec<usize>, Vec<Diagnostic>> {
     #[derive(Clone, Copy, PartialEq)]
     enum Mark {
@@ -198,26 +213,26 @@ fn topological_order(
     fn visit(
         node: usize,
         parsed: &[ParsedModule],
-        edges: &[HashSet<usize>],
+        edges: &Edges,
         marks: &mut [Mark],
         order: &mut Vec<usize>,
     ) -> Result<(), Vec<Diagnostic>> {
-        match marks[node] {
-            Mark::Done => return Ok(()),
-            Mark::InProgress => {
-                return Err(vec![Diagnostic::error(
-                    crate::diag::Span::new(0, 0),
-                    format!(
-                        "module `{}` is part of a dependency cycle",
-                        parsed[node].path
-                    ),
-                )]);
-            }
-            Mark::Unvisited => {}
-        }
         marks[node] = Mark::InProgress;
-        for &next in &edges[node] {
-            visit(next, parsed, edges, marks, order)?;
+        for (&next, (span, file)) in &edges[node] {
+            match marks[next] {
+                Mark::Done => {}
+                Mark::InProgress => {
+                    return Err(vec![Diagnostic::error(
+                        *span,
+                        format!(
+                            "module `{}` is part of a dependency cycle with `{}`",
+                            parsed[node].path, parsed[next].path
+                        ),
+                    )
+                    .in_file(file)]);
+                }
+                Mark::Unvisited => visit(next, parsed, edges, marks, order)?,
+            }
         }
         marks[node] = Mark::Done;
         order.push(node);
@@ -225,7 +240,9 @@ fn topological_order(
     }
 
     for node in 0..parsed.len() {
-        visit(node, parsed, edges, &mut marks, &mut order)?;
+        if marks[node] == Mark::Unvisited {
+            visit(node, parsed, edges, &mut marks, &mut order)?;
+        }
     }
     Ok(order)
 }
@@ -277,10 +294,11 @@ fn analyze_module(
     interfaces: &HashMap<ModulePath, Globals>,
 ) -> (Vec<Diagnostic>, Globals) {
     let mut diags = Vec::new();
+    let declared = declared_names(&module.files);
     let file_imports: Vec<Imports> = module
         .files
         .iter()
-        .map(|file| build_file_imports(&file.uses, known, interfaces, &mut diags))
+        .map(|file| build_file_imports(file, &declared, known, interfaces, &mut diags))
         .collect();
 
     // Resolve files in order, accumulating one module-wide table of the module's own
@@ -314,21 +332,69 @@ fn analyze_module(
     (diags, interface)
 }
 
+/// The names a module declares across all its files: its top-level structs, sum
+/// types, and free functions. Methods are keyed by receiver, not by a bare name, so
+/// they never collide with an import. Used to reject an import whose local name would
+/// shadow one of the module's own declarations.
+fn declared_names(files: &[ParsedFile]) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for file in files {
+        for stmt in &file.decls {
+            match &stmt.kind {
+                StmtKind::StructDecl { name, .. } | StmtKind::OneofDecl { name, .. } => {
+                    names.insert(name.clone());
+                }
+                StmtKind::FuncDecl(func) if func.receiver.is_none() => {
+                    names.insert(func.name.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+    names
+}
+
 /// Resolve one file's `use` bindings against its dependencies' interfaces, collecting
 /// the imported symbols. Name bindings seed bare names; module bindings record the
-/// dependency's interface under its local spelling for qualified access. Bindings to
-/// an unknown item, or two bindings in this file claiming the same local name, are
-/// reported.
+/// dependency's interface under its local spelling for qualified access. An import is
+/// rejected — reported at its own `use` — when it binds an unknown item, repeats a
+/// local name already bound in this file, or collides with one of `declared`, the
+/// module's own declaration names.
 fn build_file_imports(
-    uses: &[UseSpec],
+    file: &ParsedFile,
+    declared: &HashSet<String>,
     known: &HashSet<ModulePath>,
     interfaces: &HashMap<ModulePath, Globals>,
     diags: &mut Vec<Diagnostic>,
 ) -> Imports {
     let mut imports = Imports::default();
-    for spec in uses {
-        match classify(spec, known) {
-            Some(UseTarget::Module(dep)) => {
+    for spec in &file.uses {
+        let Some(target) = classify(spec, known) else {
+            continue;
+        };
+        let local = spec.local_name().to_string();
+        if declared.contains(&local) {
+            diags.push(
+                Diagnostic::error(
+                    spec.span,
+                    format!("import `{local}` collides with a declaration of the same name in this module"),
+                )
+                .in_file(&file.name),
+            );
+            continue;
+        }
+        if !imports.local_names.insert(local.clone()) {
+            diags.push(
+                Diagnostic::error(
+                    spec.span,
+                    format!("`{local}` is bound by more than one use in this file"),
+                )
+                .in_file(&file.name),
+            );
+            continue;
+        }
+        match target {
+            UseTarget::Module(dep) => {
                 let Some(interface) = interfaces.get(&dep) else {
                     continue;
                 };
@@ -337,28 +403,12 @@ fn build_file_imports(
                     Some(alias) => vec![alias.clone()],
                     None => spec.path.clone(),
                 };
-                let local = spec.local_name().to_string();
-                if !imports.local_names.insert(local.clone()) {
-                    diags.push(Diagnostic::error(
-                        spec.span,
-                        format!("`{local}` is bound by more than one use in this file"),
-                    ));
-                    continue;
-                }
                 imports.modules.insert(spelling, interface.clone());
             }
-            Some(UseTarget::Name { module: dep, item }) => {
+            UseTarget::Name { module: dep, item } => {
                 let Some(interface) = interfaces.get(&dep) else {
                     continue;
                 };
-                let local = spec.local_name().to_string();
-                if !imports.local_names.insert(local.clone()) {
-                    diags.push(Diagnostic::error(
-                        spec.span,
-                        format!("`{local}` is bound by more than one use in this file"),
-                    ));
-                    continue;
-                }
                 if let Some(ty) = interface.lookup_struct(&item) {
                     imports.structs.insert(local, ty.clone());
                     if let Some(methods) = interface.methods.get(&item) {
@@ -369,13 +419,15 @@ fn build_file_imports(
                 } else if let Some(ty) = interface.lookup_func(&item) {
                     imports.funcs.insert(local, ty.clone());
                 } else {
-                    diags.push(Diagnostic::error(
-                        spec.span,
-                        format!("module `{dep}` exports no item named `{item}`"),
-                    ));
+                    diags.push(
+                        Diagnostic::error(
+                            spec.span,
+                            format!("module `{dep}` exports no item named `{item}`"),
+                        )
+                        .in_file(&file.name),
+                    );
                 }
             }
-            None => {}
         }
     }
     imports

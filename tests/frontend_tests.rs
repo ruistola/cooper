@@ -442,13 +442,39 @@ fn colliding_imports_are_reported() {
 }
 
 #[test]
+fn import_colliding_with_a_declaration_is_reported_at_the_use() {
+    // An imported name that shadows one of the importing module's own declarations is
+    // rejected at the `use` site, not at the declaration.
+    let diags = multifile_main_diags(
+        &[(
+            "main",
+            "use {\n  util.inc,\n}\nfunc inc(x: i32): i32 {\n  return x\n}\nfunc main() {}",
+        )],
+        &[("util", "func inc(x: i32): i32 {\n  return x + 1\n}")],
+    );
+    let collision = diags
+        .iter()
+        .find(|d| d.message.contains("collides with a declaration"))
+        .expect("expected a collision error");
+    assert_eq!(collision.file.as_deref(), Some("main"));
+}
+
+#[test]
 fn module_dependency_cycle_is_reported() {
-    project_err(
-        &[
-            ("a", "use {\n  b.fromB,\n}\nfunc fromA(): i32 {\n  return fromB()\n}"),
-            ("b", "use {\n  a.fromA,\n}\nfunc fromB(): i32 {\n  return fromA()\n}"),
-        ],
-        "dependency cycle",
+    let diags = multifile_main_diags(
+        &[("main", "use {\n  b.fromB,\n}\nfunc fromA(): i32 {\n  return fromB()\n}")],
+        &[("b", "use {\n  main.fromA,\n}\nfunc fromB(): i32 {\n  return fromA()\n}")],
+    );
+    // The cycle is reported against a real `use` site, tagged with its file, rather
+    // than an anonymous zero span.
+    let cycle = diags
+        .iter()
+        .find(|d| d.message.contains("dependency cycle"))
+        .expect("expected a dependency-cycle error");
+    assert!(cycle.file.is_some(), "cycle error should name its file");
+    assert!(
+        cycle.span.start != 0 || cycle.span.end != 0,
+        "cycle error should carry a real use span"
     );
 }
 

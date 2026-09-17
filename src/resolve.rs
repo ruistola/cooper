@@ -48,9 +48,10 @@ impl Globals {
 }
 
 /// Resolve `module`'s declarations into a symbol table already seeded with imported
-/// names, so signatures may reference types and functions brought in by `use`. A
-/// local declaration whose name collides with a seeded import is reported by the
-/// same redeclaration checks that guard local duplicates.
+/// names, so signatures may reference types and functions brought in by `use`. The
+/// seeded imports never collide with a local declaration: an import whose local name
+/// shadows one of the module's own declarations is rejected at its `use` before it
+/// reaches this pass, so the redeclaration checks here guard only local duplicates.
 pub(crate) fn resolve_into(mut globals: Globals, module: &[Stmt]) -> (Globals, Vec<Diagnostic>) {
     let mut diags = Vec::new();
     for stmt in module {

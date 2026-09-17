@@ -197,6 +197,46 @@ fn default_integer_literal_is_i32() {
 }
 
 #[test]
+fn literal_exceeding_its_type_is_reported() {
+    err(
+        "func f() {\n  let x: u8 = 300\n}",
+        "out of range for u8",
+    );
+}
+
+#[test]
+fn signed_minimum_literal_is_in_range() {
+    // -128 fits i8 exactly; the sign folds into the literal so it is checked against
+    // the minimum, not rejected as the out-of-range positive 128.
+    ok("func f(): i8 {\n  let x: i8 = -128\n  return x\n}");
+}
+
+#[test]
+fn signed_maximum_boundary_is_enforced() {
+    err(
+        "func f() {\n  let x: i8 = 128\n}",
+        "out of range for i8",
+    );
+}
+
+#[test]
+fn negating_an_unsigned_literal_is_reported() {
+    err(
+        "func f() {\n  let x: u16 = -1\n}",
+        "cannot negate a literal of unsigned type u16",
+    );
+}
+
+#[test]
+fn hexadecimal_literal_is_range_checked() {
+    // 0x1FF = 511 does not fit u8.
+    err(
+        "func f() {\n  let x: u8 = 0x1FF\n}",
+        "out of range for u8",
+    );
+}
+
+#[test]
 fn calling_non_function_is_reported() {
     err(
         "func f() {\n  x := 5\n  x()\n}",

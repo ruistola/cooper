@@ -12,8 +12,8 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Span};
 use crate::resolve::{self, Globals};
 use crate::types::{
-    is_float_name, is_numeric, is_numeric_name, is_primitive, is_unit, unify, Type, DEFAULT_FLOAT,
-    DEFAULT_INT,
+    is_float_name, is_integer_name, is_numeric, is_numeric_name, is_primitive, is_unit, unify,
+    Type, DEFAULT_FLOAT, DEFAULT_INT,
 };
 
 /// Type check `module` against `globals`, returning any diagnostics. `modules` maps
@@ -391,7 +391,7 @@ impl<'g> TypeChecker<'g> {
         // can act on it restore it before recursing.
         let expected = self.expected.take();
         match &expr.kind {
-            ExprKind::Number(text) => Some(number_literal_type(text, expected.as_ref())),
+            ExprKind::Number(text) => Some(self.number_type(text, expr.span, expected, false)),
             ExprKind::Str(_) => Some(Type::Primitive("string".to_string())),
             ExprKind::Bool(_) => Some(Type::Primitive("bool".to_string())),
             ExprKind::Nil => Some(Type::Nil),
@@ -651,7 +651,62 @@ impl<'g> TypeChecker<'g> {
         self.check_expr(expr)
     }
 
+    /// The type of a numeric literal, range-checked when it resolves to an integer.
+    /// `negated` folds a leading sign into the literal so a negative value is checked
+    /// against the type's minimum rather than its maximum.
+    fn number_type(&mut self, text: &str, span: Span, expected: Option<Type>, negated: bool) -> Type {
+        let ty = number_literal_type(text, expected.as_ref());
+        if let Type::Primitive(name) = &ty {
+            if is_integer_name(name) {
+                self.check_integer_range(text, name, negated, span);
+            }
+        }
+        ty
+    }
+
+    /// Report a diagnostic if the integer literal `text`, optionally `negated`, does
+    /// not fit the range of integer type `name`. Values are staged through 128-bit
+    /// arithmetic, wide enough to hold any 64-bit-or-narrower bound exactly.
+    fn check_integer_range(&mut self, text: &str, name: &str, negated: bool, span: Span) {
+        let Some(mag) = parse_literal_magnitude(text) else {
+            self.err(span, format!("integer literal `{text}` is too large to represent"));
+            return;
+        };
+        let bits = integer_bits(name);
+        if name.starts_with('u') {
+            if negated && mag != 0 {
+                self.err(span, format!("cannot negate a literal of unsigned type {name}"));
+                return;
+            }
+            let max = (1u128 << bits) - 1;
+            if mag > max {
+                self.err(span, format!("integer literal {mag} is out of range for {name} (0..={max})"));
+            }
+        } else if negated {
+            let min_magnitude = 1u128 << (bits - 1);
+            if mag > min_magnitude {
+                self.err(span, format!("integer literal -{mag} is out of range for {name} (min -{min_magnitude})"));
+            }
+        } else {
+            let max = (1u128 << (bits - 1)) - 1;
+            if mag > max {
+                self.err(span, format!("integer literal {mag} is out of range for {name} (max {max})"));
+            }
+        }
+    }
+
     fn check_unary(&mut self, op: UnaryOp, operand: &Expr, span: Span) -> Option<Type> {
+        // A sign directly over a numeric literal is part of the literal for the
+        // purpose of range checking: `-128` must be validated against a type's
+        // minimum, not rejected as the out-of-range positive `128`. Intercept it
+        // before the operand is checked on its own so the bound is applied once.
+        if matches!(op, UnaryOp::Neg | UnaryOp::Pos) {
+            if let Some(text) = bare_number_text(operand) {
+                let expected = self.expected.take();
+                let ty = self.number_type(text, span, expected, op == UnaryOp::Neg);
+                return Some(ty);
+            }
+        }
         let operand_type = self.check_expr(operand)?;
         match op {
             UnaryOp::Neg | UnaryOp::Pos => {
@@ -1253,6 +1308,42 @@ fn is_numeric_literal(expr: &Expr) -> bool {
             operand,
         } => is_numeric_literal(operand),
         _ => false,
+    }
+}
+
+/// The bare integer magnitude of a numeric literal, ignoring digit separators and
+/// respecting a hexadecimal or binary prefix. `None` when the value overflows 128
+/// bits — beyond any Cooper integer type, so already out of range.
+fn parse_literal_magnitude(text: &str) -> Option<u128> {
+    let cleaned: String = text.chars().filter(|c| *c != '_').collect();
+    let lower = cleaned.to_ascii_lowercase();
+    if let Some(hex) = lower.strip_prefix("0x") {
+        u128::from_str_radix(hex, 16).ok()
+    } else if let Some(bin) = lower.strip_prefix("0b") {
+        u128::from_str_radix(bin, 2).ok()
+    } else {
+        cleaned.parse::<u128>().ok()
+    }
+}
+
+/// The bit width of an integer type by name.
+fn integer_bits(name: &str) -> u32 {
+    match name {
+        "i8" | "u8" => 8,
+        "i16" | "u16" => 16,
+        "i32" | "u32" => 32,
+        "i64" | "u64" => 64,
+        _ => unreachable!("not an integer type: {name}"),
+    }
+}
+
+/// The literal text of a bare numeric literal seen through groupings, or `None` for
+/// any other expression — the shape a leading sign folds into for range checking.
+fn bare_number_text(expr: &Expr) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Number(text) => Some(text),
+        ExprKind::Group(inner) => bare_number_text(inner),
+        _ => None,
     }
 }
 

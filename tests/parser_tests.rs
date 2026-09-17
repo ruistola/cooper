@@ -11,7 +11,7 @@ fn ok(src: &str) -> Vec<Stmt> {
         "expected no errors, got: {:?}",
         result.errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
-    result.module
+    result.decls
 }
 
 /// Lex and parse `src`, asserting at least one diagnostic mentions `needle`.
@@ -85,9 +85,15 @@ fn recovers_and_reports_multiple_errors() {
     );
     // Recovery still recovered the well-formed final declaration.
     assert!(result
-        .module
+        .decls
         .iter()
         .any(|s| matches!(&s.kind, StmtKind::VarDecl { name, .. } if name == "z")));
+}
+
+#[test]
+fn rejects_bare_top_level_expression() {
+    // A file's top level admits only declarations; a bare expression is rejected.
+    err("2 + 2\n", "top-level declaration");
 }
 
 #[test]

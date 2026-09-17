@@ -8,9 +8,16 @@ Cooper is written in Rust. This document describes the compiler's internal modul
   reports "no errors" or renders every collected diagnostic with [`ariadne`]. The primary focus is
   currently on validation by tests, so the driver stays minimal.
 
-* **src/lib.rs** — The library crate root and pipeline orchestrator. [`analyze`] runs the whole
-  frontend and returns every diagnostic; each semantic phase runs only when the previous produced no
-  errors, so diagnostics stay meaningful rather than cascading.
+* **src/lib.rs** — The library crate root and pipeline orchestrator. [`analyze_project`] runs the
+  whole frontend over an in-memory [`Project`] and returns every diagnostic; each module is analyzed
+  independently, and within a module each semantic phase runs only when the previous produced no
+  errors, so diagnostics stay meaningful rather than cascading. [`analyze`] is a thin convenience
+  that wraps a single source snippet as a one-module program.
+
+* **src/project.rs** — The in-memory project model, the compiler's input. A `Project` (manifest plus
+  modules) is compiled directly rather than reading a filesystem, so the frontend can run anywhere
+  and tests can build programs from in-memory sources. A `Module` is the atomic compilation unit,
+  spanning one or more `SourceFile`s whose top-level declarations unite into one namespace.
 
 * **src/lexer.rs** — Tokenization, built on the [`logos`] derive lexer. Outputs a `Vec<Token>`
   consumed by the parser, or a single diagnostic on an unexpected character.
@@ -48,6 +55,8 @@ Code generation is not yet part of the frontend; the current focus is a correct,
 front end from source text through semantic analysis.
 
 [`analyze`]: ../src/lib.rs
+[`analyze_project`]: ../src/lib.rs
+[`Project`]: ../src/project.rs
 [`ariadne`]: https://crates.io/crates/ariadne
 [`logos`]: https://crates.io/crates/logos
 [`Span`]: ../src/diag.rs

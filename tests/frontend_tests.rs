@@ -299,3 +299,31 @@ fn unreachable_code_after_return_is_reported() {
         "unreachable code",
     );
 }
+
+// --- projects and modules ---
+
+/// A module spanning several source files unites their top-level declarations into
+/// one namespace, so a function in one file may call one defined in another.
+#[test]
+fn module_unites_declarations_across_files() {
+    use cooper::{Module, Project, ProjectKind, SourceFile};
+
+    let project = Project::new(
+        "multifile",
+        ProjectKind::Program,
+        vec![Module::new(
+            "main",
+            vec![
+                SourceFile::new("a", "func one(): i32 {\n  return 1\n}"),
+                SourceFile::new("b", "func two(): i32 {\n  return one() + 1\n}"),
+            ],
+        )],
+    );
+
+    let diags = cooper::analyze_project(&project);
+    assert!(
+        diags.is_empty(),
+        "expected no errors, got: {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}

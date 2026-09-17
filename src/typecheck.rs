@@ -81,7 +81,7 @@ impl<'g> TypeChecker<'g> {
                 self.scopes.pop();
             }
             StmtKind::VarDecl { name, ty, init } => self.check_var_decl(name, ty, init, stmt.span),
-            StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } | StmtKind::Use(_) => {}
+            StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } => {}
             StmtKind::FuncDecl(func) => self.check_func_decl(func),
             StmtKind::If { cond, then, els } => {
                 let cond_type = self.check_expr(cond);

@@ -41,7 +41,7 @@ impl SemanticAnalyzer<'_> {
                     self.analyze_expr(init);
                 }
             }
-            StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } | StmtKind::Use(_) => {}
+            StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } => {}
             StmtKind::FuncDecl(func) => self.analyze_func_decl(func),
             StmtKind::If { cond, then, els } => {
                 self.analyze_expr(cond);

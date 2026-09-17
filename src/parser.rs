@@ -10,19 +10,22 @@ use crate::lexer::{Token, TokenKind};
 
 use TokenKind::*;
 
-/// The outcome of parsing: a best-effort module plus any diagnostics. A non-empty
-/// `errors` means some nodes were recovered rather than cleanly parsed.
-pub struct Parsed {
-    pub module: Vec<Stmt>,
+/// The outcome of parsing one source file: its `use` imports and top-level
+/// declarations, plus any diagnostics. A non-empty `errors` means some nodes were
+/// recovered rather than cleanly parsed.
+pub struct ParsedFile {
+    pub uses: Vec<UseSpec>,
+    pub decls: Vec<Stmt>,
     pub errors: Vec<Diagnostic>,
 }
 
-/// Parse a token stream into a module.
-pub fn parse(tokens: Vec<Token>) -> Parsed {
+/// Parse a token stream into a source file.
+pub fn parse(tokens: Vec<Token>) -> ParsedFile {
     let mut parser = Parser::new(tokens);
-    let module = parser.parse_module();
-    Parsed {
-        module,
+    let (uses, decls) = parser.parse_file();
+    ParsedFile {
+        uses,
+        decls,
         errors: parser.errors,
     }
 }
@@ -329,19 +332,78 @@ impl Parser {
 
     // --- top level ---
 
-    fn parse_module(&mut self) -> Vec<Stmt> {
-        let mut stmts = Vec::new();
+    /// Parse a whole file: any number of top-of-file `use` blocks, then top-level
+    /// declarations. A `use` appearing after a declaration, or a non-declaration at
+    /// top level (a bare expression or control-flow statement), is a diagnostic —
+    /// a file is a set of declarations, not a script.
+    fn parse_file(&mut self) -> (Vec<UseSpec>, Vec<Stmt>) {
+        let mut uses = Vec::new();
+        let mut decls = Vec::new();
+        let mut seen_decl = false;
         while self.peek().kind != Eof {
             if self.peek().kind == Semicolon {
                 self.advance();
                 continue;
             }
-            match self.parse_stmt() {
-                Ok(s) => stmts.push(s),
+            if self.peek().kind == Use {
+                let span = self.peek().span;
+                match self.parse_use_block() {
+                    Ok(specs) => {
+                        if seen_decl {
+                            self.errors.push(Diagnostic::error(
+                                span,
+                                "use declarations must appear at the top of the file",
+                            ));
+                        }
+                        uses.extend(specs);
+                    }
+                    Err(_) => self.synchronize(),
+                }
+                continue;
+            }
+            match self.parse_top_level_decl() {
+                Ok(s) => {
+                    seen_decl = true;
+                    decls.push(s);
+                }
                 Err(_) => self.synchronize(),
             }
         }
-        stmts
+        (uses, decls)
+    }
+
+    /// Parse a single top-level declaration: a function or method, a struct, a sum
+    /// type, or a module-level variable. Anything else — a bare expression or a
+    /// control-flow statement — is rejected: those only belong inside a body.
+    fn parse_top_level_decl(&mut self) -> PResult<Stmt> {
+        if self.peek().kind == OpenParen && self.is_method_decl_ahead() {
+            let decl = self.parse_func_decl()?;
+            let span = decl.span;
+            return Ok(Stmt {
+                kind: StmtKind::FuncDecl(decl),
+                span,
+            });
+        }
+        match self.peek().kind {
+            Func => {
+                let decl = self.parse_func_decl()?;
+                let span = decl.span;
+                Ok(Stmt {
+                    kind: StmtKind::FuncDecl(decl),
+                    span,
+                })
+            }
+            Struct => self.parse_struct_decl_stmt(),
+            Oneof => self.parse_oneof_decl_stmt(),
+            Let => self.parse_var_decl_stmt(),
+            _ => {
+                let token = self.peek();
+                Err(self.error(
+                    token.span,
+                    format!("expected a top-level declaration, found {}", token.kind),
+                ))
+            }
+        }
     }
 
     fn parse_stmt(&mut self) -> PResult<Stmt> {
@@ -369,7 +431,6 @@ impl Parser {
             Return => self.parse_return_stmt(),
             Struct => self.parse_struct_decl_stmt(),
             Oneof => self.parse_oneof_decl_stmt(),
-            Use => self.parse_use_decl_stmt(),
             _ => self.parse_expression_stmt(),
         }
     }
@@ -1190,8 +1251,7 @@ impl Parser {
         }
     }
 
-    fn parse_use_decl_stmt(&mut self) -> PResult<Stmt> {
-        let start = self.peek().span;
+    fn parse_use_block(&mut self) -> PResult<Vec<UseSpec>> {
         self.expect(Use)?;
         self.expect(OpenCurly)?;
         self.paren_stack.push(OpenCurly);
@@ -1215,10 +1275,7 @@ impl Parser {
             }
         }
         self.expect(CloseCurly)?;
-        Ok(Stmt {
-            kind: StmtKind::Use(specs),
-            span: start.to(self.prev_token().span),
-        })
+        Ok(specs)
     }
 
     fn parse_module_path(&mut self) -> PResult<Vec<String>> {

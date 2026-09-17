@@ -314,5 +314,4 @@ pub enum StmtKind {
         arms: Vec<StmtArm>,
     },
     Return(Option<Expr>),
-    Use(Vec<UseSpec>),
 }

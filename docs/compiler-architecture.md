@@ -22,10 +22,11 @@ Cooper is written in Rust. This document describes the compiler's internal modul
 * **src/modules.rs** — Module-graph analysis: the driver behind `analyze_project`. It parses every
   module's files, resolves each `use` binding against the project's modules, orders the module
   dependency graph topologically (rejecting cycles), and builds each module's interface — its
-  exported signatures — in that order. Every module is resolved and checked against its own
-  declarations plus its dependencies' interfaces, never their bodies; imports are seeded into the
-  module's symbol table and stripped from the interface it exports, so `use` does not re-export
-  transitively.
+  exported signatures — in that order. Every module is checked against its own declarations plus its
+  dependencies' interfaces, never their bodies. `use` is file-scoped: each file is resolved and
+  checked against the module's united declarations plus that file's own imports, so an import is
+  invisible in sibling files and is stripped from the interface the module exports — `use` neither
+  leaks across files nor re-exports transitively.
 
 * **src/loader.rs** — Filesystem loading: constructs a `Project` from a source tree rooted at a
   `project.toml`. Each subdirectory of `.coop` files becomes a module named by its path relative to

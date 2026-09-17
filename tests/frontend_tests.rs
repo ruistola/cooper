@@ -520,3 +520,87 @@ fn qualified_access_to_unknown_member_is_reported() {
         "module `util` exports no item named `dec`",
     );
 }
+
+/// Build a program whose `main` module spans several `(file name, source)` files
+/// alongside any number of one-file dependency modules, and return its diagnostics.
+fn multifile_main_diags(
+    main_files: &[(&str, &str)],
+    deps: &[(&str, &str)],
+) -> Vec<cooper::Diagnostic> {
+    use cooper::{Module, Project, ProjectKind, SourceFile};
+    let main = Module::new(
+        "main",
+        main_files
+            .iter()
+            .map(|(name, src)| SourceFile::new(*name, *src))
+            .collect(),
+    );
+    let mut modules = vec![main];
+    modules.extend(
+        deps.iter()
+            .map(|(path, src)| Module::new(path, vec![SourceFile::new(*path, *src)])),
+    );
+    cooper::analyze_project(&Project::new("multifile", ProjectKind::Program, modules))
+}
+
+#[test]
+fn a_use_is_visible_only_in_its_own_file() {
+    // `a.coop` imports `inc`; `b.coop`, in the same module, may not use it bare — a
+    // `use` is file-scoped, so the name is undefined there.
+    let diags = multifile_main_diags(
+        &[
+            ("a", "use {\n  util.inc,\n}\nfunc first(): i32 {\n  return inc(1)\n}"),
+            ("b", "func second(): i32 {\n  return inc(2)\n}"),
+        ],
+        &[("util", "func inc(x: i32): i32 {\n  return x + 1\n}")],
+    );
+    assert!(
+        diags.iter().any(|d| d.message.contains("undefined")
+            && d.file.as_deref() == Some("b")),
+        "expected an 'undefined' error in file b, got: {:?}",
+        diags
+            .iter()
+            .map(|d| (&d.file, &d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn sibling_files_may_import_the_same_name_independently() {
+    // The same bare name imported in two files of one module is not a collision:
+    // each `use` is file-scoped.
+    let diags = multifile_main_diags(
+        &[
+            ("a", "use {\n  util.inc,\n}\nfunc first(): i32 {\n  return inc(1)\n}"),
+            ("b", "use {\n  util.inc,\n}\nfunc second(): i32 {\n  return inc(2)\n}"),
+        ],
+        &[("util", "func inc(x: i32): i32 {\n  return x + 1\n}")],
+    );
+    assert!(
+        diags.is_empty(),
+        "expected no errors, got: {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_declaration_in_one_file_is_visible_across_the_module() {
+    // A type imported in `a.coop` is used there; a function declared in `b.coop`
+    // (module-global) is callable from `a.coop`, confirming declarations unite while
+    // imports do not.
+    let diags = multifile_main_diags(
+        &[
+            (
+                "a",
+                "use {\n  geo.Point,\n}\nfunc origin(): i32 {\n  p := Point { x: 0, y: 0 }\n  return helper(p.x)\n}",
+            ),
+            ("b", "func helper(n: i32): i32 {\n  return n + 1\n}"),
+        ],
+        &[("geo", "struct Point {\n  x: i32,\n  y: i32,\n}")],
+    );
+    assert!(
+        diags.is_empty(),
+        "expected no errors, got: {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}

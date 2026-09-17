@@ -12,10 +12,9 @@
 //! whose final segment names a module is a *module binding*, made available for
 //! qualified access (`other.func()`, `other.Type`), while a path whose prefix names a
 //! module and whose final segment names one of that module's exported items is a
-//! *name binding*, bringing the item into scope for bare use. For now imports are
-//! resolved at module granularity — all of a module's files share one import view;
-//! per-file scoping is a later refinement that does not affect the interface or graph
-//! machinery here.
+//! *name binding*, bringing the item into scope for bare use. Imports are file-scoped:
+//! each file is resolved and checked against the module's united declarations plus its
+//! own `use` bindings, so a name imported in one file is invisible in its siblings.
 
 use std::collections::{HashMap, HashSet};
 
@@ -58,19 +57,19 @@ pub fn analyze(project: &Project) -> Vec<Diagnostic> {
     diags
 }
 
-/// A module whose files have been parsed. `uses` gathers every file's flattened
-/// `use` bindings (module-granularity for now); `files` keeps each file's own
-/// declarations so diagnostics can be attributed to the file they arose in.
+/// A module whose files have been parsed. Top-level declarations unite across files
+/// into the module's namespace, but each file keeps its own `use` bindings, which are
+/// visible only within that file.
 struct ParsedModule {
     path: ModulePath,
-    uses: Vec<UseSpec>,
     files: Vec<ParsedFile>,
 }
 
-/// One parsed source file's declarations, tagged with the file name so later passes
-/// can label their diagnostics.
+/// One parsed source file: its file-scoped `use` bindings and its declarations,
+/// tagged with the file name so later passes can label their diagnostics.
 struct ParsedFile {
     name: String,
+    uses: Vec<UseSpec>,
     decls: Vec<Stmt>,
 }
 
@@ -80,11 +79,10 @@ fn parse_modules(project: &Project) -> Result<Vec<ParsedModule>, Vec<Diagnostic>
     let mut parsed = Vec::with_capacity(project.modules.len());
     let mut errors = Vec::new();
     for module in &project.modules {
-        let (uses, files, module_errors) = parse_module_files(module);
+        let (files, module_errors) = parse_module_files(module);
         errors.extend(module_errors);
         parsed.push(ParsedModule {
             path: module.path.clone(),
-            uses,
             files,
         });
     }
@@ -95,11 +93,10 @@ fn parse_modules(project: &Project) -> Result<Vec<ParsedModule>, Vec<Diagnostic>
     }
 }
 
-/// Lex and parse each source file of `module`, uniting all files' `use` bindings but
-/// keeping declarations grouped per file. Lex and parse diagnostics are tagged with
-/// the originating file.
-fn parse_module_files(module: &Module) -> (Vec<UseSpec>, Vec<ParsedFile>, Vec<Diagnostic>) {
-    let mut uses = Vec::new();
+/// Lex and parse each source file of `module`, keeping each file's `use` bindings and
+/// declarations separate. Lex and parse diagnostics are tagged with the originating
+/// file.
+fn parse_module_files(module: &Module) -> (Vec<ParsedFile>, Vec<Diagnostic>) {
     let mut files = Vec::new();
     let mut errors = Vec::new();
     for file in &module.files {
@@ -112,13 +109,13 @@ fn parse_module_files(module: &Module) -> (Vec<UseSpec>, Vec<ParsedFile>, Vec<Di
         };
         let parsed = parser::parse(tokens);
         errors.extend(parsed.errors.into_iter().map(|d| d.in_file(&file.name)));
-        uses.extend(parsed.uses);
         files.push(ParsedFile {
             name: file.name.clone(),
+            uses: parsed.uses,
             decls: parsed.decls,
         });
     }
-    (uses, files, errors)
+    (files, errors)
 }
 
 /// What a `use` binding refers to, once resolved against the project's modules.
@@ -161,7 +158,7 @@ fn build_edges(
     let mut edges = vec![HashSet::new(); parsed.len()];
     let mut diags = Vec::new();
     for (i, module) in parsed.iter().enumerate() {
-        for spec in &module.uses {
+        for spec in module.files.iter().flat_map(|f| &f.uses) {
             let target = match classify(spec, known) {
                 Some(UseTarget::Module(path)) | Some(UseTarget::Name { module: path, .. }) => path,
                 None => {
@@ -249,49 +246,63 @@ struct Imports {
 }
 
 impl Imports {
-    /// A symbol table seeded with these imports, into which a module's own
-    /// declarations are then resolved.
-    fn seed(&self) -> Globals {
-        Globals {
-            structs: self.structs.clone(),
-            oneofs: self.oneofs.clone(),
-            funcs: self.funcs.clone(),
-            methods: self.methods.clone(),
+    /// This file's bare imports overlaid on `base` — the module's own declarations —
+    /// yielding the symbol table a file's declarations and bodies are checked against.
+    /// Imported structs, sum types, and functions join by local name; an imported
+    /// struct's methods merge under its own name.
+    fn overlay(&self, base: &Globals) -> Globals {
+        let mut globals = base.clone();
+        globals.structs.extend(self.structs.clone());
+        globals.oneofs.extend(self.oneofs.clone());
+        globals.funcs.extend(self.funcs.clone());
+        for (owner, methods) in &self.methods {
+            globals
+                .methods
+                .entry(owner.clone())
+                .or_default()
+                .extend(methods.clone());
         }
+        globals
     }
 }
 
 /// Resolve, type-check, and semantically analyze one module against its dependencies'
 /// interfaces, returning its diagnostics and its own exported interface for later
-/// modules. Diagnostics short-circuit per phase so failures do not cascade within a
-/// module.
+/// modules. Each file is resolved and checked against the module's declarations plus
+/// that file's own imports, so a `use` is visible only in the file that wrote it.
+/// Diagnostics short-circuit per phase so failures do not cascade within a file.
 fn analyze_module(
     module: &ParsedModule,
     known: &HashSet<ModulePath>,
     interfaces: &HashMap<ModulePath, Globals>,
 ) -> (Vec<Diagnostic>, Globals) {
     let mut diags = Vec::new();
-    let imports = build_imports(module, known, interfaces, &mut diags);
+    let file_imports: Vec<Imports> = module
+        .files
+        .iter()
+        .map(|file| build_file_imports(&file.uses, known, interfaces, &mut diags))
+        .collect();
 
-    // Resolve files in order, accumulating one module-wide table; each file's
-    // signature diagnostics are attributed to that file.
-    let mut resolved = imports.seed();
-    for file in &module.files {
-        let (next, resolve_diags) = resolve::resolve_into(resolved, &file.decls);
+    // Resolve files in order, accumulating one module-wide table of the module's own
+    // declarations. Each file's signatures see that file's imports, but those imports
+    // are stripped back out before the next file, so they never leak across files.
+    let mut interface = Globals::default();
+    for (file, imports) in module.files.iter().zip(&file_imports) {
+        let base = imports.overlay(&interface);
+        let (resolved, resolve_diags) = resolve::resolve_into(base, &file.decls);
         diags.extend(resolve_diags.into_iter().map(|d| d.in_file(&file.name)));
-        resolved = next;
+        interface = strip_imports(resolved, imports);
     }
 
-    let interface = strip_imports(resolved.clone(), &imports);
-
     if diags.is_empty() {
-        // Bodies are checked per file against the finished module table, so type and
-        // semantic diagnostics carry their file too.
-        for file in &module.files {
-            let type_diags = typecheck::check(&file.decls, &resolved, &imports.modules);
+        // Bodies are checked per file against the module's declarations plus that
+        // file's imports, so type and semantic diagnostics carry their file too.
+        for (file, imports) in module.files.iter().zip(&file_imports) {
+            let globals = imports.overlay(&interface);
+            let type_diags = typecheck::check(&file.decls, &globals, &imports.modules);
             if type_diags.is_empty() {
                 diags.extend(
-                    semantic::analyze(&file.decls, &resolved)
+                    semantic::analyze(&file.decls, &globals)
                         .into_iter()
                         .map(|d| d.in_file(&file.name)),
                 );
@@ -303,18 +314,19 @@ fn analyze_module(
     (diags, interface)
 }
 
-/// Resolve a module's `use` bindings against its dependencies' interfaces, collecting
+/// Resolve one file's `use` bindings against its dependencies' interfaces, collecting
 /// the imported symbols. Name bindings seed bare names; module bindings record the
 /// dependency's interface under its local spelling for qualified access. Bindings to
-/// an unknown item, or two bindings claiming the same local name, are reported.
-fn build_imports(
-    module: &ParsedModule,
+/// an unknown item, or two bindings in this file claiming the same local name, are
+/// reported.
+fn build_file_imports(
+    uses: &[UseSpec],
     known: &HashSet<ModulePath>,
     interfaces: &HashMap<ModulePath, Globals>,
     diags: &mut Vec<Diagnostic>,
 ) -> Imports {
     let mut imports = Imports::default();
-    for spec in &module.uses {
+    for spec in uses {
         match classify(spec, known) {
             Some(UseTarget::Module(dep)) => {
                 let Some(interface) = interfaces.get(&dep) else {

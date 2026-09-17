@@ -763,6 +763,14 @@ impl<'g> TypeChecker<'g> {
                 return None;
             }
         }
+        // A call whose callee names a numeric type (`i64(x)`, `f32(n)`) is an explicit
+        // constructor-style conversion. Any numeric source type is accepted; the result
+        // is the named type.
+        if let ExprKind::Ident(name) = &callee.kind {
+            if is_numeric_name(name) {
+                return self.check_numeric_conversion(name, args, span);
+            }
+        }
         let callee_type = self.check_expr(callee)?;
         let Type::Func {
             return_type,
@@ -795,6 +803,28 @@ impl<'g> TypeChecker<'g> {
             }
         }
         Some((**return_type).clone())
+    }
+
+    /// Type check an explicit numeric conversion `Type(value)`. The argument may have
+    /// any numeric type; the result is the target primitive type.
+    fn check_numeric_conversion(&mut self, name: &str, args: &[Expr], span: Span) -> Option<Type> {
+        if args.len() != 1 {
+            self.err(
+                span,
+                format!("conversion to {name} takes exactly one argument, found {}", args.len()),
+            );
+            return None;
+        }
+        self.expected = None;
+        let arg_type = self.check_expr(&args[0])?;
+        if !is_numeric(&arg_type) {
+            self.err(
+                args[0].span,
+                format!("cannot convert value of type {arg_type} to {name}; source must be numeric"),
+            );
+            return None;
+        }
+        Some(Type::Primitive(name.to_string()))
     }
 
     /// Type check a bare variant access `Oneof.Variant`. A payload-free variant is a

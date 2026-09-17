@@ -237,6 +237,38 @@ fn hexadecimal_literal_is_range_checked() {
 }
 
 #[test]
+fn numeric_conversion_widens_an_integer() {
+    ok("func f(): i64 {\n  let x: i32 = 5\n  return i64(x)\n}");
+}
+
+#[test]
+fn numeric_conversion_between_int_and_float() {
+    ok("func f(): f64 {\n  let n: i32 = 3\n  return f64(n)\n}");
+    ok("func f(): i32 {\n  let x: f64 = 3.5\n  return i32(x)\n}");
+}
+
+#[test]
+fn numeric_conversion_between_signednesses() {
+    ok("func f(): u8 {\n  let x: i32 = 200\n  return u8(x)\n}");
+}
+
+#[test]
+fn converting_a_non_numeric_value_is_reported() {
+    err(
+        "struct S {}\nfunc f() {\n  let s: S = S{}\n  let x: i32 = i32(s)\n}",
+        "source must be numeric",
+    );
+}
+
+#[test]
+fn numeric_conversion_wrong_arity_is_reported() {
+    err(
+        "func f() {\n  let x: i32 = i32()\n}",
+        "takes exactly one argument",
+    );
+}
+
+#[test]
 fn calling_non_function_is_reported() {
     err(
         "func f() {\n  x := 5\n  x()\n}",

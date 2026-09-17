@@ -12,10 +12,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::{FuncDecl, Stmt, StmtKind, TypeExpr, TypeExprKind, TypedIdent, VariantDef};
 use crate::diag::{Diagnostic, Span};
-use crate::types::Type;
-
-/// The primitive type names recognised without declaration.
-const PRIMITIVES: [&str; 7] = ["bool", "string", "i8", "i32", "i64", "f32", "f64"];
+use crate::types::{is_primitive_name, Type};
 
 /// The module-wide symbol table produced by resolution. Structs, sum types, and
 /// functions are global (only variables are block-scoped), so later passes read
@@ -89,7 +86,7 @@ pub fn resolve_type(
             if type_params.contains(name) {
                 return Some(Type::TypeParam(name.clone()));
             }
-            if PRIMITIVES.contains(&name.as_str()) {
+            if is_primitive_name(name) {
                 return Some(Type::Primitive(name.clone()));
             }
             if let Some(ty) = globals.lookup_struct(name).or_else(|| globals.lookup_oneof(name)) {

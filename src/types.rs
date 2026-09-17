@@ -211,6 +211,37 @@ pub fn unify(template: &Type, concrete: &Type, subst: &mut HashMap<String, Type>
     }
 }
 
+/// The signed integer types, narrowest to widest.
+pub const SIGNED_INTS: [&str; 4] = ["i8", "i16", "i32", "i64"];
+/// The unsigned integer types, narrowest to widest.
+pub const UNSIGNED_INTS: [&str; 4] = ["u8", "u16", "u32", "u64"];
+/// The floating-point types, narrowest to widest.
+pub const FLOATS: [&str; 2] = ["f32", "f64"];
+/// The non-numeric primitives.
+pub const OTHER_PRIMITIVES: [&str; 2] = ["bool", "string"];
+
+/// The type a bare integer literal takes with no contextual type to guide it.
+pub const DEFAULT_INT: &str = "i32";
+/// The type a bare floating-point literal takes with no contextual type to guide it.
+pub const DEFAULT_FLOAT: &str = "f32";
+
+pub fn is_integer_name(name: &str) -> bool {
+    SIGNED_INTS.contains(&name) || UNSIGNED_INTS.contains(&name)
+}
+
+pub fn is_float_name(name: &str) -> bool {
+    FLOATS.contains(&name)
+}
+
+pub fn is_numeric_name(name: &str) -> bool {
+    is_integer_name(name) || is_float_name(name)
+}
+
+/// Whether `name` denotes a built-in primitive type recognised without declaration.
+pub fn is_primitive_name(name: &str) -> bool {
+    is_numeric_name(name) || OTHER_PRIMITIVES.contains(&name)
+}
+
 pub fn is_unit(t: &Type) -> bool {
     matches!(t, Type::Unit)
 }
@@ -220,7 +251,15 @@ pub fn is_primitive(t: &Type, name: &str) -> bool {
 }
 
 pub fn is_numeric(t: &Type) -> bool {
-    matches!(t, Type::Primitive(n) if matches!(n.as_str(), "i8" | "i32" | "i64" | "f32" | "f64"))
+    matches!(t, Type::Primitive(n) if is_numeric_name(n))
+}
+
+pub fn is_integer(t: &Type) -> bool {
+    matches!(t, Type::Primitive(n) if is_integer_name(n))
+}
+
+pub fn is_float(t: &Type) -> bool {
+    matches!(t, Type::Primitive(n) if is_float_name(n))
 }
 
 impl fmt::Display for Type {

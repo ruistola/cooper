@@ -17,6 +17,7 @@ Detailed language design notes live in `docs/`:
 * [Generics](docs/generics.md) — juxtaposition type application, type-parameter binders, generic methods
 * [Sum Types](docs/sum-types.md) — `oneof` declarations, variant payloads, type-qualified construction, inference
 * [Type System](docs/type-system.md) — nominal/structural, no subtyping/variance, constraints as sugar over passing
+* [Numeric Types](docs/numeric-types.md) — primitive grid, literal inference, no implicit conversion, casts and `const` stance
 
 ## Coding guidelines
 

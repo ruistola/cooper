@@ -11,7 +11,10 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::*;
 use crate::diag::{Diagnostic, Span};
 use crate::resolve::{self, Globals};
-use crate::types::{is_numeric, is_primitive, is_unit, unify, Type};
+use crate::types::{
+    is_float_name, is_numeric, is_numeric_name, is_primitive, is_unit, unify, Type, DEFAULT_FLOAT,
+    DEFAULT_INT,
+};
 
 /// Type check `module` against `globals`, returning any diagnostics. `modules` maps
 /// each `use`-bound module's local spelling to its interface, so qualified accesses
@@ -388,7 +391,7 @@ impl<'g> TypeChecker<'g> {
         // can act on it restore it before recursing.
         let expected = self.expected.take();
         match &expr.kind {
-            ExprKind::Number(_) => Some(Type::Primitive("i32".to_string())),
+            ExprKind::Number(text) => Some(number_literal_type(text, expected.as_ref())),
             ExprKind::Str(_) => Some(Type::Primitive("string".to_string())),
             ExprKind::Bool(_) => Some(Type::Primitive("bool".to_string())),
             ExprKind::Nil => Some(Type::Nil),
@@ -408,9 +411,19 @@ impl<'g> TypeChecker<'g> {
                 self.expected = None;
                 t
             }
-            ExprKind::Binary { op, lhs, rhs } => self.check_binary(*op, lhs, rhs, expr.span),
-            ExprKind::Unary { op, operand } => self.check_unary(*op, operand, expr.span),
-            ExprKind::Group(inner) => self.check_expr(inner),
+            ExprKind::Binary { op, lhs, rhs } => {
+                self.check_binary(*op, lhs, rhs, expr.span, expected)
+            }
+            ExprKind::Unary { op, operand } => {
+                // A sign carried over a numeric literal is transparent to contextual
+                // typing, so restore the hint for `-1` to adopt an expected width.
+                self.expected = expected;
+                self.check_unary(*op, operand, expr.span)
+            }
+            ExprKind::Group(inner) => {
+                self.expected = expected;
+                self.check_expr(inner)
+            }
             ExprKind::Call { callee, args } => {
                 self.expected = expected;
                 self.check_call(callee, args, expr.span)
@@ -537,44 +550,18 @@ impl<'g> TypeChecker<'g> {
         None
     }
 
-    fn check_binary(&mut self, op: BinaryOp, lhs: &Expr, rhs: &Expr, span: Span) -> Option<Type> {
-        let left = self.check_expr(lhs)?;
-        let right = self.check_expr(rhs)?;
+    fn check_binary(
+        &mut self,
+        op: BinaryOp,
+        lhs: &Expr,
+        rhs: &Expr,
+        span: Span,
+        expected: Option<Type>,
+    ) -> Option<Type> {
         match op {
-            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => {
-                if is_numeric(&left) && is_numeric(&right) {
-                    return Some(left);
-                }
-                if op == BinaryOp::Add
-                    && is_primitive(&left, "string")
-                    && is_primitive(&right, "string")
-                {
-                    return Some(Type::Primitive("string".to_string()));
-                }
-                self.err(
-                    span,
-                    format!("invalid operands for {}: {left} and {right}", op.symbol()),
-                );
-                None
-            }
-            BinaryOp::Eq | BinaryOp::Ne => {
-                if !left.equals(&right) {
-                    self.err(span, format!("cannot compare {left} and {right}"));
-                    return None;
-                }
-                Some(Type::Primitive("bool".to_string()))
-            }
-            BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-                if is_numeric(&left) && is_numeric(&right) {
-                    return Some(Type::Primitive("bool".to_string()));
-                }
-                self.err(
-                    span,
-                    format!("invalid operands for {}: {left} and {right}", op.symbol()),
-                );
-                None
-            }
             BinaryOp::And | BinaryOp::Or => {
+                let left = self.check_expr(lhs)?;
+                let right = self.check_expr(rhs)?;
                 if is_primitive(&left, "bool") && is_primitive(&right, "bool") {
                     return Some(Type::Primitive("bool".to_string()));
                 }
@@ -584,7 +571,84 @@ impl<'g> TypeChecker<'g> {
                 );
                 None
             }
+            // Every other operator relates two numbers of one type. Operands are
+            // checked so a bare literal adopts the other side's width — `x + 1` with
+            // `x: i64` types `1` as `i64` — and the arithmetic result carries the
+            // shared type, while the comparisons yield `bool`.
+            _ => {
+                let (left, right) = self.check_numeric_operands(lhs, rhs, expected)?;
+                match op {
+                    BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => {
+                        if is_numeric(&left) && left.equals(&right) {
+                            return Some(left);
+                        }
+                        if op == BinaryOp::Add
+                            && is_primitive(&left, "string")
+                            && is_primitive(&right, "string")
+                        {
+                            return Some(Type::Primitive("string".to_string()));
+                        }
+                        self.err(
+                            span,
+                            format!("invalid operands for {}: {left} and {right}", op.symbol()),
+                        );
+                        None
+                    }
+                    BinaryOp::Eq | BinaryOp::Ne => {
+                        if !left.equals(&right) {
+                            self.err(span, format!("cannot compare {left} and {right}"));
+                            return None;
+                        }
+                        Some(Type::Primitive("bool".to_string()))
+                    }
+                    BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
+                        if is_numeric(&left) && left.equals(&right) {
+                            return Some(Type::Primitive("bool".to_string()));
+                        }
+                        self.err(
+                            span,
+                            format!("invalid operands for {}: {left} and {right}", op.symbol()),
+                        );
+                        None
+                    }
+                    BinaryOp::And | BinaryOp::Or => unreachable!("handled above"),
+                }
+            }
         }
+    }
+
+    /// Check the two operands of a numeric or comparison operator, letting a bare
+    /// numeric literal borrow its width from the opposite, non-literal operand so
+    /// `x + 1` needs no suffix. When neither or both sides is a literal, the enclosing
+    /// `expected` hint guides both equally.
+    fn check_numeric_operands(
+        &mut self,
+        lhs: &Expr,
+        rhs: &Expr,
+        expected: Option<Type>,
+    ) -> Option<(Type, Type)> {
+        let lhs_lit = is_numeric_literal(lhs);
+        let rhs_lit = is_numeric_literal(rhs);
+        if lhs_lit && !rhs_lit {
+            let right = self.check_expr_expecting(rhs, expected.clone())?;
+            let hint = if is_numeric(&right) { Some(right.clone()) } else { expected };
+            let left = self.check_expr_expecting(lhs, hint)?;
+            Some((left, right))
+        } else if rhs_lit && !lhs_lit {
+            let left = self.check_expr_expecting(lhs, expected.clone())?;
+            let hint = if is_numeric(&left) { Some(left.clone()) } else { expected };
+            let right = self.check_expr_expecting(rhs, hint)?;
+            Some((left, right))
+        } else {
+            let left = self.check_expr_expecting(lhs, expected.clone())?;
+            let right = self.check_expr_expecting(rhs, expected)?;
+            Some((left, right))
+        }
+    }
+
+    fn check_expr_expecting(&mut self, expr: &Expr, expected: Option<Type>) -> Option<Type> {
+        self.expected = expected;
+        self.check_expr(expr)
     }
 
     fn check_unary(&mut self, op: UnaryOp, operand: &Expr, span: Span) -> Option<Type> {
@@ -755,7 +819,7 @@ impl<'g> TypeChecker<'g> {
         let mut subst = HashMap::new();
         seed_subst_from_expected(oneof, expected.as_ref(), &mut subst);
         for (i, (arg, slot)) in args.iter().zip(&payload).enumerate() {
-            let arg_type = self.check_expr(arg)?;
+            let arg_type = self.check_expr_expecting(arg, Some(slot.substitute(&subst)))?;
             if !unify(slot, &arg_type, &mut subst) {
                 self.err(
                     arg.span,
@@ -853,7 +917,8 @@ impl<'g> TypeChecker<'g> {
                 );
                 continue;
             }
-            let Some(value_type) = self.check_expr(&member.value) else {
+            let Some(value_type) = self.check_expr_expecting(&member.value, Some(member_type.clone()))
+            else {
                 continue;
             };
             if is_generic {
@@ -1141,6 +1206,53 @@ fn oneof_parts(oneof: &Type) -> (String, HashMap<String, Vec<Type>>, Vec<String>
             ..
         } => (name.clone(), variants.clone(), variant_order.clone()),
         _ => unreachable!("check_scrutinee guarantees a sum type"),
+    }
+}
+
+/// The type of a numeric literal. A literal's lexical form fixes its class — a `.`
+/// or exponent (outside a hex/binary prefix) makes it floating-point — and an
+/// `expected` type of the matching class fixes its width: an integer literal adopts
+/// any expected numeric type (so `f32 = 5` holds), a float literal only an expected
+/// float type. Absent a usable hint, the class default (`i32` or `f32`) applies.
+fn number_literal_type(text: &str, expected: Option<&Type>) -> Type {
+    let is_float = literal_is_float(text);
+    if let Some(Type::Primitive(name)) = expected {
+        let adopts = if is_float {
+            is_float_name(name)
+        } else {
+            is_numeric_name(name)
+        };
+        if adopts {
+            return Type::Primitive(name.clone());
+        }
+    }
+    let default = if is_float { DEFAULT_FLOAT } else { DEFAULT_INT };
+    Type::Primitive(default.to_string())
+}
+
+/// Whether a numeric literal is floating-point. Hexadecimal and binary literals are
+/// always integers; a decimal literal is floating-point when it carries a fractional
+/// point or a decimal exponent.
+fn literal_is_float(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    if lower.starts_with("0x") || lower.starts_with("0b") {
+        return false;
+    }
+    lower.contains('.') || lower.contains('e')
+}
+
+/// Whether `expr` is a bare numeric literal, seen through a grouping or a leading
+/// sign — the shapes whose width may be borrowed from the opposite operand of a
+/// binary operator.
+fn is_numeric_literal(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Number(_) => true,
+        ExprKind::Group(inner) => is_numeric_literal(inner),
+        ExprKind::Unary {
+            op: UnaryOp::Neg | UnaryOp::Pos,
+            operand,
+        } => is_numeric_literal(operand),
+        _ => false,
     }
 }
 

@@ -27,6 +27,13 @@ Cooper is written in Rust. This document describes the compiler's internal modul
   module's symbol table and stripped from the interface it exports, so `use` does not re-export
   transitively.
 
+* **src/loader.rs** — Filesystem loading: constructs a `Project` from a source tree rooted at a
+  `project.toml`. Each subdirectory of `.coop` files becomes a module named by its path relative to
+  the module root (`server/auth/` → `server.auth`); root files form the implicit `main` module, and
+  a `main.coop` there makes the project a program. A nested directory with its own `project.toml` is
+  a sub-project and is skipped rather than absorbed. This is the only filesystem-aware component; the
+  rest of the compiler consumes the abstract `Project`.
+
 * **src/lexer.rs** — Tokenization, built on the [`logos`] derive lexer. Outputs a `Vec<Token>`
   consumed by the parser, or a single diagnostic on an unexpected character.
 
@@ -45,7 +52,9 @@ Cooper is written in Rust. This document describes the compiler's internal modul
   unification for generics.
 
 * **src/diag.rs** — Source spans and diagnostics. Every diagnostic carries the [`Span`] of the
-  offending range so the whole pipeline can surface many precisely located errors from one run.
+  offending range so the whole pipeline can surface many precisely located errors from one run, plus
+  the source file that span indexes into (attributed as diagnostics leave the per-file passes) so a
+  multi-file project renders each error against the right source.
 
 * Post-parsing analysis is split into three passes for source-order insensitivity:
   1. **src/resolve.rs** — Declaration resolution. Collects every top-level struct, sum type,

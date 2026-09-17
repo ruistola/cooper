@@ -11,6 +11,7 @@
 pub mod ast;
 pub mod diag;
 pub mod lexer;
+pub mod loader;
 pub mod modules;
 pub mod parser;
 pub mod project;
@@ -20,6 +21,7 @@ pub mod typecheck;
 pub mod types;
 
 pub use diag::{Diagnostic, Span};
+pub use loader::{load_project, LoadError};
 pub use project::{Module, Project, ProjectKind, ProjectManifest, SourceFile};
 
 /// Run the full frontend over a single source snippet and return all diagnostics.

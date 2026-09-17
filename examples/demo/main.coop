@@ -1,0 +1,9 @@
+use {
+  mathx,
+  geometry.Point,
+}
+
+func main(): i32 {
+  p := Point { x: 3, y: 4 }
+  return mathx.add(p.x, p.y)
+}

@@ -39,12 +39,15 @@ impl From<Range<usize>> for Span {
     }
 }
 
-/// A located compiler error with an optional explanatory note.
+/// A located compiler error with an optional explanatory note. `file` names the
+/// source file the span indexes into, set once a diagnostic leaves the per-file
+/// passes so a multi-file project can render each error against the right source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     pub span: Span,
     pub message: String,
     pub note: Option<String>,
+    pub file: Option<String>,
 }
 
 impl Diagnostic {
@@ -53,12 +56,19 @@ impl Diagnostic {
             span,
             message: message.into(),
             note: None,
+            file: None,
         }
     }
 
     /// Attach a secondary note, rendered beneath the primary label.
     pub fn with_note(mut self, note: impl Into<String>) -> Self {
         self.note = Some(note.into());
+        self
+    }
+
+    /// Record the source file this diagnostic's span indexes into.
+    pub fn in_file(mut self, file: impl Into<String>) -> Self {
+        self.file = Some(file.into());
         self
     }
 
@@ -83,13 +93,4 @@ impl Diagnostic {
             .expect("writing a report to an in-memory buffer cannot fail");
         String::from_utf8_lossy(&buf).into_owned()
     }
-}
-
-/// Render every diagnostic in `diagnostics` against `source`, concatenated in
-/// order.
-pub fn render_all(diagnostics: &[Diagnostic], filename: &str, source: &str) -> String {
-    diagnostics
-        .iter()
-        .map(|d| d.render(filename, source))
-        .collect()
 }

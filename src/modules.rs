@@ -58,26 +58,34 @@ pub fn analyze(project: &Project) -> Vec<Diagnostic> {
     diags
 }
 
-/// A module whose files have been parsed and their declarations united. `uses`
-/// gathers every file's flattened `use` bindings (module-granularity for now).
+/// A module whose files have been parsed. `uses` gathers every file's flattened
+/// `use` bindings (module-granularity for now); `files` keeps each file's own
+/// declarations so diagnostics can be attributed to the file they arose in.
 struct ParsedModule {
     path: ModulePath,
     uses: Vec<UseSpec>,
+    files: Vec<ParsedFile>,
+}
+
+/// One parsed source file's declarations, tagged with the file name so later passes
+/// can label their diagnostics.
+struct ParsedFile {
+    name: String,
     decls: Vec<Stmt>,
 }
 
 /// Parse every file of every module. Returns the parsed modules, or every lex and
-/// parse diagnostic if any file was malformed.
+/// parse diagnostic (each tagged with its file) if any file was malformed.
 fn parse_modules(project: &Project) -> Result<Vec<ParsedModule>, Vec<Diagnostic>> {
     let mut parsed = Vec::with_capacity(project.modules.len());
     let mut errors = Vec::new();
     for module in &project.modules {
-        let (uses, decls, module_errors) = parse_module_files(module);
+        let (uses, files, module_errors) = parse_module_files(module);
         errors.extend(module_errors);
         parsed.push(ParsedModule {
             path: module.path.clone(),
             uses,
-            decls,
+            files,
         });
     }
     if errors.is_empty() {
@@ -87,26 +95,30 @@ fn parse_modules(project: &Project) -> Result<Vec<ParsedModule>, Vec<Diagnostic>
     }
 }
 
-/// Lex and parse each source file of `module`, uniting all files' `use` bindings and
-/// top-level declarations.
-fn parse_module_files(module: &Module) -> (Vec<UseSpec>, Vec<Stmt>, Vec<Diagnostic>) {
+/// Lex and parse each source file of `module`, uniting all files' `use` bindings but
+/// keeping declarations grouped per file. Lex and parse diagnostics are tagged with
+/// the originating file.
+fn parse_module_files(module: &Module) -> (Vec<UseSpec>, Vec<ParsedFile>, Vec<Diagnostic>) {
     let mut uses = Vec::new();
-    let mut decls = Vec::new();
+    let mut files = Vec::new();
     let mut errors = Vec::new();
     for file in &module.files {
         let tokens = match lexer::tokenize(&file.source) {
             Ok(tokens) => tokens,
             Err(diag) => {
-                errors.push(diag);
+                errors.push(diag.in_file(&file.name));
                 continue;
             }
         };
         let parsed = parser::parse(tokens);
-        errors.extend(parsed.errors);
+        errors.extend(parsed.errors.into_iter().map(|d| d.in_file(&file.name)));
         uses.extend(parsed.uses);
-        decls.extend(parsed.decls);
+        files.push(ParsedFile {
+            name: file.name.clone(),
+            decls: parsed.decls,
+        });
     }
-    (uses, decls, errors)
+    (uses, files, errors)
 }
 
 /// What a `use` binding refers to, once resolved against the project's modules.
@@ -261,17 +273,31 @@ fn analyze_module(
     let mut diags = Vec::new();
     let imports = build_imports(module, known, interfaces, &mut diags);
 
-    let (resolved, resolve_diags) = resolve::resolve_into(imports.seed(), &module.decls);
-    diags.extend(resolve_diags);
+    // Resolve files in order, accumulating one module-wide table; each file's
+    // signature diagnostics are attributed to that file.
+    let mut resolved = imports.seed();
+    for file in &module.files {
+        let (next, resolve_diags) = resolve::resolve_into(resolved, &file.decls);
+        diags.extend(resolve_diags.into_iter().map(|d| d.in_file(&file.name)));
+        resolved = next;
+    }
 
     let interface = strip_imports(resolved.clone(), &imports);
 
     if diags.is_empty() {
-        let type_diags = typecheck::check(&module.decls, &resolved, &imports.modules);
-        if type_diags.is_empty() {
-            diags.extend(semantic::analyze(&module.decls, &resolved));
-        } else {
-            diags.extend(type_diags);
+        // Bodies are checked per file against the finished module table, so type and
+        // semantic diagnostics carry their file too.
+        for file in &module.files {
+            let type_diags = typecheck::check(&file.decls, &resolved, &imports.modules);
+            if type_diags.is_empty() {
+                diags.extend(
+                    semantic::analyze(&file.decls, &resolved)
+                        .into_iter()
+                        .map(|d| d.in_file(&file.name)),
+                );
+            } else {
+                diags.extend(type_diags.into_iter().map(|d| d.in_file(&file.name)));
+            }
         }
     }
     (diags, interface)

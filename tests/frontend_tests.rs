@@ -451,3 +451,72 @@ fn module_dependency_cycle_is_reported() {
         "dependency cycle",
     );
 }
+
+#[test]
+fn module_binding_reaches_a_function_qualified() {
+    project_ok(&[
+        ("util", "func inc(x: i32): i32 {\n  return x + 1\n}"),
+        (
+            "main",
+            "use {\n  util,\n}\nfunc main(): i32 {\n  return util.inc(41)\n}",
+        ),
+    ]);
+}
+
+#[test]
+fn module_binding_reaches_a_type_qualified() {
+    project_ok(&[
+        ("geo", "struct Point {\n  x: i32,\n  y: i32,\n}"),
+        (
+            "main",
+            "use {\n  geo,\n}\nfunc origin(): i32 {\n  p := geo.Point { x: 0, y: 0 }\n  return p.x\n}",
+        ),
+    ]);
+}
+
+#[test]
+fn module_binding_reaches_a_variant_qualified() {
+    project_ok(&[
+        ("shapes", "oneof Shape {\n  Circle(i32),\n  Rect(i32, i32),\n}"),
+        (
+            "main",
+            "use {\n  shapes,\n}\nfunc main() {\n  s := shapes.Shape.Circle(5)\n}",
+        ),
+    ]);
+}
+
+#[test]
+fn module_binding_may_be_aliased() {
+    project_ok(&[
+        ("helpers", "func inc(x: i32): i32 {\n  return x + 1\n}"),
+        (
+            "main",
+            "use {\n  helpers as h,\n}\nfunc main(): i32 {\n  return h.inc(41)\n}",
+        ),
+    ]);
+}
+
+#[test]
+fn multi_segment_module_is_reached_by_full_spelling() {
+    project_ok(&[
+        ("server.auth", "func token(): i32 {\n  return 7\n}"),
+        (
+            "main",
+            "use {\n  server.auth,\n}\nfunc main(): i32 {\n  return server.auth.token()\n}",
+        ),
+    ]);
+}
+
+#[test]
+fn qualified_access_to_unknown_member_is_reported() {
+    project_err(
+        &[
+            ("util", "func inc(x: i32): i32 {\n  return x + 1\n}"),
+            (
+                "main",
+                "use {\n  util,\n}\nfunc main(): i32 {\n  return util.dec(41)\n}",
+            ),
+        ],
+        "module `util` exports no item named `dec`",
+    );
+}

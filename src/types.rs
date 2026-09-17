@@ -37,6 +37,11 @@ pub enum Type {
     /// A reference to a bound type parameter, e.g. `T` inside `struct Box T`.
     /// Substitution replaces it with a concrete argument at instantiation.
     TypeParam(String),
+    /// A partial or complete reference to a `use`-bound module, by its local
+    /// spelling (`std.io` → `["std", "io"]`). It is an intermediate produced while
+    /// navigating a qualified path: further `.member` access resolves it to the
+    /// member's type. It is never the type of a value.
+    Module(Vec<String>),
 }
 
 impl Type {
@@ -252,6 +257,7 @@ impl fmt::Display for Type {
                 }
             }
             Type::TypeParam(name) => write!(f, "{}", name),
+            Type::Module(path) => write!(f, "module {}", path.join(".")),
         }
     }
 }

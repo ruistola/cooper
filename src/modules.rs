@@ -9,12 +9,13 @@
 //! keeps modules separable (a future cache can supply an interface without source).
 //!
 //! `use` bindings are resolved here against the set of the project's modules: a path
-//! whose final segment names a module is a *module binding* (qualified access, not
-//! yet usable), while a path whose prefix names a module and whose final segment
-//! names one of that module's exported items is a *name binding*, bringing the item
-//! into scope for bare use. For now imports are resolved at module granularity —
-//! all of a module's files share one import view; per-file scoping is a later
-//! refinement that does not affect the interface or graph machinery here.
+//! whose final segment names a module is a *module binding*, made available for
+//! qualified access (`other.func()`, `other.Type`), while a path whose prefix names a
+//! module and whose final segment names one of that module's exported items is a
+//! *name binding*, bringing the item into scope for bare use. For now imports are
+//! resolved at module granularity — all of a module's files share one import view;
+//! per-file scoping is a later refinement that does not affect the interface or graph
+//! machinery here.
 
 use std::collections::{HashMap, HashSet};
 
@@ -229,6 +230,9 @@ struct Imports {
     oneofs: HashMap<String, crate::types::Type>,
     funcs: HashMap<String, crate::types::Type>,
     methods: HashMap<String, HashMap<String, crate::types::Type>>,
+    /// Module bindings keyed by local spelling (`["std", "io"]`, or `["web"]` when
+    /// aliased), each mapped to that module's interface for qualified access.
+    modules: HashMap<Vec<String>, Globals>,
     local_names: HashSet<String>,
 }
 
@@ -263,7 +267,7 @@ fn analyze_module(
     let interface = strip_imports(resolved.clone(), &imports);
 
     if diags.is_empty() {
-        let type_diags = typecheck::check(&module.decls, &resolved);
+        let type_diags = typecheck::check(&module.decls, &resolved, &imports.modules);
         if type_diags.is_empty() {
             diags.extend(semantic::analyze(&module.decls, &resolved));
         } else {
@@ -273,9 +277,10 @@ fn analyze_module(
     (diags, interface)
 }
 
-/// Resolve a module's name bindings against its dependencies' interfaces, collecting
-/// the imported symbols. Bindings to an unknown item, or two bindings claiming the
-/// same local name, are reported. Module bindings introduce no bare names.
+/// Resolve a module's `use` bindings against its dependencies' interfaces, collecting
+/// the imported symbols. Name bindings seed bare names; module bindings record the
+/// dependency's interface under its local spelling for qualified access. Bindings to
+/// an unknown item, or two bindings claiming the same local name, are reported.
 fn build_imports(
     module: &ParsedModule,
     known: &HashSet<ModulePath>,
@@ -284,34 +289,55 @@ fn build_imports(
 ) -> Imports {
     let mut imports = Imports::default();
     for spec in &module.uses {
-        let Some(UseTarget::Name { module: dep, item }) = classify(spec, known) else {
-            continue;
-        };
-        let Some(interface) = interfaces.get(&dep) else {
-            continue;
-        };
-        let local = spec.local_name().to_string();
-        if !imports.local_names.insert(local.clone()) {
-            diags.push(Diagnostic::error(
-                spec.span,
-                format!("`{local}` is bound by more than one use in this file"),
-            ));
-            continue;
-        }
-        if let Some(ty) = interface.lookup_struct(&item) {
-            imports.structs.insert(local, ty.clone());
-            if let Some(methods) = interface.methods.get(&item) {
-                imports.methods.insert(item.clone(), methods.clone());
+        match classify(spec, known) {
+            Some(UseTarget::Module(dep)) => {
+                let Some(interface) = interfaces.get(&dep) else {
+                    continue;
+                };
+                // A module is spelled by its full local path, or by its alias alone.
+                let spelling = match &spec.alias {
+                    Some(alias) => vec![alias.clone()],
+                    None => spec.path.clone(),
+                };
+                let local = spec.local_name().to_string();
+                if !imports.local_names.insert(local.clone()) {
+                    diags.push(Diagnostic::error(
+                        spec.span,
+                        format!("`{local}` is bound by more than one use in this file"),
+                    ));
+                    continue;
+                }
+                imports.modules.insert(spelling, interface.clone());
             }
-        } else if let Some(ty) = interface.lookup_oneof(&item) {
-            imports.oneofs.insert(local, ty.clone());
-        } else if let Some(ty) = interface.lookup_func(&item) {
-            imports.funcs.insert(local, ty.clone());
-        } else {
-            diags.push(Diagnostic::error(
-                spec.span,
-                format!("module `{dep}` exports no item named `{item}`"),
-            ));
+            Some(UseTarget::Name { module: dep, item }) => {
+                let Some(interface) = interfaces.get(&dep) else {
+                    continue;
+                };
+                let local = spec.local_name().to_string();
+                if !imports.local_names.insert(local.clone()) {
+                    diags.push(Diagnostic::error(
+                        spec.span,
+                        format!("`{local}` is bound by more than one use in this file"),
+                    ));
+                    continue;
+                }
+                if let Some(ty) = interface.lookup_struct(&item) {
+                    imports.structs.insert(local, ty.clone());
+                    if let Some(methods) = interface.methods.get(&item) {
+                        imports.methods.insert(item.clone(), methods.clone());
+                    }
+                } else if let Some(ty) = interface.lookup_oneof(&item) {
+                    imports.oneofs.insert(local, ty.clone());
+                } else if let Some(ty) = interface.lookup_func(&item) {
+                    imports.funcs.insert(local, ty.clone());
+                } else {
+                    diags.push(Diagnostic::error(
+                        spec.span,
+                        format!("module `{dep}` exports no item named `{item}`"),
+                    ));
+                }
+            }
+            None => {}
         }
     }
     imports

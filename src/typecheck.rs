@@ -13,9 +13,15 @@ use crate::diag::{Diagnostic, Span};
 use crate::resolve::{self, Globals};
 use crate::types::{is_numeric, is_primitive, is_unit, unify, Type};
 
-/// Type check `module` against `globals`, returning any diagnostics.
-pub fn check(module: &[Stmt], globals: &Globals) -> Vec<Diagnostic> {
-    let mut tc = TypeChecker::new(globals);
+/// Type check `module` against `globals`, returning any diagnostics. `modules` maps
+/// each `use`-bound module's local spelling to its interface, so qualified accesses
+/// (`other.func()`) resolve against the depended-on module.
+pub fn check(
+    module: &[Stmt],
+    globals: &Globals,
+    modules: &HashMap<Vec<String>, Globals>,
+) -> Vec<Diagnostic> {
+    let mut tc = TypeChecker::new(globals, modules);
     tc.scopes.push(HashMap::new());
     for stmt in module {
         tc.check_stmt(stmt);
@@ -25,6 +31,8 @@ pub fn check(module: &[Stmt], globals: &Globals) -> Vec<Diagnostic> {
 
 struct TypeChecker<'g> {
     globals: &'g Globals,
+    /// Bound module interfaces, keyed by local spelling (`["std", "io"]`).
+    modules: &'g HashMap<Vec<String>, Globals>,
     diags: Vec<Diagnostic>,
     /// Block-scoped variable bindings, innermost scope last.
     scopes: Vec<HashMap<String, Type>>,
@@ -40,9 +48,10 @@ struct TypeChecker<'g> {
 }
 
 impl<'g> TypeChecker<'g> {
-    fn new(globals: &'g Globals) -> Self {
+    fn new(globals: &'g Globals, modules: &'g HashMap<Vec<String>, Globals>) -> Self {
         TypeChecker {
             globals,
+            modules,
             diags: Vec::new(),
             scopes: Vec::new(),
             current_return: None,
@@ -442,6 +451,11 @@ impl<'g> TypeChecker<'g> {
         if let Some(t) = self.globals.lookup_func(name) {
             return Some(t.clone());
         }
+        // A bare name that begins some `use`-bound module's spelling is a module
+        // reference, navigated further by qualified field access.
+        if self.module_is_prefix(std::slice::from_ref(&name.to_string())) {
+            return Some(Type::Module(vec![name.to_string()]));
+        }
         // A bare name may be a variant of the expected sum type (`None` where a
         // `Maybe` is wanted). `check_variant_access` consumes `self.expected`.
         if let Some(oneof) = self.expected_variant_oneof(name) {
@@ -483,6 +497,44 @@ impl<'g> TypeChecker<'g> {
             Type::Oneof { variants, .. } if variants.contains_key(variant) => Some(name.clone()),
             _ => None,
         })
+    }
+
+    /// Whether `segs` names a `use`-bound module or the leading segments of one, so
+    /// that a partial spelling (`std` of `std.io`) is still recognised as a module
+    /// reference to be navigated further.
+    fn module_is_prefix(&self, segs: &[String]) -> bool {
+        self.modules.keys().any(|key| key.starts_with(segs))
+    }
+
+    /// Resolve a qualified access `prefix.field` where `prefix` is a module reference.
+    /// Extending the spelling toward a bound module yields a deeper module reference;
+    /// once it names a complete module, `field` selects one of that module's exported
+    /// items.
+    fn check_module_access(&mut self, prefix: &[String], field: &str, span: Span) -> Option<Type> {
+        let mut candidate = prefix.to_vec();
+        candidate.push(field.to_string());
+        if self.module_is_prefix(&candidate) {
+            return Some(Type::Module(candidate));
+        }
+        if let Some(interface) = self.modules.get(prefix) {
+            if let Some(ty) = interface
+                .lookup_struct(field)
+                .or_else(|| interface.lookup_oneof(field))
+                .or_else(|| interface.lookup_func(field))
+            {
+                return Some(ty.clone());
+            }
+            self.err(
+                span,
+                format!("module `{}` exports no item named `{field}`", prefix.join(".")),
+            );
+            return None;
+        }
+        self.err(
+            span,
+            format!("`{field}` is not a member of module `{}`", prefix.join(".")),
+        );
+        None
     }
 
     fn check_binary(&mut self, op: BinaryOp, lhs: &Expr, rhs: &Expr, span: Span) -> Option<Type> {
@@ -871,6 +923,13 @@ impl<'g> TypeChecker<'g> {
     fn check_field(&mut self, target: &Expr, field: &str, span: Span) -> Option<Type> {
         let expected = self.expected.take();
         let mut target_type = self.check_expr(target)?;
+        // A member access whose base is a module reference selects an exported item
+        // (or a deeper module), distinct from struct-field and variant access.
+        if let Type::Module(prefix) = &target_type {
+            let prefix = prefix.clone();
+            self.expected = expected;
+            return self.check_module_access(&prefix, field, span);
+        }
         // A member access whose base is a sum type names a variant constructor.
         if matches!(target_type, Type::Oneof { .. }) {
             self.expected = expected;

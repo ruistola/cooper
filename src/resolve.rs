@@ -20,7 +20,7 @@ const PRIMITIVES: [&str; 7] = ["bool", "string", "i8", "i32", "i64", "f32", "f64
 /// The module-wide symbol table produced by resolution. Structs, sum types, and
 /// functions are global (only variables are block-scoped), so later passes read
 /// declarations directly from here rather than from a scope tree.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Globals {
     pub structs: HashMap<String, Type>,
     pub oneofs: HashMap<String, Type>,
@@ -47,10 +47,11 @@ impl Globals {
     }
 }
 
-/// Resolve every top-level declaration in `module`, returning the global symbol
-/// table alongside any signature diagnostics.
-pub fn resolve(module: &[Stmt]) -> (Globals, Vec<Diagnostic>) {
-    let mut globals = Globals::default();
+/// Resolve `module`'s declarations into a symbol table already seeded with imported
+/// names, so signatures may reference types and functions brought in by `use`. A
+/// local declaration whose name collides with a seeded import is reported by the
+/// same redeclaration checks that guard local duplicates.
+pub(crate) fn resolve_into(mut globals: Globals, module: &[Stmt]) -> (Globals, Vec<Diagnostic>) {
     let mut diags = Vec::new();
     for stmt in module {
         match &stmt.kind {

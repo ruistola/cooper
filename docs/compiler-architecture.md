@@ -19,6 +19,14 @@ Cooper is written in Rust. This document describes the compiler's internal modul
   and tests can build programs from in-memory sources. A `Module` is the atomic compilation unit,
   spanning one or more `SourceFile`s whose top-level declarations unite into one namespace.
 
+* **src/modules.rs** — Module-graph analysis: the driver behind `analyze_project`. It parses every
+  module's files, resolves each `use` binding against the project's modules, orders the module
+  dependency graph topologically (rejecting cycles), and builds each module's interface — its
+  exported signatures — in that order. Every module is resolved and checked against its own
+  declarations plus its dependencies' interfaces, never their bodies; imports are seeded into the
+  module's symbol table and stripped from the interface it exports, so `use` does not re-export
+  transitively.
+
 * **src/lexer.rs** — Tokenization, built on the [`logos`] derive lexer. Outputs a `Vec<Token>`
   consumed by the parser, or a single diagnostic on an unexpected character.
 

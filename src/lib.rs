@@ -11,6 +11,7 @@
 pub mod ast;
 pub mod diag;
 pub mod lexer;
+pub mod modules;
 pub mod parser;
 pub mod project;
 pub mod resolve;
@@ -36,47 +37,8 @@ pub fn analyze(source: &str) -> Vec<Diagnostic> {
     analyze_project(&Project::snippet(source))
 }
 
-/// Run the full frontend over every module of `project`, returning all diagnostics
-/// in module order.
+/// Run the full frontend over every module of `project`, resolving the module
+/// dependency graph and checking each module against its dependencies' interfaces.
 pub fn analyze_project(project: &Project) -> Vec<Diagnostic> {
-    project
-        .modules
-        .iter()
-        .flat_map(analyze_module)
-        .collect()
-}
-
-/// Analyze one module: parse its files, unite their top-level declarations, then
-/// run resolution, type checking, and semantic analysis. `use` imports are parsed
-/// but not yet resolved — cross-module binding arrives with module interfaces.
-fn analyze_module(module: &Module) -> Vec<Diagnostic> {
-    let mut errors = Vec::new();
-    let mut decls = Vec::new();
-    for file in &module.files {
-        let tokens = match lexer::tokenize(&file.source) {
-            Ok(tokens) => tokens,
-            Err(diag) => {
-                errors.push(diag);
-                continue;
-            }
-        };
-        let parsed = parser::parse(tokens);
-        errors.extend(parsed.errors);
-        decls.extend(parsed.decls);
-    }
-    if !errors.is_empty() {
-        return errors;
-    }
-
-    let (globals, resolve_errors) = resolve::resolve(&decls);
-    if !resolve_errors.is_empty() {
-        return resolve_errors;
-    }
-
-    let type_errors = typecheck::check(&decls, &globals);
-    if !type_errors.is_empty() {
-        return type_errors;
-    }
-
-    semantic::analyze(&decls, &globals)
+    modules::analyze(project)
 }

@@ -327,3 +327,127 @@ fn module_unites_declarations_across_files() {
         diags.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+/// Build a program from one-file modules, each given as `(module path, source)`, and
+/// return its diagnostics.
+fn project_diags(modules: &[(&str, &str)]) -> Vec<cooper::Diagnostic> {
+    use cooper::{Module, Project, ProjectKind, SourceFile};
+    let modules = modules
+        .iter()
+        .map(|(path, src)| Module::new(path, vec![SourceFile::new(*path, *src)]))
+        .collect();
+    cooper::analyze_project(&Project::new("multimodule", ProjectKind::Program, modules))
+}
+
+/// Assert the multi-module program is clean.
+fn project_ok(modules: &[(&str, &str)]) {
+    let diags = project_diags(modules);
+    assert!(
+        diags.is_empty(),
+        "expected no errors, got: {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Assert some diagnostic of the multi-module program mentions `needle`.
+fn project_err(modules: &[(&str, &str)], needle: &str) {
+    let diags = project_diags(modules);
+    assert!(
+        diags.iter().any(|d| d.message.contains(needle)),
+        "expected an error containing {needle:?}, got: {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn name_binding_imports_a_function_for_bare_use() {
+    project_ok(&[
+        ("util", "func inc(x: i32): i32 {\n  return x + 1\n}"),
+        (
+            "main",
+            "use {\n  util.inc,\n}\nfunc main(): i32 {\n  return inc(41)\n}",
+        ),
+    ]);
+}
+
+#[test]
+fn name_binding_imports_a_type_for_construction_and_fields() {
+    project_ok(&[
+        ("geo", "struct Point {\n  x: i32,\n  y: i32,\n}"),
+        (
+            "main",
+            "use {\n  geo.Point,\n}\nfunc origin(): i32 {\n  p := Point { x: 0, y: 0 }\n  return p.x\n}",
+        ),
+    ]);
+}
+
+#[test]
+fn imported_name_may_be_aliased() {
+    project_ok(&[
+        ("util", "func inc(x: i32): i32 {\n  return x + 1\n}"),
+        (
+            "main",
+            "use {\n  util.inc as bump,\n}\nfunc main(): i32 {\n  return bump(41)\n}",
+        ),
+    ]);
+}
+
+#[test]
+fn use_of_unknown_module_is_reported() {
+    project_err(
+        &[("main", "use {\n  missing.thing,\n}\nfunc main() {}")],
+        "no module `missing.thing` in this project",
+    );
+}
+
+#[test]
+fn use_of_unexported_item_is_reported() {
+    project_err(
+        &[
+            ("util", "func inc(x: i32): i32 {\n  return x + 1\n}"),
+            ("main", "use {\n  util.dec,\n}\nfunc main() {}"),
+        ],
+        "module `util` exports no item named `dec`",
+    );
+}
+
+#[test]
+fn imports_do_not_re_export_transitively() {
+    // `mid` uses `base.Thing`, but does not re-export it; `main` using `mid.Thing`
+    // must fail — a name reaches a module only through that module's own use.
+    project_err(
+        &[
+            ("base", "struct Thing {\n  v: i32,\n}"),
+            ("mid", "use {\n  base.Thing,\n}\nfunc wrap(t: Thing): i32 {\n  return t.v\n}"),
+            ("main", "use {\n  mid.Thing,\n}\nfunc main() {}"),
+        ],
+        "module `mid` exports no item named `Thing`",
+    );
+}
+
+#[test]
+fn colliding_imports_are_reported() {
+    // Two imports aliased to the same local name collide.
+    project_err(
+        &[
+            ("a", "func f(): i32 {\n  return 1\n}"),
+            ("b", "func g(): i32 {\n  return 2\n}"),
+            (
+                "main",
+                "use {\n  a.f as dup,\n  b.g as dup,\n}\nfunc main() {}",
+            ),
+        ],
+        "bound by more than one use",
+    );
+}
+
+#[test]
+fn module_dependency_cycle_is_reported() {
+    project_err(
+        &[
+            ("a", "use {\n  b.fromB,\n}\nfunc fromA(): i32 {\n  return fromB()\n}"),
+            ("b", "use {\n  a.fromA,\n}\nfunc fromB(): i32 {\n  return fromA()\n}"),
+        ],
+        "dependency cycle",
+    );
+}

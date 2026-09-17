@@ -89,7 +89,9 @@ A `use` clause binds one of two things, decided by the **kind of its final path 
   Several names from one module are grouped with braces on the trailing position:
 
   ```
-  use { std.types.{ Maybe, Result } }   // both Maybe and Result usable bare
+  use {
+    std.types.{ Maybe, Result }   // both Maybe and Result usable bare
+  }
   ```
 
 A bare-bound name occupies a top-level name in this file's namespace, sharing that

@@ -333,15 +333,17 @@ fn analyze_module(
 }
 
 /// The names a module declares across all its files: its top-level structs, sum
-/// types, and free functions. Methods are keyed by receiver, not by a bare name, so
-/// they never collide with an import. Used to reject an import whose local name would
-/// shadow one of the module's own declarations.
+/// types, free functions, and module-level variables. Methods are keyed by receiver,
+/// not by a bare name, so they never collide with an import. Used to reject an import
+/// whose local name would shadow one of the module's own declarations.
 fn declared_names(files: &[ParsedFile]) -> HashSet<String> {
     let mut names = HashSet::new();
     for file in files {
         for stmt in &file.decls {
             match &stmt.kind {
-                StmtKind::StructDecl { name, .. } | StmtKind::OneofDecl { name, .. } => {
+                StmtKind::StructDecl { name, .. }
+                | StmtKind::OneofDecl { name, .. }
+                | StmtKind::VarDecl { name, .. } => {
                     names.insert(name.clone());
                 }
                 StmtKind::FuncDecl(func) if func.receiver.is_none() => {

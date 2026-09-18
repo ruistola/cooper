@@ -1,7 +1,7 @@
 //! Declaration resolution: the first semantic pass.
 //!
-//! This pass collects every top-level struct, sum type, function, and method into
-//! a global symbol table ([`Globals`]) and validates each declaration's signature
+//! This pass collects every top-level struct, sum type, function, method, and
+//! variable into a global symbol table ([`Globals`]) and validates each declaration's signature
 //! in isolation — duplicate names, duplicate members or variants, undefined types
 //! in signatures, generic arity, and receiver/method well-formedness. Function
 //! *bodies* are not walked here; the type checker does that against the finished
@@ -24,6 +24,15 @@ pub struct Globals {
     pub funcs: HashMap<String, Type>,
     /// Receiver struct name -> method name -> bound signature (receiver excluded).
     pub methods: HashMap<String, HashMap<String, Type>>,
+    /// Module-level variable names. Top-level `let` bindings occupy the module
+    /// namespace alongside structs, sum types, and functions; unlike a block-scoped
+    /// `let` — an ordered sequence where a re-binding shadows its predecessor — the
+    /// module namespace is an unordered union across a module's files, so a repeated
+    /// name is a redeclaration, never a shadow. Only the name is recorded: a
+    /// binding's type is inferred later and top-level variables are not yet consumed
+    /// as values by downstream passes, so this table exists purely to enforce the
+    /// namespace rule.
+    pub vars: HashSet<String>,
 }
 
 impl Globals {
@@ -64,6 +73,9 @@ pub(crate) fn resolve_into(mut globals: Globals, module: &[Stmt]) -> (Globals, V
                 variants,
             } => resolve_oneof_decl(&mut globals, &mut diags, name, type_params, variants, stmt.span),
             StmtKind::FuncDecl(func) => resolve_func_decl(&mut globals, &mut diags, func),
+            StmtKind::VarDecl { name, .. } => {
+                resolve_var_decl(&mut globals, &mut diags, name, stmt.span)
+            }
             _ => {}
         }
     }
@@ -263,7 +275,7 @@ fn resolve_struct_decl(
     members: &[TypedIdent],
     span: Span,
 ) {
-    if globals.structs.contains_key(name) || globals.oneofs.contains_key(name) {
+    if globals.structs.contains_key(name) || globals.oneofs.contains_key(name) || globals.vars.contains(name) {
         diags.push(Diagnostic::error(
             span,
             format!("redeclared type {name} in the same scope"),
@@ -303,7 +315,7 @@ fn resolve_oneof_decl(
     variants: &[VariantDef],
     span: Span,
 ) {
-    if globals.oneofs.contains_key(name) || globals.structs.contains_key(name) {
+    if globals.oneofs.contains_key(name) || globals.structs.contains_key(name) || globals.vars.contains(name) {
         diags.push(Diagnostic::error(
             span,
             format!("redeclared type {name} in the same scope"),
@@ -342,6 +354,27 @@ fn resolve_oneof_decl(
     );
 }
 
+/// Record a module-level variable declaration in the global namespace. A top-level
+/// `let` shares the module namespace with structs, sum types, and functions across
+/// all of a module's files, so a name already claimed there — by an earlier variable,
+/// a function, a struct, or a sum type — is a redeclaration, not a shadow. Block-local
+/// shadowing does not apply here: that is an ordered-sequence rule, whereas the module
+/// namespace is an unordered union.
+fn resolve_var_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, name: &str, span: Span) {
+    if globals.vars.contains(name)
+        || globals.funcs.contains_key(name)
+        || globals.structs.contains_key(name)
+        || globals.oneofs.contains_key(name)
+    {
+        diags.push(Diagnostic::error(
+            span,
+            format!("redeclared name {name} in the same scope"),
+        ));
+        return;
+    }
+    globals.vars.insert(name.to_string());
+}
+
 fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &FuncDecl) {
     // The declaration's binders — its own type parameters plus any bound by a
     // generic receiver pattern — are in scope for the receiver, parameter, and
@@ -375,7 +408,7 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
     };
 
     let Some(receiver) = &func.receiver else {
-        if globals.funcs.contains_key(&func.name) {
+        if globals.funcs.contains_key(&func.name) || globals.vars.contains(&func.name) {
             diags.push(Diagnostic::error(
                 func.span,
                 format!("redeclared function {} in the same scope", func.name),

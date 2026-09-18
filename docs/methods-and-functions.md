@@ -202,8 +202,29 @@ struct Button {
 
 ## Shadowing rules
 
+Shadowing is a property of an **ordered sequence of statements within a block**. It is
+never a property of a namespace. The two are different kinds of scope and obey different
+rules:
+
 * **Same-scope rebinding** (re-declaring a name in the same block): Allowed. Useful for
-  iterative transformation of values (especially with errors-as-values patterns).
+  iterative transformation of values (especially with errors-as-values patterns). This is
+  well-defined precisely because a block is ordered — a later binding follows, and may
+  consume, the earlier one, and "the current value" is simply the most recent binding.
 * **Cross-scope shadowing** (inner scope hides outer scope variable): Allowed. Banning this
   generally would be impractical — adding a variable to a parent scope shouldn't break all
   downstream code.
+
+### The module namespace is not a block
+
+A module's top-level declarations — structs, sum types, functions, and module-level `let`
+variables — form a single **unordered namespace**, united across all of the module's files
+(see [Modules and Projects](./modules-and-projects.md)). There is no ordering between a
+module's files, so there is no sequence for shadowing to operate on. A name claimed twice at
+module top level — whether by two variables, a variable and a function, or the same name in
+two sibling files — is a **redeclaration error**, never a shadow.
+
+This is why a variable being "re-declarable" in a block does not make it re-declarable at
+module top level. If `a.coop` declares `x := 5` and `b.coop` declares `x := 10`, there is no
+"last wins": the module simply fails to compile, exactly as two functions named `f` would.
+Consequently a module never exposes an ambiguous value, and a downstream `use` of it never
+has to choose between competing definitions — the question cannot arise.

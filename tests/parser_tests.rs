@@ -205,3 +205,10 @@ fn parses_break_and_continue_and_single_statement_body() {
     };
     assert!(matches!(second[0].kind, StmtKind::Continue));
 }
+
+#[test]
+fn header_expressions_span_multiple_lines() {
+    // A condition or iterable may wrap across lines, and its delimiter keyword may
+    // sit on a later line, because newlines are insignificant inside a header.
+    ok("func f() {\n  while a\n    and b\n  do total += 1\n  for i in\n    0..10\n  do total += i\n}");
+}

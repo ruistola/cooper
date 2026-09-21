@@ -42,6 +42,12 @@ struct Parser {
     pos: usize,
     paren_stack: Vec<TokenKind>,
     in_then_branch: bool,
+    /// How many control-flow header expressions we are nested inside. While this
+    /// is non-zero, newlines carry no meaning (like inside brackets): a long
+    /// condition or iterable may span lines, and the delimiter keyword need not
+    /// share the header's last line. A braced statement block resets it to zero so
+    /// statements within the header still terminate at newlines.
+    header_depth: u32,
     errors: Vec<Diagnostic>,
 }
 
@@ -165,6 +171,7 @@ impl Parser {
             pos: 0,
             paren_stack: Vec::new(),
             in_then_branch: false,
+            header_depth: 0,
             errors: Vec::new(),
         }
     }
@@ -235,7 +242,7 @@ impl Parser {
                 self.tokens.remove(self.pos);
                 return self.peek();
             }
-            let outside_parens = self.paren_stack.is_empty();
+            let outside_parens = self.paren_stack.is_empty() && self.header_depth == 0;
             let can_terminate = can_precede_semicolon(self.prev_token().kind)
                 && can_follow_semicolon(self.next_token().kind);
             if outside_parens && can_terminate && self.next_token().kind != Eof {
@@ -953,8 +960,19 @@ impl Parser {
         })
     }
 
+    /// Parse a control-flow header expression (an `if`/`while`/`until` condition, a
+    /// `for` iterable, or a `match` scrutinee) with newline-insignificance enabled,
+    /// so the expression may wrap across lines and its delimiter keyword may sit on a
+    /// later line.
+    fn parse_header_expr(&mut self) -> PResult<Expr> {
+        self.header_depth += 1;
+        let result = self.parse_expr(0);
+        self.header_depth -= 1;
+        result
+    }
+
     fn parse_if_expr(&mut self) -> PResult<ExprKind> {
-        let cond = self.parse_expr(0)?;
+        let cond = self.parse_header_expr()?;
         self.expect(Then)?;
         let then = self.parse_branch_expr()?;
         if self.peek().kind == Semicolon {
@@ -988,7 +1006,7 @@ impl Parser {
     fn parse_if_stmt(&mut self) -> PResult<Stmt> {
         let start = self.peek().span;
         self.expect(If)?;
-        let cond = self.parse_expr(0)?;
+        let cond = self.parse_header_expr()?;
         self.expect(Then)?;
         let then = self.parse_branch_stmt()?;
         let els = if self.peek().kind == Else {
@@ -1069,7 +1087,7 @@ impl Parser {
     fn parse_match_stmt(&mut self) -> PResult<Stmt> {
         let start = self.peek().span;
         self.expect(Match)?;
-        let scrutinee = self.parse_expr(0)?;
+        let scrutinee = self.parse_header_expr()?;
         self.expect(With)?;
         self.expect(OpenCurly)?;
         let mut arms = Vec::new();
@@ -1091,7 +1109,7 @@ impl Parser {
     }
 
     fn parse_match_expr(&mut self) -> PResult<ExprKind> {
-        let scrutinee = self.parse_expr(0)?;
+        let scrutinee = self.parse_header_expr()?;
         self.expect(With)?;
         self.expect(OpenCurly)?;
         let mut arms = Vec::new();
@@ -1121,7 +1139,7 @@ impl Parser {
         self.expect(For)?;
         let bindings = self.parse_for_bindings()?;
         self.expect(In)?;
-        let iterable = self.parse_expr(0)?;
+        let iterable = self.parse_header_expr()?;
         self.expect(Do)?;
         let body = self.parse_loop_body()?;
         Ok(Stmt {
@@ -1157,7 +1175,7 @@ impl Parser {
     fn parse_pre_test_loop(&mut self) -> PResult<Stmt> {
         let start = self.peek().span;
         let until = self.advance().kind == Until;
-        let cond = self.parse_expr(0)?;
+        let cond = self.parse_header_expr()?;
         self.expect(if until { Repeat } else { Do })?;
         let body = self.parse_loop_body()?;
         Ok(Stmt {
@@ -1307,8 +1325,12 @@ impl Parser {
     }
 
     /// Parse statements up to a closing brace or end of input, recovering past any
-    /// failed statement so the block still yields as much as possible.
+    /// failed statement so the block still yields as much as possible. A braced block
+    /// is a statement context even inside a header expression, so header
+    /// newline-insignificance is suspended for its extent.
     fn parse_block_stmt(&mut self) -> Vec<Stmt> {
+        let saved_header_depth = self.header_depth;
+        self.header_depth = 0;
         let mut statements = Vec::new();
         loop {
             match self.peek().kind {
@@ -1322,6 +1344,7 @@ impl Parser {
                 },
             }
         }
+        self.header_depth = saved_header_depth;
         statements
     }
 

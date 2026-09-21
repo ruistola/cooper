@@ -154,3 +154,54 @@ fn walrus_binds_identifier() {
         StmtKind::Expression(e) if matches!(&e.kind, ExprKind::Let { name, .. } if name == "x")
     ));
 }
+
+/// The statements of a single function `f`, for inspecting loop bodies.
+fn body_of(src: &str) -> Vec<Stmt> {
+    let m = ok(src);
+    let StmtKind::FuncDecl(f) = &m[0].kind else {
+        panic!("expected a function declaration");
+    };
+    f.body.clone()
+}
+
+#[test]
+fn parses_range_for_with_tuple_and_single_bindings() {
+    let body = body_of("func f() {\n  for i in 0..10 do {}\n  for (idx, val) in xs do {}\n}");
+    assert!(matches!(
+        &body[0].kind,
+        StmtKind::ForIn { bindings, iterable, .. }
+            if bindings == &["i"] && matches!(&iterable.kind, ExprKind::Range { .. })
+    ));
+    assert!(matches!(
+        &body[1].kind,
+        StmtKind::ForIn { bindings, .. } if bindings == &["idx", "val"]
+    ));
+}
+
+#[test]
+fn parses_all_four_conditional_loops() {
+    let body = body_of(
+        "func f() {\n  while a do {}\n  until b repeat {}\n  do {} while c\n  repeat {} until d\n}",
+    );
+    let flags: Vec<(bool, bool)> = body
+        .iter()
+        .map(|s| match &s.kind {
+            StmtKind::While { post_test, until, .. } => (*post_test, *until),
+            other => panic!("expected a while-family loop, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(flags, vec![(false, false), (false, true), (true, false), (true, true)]);
+}
+
+#[test]
+fn parses_break_and_continue_and_single_statement_body() {
+    let body = body_of("func f() {\n  while a do break\n  while a do continue\n}");
+    let StmtKind::While { body: first, .. } = &body[0].kind else {
+        panic!("expected a while loop");
+    };
+    assert!(matches!(first[0].kind, StmtKind::Break));
+    let StmtKind::While { body: second, .. } = &body[1].kind else {
+        panic!("expected a while loop");
+    };
+    assert!(matches!(second[0].kind, StmtKind::Continue));
+}

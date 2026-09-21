@@ -56,17 +56,15 @@ impl SemanticAnalyzer<'_> {
                     self.analyze_stmt(&arm.body);
                 }
             }
-            StmtKind::For {
-                init,
-                cond,
-                iter,
-                body,
-            } => {
-                self.analyze_stmt(init);
-                self.analyze_expr(cond);
-                self.analyze_expr(iter);
+            StmtKind::ForIn { iterable, body, .. } => {
+                self.analyze_expr(iterable);
                 self.analyze_block(body);
             }
+            StmtKind::While { cond, body, .. } => {
+                self.analyze_expr(cond);
+                self.analyze_block(body);
+            }
+            StmtKind::Break | StmtKind::Continue => {}
             StmtKind::Return(expr) => {
                 if let Some(expr) = expr {
                     self.analyze_expr(expr);
@@ -112,6 +110,10 @@ impl SemanticAnalyzer<'_> {
             ExprKind::Binary { lhs, rhs, .. } => {
                 self.analyze_expr(lhs);
                 self.analyze_expr(rhs);
+            }
+            ExprKind::Range { start, end } => {
+                self.analyze_expr(start);
+                self.analyze_expr(end);
             }
             ExprKind::Group(inner) => self.analyze_expr(inner),
             ExprKind::Tuple(elems) => elems.iter().for_each(|e| self.analyze_expr(e)),
@@ -175,7 +177,9 @@ impl SemanticAnalyzer<'_> {
                         }
                     }
                 }
-                StmtKind::For { body, .. } => self.check_unreachable_code(body),
+                StmtKind::ForIn { body, .. } | StmtKind::While { body, .. } => {
+                    self.check_unreachable_code(body)
+                }
                 _ => {}
             }
         }

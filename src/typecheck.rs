@@ -12,8 +12,8 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Span};
 use crate::resolve::{self, Globals};
 use crate::types::{
-    is_float_name, is_integer_name, is_numeric, is_numeric_name, is_primitive, is_unit, unify,
-    Type, DEFAULT_FLOAT, DEFAULT_INT,
+    is_float_name, is_integer, is_integer_name, is_numeric, is_numeric_name, is_primitive, is_unit,
+    unify, Type, DEFAULT_FLOAT, DEFAULT_INT,
 };
 
 /// Type check `module` against `globals`, returning any diagnostics. `modules` maps
@@ -48,6 +48,9 @@ struct TypeChecker<'g> {
     /// arguments a generic variant construction cannot infer from its payload
     /// alone. It is a head-only hint: consumed before checking sub-expressions.
     expected: Option<Type>,
+    /// How many loop bodies enclose the statement being checked, so `break` and
+    /// `continue` outside any loop can be rejected.
+    loop_depth: u32,
 }
 
 impl<'g> TypeChecker<'g> {
@@ -60,6 +63,7 @@ impl<'g> TypeChecker<'g> {
             current_return: None,
             type_params: HashSet::new(),
             expected: None,
+            loop_depth: 0,
         }
     }
 
@@ -106,29 +110,96 @@ impl<'g> TypeChecker<'g> {
                 }
             }
             StmtKind::Match { scrutinee, arms } => self.check_match_stmt(scrutinee, arms),
-            StmtKind::For {
-                init,
-                cond,
-                iter,
+            StmtKind::ForIn {
+                bindings,
+                iterable,
                 body,
-            } => {
-                self.check_stmt(init);
+            } => self.check_for_in(bindings, iterable, body, stmt.span),
+            StmtKind::While { cond, body, .. } => {
                 let cond_type = self.check_expr(cond);
                 if !matches!(cond_type, Some(t) if is_primitive(&t, "bool")) {
-                    self.err(cond.span, "for-statement condition does not evaluate to a boolean type");
+                    self.err(cond.span, "loop condition does not evaluate to a boolean type");
                 }
-                self.check_expr(iter);
                 self.scopes.push(HashMap::new());
+                self.loop_depth += 1;
                 for s in body {
                     self.check_stmt(s);
                 }
+                self.loop_depth -= 1;
                 self.scopes.pop();
+            }
+            StmtKind::Break | StmtKind::Continue => {
+                if self.loop_depth == 0 {
+                    let kw = if matches!(stmt.kind, StmtKind::Break) { "break" } else { "continue" };
+                    self.err(stmt.span, format!("'{kw}' outside of a loop"));
+                }
             }
             StmtKind::Return(expr) => self.check_return(expr.as_ref(), stmt.span),
             StmtKind::Expression(expr) => {
                 self.check_expr(expr);
             }
         }
+    }
+
+    /// Determine the element type(s) a `for … in …` loop binds and check its body
+    /// against them. Ranges bind a single integer element; arrays bind either the
+    /// element alone or an `(index, element)` pair. Any other iterable is an error.
+    fn check_for_in(&mut self, bindings: &[String], iterable: &Expr, body: &[Stmt], span: Span) {
+        let elems: Option<Vec<Type>> = match &iterable.kind {
+            ExprKind::Range { start, end } => {
+                let start_type = self.check_expr(start);
+                self.expected = start_type.clone();
+                let end_type = self.check_expr(end);
+                let elem = match (start_type, end_type) {
+                    (Some(s), Some(e)) => {
+                        if !is_integer(&s) {
+                            self.err(start.span, format!("range bounds must be an integer type, found {s}"));
+                            None
+                        } else if !s.equals(&e) {
+                            self.err(end.span, format!("range bounds must share one type: {s} and {e}"));
+                            None
+                        } else {
+                            Some(s)
+                        }
+                    }
+                    _ => None,
+                };
+                if bindings.len() != 1 {
+                    self.err(span, "a range binds a single loop variable");
+                    None
+                } else {
+                    elem.map(|e| vec![e])
+                }
+            }
+            _ => match self.check_expr(iterable) {
+                Some(Type::Array(elem)) => match bindings.len() {
+                    1 => Some(vec![*elem]),
+                    2 => Some(vec![Type::Primitive(DEFAULT_INT.to_string()), *elem]),
+                    _ => {
+                        self.err(span, "an array binds either one loop variable or an (index, value) pair");
+                        None
+                    }
+                },
+                Some(other) => {
+                    self.err(iterable.span, format!("cannot iterate over type {other}"));
+                    None
+                }
+                None => None,
+            },
+        };
+
+        self.scopes.push(HashMap::new());
+        if let Some(elems) = elems {
+            for (name, ty) in bindings.iter().zip(elems) {
+                self.define_var(name, ty);
+            }
+        }
+        self.loop_depth += 1;
+        for s in body {
+            self.check_stmt(s);
+        }
+        self.loop_depth -= 1;
+        self.scopes.pop();
     }
 
     fn check_var_decl(
@@ -413,6 +484,10 @@ impl<'g> TypeChecker<'g> {
             }
             ExprKind::Binary { op, lhs, rhs } => {
                 self.check_binary(*op, lhs, rhs, expr.span, expected)
+            }
+            ExprKind::Range { .. } => {
+                self.err(expr.span, "a range may only appear as a for-loop iterable");
+                None
             }
             ExprKind::Unary { op, operand } => {
                 // A sign carried over a numeric literal is transparent to contextual

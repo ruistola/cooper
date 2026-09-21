@@ -57,6 +57,8 @@ fn can_precede_semicolon(kind: TokenKind) -> bool {
             | CloseBracket
             | CloseParen
             | Chevron
+            | Break
+            | Continue
             | Else
             | False
             | Nil
@@ -78,6 +80,9 @@ fn can_follow_semicolon(kind: TokenKind) -> bool {
             | CloseCurly
             | OpenParen
             | Ampersand
+            | Break
+            | Continue
+            | Do
             | False
             | For
             | Func
@@ -85,11 +90,14 @@ fn can_follow_semicolon(kind: TokenKind) -> bool {
             | Let
             | Match
             | Nil
+            | Repeat
             | Return
             | Struct
             | Oneof
             | True
+            | Until
             | Use
+            | While
     )
 }
 
@@ -107,6 +115,7 @@ fn prefix_bp(kind: TokenKind) -> i32 {
 fn tail_bp(kind: TokenKind) -> (i32, i32) {
     match kind {
         Equals | PlusEquals | DashEquals | StarEquals | SlashEquals | ColonEquals => (1, 2),
+        DotDot => (3, 4),
         Or | And => (4, 3),
         DoubleEquals | NotEquals => (5, 6),
         Less | LessEquals | Greater | GreaterEquals => (8, 7),
@@ -296,7 +305,8 @@ impl Parser {
                     self.advance();
                     return;
                 }
-                For | Func | If | Let | Match | Return | Struct | Oneof | Use => return,
+                For | Func | If | Let | Match | Return | Struct | Oneof | Use | While | Until
+                | Do | Repeat | Break | Continue => return,
                 _ => {
                     self.advance();
                 }
@@ -426,6 +436,12 @@ impl Parser {
                 })
             }
             If => self.parse_if_stmt(),
+            While => self.parse_pre_test_loop(),
+            Until => self.parse_pre_test_loop(),
+            Do => self.parse_post_test_loop(),
+            Repeat => self.parse_post_test_loop(),
+            Break => self.parse_break_continue(),
+            Continue => self.parse_break_continue(),
             Let => self.parse_var_decl_stmt(),
             Match => self.parse_match_stmt(),
             Return => self.parse_return_stmt(),
@@ -535,6 +551,14 @@ impl Parser {
                     op,
                     lhs: Box::new(head),
                     rhs: Box::new(rhs),
+                }
+            }
+            DotDot => {
+                self.expect(DotDot)?;
+                let end = self.parse_expr(rbp)?;
+                ExprKind::Range {
+                    start: Box::new(head),
+                    end: Box::new(end),
                 }
             }
             OpenParen => self.parse_call_args(head)?,
@@ -1089,29 +1113,108 @@ impl Parser {
         })
     }
 
+    /// `for BINDINGS in ITER do BODY`. BINDINGS is a single identifier or a
+    /// parenthesised list of identifiers; ITER is any expression (typically a range
+    /// `a..b` or an array); the `do` keyword delimits the body.
     fn parse_for_stmt(&mut self) -> PResult<Stmt> {
         let start = self.peek().span;
         self.expect(For)?;
-        self.expect(OpenParen)?;
-        let init = self.parse_stmt()?;
-        let cond = match self.parse_expression_stmt()?.kind {
-            StmtKind::Expression(expr) => expr,
-            _ => unreachable!("parse_expression_stmt yields an expression statement"),
-        };
-        let iter = self.parse_expr(0)?;
-        self.expect(CloseParen)?;
-        self.expect(OpenCurly)?;
-        let body = self.parse_block_stmt();
-        self.expect(CloseCurly)?;
+        let bindings = self.parse_for_bindings()?;
+        self.expect(In)?;
+        let iterable = self.parse_expr(0)?;
+        self.expect(Do)?;
+        let body = self.parse_loop_body()?;
         Ok(Stmt {
-            kind: StmtKind::For {
-                init: Box::new(init),
-                cond,
-                iter,
+            kind: StmtKind::ForIn {
+                bindings,
+                iterable,
                 body,
             },
             span: start.to(self.prev_token().span),
         })
+    }
+
+    fn parse_for_bindings(&mut self) -> PResult<Vec<String>> {
+        if self.peek().kind != OpenParen {
+            return Ok(vec![self.expect(Identifier)?.text]);
+        }
+        self.expect(OpenParen)?;
+        let mut names = Vec::new();
+        while self.peek().kind != CloseParen {
+            names.push(self.expect(Identifier)?.text);
+            if self.peek().kind == Comma {
+                self.expect(Comma)?;
+            } else {
+                break;
+            }
+        }
+        self.expect(CloseParen)?;
+        Ok(names)
+    }
+
+    /// `while COND do BODY` / `until COND repeat BODY` — the condition is tested
+    /// before each iteration. `until` loops while the condition is false.
+    fn parse_pre_test_loop(&mut self) -> PResult<Stmt> {
+        let start = self.peek().span;
+        let until = self.advance().kind == Until;
+        let cond = self.parse_expr(0)?;
+        self.expect(if until { Repeat } else { Do })?;
+        let body = self.parse_loop_body()?;
+        Ok(Stmt {
+            kind: StmtKind::While {
+                cond,
+                body,
+                post_test: false,
+                until,
+            },
+            span: start.to(self.prev_token().span),
+        })
+    }
+
+    /// `do BODY while COND` / `repeat BODY until COND` — the body runs before the
+    /// first test, so it executes at least once. `until` loops while COND is false.
+    fn parse_post_test_loop(&mut self) -> PResult<Stmt> {
+        let start = self.peek().span;
+        let until = self.advance().kind == Repeat;
+        let body = self.parse_loop_body()?;
+        self.expect(if until { Until } else { While })?;
+        let cond = self.parse_expr(0)?;
+        self.consume_statement_terminator()?;
+        Ok(Stmt {
+            kind: StmtKind::While {
+                cond,
+                body,
+                post_test: true,
+                until,
+            },
+            span: start.to(self.prev_token().span),
+        })
+    }
+
+    fn parse_break_continue(&mut self) -> PResult<Stmt> {
+        let token = self.advance();
+        let kind = if token.kind == Break {
+            StmtKind::Break
+        } else {
+            StmtKind::Continue
+        };
+        self.consume_statement_terminator()?;
+        Ok(Stmt {
+            kind,
+            span: token.span,
+        })
+    }
+
+    /// A loop body: a braced block or a single statement, mirroring an if-branch.
+    fn parse_loop_body(&mut self) -> PResult<Vec<Stmt>> {
+        if self.peek().kind == OpenCurly {
+            self.expect(OpenCurly)?;
+            let body = self.parse_block_stmt();
+            self.expect(CloseCurly)?;
+            Ok(body)
+        } else {
+            Ok(vec![self.parse_stmt()?])
+        }
     }
 
     fn parse_call_args(&mut self, callee: Expr) -> PResult<ExprKind> {

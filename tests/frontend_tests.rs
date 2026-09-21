@@ -762,3 +762,43 @@ fn a_declaration_in_one_file_is_visible_across_the_module() {
         diags.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+// --- control flow ---
+
+#[test]
+fn range_for_binds_an_integer_element() {
+    ok("func f(): i32 {\n  total := 0\n  for i in 0..10 do total += i\n  return total\n}");
+}
+
+#[test]
+fn range_over_non_integer_bounds_is_reported() {
+    err(
+        "func f() {\n  for x in 0..true do {}\n}",
+        "range bounds must",
+    );
+}
+
+#[test]
+fn array_iteration_binds_element_and_index_value_pair() {
+    ok("func f(xs: i32[]): i32 {\n  total := 0\n  for v in xs do total += v\n  for (i, v) in xs do total += i + v\n  return total\n}");
+}
+
+#[test]
+fn iterating_a_non_iterable_type_is_reported() {
+    err("func f() {\n  for x in true do {}\n}", "cannot iterate over type bool");
+}
+
+#[test]
+fn conditional_loops_check_their_bodies() {
+    ok("func f(): i32 {\n  n := 0\n  while n < 5 do {\n    n += 1\n    if n == 3 then continue\n    if n == 4 then break\n  }\n  repeat { n -= 1 } until n == 0\n  return n\n}");
+}
+
+#[test]
+fn break_outside_a_loop_is_reported() {
+    err("func f() {\n  break\n}", "'break' outside of a loop");
+}
+
+#[test]
+fn continue_outside_a_loop_is_reported() {
+    err("func f() {\n  continue\n}", "'continue' outside of a loop");
+}

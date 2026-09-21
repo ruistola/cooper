@@ -206,6 +206,11 @@ pub enum ExprKind {
         lhs: Box<Expr>,
         rhs: Box<Expr>,
     },
+    /// Half-open range `start..end`. Valid only as a `for` iterable.
+    Range {
+        start: Box<Expr>,
+        end: Box<Expr>,
+    },
     Block(Block),
     Group(Box<Expr>),
     Call {
@@ -324,12 +329,30 @@ pub enum StmtKind {
         then: Box<Stmt>,
         els: Option<Box<Stmt>>,
     },
-    For {
-        init: Box<Stmt>,
-        cond: Expr,
-        iter: Expr,
+    /// Ranged iteration `for BINDINGS in ITER do BODY`. One binding binds the
+    /// element; two bind `(index, element)` when iterating an array.
+    ForIn {
+        bindings: Vec<String>,
+        iterable: Expr,
         body: Vec<Stmt>,
     },
+    /// The four condition loops. `post_test` runs the body before the first test
+    /// (`do`/`repeat`); `until` loops while the condition is false rather than true.
+    ///
+    /// | post_test | until | form                    |
+    /// |-----------|-------|-------------------------|
+    /// | false     | false | `while COND do BODY`     |
+    /// | false     | true  | `until COND repeat BODY` |
+    /// | true      | false | `do BODY while COND`     |
+    /// | true      | true  | `repeat BODY until COND` |
+    While {
+        cond: Expr,
+        body: Vec<Stmt>,
+        post_test: bool,
+        until: bool,
+    },
+    Break,
+    Continue,
     Match {
         scrutinee: Expr,
         arms: Vec<StmtArm>,

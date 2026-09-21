@@ -14,7 +14,7 @@ pub enum TokenKind {
     Eol,
 
     // Literals
-    #[regex(r"0[xX][0-9a-fA-F](_?[0-9a-fA-F])*|0[bB][01](_?[01])*|[0-9](_?[0-9])*(\.([0-9](_?[0-9])*)?)?([eE][+-]?[0-9](_?[0-9])*)?")]
+    #[regex(r"0[xX][0-9a-fA-F](_?[0-9a-fA-F])*|0[bB][01](_?[01])*|[0-9](_?[0-9])*\.[0-9](_?[0-9])*([eE][+-]?[0-9](_?[0-9])*)?|[0-9](_?[0-9])*([eE][+-]?[0-9](_?[0-9])*)?")]
     Number,
     #[regex(r#""([^"\\]|\\.)*""#)]
     Str,
@@ -26,6 +26,8 @@ pub enum TokenKind {
     ColonEquals,
     #[token("=>")]
     FatArrow,
+    #[token("..")]
+    DotDot,
     #[token("==")]
     DoubleEquals,
     #[token("!=")]
@@ -96,6 +98,12 @@ pub enum TokenKind {
     And,
     #[token("as")]
     As,
+    #[token("break")]
+    Break,
+    #[token("continue")]
+    Continue,
+    #[token("do")]
+    Do,
     #[token("else")]
     Else,
     #[token("false")]
@@ -106,12 +114,16 @@ pub enum TokenKind {
     Func,
     #[token("if")]
     If,
+    #[token("in")]
+    In,
     #[token("let")]
     Let,
     #[token("nil")]
     Nil,
     #[token("or")]
     Or,
+    #[token("repeat")]
+    Repeat,
     #[token("return")]
     Return,
     #[token("struct")]
@@ -122,10 +134,14 @@ pub enum TokenKind {
     Then,
     #[token("true")]
     True,
+    #[token("until")]
+    Until,
     #[token("use")]
     Use,
     #[token("match")]
     Match,
+    #[token("while")]
+    While,
     #[token("with")]
     With,
 
@@ -143,6 +159,7 @@ impl std::fmt::Display for TokenKind {
             Identifier => "identifier",
             ColonEquals => "':='",
             FatArrow => "'=>'",
+            DotDot => "'..'",
             DoubleEquals => "'=='",
             NotEquals => "'!='",
             LessEquals => "'<='",
@@ -176,21 +193,28 @@ impl std::fmt::Display for TokenKind {
             CloseParen => "')'",
             And => "'and'",
             As => "'as'",
+            Break => "'break'",
+            Continue => "'continue'",
+            Do => "'do'",
             Else => "'else'",
             False => "'false'",
             For => "'for'",
             Func => "'func'",
             If => "'if'",
+            In => "'in'",
             Let => "'let'",
             Nil => "'nil'",
             Or => "'or'",
+            Repeat => "'repeat'",
             Return => "'return'",
             Struct => "'struct'",
             Oneof => "'oneof'",
             Then => "'then'",
             True => "'true'",
+            Until => "'until'",
             Use => "'use'",
             Match => "'match'",
+            While => "'while'",
             With => "'with'",
             Eof => "end of input",
         };
@@ -210,6 +234,12 @@ pub struct Token {
 /// lines never produce spurious statement terminators), horizontal whitespace and
 /// comments are dropped, and a trailing `Eof` token is appended. An unexpected
 /// character yields an `Err` diagnostic locating it.
+///
+/// Logos matches maximally without rewinding, so a numeric literal immediately
+/// followed by a range operator (`0..10`) is lexed as a number ending in a dot
+/// (`0.`) plus a stray `.`. A valid float always has a digit after its dot, so a
+/// number whose text ends in `.` is unambiguously this case: the trailing dot is
+/// peeled off into its own token and adjacent dots are merged into `..`.
 pub fn tokenize(src: &str) -> Result<Vec<Token>, Diagnostic> {
     let mut tokens: Vec<Token> = Vec::new();
     let mut lex = TokenKind::lexer(src);
@@ -218,6 +248,22 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, Diagnostic> {
         let kind = result.map_err(|_| Diagnostic::error(span, "unexpected character"))?;
         // Collapse consecutive end-of-line tokens into a single one.
         if kind == TokenKind::Eol && matches!(tokens.last(), Some(t) if t.kind == TokenKind::Eol) {
+            continue;
+        }
+        // Peel a trailing dot off a stuck numeric literal into a standalone dot.
+        if kind == TokenKind::Number && lex.slice().ends_with('.') {
+            let text = lex.slice();
+            let dot_start = span.end - 1;
+            tokens.push(Token {
+                kind: TokenKind::Number,
+                text: text[..text.len() - 1].to_string(),
+                span: Span::new(span.start, dot_start),
+            });
+            push_dot(&mut tokens, Span::new(dot_start, span.end));
+            continue;
+        }
+        if kind == TokenKind::Dot {
+            push_dot(&mut tokens, span);
             continue;
         }
         tokens.push(Token {
@@ -233,4 +279,64 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, Diagnostic> {
         span: Span::new(end, end),
     });
     Ok(tokens)
+}
+
+/// Push a `.` token, merging it with an immediately preceding `.` into a `..`.
+fn push_dot(tokens: &mut Vec<Token>, span: Span) {
+    if let Some(prev) = tokens.last_mut() {
+        if prev.kind == TokenKind::Dot && prev.span.end == span.start {
+            prev.kind = TokenKind::DotDot;
+            prev.text = "..".to_string();
+            prev.span = prev.span.to(span);
+            return;
+        }
+    }
+    tokens.push(Token {
+        kind: TokenKind::Dot,
+        text: ".".to_string(),
+        span,
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kinds(src: &str) -> Vec<(TokenKind, String)> {
+        tokenize(src)
+            .expect("lexing succeeds")
+            .into_iter()
+            .filter(|t| t.kind != TokenKind::Eof)
+            .map(|t| (t.kind, t.text))
+            .collect()
+    }
+
+    #[test]
+    fn range_between_integers_is_not_a_float() {
+        assert_eq!(
+            kinds("0..10"),
+            vec![
+                (TokenKind::Number, "0".to_string()),
+                (TokenKind::DotDot, "..".to_string()),
+                (TokenKind::Number, "10".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn float_literal_keeps_its_dot() {
+        assert_eq!(kinds("3.14"), vec![(TokenKind::Number, "3.14".to_string())]);
+    }
+
+    #[test]
+    fn tuple_field_access_on_number_splits_the_dot() {
+        assert_eq!(
+            kinds("3.foo"),
+            vec![
+                (TokenKind::Number, "3".to_string()),
+                (TokenKind::Dot, ".".to_string()),
+                (TokenKind::Identifier, "foo".to_string()),
+            ]
+        );
+    }
 }

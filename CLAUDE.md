@@ -11,6 +11,7 @@ Detailed language design notes live in `docs/`:
 * [Compiler Architecture](docs/compiler-architecture.md) — Rust module structure and pipeline stages
 * [Modules and Projects](docs/modules-and-projects.md) — project layout, module system, dependency management
 * [Syntax Fundamentals](docs/syntax-fundamentals.md) — semicolon inference, naming conventions, type expressions
+* [Control Flow](docs/control-flow.md) — ranged `for`, the while/until/do/repeat loop matrix, `break`/`continue`, ranges
 * [Polymorphism and Interfaces](docs/polymorphism-and-interfaces.md) — why Cooper has no interface construct
 * [Methods and Functions](docs/methods-and-functions.md) — method declaration, receivers, struct declarations
 * [Memory and the Object Model](docs/memory-and-object-model.md) — value layout, storage, pointers, inert nil

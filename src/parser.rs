@@ -121,7 +121,7 @@ fn prefix_bp(kind: TokenKind) -> i32 {
 fn tail_bp(kind: TokenKind) -> (i32, i32) {
     match kind {
         Equals | PlusEquals | DashEquals | StarEquals | SlashEquals | ColonEquals => (1, 2),
-        DotDot => (3, 4),
+        DotDot | DotDotEquals => (3, 4),
         Or | And => (4, 3),
         DoubleEquals | NotEquals => (5, 6),
         Less | LessEquals | Greater | GreaterEquals => (8, 7),
@@ -560,12 +560,13 @@ impl Parser {
                     rhs: Box::new(rhs),
                 }
             }
-            DotDot => {
-                self.expect(DotDot)?;
+            DotDot | DotDotEquals => {
+                let inclusive = self.advance().kind == DotDotEquals;
                 let end = self.parse_expr(rbp)?;
                 ExprKind::Range {
                     start: Box::new(head),
                     end: Box::new(end),
+                    inclusive,
                 }
             }
             OpenParen => self.parse_call_args(head)?,

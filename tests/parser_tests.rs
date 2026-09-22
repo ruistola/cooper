@@ -170,11 +170,21 @@ fn parses_range_for_with_tuple_and_single_bindings() {
     assert!(matches!(
         &body[0].kind,
         StmtKind::ForIn { bindings, iterable, .. }
-            if bindings == &["i"] && matches!(&iterable.kind, ExprKind::Range { .. })
+            if bindings == &["i"] && matches!(&iterable.kind, ExprKind::Range { inclusive: false, .. })
     ));
     assert!(matches!(
         &body[1].kind,
         StmtKind::ForIn { bindings, .. } if bindings == &["idx", "val"]
+    ));
+}
+
+#[test]
+fn inclusive_range_sets_the_inclusive_flag() {
+    let body = body_of("func f() {\n  for i in 0..=10 do {}\n}");
+    assert!(matches!(
+        &body[0].kind,
+        StmtKind::ForIn { iterable, .. }
+            if matches!(&iterable.kind, ExprKind::Range { inclusive: true, .. })
     ));
 }
 

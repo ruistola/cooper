@@ -206,10 +206,12 @@ pub enum ExprKind {
         lhs: Box<Expr>,
         rhs: Box<Expr>,
     },
-    /// Half-open range `start..end`. Valid only as a `for` iterable.
+    /// Range `start..end` (exclusive) or `start..=end` (inclusive of `end`). Valid
+    /// only as a `for` iterable.
     Range {
         start: Box<Expr>,
         end: Box<Expr>,
+        inclusive: bool,
     },
     Block(Block),
     Group(Box<Expr>),

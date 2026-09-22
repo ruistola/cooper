@@ -111,7 +111,7 @@ impl SemanticAnalyzer<'_> {
                 self.analyze_expr(lhs);
                 self.analyze_expr(rhs);
             }
-            ExprKind::Range { start, end } => {
+            ExprKind::Range { start, end, .. } => {
                 self.analyze_expr(start);
                 self.analyze_expr(end);
             }

@@ -28,6 +28,8 @@ pub enum TokenKind {
     FatArrow,
     #[token("..")]
     DotDot,
+    #[token("..=")]
+    DotDotEquals,
     #[token("==")]
     DoubleEquals,
     #[token("!=")]
@@ -160,6 +162,7 @@ impl std::fmt::Display for TokenKind {
             ColonEquals => "':='",
             FatArrow => "'=>'",
             DotDot => "'..'",
+            DotDotEquals => "'..='",
             DoubleEquals => "'=='",
             NotEquals => "'!='",
             LessEquals => "'<='",
@@ -266,6 +269,18 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, Diagnostic> {
             push_dot(&mut tokens, span);
             continue;
         }
+        // A digit-adjacent `..=` reaches here as `..` `=` (the number swallowed the
+        // first dot and was split above); fuse the `=` back on to recover `..=`.
+        if kind == TokenKind::Equals {
+            if let Some(prev) = tokens.last_mut() {
+                if prev.kind == TokenKind::DotDot && prev.span.end == span.start {
+                    prev.kind = TokenKind::DotDotEquals;
+                    prev.text = "..=".to_string();
+                    prev.span = prev.span.to(span);
+                    continue;
+                }
+            }
+        }
         tokens.push(Token {
             kind,
             text: lex.slice().to_string(),
@@ -338,5 +353,20 @@ mod tests {
                 (TokenKind::Identifier, "foo".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn inclusive_range_fuses_regardless_of_spacing() {
+        // Digit-adjacent, where the number first swallows a dot, and cleanly spaced
+        // both recover a single `..=`.
+        let expected = |lo: &str, hi: &str| {
+            vec![
+                (TokenKind::Number, lo.to_string()),
+                (TokenKind::DotDotEquals, "..=".to_string()),
+                (TokenKind::Number, hi.to_string()),
+            ]
+        };
+        assert_eq!(kinds("0..=10"), expected("0", "10"));
+        assert_eq!(kinds("0 ..= 10"), expected("0", "10"));
     }
 }

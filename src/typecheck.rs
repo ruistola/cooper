@@ -146,7 +146,7 @@ impl<'g> TypeChecker<'g> {
     /// element alone or an `(index, element)` pair. Any other iterable is an error.
     fn check_for_in(&mut self, bindings: &[String], iterable: &Expr, body: &[Stmt], span: Span) {
         let elems: Option<Vec<Type>> = match &iterable.kind {
-            ExprKind::Range { start, end } => {
+            ExprKind::Range { start, end, .. } => {
                 let start_type = self.check_expr(start);
                 self.expected = start_type.clone();
                 let end_type = self.check_expr(end);

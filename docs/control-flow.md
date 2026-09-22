@@ -40,10 +40,10 @@ get introduced later but for now, they are out of scope.
 
 ## Iteration
 
-* **Range** `a..b` is half-open. Both endpoints share one integer type, and a bare
-  literal range such as `0..10` defaults to `i32` like any integer literal. A range
-  binds a single loop variable of that element type and is meaningful only as a
-  `for` iterable.
+* **Range** `a..b` is half-open and `a..=b` includes `b`. Both endpoints share one
+  integer type, and a bare literal range such as `0..10` defaults to `i32` like any
+  integer literal. A range binds a single loop variable of that element type and is
+  meaningful only as a `for` iterable.
 * **Array** `T[]` binds either the element (`for v in xs`) or an
   `(index: i32, value: T)` pair (`for (i, v) in xs`).
 * Any other iterand type is rejected with "cannot iterate over type …".

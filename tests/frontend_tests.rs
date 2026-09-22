@@ -771,6 +771,11 @@ fn range_for_binds_an_integer_element() {
 }
 
 #[test]
+fn inclusive_range_for_binds_an_integer_element() {
+    ok("func f(): i32 {\n  total := 0\n  for i in 0..=10 do total += i\n  return total\n}");
+}
+
+#[test]
 fn range_over_non_integer_bounds_is_reported() {
     err(
         "func f() {\n  for x in 0..true do {}\n}",

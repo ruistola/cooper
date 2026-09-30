@@ -63,8 +63,8 @@ the brackets. It is the exceptional case — a known, non-resizable block of mem
 when the size is fixed and the extra guarantees enable optimization:
 
 ```
-let rgb: u8[3]           // exactly three bytes, never reallocated
-let grid: i32[8][8]      // fixed 8×8
+let rgb: u8[3]           # exactly three bytes, never reallocated
+let grid: i32[8][8]      # fixed 8×8
 ```
 
 ### Array literals
@@ -74,27 +74,66 @@ sequences and reserves `{...}` for records/aggregates:
 
 ```
 let xs: i32[] = [0, 1, 2, 4, 8]
-ys := [0, 1, 2, 4, 8]        // ys : i32[], element type inferred
-empty := []                  // needs an annotation to fix the element type
+ys := [0, 1, 2, 4, 8]        # ys : i32[], element type inferred
+empty := []                  # needs an annotation to fix the element type
 ```
 
 There is no `new` or `make` keyword. Zero-defaults, literals, and (later) a small set of
 ordinary builtin constructor *functions* for capacity hints cover construction; the
 programmer never chooses stack versus heap.
 
-### Subranging copies
+### Subranging: copy by default, share with `&`
 
-Indexing with a range yields a **new array** — a copy — not a view onto the original
-backing store:
+Indexing with a range yields a **new array** — an independent copy — not a view onto the
+original backing store:
 
 ```
 let xs: i32[] = [0, 1, 2, 4, 8]
-let ys: i32[] = xs[2..]      // a fresh i32[] holding 2, 4, 8; independent of xs
+let ys: i32[] = xs[2..]      # a fresh i32[] holding 2, 4, 8; independent of xs
 ```
 
-Arrays have value semantics, so subranging produces a value; mutating `ys` never touches
-`xs`. When aliasing *is* wanted, it is requested explicitly through the pointer machinery
-(`^`) rather than hidden behind indexing — copies copy, aliasing takes a visible caret.
+Arrays have value semantics, so the safe thing happens by default: mutating `ys` never
+touches `xs`. Sharing a backing store is the less common, more hazardous case, so it costs
+one visible sigil — the `&` "reference into" operator — applied at the point the aliasing
+is introduced:
+
+```
+let ws: i32[] = &xs[2..]     # a *view*: shares xs' backing, no copy
+ws[0] = 99                   # writes through — xs[2] is now 99
+```
+
+The shape of the selection picks what `&` produces: a scalar index yields a single-element
+pointer, a range yields a shared array view.
+
+```
+let p: i32^  = &xs[2]        # pointer to one element
+let v: i32[] = &xs[3..]      # shared view of a run of elements
+```
+
+A view is **not a new type.** It is an ordinary `i32[]` whose data pointer aliases another
+array's storage, so it passes to any function expecting `i32[]` and needs no separate
+annotation. Under the tracing collector, two headers sharing one backing store is memory
+safe; the only question is behavior, which one rule settles:
+
+> **`&` shares elements; growth always forks.**
+
+* **Element writes are shared.** Writing through a view mutates the common backing — that
+  is exactly what you asked for by typing `&`, and it is visible at the creation site.
+* **Growth never is.** A view is born with `capacity == length` (no spare room), so *any*
+  append to it must reallocate into fresh storage and detach. A view can never grow into —
+  and clobber — the array it borrows from.
+
+Growth therefore follows an explicit return-value idiom, since an append may hand back the
+same array (if it had spare capacity) or an entirely new one (a full owner, or any view):
+
+```
+xs = xs.push(9)              # reassign: the result may or may not be the original xs
+```
+
+A function that appends must return the possibly-new array; a signature that does **not**
+return a `T[]` thereby signals it will not grow what it was given. The one residual sharp
+edge is inherited and mild: pushing to an array that has outstanding views may reallocate
+it, after which those views observe the pre-growth backing rather than the new one.
 
 ### Pointer notation
 
@@ -103,18 +142,18 @@ Pointers use postfix caret notation, consistent with the postfix array notation
 operations):
 
 ```
-let p: Point^        // pointer to a Point
-let pp: Point^^      // pointer to a pointer to a Point
-let ps: Point^[]     // array of pointers to Point
-let sp: Point[]^     // pointer to an array of Point
+let p: Point^        # pointer to a Point
+let pp: Point^^      # pointer to a pointer to a Point
+let ps: Point^[]     # array of pointers to Point
+let sp: Point[]^     # pointer to an array of Point
 ```
 
 The same caret is the postfix dereference operator in value position, mirroring
 how `[]` constructs an array type but indexes an array value:
 
 ```
-let x: i32 = p^.value   // dereference (explicit form: (p^).value)
-p^.value = 10           // assign through a pointer
+let x: i32 = p^.value   # dereference (explicit form: (p^).value)
+p^.value = 10           # assign through a pointer
 ```
 
 Related operators and values:
@@ -141,10 +180,10 @@ inconsequential (not checked or matched), their presence is misleading. Names be
 function _declarations_ (where they're used in the body), not in type expressions.
 
 ```
-// Function declaration — names required (used in body)
+# Function declaration — names required (used in body)
 func process(req: Request, timeout: Duration): Response { ... }
 
-// The same signature as a type — types only, written inline where it is needed
+# The same signature as a type — types only, written inline where it is needed
 func run(step: func(Request, Duration): Response) { ... }
 ```
 
@@ -160,9 +199,9 @@ A tuple is an anonymous, structural product type written as a parenthesised list
 element types. Tuples are compared by shape: arity and element types, positionally.
 
 ```
-let pair: (i32, string)          // a 2-tuple
-let nested: (i32, (string, bool)) // tuples nest
-let pairs: (i32, string)[]       // array of tuples
+let pair: (i32, string)          # a 2-tuple
+let nested: (i32, (string, bool)) # tuples nest
+let pairs: (i32, string)[]       # array of tuples
 ```
 
 Parentheses without a comma are not tuples: `(T)` collapses to `T` (grouping) and
@@ -175,15 +214,15 @@ A `let` binds a name with an explicit type, an optional initializer, or both:
 
 ```
 let count: i32 = 0
-let name: string        // declared, no initializer
+let name: string        # declared, no initializer
 ```
 
 The walrus operator `:=` declares and initializes in one step, inferring the type
 from the right-hand side (no annotation is permitted):
 
 ```
-total := 0              // total: i32
-label := "start"        // label: string
+total := 0              # total: i32
+label := "start"        # label: string
 ```
 
 ### Destructuring
@@ -193,15 +232,15 @@ untyped — any type annotation lives on the enclosing `let`, never inside the
 pattern. The pattern's arity must match the tuple's.
 
 ```
-(x, y) := origin()              // types inferred from the result tuple
-let (a, b): (i32, string) = row // annotation on the `let`, checked element-wise
+(x, y) := origin()              # types inferred from the result tuple
+let (a, b): (i32, string) = row # annotation on the `let`, checked element-wise
 ```
 
 The same pattern shape reassigns existing variables when the left of `=` is a tuple
 of assignable targets:
 
 ```
-(a, b) = (b, a)                 // positional reassignment
+(a, b) = (b, a)                 # positional reassignment
 ```
 
 ## Logical and bitwise operators
@@ -232,7 +271,7 @@ Comparisons may be chained when they run in a single direction, which reads bett
 repeated conjunction:
 
 ```
-if min <= x <= max { ... }        // equivalent to: min <= x and x <= max
+if min <= x <= max { ... }        # equivalent to: min <= x and x <= max
 ```
 
 A chain desugars to the conjunction of its adjacent pairs, and each middle operand is

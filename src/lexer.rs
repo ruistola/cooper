@@ -4,11 +4,11 @@ use crate::diag::{Diagnostic, Span};
 
 /// The lexical token kinds.
 ///
-/// Horizontal whitespace and `//` line comments are skipped outright. End-of-line
+/// Horizontal whitespace and `#` line comments are skipped outright. End-of-line
 /// is kept as a token because semicolon inference in the parser depends on it.
 #[derive(Logos, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[logos(skip r"[ \t\f]+")]
-#[logos(skip r"//[^\n\r]*")]
+#[logos(skip r"#[^\n\r]*")]
 pub enum TokenKind {
     #[regex(r"\r\n|\n|\r")]
     Eol,

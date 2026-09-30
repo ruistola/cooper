@@ -8,9 +8,9 @@ application, **PascalCase type parameters introduced by an explicit binder**, an
 turbofish, and no type arguments written at call sites.
 
 ```
-struct Map K V { … }                         // K, V are type parameters
-let scores: Map string i32 = …               // Map applied to string and i32
-let maybe: Maybe bool = Some(true)            // constructor; type args inferred
+struct Map K V { … }                         # K, V are type parameters
+let scores: Map string i32 = …               # Map applied to string and i32
+let maybe: Maybe bool = Some(true)            # constructor; type args inferred
 ```
 
 ## Why not brackets
@@ -43,9 +43,9 @@ a comma, a closing delimiter, `=`, `{`, or a statement terminator. Those existin
 boundaries make the common cases unambiguous:
 
 ```
-func f(m: Map string i32, n: i32): i32 { … }  // comma ends the first type
-let x: Map string i32 = …                     // `=` ends the type
-): Map string i32 { … }                       // `{` ends the return type
+func f(m: Map string i32, n: i32): i32 { … }  # comma ends the first type
+let x: Map string i32 = …                     # `=` ends the type
+): Map string i32 { … }                       # `{` ends the return type
 ```
 
 ### Grouping requires parentheses
@@ -54,10 +54,10 @@ Juxtaposition is left-associative and binds looser than the postfix operators, s
 compound argument must be parenthesised:
 
 ```
-(Map string i32)[]        // array of maps  (vs. Map string i32[] = Map of string and i32[])
-Map (i32, string) bool    // a tuple as one argument
-List (func(i32): bool)    // a function type as one argument
-Map string (List i32)     // nesting: Map of string to (List of i32)
+(Map string i32)[]        # array of maps  (vs. Map string i32[] = Map of string and i32[])
+Map (i32, string) bool    # a tuple as one argument
+List (func(i32): bool)    # a function type as one argument
+Map string (List i32)     # nesting: Map of string to (List of i32)
 ```
 
 This is the ML trade-off: clean in the common case, parentheses for anything
@@ -73,8 +73,8 @@ marks them. The binder is what distinguishes a parameter from a concrete type; i
 locality on the same declaration keeps intent clear.
 
 ```
-struct Map K V { … }                     // struct binder: after the name
-func map T U (f: func(T): U, xs: List T): List U { … }   // free-function binder
+struct Map K V { … }                     # struct binder: after the name
+func map T U (f: func(T): U, xs: List T): List U { … }   # free-function binder
 ```
 
 The binder is a run of identifiers between the declared name and the value-parameter
@@ -108,7 +108,7 @@ A receiver must name the parameters it references. When a method ignores one, `_
 stands in for it rather than forcing an unused name:
 
 ```
-(m: Map K _) func keys(): List K { … }   // value type irrelevant here
+(m: Map K _) func keys(): List K { … }   # value type irrelevant here
 ```
 
 ## Instantiation in value position
@@ -118,8 +118,8 @@ type position; in value position the compiler infers them, and when inference
 under-determines a parameter, the binding is annotated:
 
 ```
-x := Some(true)                          // x : Maybe bool, fully inferred
-let r: Result i32 string = Ok(5)         // Ok fixes only T; E annotated on the let
+x := Some(true)                          # x : Maybe bool, fully inferred
+let r: Result i32 string = Ok(5)         # Ok fixes only T; E annotated on the let
 ```
 
 This is the same discipline already used for tuples and destructuring — **when in

@@ -19,14 +19,14 @@ its partner keyword as the body delimiter; a post-test loop uses it as the leadi
 opener, so the body always runs at least once.
 
 ```
-while COND do BODY        // pre-test,  repeat while COND is true
-until COND repeat BODY    // pre-test,  repeat while COND is false
-do BODY while COND        // post-test, runs ≥1×, repeat while COND is true
-repeat BODY until COND    // post-test, runs ≥1×, repeat while COND is false
+while COND do BODY        # pre-test,  repeat while COND is true
+until COND repeat BODY    # pre-test,  repeat while COND is false
+do BODY while COND        # post-test, runs ≥1×, repeat while COND is true
+repeat BODY until COND    # post-test, runs ≥1×, repeat while COND is false
 ```
 
 ```
-for BINDINGS in ITER do BODY   // ranged iteration
+for BINDINGS in ITER do BODY   # ranged iteration
 ```
 
 ```
@@ -50,9 +50,9 @@ get introduced later but for now, they are out of scope.
 
 ```
 total := 0
-for i in 0..10 do total += i          // 0,1,…,9
+for i in 0..10 do total += i          # 0,1,…,9
 
-for (i, v) in xs do total += i + v    // index and element
+for (i, v) in xs do total += i + v    # index and element
 
 n := 0
 while n < 5 do {
@@ -61,7 +61,7 @@ while n < 5 do {
   if n == 4 then break
 }
 
-repeat n -= 1 until n == 0            // runs at least once
+repeat n -= 1 until n == 0            # runs at least once
 ```
 
 ## Header expressions and newlines

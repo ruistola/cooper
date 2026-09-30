@@ -125,12 +125,12 @@ function type is expected — this is the primary mechanism for polymorphism in 
 func process(read: func(u8[]): i32) {
   let buf: u8[] = makeBuffer(1024)
   let n: i32 = read(buf)
-  // ...
+  # ...
 }
 
-process(myFile.read)      // method binding: captures myFile
-process(mySocket.read)    // same signature, different implementation
-process(func(buf: u8[]): i32 { 0 })  // ad hoc lambda also works
+process(myFile.read)      # method binding: captures myFile
+process(mySocket.read)    # same signature, different implementation
+process(func(buf: u8[]): i32 { 0 })  # ad hoc lambda also works
 ```
 
 ## Runtime representation
@@ -138,9 +138,9 @@ process(func(buf: u8[]): i32 { 0 })  // ad hoc lambda also works
 All function-typed values share a uniform runtime representation: a pair of pointers.
 
 ```
-// Conceptual internal layout (not user-visible syntax)
-//   code: pointer to the executable code
-//   env:  pointer to captured environment (or null)
+# Conceptual internal layout (not user-visible syntax)
+#   code: pointer to the executable code
+#   env:  pointer to captured environment (or null)
 ```
 
 | Source expression | `code` points to | `env` points to |
@@ -194,8 +194,8 @@ struct Button {
   drawText(b.label)
 }
 
-// onClick is per-instance (each button does something different)
-// render is shared (all buttons draw the same way)
+# onClick is per-instance (each button does something different)
+# render is shared (all buttons draw the same way)
 ```
 
 ## Shadowing rules

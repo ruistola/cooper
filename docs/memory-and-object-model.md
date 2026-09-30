@@ -13,8 +13,8 @@ run of struct bytes, not an array of references to separately allocated structs.
 ```
 struct Point { x: i32, y: i32 }
 
-let p: Point          // two i32 fields, inline
-let line: Point[]     // N * sizeof(Point) contiguous bytes
+let p: Point          # two i32 fields, inline
+let line: Point[]     # N * sizeof(Point) contiguous bytes
 ```
 
 This is the cache-friendly default: iterating `line` walks linear memory with no pointer
@@ -46,8 +46,8 @@ pointer to a field or an array element:
 
 ```
 let line: Point[] = ...
-let mid: Point^ = &line[len(line) / 2]   // interior pointer into the array
-let yp: i32^ = &mid.y                     // interior pointer into a field
+let mid: Point^ = &line[len(line) / 2]   # interior pointer into the array
+let yp: i32^ = &mid.y                     # interior pointer into a field
 ```
 
 Interior pointers keep the target aggregate alive as far as the collector is concerned;
@@ -71,9 +71,9 @@ zero values; writes are absorbed and discarded.
 
 ```
 let p: Point^ = nil
-let x: i32 = p.x     // 0 — the zero value of i32
-p.x = 10             // absorbed; writes nothing
-let y: i32 = p.x     // still 0
+let x: i32 = p.x     # 0 — the zero value of i32
+p.x = 10             # absorbed; writes nothing
+let y: i32 = p.x     # still 0
 ```
 
 The nil object has **no state**. It is a `/dev/null` sink and a source of defaults only;

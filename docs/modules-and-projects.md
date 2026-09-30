@@ -75,7 +75,7 @@ A `use` clause binds one of two things, decided by the **kind of its final path 
   local scope and its members are reached through it, qualified:
 
   ```
-  use { std.io }        // usage: std.io.print("hello")
+  use { std.io }        # usage: std.io.print("hello")
   ```
 
 * **Name binding** — the final segment names an item *exported by* a module (a type,
@@ -83,14 +83,14 @@ A `use` clause binds one of two things, decided by the **kind of its final path 
   if it were declared in this file:
 
   ```
-  use { std.types.Result }   // usage: let x: Result i32
+  use { std.types.Result }   # usage: let x: Result i32
   ```
 
   Several names from one module are grouped with braces on the trailing position:
 
   ```
   use {
-    std.types.{ Maybe, Result }   // both Maybe and Result usable bare
+    std.types.{ Maybe, Result }   # both Maybe and Result usable bare
   }
   ```
 
@@ -106,9 +106,9 @@ keyword. The alias is the only local spelling and applies solely within this fil
 
 ```
 use {
-  http as web,                              // module alias: web.serve()
-  std.types.Result as CoreResult,           // name alias
-  std.types.{ Maybe, Result as CoreResult },// alias inside a group
+  http as web,                              # module alias: web.serve()
+  std.types.Result as CoreResult,           # name alias
+  std.types.{ Maybe, Result as CoreResult },# alias inside a group
 }
 ```
 

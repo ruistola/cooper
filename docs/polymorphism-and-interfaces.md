@@ -27,16 +27,16 @@ can achieve similar expressiveness with less machinery:
 ## The design
 
 ```
-// Functions accept capabilities explicitly; the required signature is written inline
+# Functions accept capabilities explicitly; the required signature is written inline
 func process(read: func(u8[]): (i32, Error)) {
   n, err := read(buf)
-  // ...
+  # ...
 }
 
-// Call sites are explicit about what capability they provide
-process(myFile.read)                           // method binding → closure
-process(func(b: u8[]): (i32, Error) { ... })   // ad hoc lambda
-process(myMockRead)                            // any matching function
+# Call sites are explicit about what capability they provide
+process(myFile.read)                           # method binding → closure
+process(func(b: u8[]): (i32, Error) { ... })   # ad hoc lambda
+process(myMockRead)                            # any matching function
 ```
 
 ## What this gives us
@@ -68,13 +68,13 @@ process(myMockRead)                            // any matching function
 ## Performance comparison
 
 ```
-// Go single-method interface call: 2 loads + indirect call
-MOV RAX, [interface]       // load itable pointer
-MOV RBX, [RAX+offset]     // load func pointer from itable
+# Go single-method interface call: 2 loads + indirect call
+MOV RAX, [interface]       # load itable pointer
+MOV RBX, [RAX+offset]     # load func pointer from itable
 CALL RBX with data_ptr
 
-// Cooper function value call: 1 load + indirect call
-MOV RAX, [closure]         // load func pointer directly
+# Cooper function value call: 1 load + indirect call
+MOV RAX, [closure]         # load func pointer directly
 CALL RAX with env_ptr
 ```
 
@@ -113,7 +113,7 @@ oneof Attack {
   Ranged(Ranged)
 }
 
-// All variants define isLethal(): bool, so this compiles:
+# All variants define isLethal(): bool, so this compiles:
 func anyLethal(attacks: Attack[]): bool {
   for a in attacks {
     if a.isLethal() then return true

@@ -37,9 +37,9 @@ A variant is a PascalCase name followed by an optional **parenthesised,
 comma-delimited list of positional payload slots**:
 
 ```
-None                 // payload-free
-Some(T)              // one slot
-Rect(i32, i32)       // two slots
+None                 # payload-free
+Some(T)              # one slot
+Rect(i32, i32)       # two slots
 ```
 
 Payloads are **positional only**. Named-field payloads are deferred — they are
@@ -94,9 +94,9 @@ The type qualifier may be **dropped** wherever the surrounding context already f
 which sum type is expected. There a bare variant names the variant directly:
 
 ```
-let x: Result i32 string = Ok(5)              // annotation fixes the type
-func f(): Maybe i32 { return None }           // return type fixes the type
-match r with { Ok(n) => …, Err(e) => … }      // scrutinee fixes the type
+let x: Result i32 string = Ok(5)              # annotation fixes the type
+func f(): Maybe i32 { return None }           # return type fixes the type
+match r with { Ok(n) => …, Err(e) => … }      # scrutinee fixes the type
 ```
 
 This is not the numeric-literal case, where a literal is inherently a number and
@@ -106,7 +106,7 @@ type pins the sum type down. With no expected type there is nothing to disambigu
 against, and the bare form is a type error; the qualified form is required:
 
 ```
-let x = Ok(5)     // error: ambiguous variant; write Result.Ok(5)
+let x = Ok(5)     # error: ambiguous variant; write Result.Ok(5)
 ```
 
 The expected type is supplied by the same head-only mechanism that drives inference
@@ -127,8 +127,8 @@ inferred. Two sources feed the inference:
    the parameters the payload cannot:
 
 ```
-func good(): Result i32 string { return Ok(5) }    // payload fixes T, context fixes E
-func empty(): Maybe i32 { return None }            // context fixes T
+func good(): Result i32 string { return Ok(5) }    # payload fixes T, context fixes E
+func empty(): Maybe i32 { return None }            # context fixes T
 ```
 
 Both returns sit under a declared return type, so the sum type is fixed and the
@@ -139,7 +139,7 @@ payload under-determines the parameters is rejected — and with no expected typ
 is also nothing to resolve a bare variant against, so it must be qualified:
 
 ```
-func f() { m := Maybe.None }   // error: cannot infer type arguments for Maybe.None
+func f() { m := Maybe.None }   # error: cannot infer type arguments for Maybe.None
 ```
 
 This mirrors the discipline used for generic structs, tuples, and destructuring —
@@ -186,9 +186,9 @@ A pattern is one of:
 * the **wildcard** `_`, a catch-all that matches any value and binds nothing.
 
 ```
-Circle(r)      // binds r to the single payload slot
-Rect(w, _)     // binds w, ignores the second slot
-_              // catch-all
+Circle(r)      # binds r to the single payload slot
+Rect(w, _)     # binds w, ignores the second slot
+_              # catch-all
 ```
 
 Payload binders are scoped to their own arm: a name bound in one arm is not visible

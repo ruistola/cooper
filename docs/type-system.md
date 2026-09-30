@@ -100,7 +100,7 @@ that lower to it:
 * **Operators** lower to method calls (above).
 * **Instantiation** takes no type arguments in value position: types are inferred,
   and when inference under-determines a parameter, the binding is annotated —
-  `let r: Result i32 string = Result.Ok(5)`. Same "annotate the `let`" rule already
+  `let r: Result i32 string = Ok(5)`. Same "annotate the `let`" rule already
   used for tuples and destructuring.
 * **`where` clauses** infer and thread the required operations structurally, so
   bounded generics read clean while lowering to explicit dictionary passing.
@@ -116,7 +116,7 @@ overloading.
 
 ## Staged plan
 
-* **Stage 0** — parametric generics, no constraints. Enough for `Option T`,
+* **Stage 0** — parametric generics, no constraints. Enough for `Maybe T`,
   `Result T E`, `List T`, and any generic that does not inspect `T`. Capability
   needs met by passing functions/values. (Sum types need only this stage.)
 * **Stage 1** — structural method-set constraints in a `where` clause, implicit

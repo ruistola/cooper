@@ -114,9 +114,7 @@ The choice is the ordinary value-vs-pointer decision, made on two grounds:
 Accessing a method via dot notation on an instance creates a closure:
 
 ```
-type ReadFn = func(u8[]): i32
-
-let read: ReadFn = myFile.read
+let read: func(u8[]): i32 = myFile.read
 ```
 
 This closure captures the instance as its environment. It can be passed anywhere a matching

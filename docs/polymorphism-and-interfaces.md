@@ -3,8 +3,8 @@
 ## Decision
 
 Cooper does **not** have a dedicated interface construct. Polymorphism is achieved by passing
-functions (first-class citizens) as arguments. Type aliases for function signatures provide
-naming and documentation.
+functions (first-class citizens) as arguments. A required capability is spelled as a function
+type written inline at the parameter that needs it, keeping the contract local to its use.
 
 ## Context and rationale
 
@@ -27,11 +27,8 @@ can achieve similar expressiveness with less machinery:
 ## The design
 
 ```
-// Named function type — documentation and intent, compile-time only
-type Reader = func(u8[]): (i32, Error)
-
-// Functions accept capabilities explicitly
-func process(read: Reader) {
+// Functions accept capabilities explicitly; the required signature is written inline
+func process(read: func(u8[]): (i32, Error)) {
   n, err := read(buf)
   // ...
 }
@@ -46,8 +43,8 @@ process(myMockRead)                            // any matching function
 
 * **Zero runtime overhead** beyond what closures already cost (func_ptr + env_ptr, one
   indirection — strictly less than Go's itable approach).
-* **No new language concepts** — functions are values, type aliases provide names. Both are
-  needed regardless.
+* **No new language concepts** — functions are values, and a capability's shape is written
+  where it is required. Both are needed regardless.
 * **Structural typing for free** — signature match equals satisfaction.
 * **Trivial testability** — pass lambdas instead of constructing mock structs.
 * **Principle of least authority** — callers provide exactly the capability needed, not an
@@ -111,7 +108,7 @@ struct Ranged {
   return r.damage > 50 and r.accuracy > 0.9
 }
 
-enum Attack {
+oneof Attack {
   Melee(Melee),
   Ranged(Ranged)
 }

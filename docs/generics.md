@@ -119,7 +119,7 @@ under-determines a parameter, the binding is annotated:
 
 ```
 x := Some(true)                          // x : Maybe bool, fully inferred
-let r: Result i32 string = Result.Ok(5)  // Ok fixes only T; E annotated on the let
+let r: Result i32 string = Ok(5)         // Ok fixes only T; E annotated on the let
 ```
 
 This is the same discipline already used for tuples and destructuring — **when in

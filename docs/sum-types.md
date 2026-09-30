@@ -43,8 +43,7 @@ Rect(i32, i32)       // two slots
 ```
 
 Payloads are **positional only**. Named-field payloads are deferred — they are
-entangled with the anonymous-struct and `type`-keyword decisions and will be
-revisited then.
+entangled with the anonymous-struct (record) decision and will be revisited then.
 
 Payload slots are ordinary type expressions, so they may themselves be generic
 applications:
@@ -226,7 +225,7 @@ type checker enforces the rest.
 
 ## Deferred
 
-* **Named-field payloads**, tied to the anonymous-struct / `type` decision.
+* **Named-field payloads**, tied to the anonymous-struct (record) decision.
 * **Richer patterns**: nested sub-patterns, literal patterns, or-patterns (`A | B`),
   guards (`if cond`), and `@`-bindings. The first iteration of `match` is flat.
 

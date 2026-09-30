@@ -45,9 +45,10 @@ then the `EOL` token is converted into a semicolon.
 
 ## Type expressions
 
-### Slice/array notation
+### Array notation
 
-Cooper uses postfix bracket notation for collection types:
+An **array** is Cooper's default sequence type: a dynamic, growable run of elements
+(conceptually `{ data, length, capacity }`). It is written with postfix brackets:
 
 ```
 let items: i32[]
@@ -56,6 +57,44 @@ let callbacks: func(i32)[]
 ```
 
 This follows C#/TypeScript convention (`Type[]`) rather than Go's prefix (`[]Type`).
+
+A **static array** has a fixed compile-time length, written by placing that length inside
+the brackets. It is the exceptional case — a known, non-resizable block of memory — chosen
+when the size is fixed and the extra guarantees enable optimization:
+
+```
+let rgb: u8[3]           // exactly three bytes, never reallocated
+let grid: i32[8][8]      // fixed 8×8
+```
+
+### Array literals
+
+An array value is written as a bracketed, comma-separated list. This keeps `[...]` for
+sequences and reserves `{...}` for records/aggregates:
+
+```
+let xs: i32[] = [0, 1, 2, 4, 8]
+ys := [0, 1, 2, 4, 8]        // ys : i32[], element type inferred
+empty := []                  // needs an annotation to fix the element type
+```
+
+There is no `new` or `make` keyword. Zero-defaults, literals, and (later) a small set of
+ordinary builtin constructor *functions* for capacity hints cover construction; the
+programmer never chooses stack versus heap.
+
+### Subranging copies
+
+Indexing with a range yields a **new array** — a copy — not a view onto the original
+backing store:
+
+```
+let xs: i32[] = [0, 1, 2, 4, 8]
+let ys: i32[] = xs[2..]      // a fresh i32[] holding 2, 4, 8; independent of xs
+```
+
+Arrays have value semantics, so subranging produces a value; mutating `ys` never touches
+`xs`. When aliasing *is* wanted, it is requested explicitly through the pointer machinery
+(`^`) rather than hidden behind indexing — copies copy, aliasing takes a visible caret.
 
 ### Pointer notation
 
@@ -91,10 +130,10 @@ Related operators and values:
 
 ### Function type expressions
 
-Function type expressions carry only the parameter types and return type — no parameter names:
+A function type carries only the parameter types and return type — no parameter names:
 
 ```
-type Handler = func(Request, Duration): Response
+let handler: func(Request, Duration): Response
 ```
 
 Parameter names are **not allowed** in function type expressions. Rationale: if names are
@@ -105,9 +144,15 @@ function _declarations_ (where they're used in the body), not in type expression
 // Function declaration — names required (used in body)
 func process(req: Request, timeout: Duration): Response { ... }
 
-// Function type expression — types only
-type ProcessFn = func(Request, Duration): Response
+// The same signature as a type — types only, written inline where it is needed
+func run(step: func(Request, Duration): Response) { ... }
 ```
+
+Cooper has **no `type` keyword** and no cosmetic type aliases: a function type (or any
+other type) is written directly at the binding or parameter that uses it, keeping the
+shape local to its point of use rather than behind an inert nickname. Naming a distinct
+*nominal* type over an existing one (e.g. a `LengthMm` backed by `i32`) is a separate,
+deferred feature that will lead with its own declaring keyword.
 
 ### Tuple types
 
@@ -158,4 +203,39 @@ of assignable targets:
 ```
 (a, b) = (b, a)                 // positional reassignment
 ```
+
+## Logical and bitwise operators
+
+Cooper keeps a small operator vocabulary by a single rule: **a symbol is a unary prefix,
+a keyword is a binary infix.** Negation is therefore the symbol `!`; the binary logical and
+bitwise connectives are the keywords `and`, `or`, `xor`.
+
+```
+if !ready and pending or !blocked { ... }
+```
+
+`and`, `or`, `xor`, and `!` are **type-directed**: on `bool` operands they are logical, on
+integer operands they are bitwise. Mixed operands are a type error, so there is never
+ambiguity about which meaning applies.
+
+* On `bool`, `and` and `or` **short-circuit** (the right operand is skipped when the left
+  already decides the result); `!` is logical negation.
+* On integers, `and`/`or`/`xor` are **eager** bitwise operations (both operands always
+  evaluated) and `!` is bitwise complement. `xor` has no short-circuiting form in either
+  case.
+
+Bit shifts keep their conventional symbols, which are unambiguous: `x << 2`, `x >> 1`.
+
+## Chained comparison
+
+Comparisons may be chained when they run in a single direction, which reads better than a
+repeated conjunction:
+
+```
+if min <= x <= max { ... }        // equivalent to: min <= x and x <= max
+```
+
+A chain desugars to the conjunction of its adjacent pairs, and each middle operand is
+evaluated exactly once. Only **monotonic** chains are allowed: the links must all be
+`<`/`<=` or all be `>`/`>=`. A direction-mixing chain such as `a < b > c` is rejected.
 

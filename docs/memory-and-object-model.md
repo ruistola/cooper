@@ -95,7 +95,7 @@ check for nil explicitly — the same check as before, now a domain decision rat
 language mandate.
 
 Nil is confined to this role: "a pointer legitimately has no target." It is not the tool
-for modelling optional-ness or errors in general. A "maybe a bool" is an `Option bool`, not
+for modelling optional-ness or errors in general. A "maybe a bool" is a `Maybe bool`, not
 a `bool^`; a fallible computation should return a `Result T E`, not a bare pointer as a
 success/failure signal. Those constructs (planned separately) model *semantic* absence;
 nil models *referential* absence, and inertness is simply how it behaves under

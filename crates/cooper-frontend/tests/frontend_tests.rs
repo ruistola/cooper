@@ -840,6 +840,22 @@ fn index_assigning_a_read_only_type_is_reported() {
     );
 }
 
+#[test]
+fn addressing_a_built_in_array_element_is_allowed() {
+    // A built-in array's element lives in the backing buffer, so `&xs[i]` is a place.
+    ok("func f(xs: i32[]): i32^ {\n  return &xs[0]\n}");
+}
+
+#[test]
+fn addressing_a_user_type_index_is_reported() {
+    // A user type's blessed `get` returns a computed value, not a storage location, so
+    // `&m[i]` has no address to take even though `m[i]` reads fine.
+    err(
+        "struct Slots {\n  data: i32[],\n}\n(m: Slots) func get(i: u64): i32 {\n  return m.data[i]\n}\nfunc f(m: Slots): i32^ {\n  return &m[0]\n}",
+        "cannot take the address of a non-addressable expression",
+    );
+}
+
 
 
 #[test]

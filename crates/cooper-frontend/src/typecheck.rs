@@ -1257,11 +1257,14 @@ impl<'g> TypeChecker<'g> {
     }
 
     fn check_address_of(&mut self, operand: &Expr, span: Span) -> Option<Type> {
+        // Type-check the operand first so addressability can consult its type (the
+        // receiver of an index must be a built-in array). A well-typed operand is
+        // re-probed without emitting further diagnostics.
+        let operand_type = self.check_expr(operand)?;
         if !self.is_addressable(operand) {
             self.err(span, "cannot take the address of a non-addressable expression");
             return None;
         }
-        let operand_type = self.check_expr(operand)?;
         Some(Type::Pointer(Box::new(operand_type)))
     }
 
@@ -1278,11 +1281,14 @@ impl<'g> TypeChecker<'g> {
     }
 
     /// Whether an expression denotes a storage location whose address can be taken.
-    /// Temporaries (literals, call results, arithmetic) are not addressable.
-    fn is_addressable(&self, expr: &Expr) -> bool {
+    /// Temporaries (literals, call results, arithmetic) are not addressable. Indexing
+    /// is a place only on a built-in array, whose element lives in the backing buffer;
+    /// a user type's blessed `get` returns a computed value, so `&u[i]` is not a place.
+    fn is_addressable(&mut self, expr: &Expr) -> bool {
         match &expr.kind {
             ExprKind::Ident(name) => self.lookup_var(name).is_some(),
-            ExprKind::Field { .. } | ExprKind::Index { .. } | ExprKind::Deref(_) => true,
+            ExprKind::Field { .. } | ExprKind::Deref(_) => true,
+            ExprKind::Index { array, .. } => matches!(self.check_expr(array), Some(Type::Array(_))),
             ExprKind::Group(inner) => self.is_addressable(inner),
             _ => false,
         }

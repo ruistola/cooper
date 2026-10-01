@@ -795,6 +795,22 @@ fn array_exposes_a_blessed_length_method() {
 }
 
 #[test]
+fn array_index_syntax_binds_to_blessed_get_and_set() {
+    // `a[i]` reads through the blessed `get` and `a[i] = v` writes through `set`;
+    // both are also reachable as explicit methods, all sharing the `u64` index type.
+    ok("func f(xs: i32[], i: u64): i32 {\n  xs[i] = xs.get(i) + 1\n  xs.set(i, 0)\n  return xs[i]\n}");
+}
+
+#[test]
+fn array_index_of_the_wrong_integer_type_is_reported() {
+    err(
+        "func f(xs: i32[], i: i32): i32 {\n  return xs[i]\n}",
+        "array index must be u64, found i32",
+    );
+}
+
+
+#[test]
 fn unknown_array_method_is_reported() {
     err(
         "func f(xs: i32[]): i32 {\n  return xs.size()\n}",

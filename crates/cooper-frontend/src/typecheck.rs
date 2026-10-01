@@ -1187,10 +1187,11 @@ impl<'g> TypeChecker<'g> {
         if let Type::Pointer(elem) = target_type {
             target_type = *elem;
         }
-        // An array exposes a compiler-blessed method set (`xs.length()`) rather than
-        // data fields; these resolve by name against the builtin registry.
-        if matches!(target_type, Type::Array(_)) {
-            if let Some(method) = crate::builtins::array_method(field) {
+        // An array exposes a compiler-blessed method set (`xs.length()`, the `get`/
+        // `set` that index syntax binds to) rather than data fields; these resolve by
+        // name against the builtin registry.
+        if let Type::Array(elem) = &target_type {
+            if let Some(method) = crate::builtins::array_method(field, elem) {
                 return Some(method);
             }
             self.err(span, format!("{field} is not a method of array type {target_type}"));
@@ -1217,19 +1218,23 @@ impl<'g> TypeChecker<'g> {
     }
 
     fn check_index(&mut self, array: &Expr, index: &Expr) -> Option<Type> {
-        let index_type = self.check_expr(index)?;
-        if !is_numeric(&index_type) {
-            self.err(
-                index.span,
-                "array index expression does not result in a numeric type",
-            );
-            return None;
-        }
         let array_type = self.check_expr(array)?;
         let Type::Array(elem) = &array_type else {
             self.err(array.span, format!("cannot index non-array type {array_type}"));
             return None;
         };
+        // `a[i]` is the blessed read `a.get(i)`: the index takes the array index type
+        // and the result is the element type. A bare literal borrows the index type.
+        let want = crate::builtins::index_type();
+        self.expected = Some(want.clone());
+        let index_type = self.check_expr(index)?;
+        if !index_type.equals(&want) {
+            self.err(
+                index.span,
+                format!("array index must be {want}, found {index_type}"),
+            );
+            return None;
+        }
         Some((**elem).clone())
     }
 

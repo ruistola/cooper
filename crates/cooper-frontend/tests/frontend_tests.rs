@@ -805,9 +805,26 @@ fn array_index_syntax_binds_to_blessed_get_and_set() {
 fn array_index_of_the_wrong_integer_type_is_reported() {
     err(
         "func f(xs: i32[], i: i32): i32 {\n  return xs[i]\n}",
-        "array index must be u64, found i32",
+        "index must be u64, found i32",
     );
 }
+
+#[test]
+fn a_user_type_providing_get_is_indexable() {
+    // Index syntax reaches any type whose method set covers the blessed `get`: a
+    // struct with `get(u64): T` is indexable as `m[i]`, with its own index/element
+    // types.
+    ok("struct Slots {\n  data: i32[],\n}\n(m: Slots) func get(i: u64): i32 {\n  return m.data[i]\n}\nfunc f(m: Slots): i32 {\n  return m[0]\n}");
+}
+
+#[test]
+fn indexing_a_type_without_get_is_reported() {
+    err(
+        "struct Point {\n  x: i32,\n}\nfunc f(p: Point): i32 {\n  return p[0]\n}",
+        "type Point cannot be indexed",
+    );
+}
+
 
 #[test]
 fn array_push_follows_the_return_value_idiom() {

@@ -1217,25 +1217,43 @@ impl<'g> TypeChecker<'g> {
         None
     }
 
+    /// The signature of blessed method `method` on receiver type `recv`, if it has
+    /// one: a built-in array resolves against the builtin registry, a user struct
+    /// against its declared method set. This is the allowlist by which index syntax
+    /// (and, later, operators) reaches a type that structurally provides the name.
+    fn blessed_method(&self, recv: &Type, method: &str) -> Option<Type> {
+        match recv {
+            Type::Array(elem) => crate::builtins::array_method(method, elem),
+            Type::Struct { name, .. } => self.globals.lookup_method(name, method).cloned(),
+            _ => None,
+        }
+    }
+
     fn check_index(&mut self, array: &Expr, index: &Expr) -> Option<Type> {
         let array_type = self.check_expr(array)?;
-        let Type::Array(elem) = &array_type else {
-            self.err(array.span, format!("cannot index non-array type {array_type}"));
+        // `a[i]` is the blessed read `a.get(i)`: any array, or any user type whose
+        // method set provides `get`, is indexable. The index takes that method's
+        // parameter type and the result is its return type.
+        let Some(Type::Func { return_type, param_types }) = self.blessed_method(&array_type, "get")
+        else {
+            self.err(array.span, format!("type {array_type} cannot be indexed"));
             return None;
         };
-        // `a[i]` is the blessed read `a.get(i)`: the index takes the array index type
-        // and the result is the element type. A bare literal borrows the index type.
-        let want = crate::builtins::index_type();
-        self.expected = Some(want.clone());
-        let index_type = self.check_expr(index)?;
-        if !index_type.equals(&want) {
+        if param_types.len() != 1 {
             self.err(
-                index.span,
-                format!("array index must be {want}, found {index_type}"),
+                array.span,
+                format!("indexing {array_type} needs a get method taking one index"),
             );
             return None;
         }
-        Some((**elem).clone())
+        let want = param_types.into_iter().next().unwrap();
+        self.expected = Some(want.clone());
+        let index_type = self.check_expr(index)?;
+        if !index_type.equals(&want) {
+            self.err(index.span, format!("index must be {want}, found {index_type}"));
+            return None;
+        }
+        Some(*return_type)
     }
 
     fn check_address_of(&mut self, operand: &Expr, span: Span) -> Option<Type> {

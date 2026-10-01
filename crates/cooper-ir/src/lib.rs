@@ -19,6 +19,7 @@ use cooper_frontend::ast::{
 };
 use cooper_frontend::diag::Span;
 use cooper_frontend::resolve::{receiver_pattern_params, resolve_type, Globals};
+use cooper_frontend::typecheck::{decode_number_literal, LiteralValue};
 use cooper_frontend::types::Type;
 
 /// A lowered function or method: its signature, its body as typed statements, and
@@ -88,9 +89,11 @@ pub struct IrExpr {
 
 #[derive(Debug, Clone)]
 pub enum IrExprKind {
-    /// A numeric literal in its source spelling; its resolved type is on the node.
-    /// Exact-magnitude decoding is a later lowering step.
-    Number(String),
+    /// An integer literal's decoded magnitude; its resolved type (width and
+    /// signedness) is on the node, and any sign is a surrounding `Unary` operator.
+    Int(u128),
+    /// A floating-point literal's decoded value; its width is on the node.
+    Float(f64),
     Bool(bool),
     Str(String),
     Nil,
@@ -155,6 +158,10 @@ pub enum LowerError {
     /// after a clean type check, so this signals an internal inconsistency rather
     /// than user error.
     UnresolvedType(Span),
+    /// A numeric literal's spelling did not decode to a value. Like `UnresolvedType`,
+    /// this is unreachable after a clean type check (the checker rejects out-of-range
+    /// literals) and signals an internal inconsistency.
+    MalformedLiteral(Span),
     /// A syntactic form not yet handled by lowering.
     Unsupported { span: Span, what: &'static str },
 }
@@ -339,7 +346,11 @@ impl Lower<'_> {
             .cloned()
             .ok_or(LowerError::MissingType(expr.span))?;
         let kind = match &expr.kind {
-            ExprKind::Number(text) => IrExprKind::Number(text.clone()),
+            ExprKind::Number(text) => match decode_number_literal(text) {
+                Some(LiteralValue::Int(v)) => IrExprKind::Int(v),
+                Some(LiteralValue::Float(v)) => IrExprKind::Float(v),
+                None => return Err(LowerError::MalformedLiteral(expr.span)),
+            },
             ExprKind::Bool(b) => IrExprKind::Bool(*b),
             ExprKind::Str(s) => IrExprKind::Str(s.clone()),
             ExprKind::Nil => IrExprKind::Nil,
@@ -479,7 +490,7 @@ mod tests {
             panic!("expected a binary node, got {:?}", ir.kind);
         };
         // The bare literal `1` adopted the i64 width from `x`.
-        assert!(matches!(&rhs.kind, IrExprKind::Number(n) if n == "1"));
+        assert!(matches!(&rhs.kind, IrExprKind::Int(1)));
         assert!(is_primitive(&rhs.ty, "i64"), "literal width: {:?}", rhs.ty);
     }
 
@@ -528,6 +539,24 @@ mod tests {
         };
         assert_eq!(name, "x");
         assert!(is_primitive(&value.ty, "i32"));
+    }
+
+    #[test]
+    fn numeric_literals_are_decoded_to_their_values() {
+        // A hexadecimal integer with separators and a float both decode exactly.
+        let (decls, globals, types) =
+            check("func f(): u16 { return 0xFF_FF }");
+        let ir = lower_expr(return_expr(&decls), &globals, &types).expect("lowers");
+        assert!(matches!(ir.kind, IrExprKind::Int(0xFFFF)));
+        assert!(is_primitive(&ir.ty, "u16"));
+
+        let (decls, globals, types) = check("func g(): f64 { return 1.5 }");
+        let ir = lower_expr(return_expr(&decls), &globals, &types).expect("lowers");
+        let IrExprKind::Float(v) = ir.kind else {
+            panic!("expected a float literal, got {:?}", ir.kind);
+        };
+        assert_eq!(v, 1.5);
+        assert!(is_primitive(&ir.ty, "f64"));
     }
 
     #[test]

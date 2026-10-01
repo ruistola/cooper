@@ -1454,6 +1454,30 @@ fn parse_literal_magnitude(text: &str) -> Option<u128> {
     }
 }
 
+/// A numeric literal's decoded value: a non-negative integer magnitude (any sign is
+/// a surrounding unary operator, not part of the literal) or a floating-point value.
+/// The literal's resolved type, carried on the IR node, fixes its width and signedness.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LiteralValue {
+    Int(u128),
+    Float(f64),
+}
+
+/// Decode a numeric literal's source spelling into its value, classifying it by the
+/// same lexical rule the checker applies (a fractional point or decimal exponent
+/// makes it floating-point). `None` only for text the checker would already have
+/// rejected — an integer magnitude beyond 128 bits or an unparsable float — so a
+/// clean check guarantees `Some`. Shared with lowering so literal spelling is
+/// interpreted in exactly one place.
+pub fn decode_number_literal(text: &str) -> Option<LiteralValue> {
+    if literal_is_float(text) {
+        let cleaned: String = text.chars().filter(|c| *c != '_').collect();
+        cleaned.parse::<f64>().ok().map(LiteralValue::Float)
+    } else {
+        parse_literal_magnitude(text).map(LiteralValue::Int)
+    }
+}
+
 /// The bit width of an integer type by name.
 fn integer_bits(name: &str) -> u32 {
     match name {

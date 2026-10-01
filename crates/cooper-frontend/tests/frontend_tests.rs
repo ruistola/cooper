@@ -789,6 +789,21 @@ fn array_iteration_binds_element_and_index_value_pair() {
 }
 
 #[test]
+fn array_exposes_a_blessed_length_method() {
+    // `length` is a compiler-blessed method on any array, yielding a `u64` count.
+    ok("func f(xs: i32[]): u64 {\n  return xs.length()\n}");
+}
+
+#[test]
+fn unknown_array_method_is_reported() {
+    err(
+        "func f(xs: i32[]): i32 {\n  return xs.size()\n}",
+        "size is not a method of array type",
+    );
+}
+
+
+#[test]
 fn iterating_a_non_iterable_type_is_reported() {
     err("func f() {\n  for x in true do {}\n}", "cannot iterate over type bool");
 }

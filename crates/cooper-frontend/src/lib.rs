@@ -9,6 +9,7 @@
 //! convenience wrapping a single source snippet as a one-module program.
 
 pub mod ast;
+mod builtins;
 pub mod diag;
 pub mod lexer;
 pub mod modules;

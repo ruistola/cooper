@@ -1187,6 +1187,15 @@ impl<'g> TypeChecker<'g> {
         if let Type::Pointer(elem) = target_type {
             target_type = *elem;
         }
+        // An array exposes a compiler-blessed method set (`xs.length()`) rather than
+        // data fields; these resolve by name against the builtin registry.
+        if matches!(target_type, Type::Array(_)) {
+            if let Some(method) = crate::builtins::array_method(field) {
+                return Some(method);
+            }
+            self.err(span, format!("{field} is not a method of array type {target_type}"));
+            return None;
+        }
         let Type::Struct { name, members, .. } = &target_type else {
             self.err(
                 target.span,

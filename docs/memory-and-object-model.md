@@ -46,7 +46,7 @@ pointer to a field or an array element:
 
 ```
 let line: Point[] = ...
-let mid: Point^ = &line[len(line) / 2]   # interior pointer into the array
+let mid: Point^ = &line[line.length() / 2]   # interior pointer into the array
 let yp: i32^ = &mid.y                     # interior pointer into a field
 ```
 

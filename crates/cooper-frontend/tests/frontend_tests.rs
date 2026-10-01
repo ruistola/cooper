@@ -810,32 +810,20 @@ fn array_index_of_the_wrong_integer_type_is_reported() {
 }
 
 #[test]
-fn a_user_type_providing_get_is_indexable() {
-    // Index syntax reaches any type whose method set covers the blessed `get`: a
-    // struct with `get(u64): T` is indexable as `m[i]`, with its own index/element
-    // types.
-    ok("struct Slots {\n  data: i32[],\n}\n(m: Slots) func get(i: u64): i32 {\n  return m.data[i]\n}\nfunc f(m: Slots): i32 {\n  return m[0]\n}");
-}
-
-#[test]
-fn indexing_a_type_without_get_is_reported() {
+fn a_user_type_is_not_indexable() {
+    // Index syntax is a built-in-array privilege: a user struct is not indexable even
+    // when it declares a method named `get` — declaring the name grants no sugar.
     err(
-        "struct Point {\n  x: i32,\n}\nfunc f(p: Point): i32 {\n  return p[0]\n}",
-        "type Point cannot be indexed",
+        "struct Slots {\n  data: i32[],\n}\n(m: Slots) func get(i: u64): i32 {\n  return m.data[i]\n}\nfunc f(m: Slots): i32 {\n  return m[0]\n}",
+        "type Slots cannot be indexed",
     );
 }
 
 #[test]
-fn a_user_type_providing_set_is_index_assignable() {
-    // Index assignment reaches a type whose method set covers the blessed `set`.
-    ok("struct Slots {\n  data: i32[],\n}\n(m: Slots) func set(i: u64, v: i32) {\n  m.data[i] = v\n}\nfunc f(m: Slots) {\n  m[0] = 7\n}");
-}
-
-#[test]
-fn index_assigning_a_read_only_type_is_reported() {
-    // A type with `get` but no `set` is read-only: `m[i] = v` has no write to bind to.
+fn a_user_type_is_not_index_assignable() {
+    // Likewise `m[i] = v`: a user struct with a `set` method is not index-assignable.
     err(
-        "struct Slots {\n  data: i32[],\n}\n(m: Slots) func get(i: u64): i32 {\n  return m.data[i]\n}\nfunc f(m: Slots) {\n  m[0] = 7\n}",
+        "struct Slots {\n  data: i32[],\n}\n(m: Slots) func set(i: u64, v: i32) {\n  m.data[i] = v\n}\nfunc f(m: Slots) {\n  m[0] = 7\n}",
         "type Slots cannot be assigned by index",
     );
 }
@@ -844,16 +832,6 @@ fn index_assigning_a_read_only_type_is_reported() {
 fn addressing_a_built_in_array_element_is_allowed() {
     // A built-in array's element lives in the backing buffer, so `&xs[i]` is a place.
     ok("func f(xs: i32[]): i32^ {\n  return &xs[0]\n}");
-}
-
-#[test]
-fn addressing_a_user_type_index_is_reported() {
-    // A user type's blessed `get` returns a computed value, not a storage location, so
-    // `&m[i]` has no address to take even though `m[i]` reads fine.
-    err(
-        "struct Slots {\n  data: i32[],\n}\n(m: Slots) func get(i: u64): i32 {\n  return m.data[i]\n}\nfunc f(m: Slots): i32^ {\n  return &m[0]\n}",
-        "cannot take the address of a non-addressable expression",
-    );
 }
 
 

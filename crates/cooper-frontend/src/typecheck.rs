@@ -1217,43 +1217,28 @@ impl<'g> TypeChecker<'g> {
         None
     }
 
-    /// The signature of blessed method `method` on receiver type `recv`, if it has
-    /// one: a built-in array resolves against the builtin registry, a user struct
-    /// against its declared method set. This is the allowlist by which index syntax
-    /// (and, later, operators) reaches a type that structurally provides the name.
-    fn blessed_method(&self, recv: &Type, method: &str) -> Option<Type> {
-        match recv {
-            Type::Array(elem) => crate::builtins::array_method(method, elem),
-            Type::Struct { name, .. } => self.globals.lookup_method(name, method).cloned(),
-            _ => None,
-        }
-    }
-
+    /// Index syntax is a built-in-array privilege: `a[i]` reads and `a[i] = v` writes an
+    /// array element at a `u64` index. User-defined collections are not indexable and
+    /// expose ordinary methods (`at`, `set`, …) instead; array method-call forms
+    /// (`xs.length()`, `xs.push(v)`) go through the builtins registry via `check_field`.
     fn check_index(&mut self, array: &Expr, index: &Expr) -> Option<Type> {
         let array_type = self.check_expr(array)?;
-        // `a[i]` is the blessed read `a.get(i)`: any array, or any user type whose
-        // method set provides `get`, is indexable. The index takes that method's
-        // parameter type and the result is its return type.
-        let Some(Type::Func { return_type, param_types }) = self.blessed_method(&array_type, "get")
-        else {
+        // Index syntax is a built-in-array privilege: `a[i]` is the blessed read
+        // `a.get(i)`, with a `u64` index. User-defined collections are not indexable —
+        // they expose ordinary methods (`at`, `set`, …), visibly userspace.
+        let Type::Array(elem) = &array_type else {
             self.err(array.span, format!("type {array_type} cannot be indexed"));
             return None;
         };
-        if param_types.len() != 1 {
-            self.err(
-                array.span,
-                format!("indexing {array_type} needs a get method taking one index"),
-            );
-            return None;
-        }
-        let want = param_types.into_iter().next().unwrap();
+        let element = (**elem).clone();
+        let want = crate::builtins::index_type();
         self.expected = Some(want.clone());
         let index_type = self.check_expr(index)?;
         if !index_type.equals(&want) {
             self.err(index.span, format!("index must be {want}, found {index_type}"));
             return None;
         }
-        Some(*return_type)
+        Some(element)
     }
 
     fn check_address_of(&mut self, operand: &Expr, span: Span) -> Option<Type> {
@@ -1281,9 +1266,8 @@ impl<'g> TypeChecker<'g> {
     }
 
     /// Whether an expression denotes a storage location whose address can be taken.
-    /// Temporaries (literals, call results, arithmetic) are not addressable. Indexing
-    /// is a place only on a built-in array, whose element lives in the backing buffer;
-    /// a user type's blessed `get` returns a computed value, so `&u[i]` is not a place.
+    /// Temporaries (literals, call results, arithmetic) are not addressable. Indexing is
+    /// a place only on a built-in array, whose element lives in the backing buffer.
     fn is_addressable(&mut self, expr: &Expr) -> bool {
         match &expr.kind {
             ExprKind::Ident(name) => self.lookup_var(name).is_some(),
@@ -1295,9 +1279,8 @@ impl<'g> TypeChecker<'g> {
     }
 
     fn check_assign(&mut self, op: AssignOp, target: &Expr, value: &Expr) -> Option<Type> {
-        // `a[i] = v` is the blessed write `a.set(i, v)`: it reaches any array, or any
-        // user type whose method set provides `set`, independently of whether that
-        // type is readable — a type with `get` but no `set` is read-only.
+        // `a[i] = v` writes an array element through the built-in index sugar; only a
+        // built-in array is index-assignable.
         if let ExprKind::Index { array, index } = &target.kind {
             return self.check_index_assign(op, array, index, value, target.span);
         }
@@ -1307,9 +1290,8 @@ impl<'g> TypeChecker<'g> {
         Some(target_type)
     }
 
-    /// Check an index assignment `a[i] <op>= v` against the blessed `set(index, value)`
-    /// method: the index takes `set`'s first parameter type and the stored value its
-    /// second, with any compound operator relating the element and the value.
+    /// Check an index assignment `a[i] <op>= v`: the receiver must be a built-in array,
+    /// the index is a `u64`, and any compound operator relates the element and the value.
     fn check_index_assign(
         &mut self,
         op: AssignOp,
@@ -1319,24 +1301,16 @@ impl<'g> TypeChecker<'g> {
         span: Span,
     ) -> Option<Type> {
         let recv = self.check_expr(array)?;
-        let Some(Type::Func { param_types, .. }) = self.blessed_method(&recv, "set") else {
+        let Type::Array(elem) = &recv else {
             self.err(span, format!("type {recv} cannot be assigned by index"));
             return None;
         };
-        if param_types.len() != 2 {
-            self.err(
-                span,
-                format!("index assignment on {recv} needs a set method taking an index and a value"),
-            );
-            return None;
-        }
-        let mut params = param_types.into_iter();
-        let index_param = params.next().unwrap();
-        let element = params.next().unwrap();
-        self.expected = Some(index_param.clone());
+        let element = (**elem).clone();
+        let want = crate::builtins::index_type();
+        self.expected = Some(want.clone());
         let index_type = self.check_expr(index)?;
-        if !index_type.equals(&index_param) {
-            self.err(index.span, format!("index must be {index_param}, found {index_type}"));
+        if !index_type.equals(&want) {
+            self.err(index.span, format!("index must be {want}, found {index_type}"));
             return None;
         }
         self.expected = Some(element.clone());

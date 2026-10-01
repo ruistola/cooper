@@ -67,6 +67,18 @@ heterogeneity, **closures** for open behavior.
   operators or change precedence. This is the one controlled exception, and it is
   what makes "T supports `+`" expressible as "T has method `add`" — so constraints
   never need a Go-style type-set escape hatch (`~int | ~float64`).
+* **Index/slice syntax: built-in types only.** `a[i]`, `a[i] = v`, and range
+  slicing/views are a privilege of the compiler-known collections (static and dynamic
+  arrays, hashmaps, hashsets), not user-extensible sugar. A user-defined collection
+  stays explicit — it exposes ordinary methods (`at`, `set`, …), visibly userspace.
+  The reason is coherence, not capability envy: the full array-like surface includes
+  `&a[i]` (an interior pointer) and `&a[lo..hi]` (a borrowed view), and a view is only
+  "free" because the compiler privately represents it as an array aliasing existing
+  storage. A user type has no such representation, so extending the sugar would either
+  demand a general borrowed-view language feature or leave a partial surface (`a[i]`
+  works, `&a[lo..hi]` does not) that ambushes the reader. Better a visible method call
+  than magic with a hidden hole. If ergonomics demand more, the answer is *more and
+  better built-ins*, not user-defined operators.
 
 Zero/identity (needed by e.g. a generic `sum`) has no value to dispatch on and is
 **passed explicitly** (`fold(xs, 0, add)`) rather than resolved implicitly. A

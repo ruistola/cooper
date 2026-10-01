@@ -2,16 +2,17 @@
 //!
 //! A built-in type such as an array carries a fixed method set the compiler knows by
 //! name rather than from a declaration: `xs.length()` and the indexing `xs[i]` /
-//! `xs[i] = v` resolve here, not through a user-written method. These blessed names
-//! are the one vocabulary the surface syntax and (later) user-defined "array-like"
-//! types share — a type is array-like when its method set structurally covers this
-//! one, the same structural-satisfaction rule a `where` clause uses, with no nominal
-//! trait. Index syntax binds to the blessed names `get`/`set`, so `a[i]` is `a.get(i)`
-//! and `a[i] = v` is `a.set(i, v)`; a future built-in map reuses the same names with a
-//! key-typed signature. Growth (`push`) follows the return-value idiom. The bodies are
-//! intrinsics the lowering IR realises behind the runtime boundary; only the signatures
-//! live here, so a call site type-checks through the same method-access path as any
-//! other method.
+//! `xs[i] = v` resolve here, not through a user-written method. Index (and, later,
+//! slice) syntax is a *built-in privilege*: it binds to the blessed names `get`/`set`,
+//! so `a[i]` is `a.get(i)` and `a[i] = v` is `a.set(i, v)`, but it is not extended to
+//! user types. A user-defined collection stays explicit — it exposes ordinary methods
+//! (`at`, `set`, …), visibly userspace — because the ergonomic surface (addressable
+//! elements, copy/view slicing) is reachable only for types whose representation the
+//! compiler controls. The planned built-in set that carries this sugar is static and
+//! dynamic arrays, hashmaps, and hashsets. Growth (`push`) follows the return-value
+//! idiom. The bodies are intrinsics the lowering IR realises behind the runtime
+//! boundary; only the signatures live here, so a call site type-checks through the same
+//! method-access path as any other method.
 //!
 //! The only array type modelled today is the dynamic `T[]`, which carries the full set
 //! including `push`. A fixed-size static array `T[N]` — not yet a distinct type — would

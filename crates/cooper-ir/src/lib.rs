@@ -198,6 +198,13 @@ pub enum IrExprKind {
         scrutinee: Box<IrExpr>,
         arms: Vec<MatchArm<IrExpr>>,
     },
+    /// Construction of a sum-type value: a variant name and its payload arguments
+    /// (empty for a payload-free variant). The owning sum type and its type arguments
+    /// are on the node's resolved type.
+    Variant {
+        variant: String,
+        args: Vec<IrExpr>,
+    },
 }
 
 /// Why lowering could not proceed.
@@ -419,7 +426,17 @@ impl Lower<'_> {
             ExprKind::Str(s) => IrExprKind::Str(s.clone()),
             ExprKind::Nil => IrExprKind::Nil,
             ExprKind::Unit => IrExprKind::Unit,
-            ExprKind::Ident(name) => IrExprKind::Var(name.clone()),
+            ExprKind::Ident(name) => {
+                if variant_named(name, &ty) {
+                    // A bare payload-free variant inferred from the expected type.
+                    IrExprKind::Variant {
+                        variant: name.clone(),
+                        args: Vec::new(),
+                    }
+                } else {
+                    IrExprKind::Var(name.clone())
+                }
+            }
             ExprKind::Tuple(elems) => IrExprKind::Tuple(self.each(elems)?),
             ExprKind::Unary { op, operand } => IrExprKind::Unary {
                 op: *op,
@@ -430,14 +447,31 @@ impl Lower<'_> {
                 lhs: Box::new(self.expr(lhs)?),
                 rhs: Box::new(self.expr(rhs)?),
             },
-            ExprKind::Call { callee, args } => IrExprKind::Call {
-                callee: Box::new(self.expr(callee)?),
-                args: self.each(args)?,
+            ExprKind::Call { callee, args } => match self.variant_callee(callee, &ty) {
+                Some(variant) => IrExprKind::Variant {
+                    variant,
+                    args: self.each(args)?,
+                },
+                None => IrExprKind::Call {
+                    callee: Box::new(self.expr(callee)?),
+                    args: self.each(args)?,
+                },
             },
-            ExprKind::Field { target, name } => IrExprKind::Field {
-                target: Box::new(self.expr(target)?),
-                name: name.clone(),
-            },
+            ExprKind::Field { target, name } => {
+                if matches!(self.types.get(&target.span), Some(Type::Oneof { .. })) {
+                    // `Oneof.Variant` reads as a payload-free variant value, not a
+                    // field access on a runtime target.
+                    IrExprKind::Variant {
+                        variant: name.clone(),
+                        args: Vec::new(),
+                    }
+                } else {
+                    IrExprKind::Field {
+                        target: Box::new(self.expr(target)?),
+                        name: name.clone(),
+                    }
+                }
+            }
             ExprKind::Index { array, index } => IrExprKind::Index {
                 array: Box::new(self.expr(array)?),
                 index: Box::new(self.expr(index)?),
@@ -542,6 +576,29 @@ impl Lower<'_> {
     fn each(&self, exprs: &[Expr]) -> Result<Vec<IrExpr>, LowerError> {
         exprs.iter().map(|e| self.expr(e)).collect()
     }
+
+    /// The variant name a call constructs, if the callee denotes a sum-type variant
+    /// rather than a function: a qualified `Oneof.Variant(..)` (target typed as a sum
+    /// type) or a bare `Variant(..)` whose result type is a sum type owning that
+    /// variant and whose name is not a known function.
+    fn variant_callee(&self, callee: &Expr, result: &Type) -> Option<String> {
+        match &callee.kind {
+            ExprKind::Field { target, name } => {
+                matches!(self.types.get(&target.span), Some(Type::Oneof { .. }))
+                    .then(|| name.clone())
+            }
+            ExprKind::Ident(name) => (variant_named(name, result)
+                && self.globals.lookup_func(name).is_none())
+            .then(|| name.clone()),
+            _ => None,
+        }
+    }
+}
+
+/// Whether `name` is a variant of sum type `ty`. Used to tell a bare variant value
+/// apart from an ordinary variable of some sum type.
+fn variant_named(name: &str, ty: &Type) -> bool {
+    matches!(ty, Type::Oneof { variants, .. } if variants.contains_key(name))
 }
 
 fn unsupported(span: Span, what: &'static str) -> Result<IrExpr, LowerError> {
@@ -788,6 +845,42 @@ mod tests {
             "payload slot instantiated to i32, got {:?}",
             binders[0].ty
         );
+    }
+
+    #[test]
+    fn lowers_variant_construction_and_payload_free_access() {
+        let (decls, globals, types) = check(
+            "oneof Maybe T { Some(T), None }\n\
+             func some(): Maybe i32 { return Maybe.Some(5) }\n\
+             func none(): Maybe i32 { return Maybe.None }",
+        );
+        let variant_return = |idx: usize| {
+            let StmtKind::FuncDecl(func) = &decls[idx].kind else {
+                panic!("expected a function at {idx}");
+            };
+            let StmtKind::Return(Some(expr)) = &func.body[0].kind else {
+                panic!("expected a return");
+            };
+            lower_expr(expr, &globals, &types).expect("lowers")
+        };
+
+        // `Maybe.Some(5)` is a payloaded construction carrying the instantiated type.
+        let some = variant_return(1);
+        let IrExprKind::Variant { variant, args } = &some.kind else {
+            panic!("expected a variant, got {:?}", some.kind);
+        };
+        assert_eq!(variant, "Some");
+        assert_eq!(args.len(), 1);
+        assert!(is_primitive(&args[0].ty, "i32"));
+        assert!(matches!(&some.ty, Type::Oneof { name, .. } if name == "Maybe"));
+
+        // `Maybe.None` is a payload-free variant value, not a field access.
+        let none = variant_return(2);
+        let IrExprKind::Variant { variant, args } = &none.kind else {
+            panic!("expected a variant, got {:?}", none.kind);
+        };
+        assert_eq!(variant, "None");
+        assert!(args.is_empty());
     }
 
     #[test]

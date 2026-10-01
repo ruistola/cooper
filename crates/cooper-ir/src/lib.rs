@@ -218,6 +218,13 @@ pub enum IrExprKind {
     /// A constructor-style numeric conversion `T(x)`. The source value is the operand;
     /// the destination type is the node's resolved type.
     Convert(Box<IrExpr>),
+    /// Tuple-destructuring binding `(a, b) := value`: each name is bound to the
+    /// matching component of the tuple `value`, and the whole expression evaluates to
+    /// that tuple (the node's resolved type).
+    LetTuple {
+        bindings: Vec<Binder>,
+        value: Box<IrExpr>,
+    },
 }
 
 /// Why lowering could not proceed.
@@ -551,7 +558,24 @@ impl Lower<'_> {
                     arms,
                 }
             }
-            ExprKind::LetTuple { .. } => return unsupported(expr.span, "tuple destructuring"),
+            ExprKind::LetTuple { names, value, .. } => {
+                let value = self.expr(value)?;
+                let Type::Tuple(elems) = &value.ty else {
+                    unreachable!("a checked tuple destructuring binds a tuple value");
+                };
+                let bindings = names
+                    .iter()
+                    .zip(elems)
+                    .map(|(name, ty)| Binder {
+                        name: name.clone(),
+                        ty: ty.clone(),
+                    })
+                    .collect();
+                IrExprKind::LetTuple {
+                    bindings,
+                    value: Box::new(value),
+                }
+            }
         };
         Ok(IrExpr {
             kind,
@@ -937,28 +961,6 @@ mod tests {
     }
 
     #[test]
-    fn lowers_a_range_for_loop_with_a_typed_counter() {
-        let (decls, globals, types) = check(
-            "func count(): i32 {\n\
-             \ttotal := 0\n\
-             \tfor i in 0..10 do { total += i }\n\
-             \treturn total\n\
-             }",
-        );
-        let functions = lower_module(&decls, &globals, &types).expect("module lowers");
-        let IrStmtKind::ForRange {
-            var, ty, inclusive, body, ..
-        } = &functions[0].body[1].kind
-        else {
-            panic!("expected a range loop, got {:?}", functions[0].body[1].kind);
-        };
-        assert_eq!(var, "i");
-        assert!(is_primitive(ty, "i32"), "counter type: {ty:?}");
-        assert!(!inclusive);
-        assert_eq!(body.len(), 1);
-    }
-
-    #[test]
     fn numeric_conversions_lower_to_a_convert_node() {
         let (decls, globals, types) = check("func widen(x: i32): i64 { return i64(x) }");
         let ir = lower_expr(return_expr(&decls), &globals, &types).expect("lowers");
@@ -981,5 +983,53 @@ mod tests {
         );
         let err = lower_module(&decls, &globals, &types).expect_err("array iteration is unsupported");
         assert!(matches!(err, LowerError::Unsupported { what: "array iteration", .. }));
+    }
+
+    #[test]
+    fn lowers_a_range_for_loop_with_a_typed_counter() {
+        let (decls, globals, types) = check(
+            "func count(): i32 {\n\
+             \ttotal := 0\n\
+             \tfor i in 0..10 do { total += i }\n\
+             \treturn total\n\
+             }",
+        );
+        let functions = lower_module(&decls, &globals, &types).expect("module lowers");
+        let IrStmtKind::ForRange {
+            var, ty, inclusive, body, ..
+        } = &functions[0].body[1].kind
+        else {
+            panic!("expected a range loop, got {:?}", functions[0].body[1].kind);
+        };
+        assert_eq!(var, "i");
+        assert!(is_primitive(ty, "i32"), "counter type: {ty:?}");
+        assert!(!inclusive);
+        assert_eq!(body.len(), 1);
+    }
+
+    #[test]
+    fn lowers_tuple_destructuring_into_typed_bindings() {
+        let (decls, globals, types) = check(
+            "func f(): i32 {\n\
+             \tp := (1, 2)\n\
+             \t(a, b) := p\n\
+             \treturn a + b\n\
+             }",
+        );
+        let StmtKind::FuncDecl(func) = &decls[0].kind else {
+            panic!("expected a function");
+        };
+        let StmtKind::Expression(expr) = &func.body[1].kind else {
+            panic!("expected the destructuring statement");
+        };
+        let ir = lower_expr(expr, &globals, &types).expect("lowers");
+        let IrExprKind::LetTuple { bindings, value } = &ir.kind else {
+            panic!("expected a tuple destructuring, got {:?}", ir.kind);
+        };
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(bindings[0].name, "a");
+        assert!(is_primitive(&bindings[0].ty, "i32"));
+        assert_eq!(bindings[1].name, "b");
+        assert!(matches!(&value.kind, IrExprKind::Var(n) if n == "p"));
     }
 }

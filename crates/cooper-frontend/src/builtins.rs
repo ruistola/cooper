@@ -8,9 +8,15 @@
 //! one, the same structural-satisfaction rule a `where` clause uses, with no nominal
 //! trait. Index syntax binds to the blessed names `get`/`set`, so `a[i]` is `a.get(i)`
 //! and `a[i] = v` is `a.set(i, v)`; a future built-in map reuses the same names with a
-//! key-typed signature. The bodies are intrinsics the lowering IR realises behind the
-//! runtime boundary; only the signatures live here, so a call site type-checks through
-//! the same method-access path as any other method.
+//! key-typed signature. Growth (`push`) follows the return-value idiom. The bodies are
+//! intrinsics the lowering IR realises behind the runtime boundary; only the signatures
+//! live here, so a call site type-checks through the same method-access path as any
+//! other method.
+//!
+//! The only array type modelled today is the dynamic `T[]`, which carries the full set
+//! including `push`. A fixed-size static array `T[N]` — not yet a distinct type — would
+//! carry the static subset (everything but growth), realising the static- vs
+//! dynamic-array-like split once it exists.
 
 use crate::types::Type;
 
@@ -35,6 +41,10 @@ pub(crate) fn array_method(name: &str, elem: &Type) -> Option<Type> {
         "length" => Some(func(Vec::new(), index_type())),
         "get" => Some(func(vec![index_type()], elem.clone())),
         "set" => Some(func(vec![index_type(), elem.clone()], Type::Unit)),
+        // Growth follows the return-value idiom: an append may hand back the same
+        // array (spare capacity) or a fresh one (a full owner, or any view), so `push`
+        // returns the possibly-new array rather than mutating in place.
+        "push" => Some(func(vec![elem.clone()], Type::Array(Box::new(elem.clone())))),
         _ => None,
     }
 }

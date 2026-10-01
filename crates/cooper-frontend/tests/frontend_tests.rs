@@ -809,6 +809,22 @@ fn array_index_of_the_wrong_integer_type_is_reported() {
     );
 }
 
+#[test]
+fn array_push_follows_the_return_value_idiom() {
+    // `push` hands back the possibly-new array, reassigned in place; the element type
+    // flows into the argument.
+    ok("func f(xs: i32[]): i32 {\n  xs = xs.push(9)\n  return xs.get(0)\n}");
+}
+
+#[test]
+fn pushing_the_wrong_element_type_is_reported() {
+    err(
+        "func f(xs: i32[], s: string): i32[] {\n  return xs.push(s)\n}",
+        "expected i32, found string",
+    );
+}
+
+
 
 #[test]
 fn unknown_array_method_is_reported() {

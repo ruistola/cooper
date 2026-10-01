@@ -16,20 +16,32 @@ use crate::types::{
     unify, Type, DEFAULT_FLOAT, DEFAULT_INT,
 };
 
-/// Type check `module` against `globals`, returning any diagnostics. `modules` maps
-/// each `use`-bound module's local spelling to its interface, so qualified accesses
-/// (`other.func()`) resolve against the depended-on module.
+/// The result of type checking one file: its diagnostics, and the type attributed to
+/// every expression keyed by span. The span table is the lowering pass's handoff —
+/// `cooper-ir` reads it so no type need be recomputed downstream. Spans are unique
+/// per expression within a file (they are disjoint byte ranges), so the key is exact.
+pub struct Typed {
+    pub diags: Vec<Diagnostic>,
+    pub types: HashMap<Span, Type>,
+}
+
+/// Type check `module` against `globals`. `modules` maps each `use`-bound module's
+/// local spelling to its interface, so qualified accesses (`other.func()`) resolve
+/// against the depended-on module.
 pub fn check(
     module: &[Stmt],
     globals: &Globals,
     modules: &HashMap<Vec<String>, Globals>,
-) -> Vec<Diagnostic> {
+) -> Typed {
     let mut tc = TypeChecker::new(globals, modules);
     tc.scopes.push(HashMap::new());
     for stmt in module {
         tc.check_stmt(stmt);
     }
-    tc.diags
+    Typed {
+        diags: tc.diags,
+        types: tc.types,
+    }
 }
 
 struct TypeChecker<'g> {
@@ -37,6 +49,8 @@ struct TypeChecker<'g> {
     /// Bound module interfaces, keyed by local spelling (`["std", "io"]`).
     modules: &'g HashMap<Vec<String>, Globals>,
     diags: Vec<Diagnostic>,
+    /// Every expression's attributed type, keyed by span: the lowering handoff.
+    types: HashMap<Span, Type>,
     /// Block-scoped variable bindings, innermost scope last.
     scopes: Vec<HashMap<String, Type>>,
     /// The return type of the function whose body is being checked, if any.
@@ -59,6 +73,7 @@ impl<'g> TypeChecker<'g> {
             globals,
             modules,
             diags: Vec::new(),
+            types: HashMap::new(),
             scopes: Vec::new(),
             current_return: None,
             type_params: HashSet::new(),
@@ -457,6 +472,14 @@ impl<'g> TypeChecker<'g> {
     // --- expressions ---
 
     fn check_expr(&mut self, expr: &Expr) -> Option<Type> {
+        let ty = self.check_expr_kind(expr);
+        if let Some(ty) = &ty {
+            self.types.insert(expr.span, ty.clone());
+        }
+        ty
+    }
+
+    fn check_expr_kind(&mut self, expr: &Expr) -> Option<Type> {
         // expectedType is a head-only hint: capture it for this expression and
         // clear it so it never leaks into sub-expressions. Only the dispatches that
         // can act on it restore it before recursing.

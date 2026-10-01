@@ -86,8 +86,23 @@ heavy or native backend dependencies behind a crate boundary.
      non-unit return type must return on all paths, and code made unreachable by a preceding return
      is reported.
 
-Code generation is not yet part of the frontend; the current focus is a correct, well-diagnosed
-front end from source text through semantic analysis.
+## Toward code generation: the typed lowering IR
+
+The seam between the frontend and any backend is a typed intermediate representation, built by the
+`cooper-ir` crate. Lowering consumes the types the frontend already computes: type checking records a
+per-file `span → Type` table as it checks rather than discarding each expression's type, and lowering
+reads it to produce a typed, span-carrying IR where every node knows its resolved type and no name
+resolution or inference happens downstream. The IR is also the home for desugaring (operators to
+method calls, `if` to `match`) and for monomorphization, Cooper's generics model, which instantiates
+each generic function and method per concrete type-argument set.
+
+**Runtime stays behind the IR→backend boundary.** The IR models every runtime-touching operation —
+allocation, array growth, copies — as an abstract, typed *intrinsic*, never a concrete runtime call
+or committed ABI. A backend lowers those intrinsics into real allocations, object headers, write
+barriers, and safepoints according to the memory and concurrency model chosen at that stage. This
+keeps the IR neutral about garbage collection, green-thread scheduling, how the runtime is delivered,
+and whether a runtime library crate ever exists: those are backend-epoch decisions that require no IR
+rework, because the IR commits to none of them.
 
 ## Concrete syntax: AST, not a full CST
 

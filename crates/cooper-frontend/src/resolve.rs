@@ -58,7 +58,7 @@ impl Globals {
 /// seeded imports never collide with a local declaration: an import whose local name
 /// shadows one of the module's own declarations is rejected at its `use` before it
 /// reaches this pass, so the redeclaration checks here guard only local duplicates.
-pub(crate) fn resolve_into(mut globals: Globals, module: &[Stmt]) -> (Globals, Vec<Diagnostic>) {
+pub fn resolve_into(mut globals: Globals, module: &[Stmt]) -> (Globals, Vec<Diagnostic>) {
     let mut diags = Vec::new();
     for stmt in module {
         match &stmt.kind {

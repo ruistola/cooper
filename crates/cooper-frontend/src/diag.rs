@@ -10,7 +10,7 @@ use std::ops::Range;
 use ariadne::{Color, Label, Report, ReportKind, Source};
 
 /// A half-open byte range `[start, end)` into the source text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
     pub start: usize,
     pub end: usize,

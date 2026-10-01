@@ -317,7 +317,7 @@ fn analyze_module(
         // file's imports, so type and semantic diagnostics carry their file too.
         for (file, imports) in module.files.iter().zip(&file_imports) {
             let globals = imports.overlay(&interface);
-            let type_diags = typecheck::check(&file.decls, &globals, &imports.modules);
+            let type_diags = typecheck::check(&file.decls, &globals, &imports.modules).diags;
             if type_diags.is_empty() {
                 diags.extend(
                     semantic::analyze(&file.decls, &globals)

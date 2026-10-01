@@ -1,0 +1,12 @@
+[package]
+name = "cooper-ir"
+version = "0.1.0"
+edition = "2021"
+description = "The Cooper typed lowering IR: the seam between semantic analysis and code generation."
+
+[lib]
+name = "cooper_ir"
+path = "src/lib.rs"
+
+[dependencies]
+cooper-frontend = { path = "../cooper-frontend" }

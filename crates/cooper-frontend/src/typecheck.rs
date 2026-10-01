@@ -1289,37 +1289,85 @@ impl<'g> TypeChecker<'g> {
     }
 
     fn check_assign(&mut self, op: AssignOp, target: &Expr, value: &Expr) -> Option<Type> {
+        // `a[i] = v` is the blessed write `a.set(i, v)`: it reaches any array, or any
+        // user type whose method set provides `set`, independently of whether that
+        // type is readable — a type with `get` but no `set` is read-only.
+        if let ExprKind::Index { array, index } = &target.kind {
+            return self.check_index_assign(op, array, index, value, target.span);
+        }
         let target_type = self.check_expr(target)?;
         let value_type = self.check_expr(value)?;
+        self.check_assign_op(op, &target_type, &value_type, target.span);
+        Some(target_type)
+    }
+
+    /// Check an index assignment `a[i] <op>= v` against the blessed `set(index, value)`
+    /// method: the index takes `set`'s first parameter type and the stored value its
+    /// second, with any compound operator relating the element and the value.
+    fn check_index_assign(
+        &mut self,
+        op: AssignOp,
+        array: &Expr,
+        index: &Expr,
+        value: &Expr,
+        span: Span,
+    ) -> Option<Type> {
+        let recv = self.check_expr(array)?;
+        let Some(Type::Func { param_types, .. }) = self.blessed_method(&recv, "set") else {
+            self.err(span, format!("type {recv} cannot be assigned by index"));
+            return None;
+        };
+        if param_types.len() != 2 {
+            self.err(
+                span,
+                format!("index assignment on {recv} needs a set method taking an index and a value"),
+            );
+            return None;
+        }
+        let mut params = param_types.into_iter();
+        let index_param = params.next().unwrap();
+        let element = params.next().unwrap();
+        self.expected = Some(index_param.clone());
+        let index_type = self.check_expr(index)?;
+        if !index_type.equals(&index_param) {
+            self.err(index.span, format!("index must be {index_param}, found {index_type}"));
+            return None;
+        }
+        self.expected = Some(element.clone());
+        let value_type = self.check_expr(value)?;
+        self.check_assign_op(op, &element, &value_type, span);
+        Some(element)
+    }
+
+    /// Apply an assignment operator's type rule, reporting a diagnostic on mismatch: a
+    /// plain assignment requires equal types, a compound `+=` two numbers or two
+    /// strings, and the other compound operators two numbers.
+    fn check_assign_op(&mut self, op: AssignOp, target_type: &Type, value_type: &Type, span: Span) {
         match op {
             AssignOp::Assign => {
-                if !target_type.equals(&value_type) {
-                    self.err(
-                        target.span,
-                        format!("cannot assign {value_type} to {target_type}"),
-                    );
+                if !target_type.equals(value_type) {
+                    self.err(span, format!("cannot assign {value_type} to {target_type}"));
                 }
             }
             AssignOp::Add => {
-                let numeric = is_numeric(&target_type) && is_numeric(&value_type);
-                let strings = is_primitive(&target_type, "string") && is_primitive(&value_type, "string");
+                let numeric = is_numeric(target_type) && is_numeric(value_type);
+                let strings = is_primitive(target_type, "string") && is_primitive(value_type, "string");
                 if !numeric && !strings {
                     self.err(
-                        target.span,
+                        span,
                         format!("invalid operands for {}: {target_type} and {value_type}", op.symbol()),
                     );
                 }
             }
             AssignOp::Sub | AssignOp::Mul | AssignOp::Div => {
-                if !(is_numeric(&target_type) && is_numeric(&value_type)) {
+                if !(is_numeric(target_type) && is_numeric(value_type)) {
                     self.err(
-                        target.span,
+                        span,
                         format!("invalid operands for {}: {target_type} and {value_type}", op.symbol()),
                     );
                 }
             }
         }
-        Some(target_type)
     }
 
     fn check_let_tuple(

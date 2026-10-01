@@ -825,6 +825,22 @@ fn indexing_a_type_without_get_is_reported() {
     );
 }
 
+#[test]
+fn a_user_type_providing_set_is_index_assignable() {
+    // Index assignment reaches a type whose method set covers the blessed `set`.
+    ok("struct Slots {\n  data: i32[],\n}\n(m: Slots) func set(i: u64, v: i32) {\n  m.data[i] = v\n}\nfunc f(m: Slots) {\n  m[0] = 7\n}");
+}
+
+#[test]
+fn index_assigning_a_read_only_type_is_reported() {
+    // A type with `get` but no `set` is read-only: `m[i] = v` has no write to bind to.
+    err(
+        "struct Slots {\n  data: i32[],\n}\n(m: Slots) func get(i: u64): i32 {\n  return m.data[i]\n}\nfunc f(m: Slots) {\n  m[0] = 7\n}",
+        "type Slots cannot be assigned by index",
+    );
+}
+
+
 
 #[test]
 fn array_push_follows_the_return_value_idiom() {

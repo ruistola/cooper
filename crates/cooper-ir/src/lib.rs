@@ -73,6 +73,16 @@ pub enum IrStmtKind {
         post_test: bool,
         until: bool,
     },
+    /// Iteration over an integer range. `var` takes successive values of type `ty`
+    /// from `start` up to `end` (inclusive when `inclusive`).
+    ForRange {
+        var: String,
+        ty: Type,
+        start: Box<IrExpr>,
+        end: Box<IrExpr>,
+        inclusive: bool,
+        body: Vec<IrStmt>,
+    },
     Block(Vec<IrStmt>),
     Break,
     Continue,
@@ -395,7 +405,31 @@ impl Lower<'_> {
                     .collect::<Result<_, LowerError>>()?;
                 IrStmtKind::Match { scrutinee, arms }
             }
-            StmtKind::ForIn { .. } => return unsupported_stmt(stmt.span, "for-in loop"),
+            StmtKind::ForIn {
+                bindings,
+                iterable,
+                body,
+            } => match &iterable.kind {
+                ExprKind::Range {
+                    start,
+                    end,
+                    inclusive,
+                } if bindings.len() == 1 => {
+                    let start = self.expr(start)?;
+                    let end = self.expr(end)?;
+                    IrStmtKind::ForRange {
+                        var: bindings[0].clone(),
+                        ty: start.ty.clone(),
+                        start: Box::new(start),
+                        end: Box::new(end),
+                        inclusive: *inclusive,
+                        body: self.block(body)?,
+                    }
+                }
+                // Array iteration drives from the backing's length, an array builtin
+                // the frontend does not yet model.
+                _ => return unsupported_stmt(stmt.span, "array iteration"),
+            },
             StmtKind::FuncDecl(_) => return unsupported_stmt(stmt.span, "nested function"),
             StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } => {
                 return unsupported_stmt(stmt.span, "local type declaration");
@@ -884,14 +918,37 @@ mod tests {
     }
 
     #[test]
-    fn for_in_loops_are_reported_not_panicked() {        let (decls, globals, types) = check(
+    fn lowers_a_range_for_loop_with_a_typed_counter() {
+        let (decls, globals, types) = check(
+            "func count(): i32 {\n\
+             \ttotal := 0\n\
+             \tfor i in 0..10 do { total += i }\n\
+             \treturn total\n\
+             }",
+        );
+        let functions = lower_module(&decls, &globals, &types).expect("module lowers");
+        let IrStmtKind::ForRange {
+            var, ty, inclusive, body, ..
+        } = &functions[0].body[1].kind
+        else {
+            panic!("expected a range loop, got {:?}", functions[0].body[1].kind);
+        };
+        assert_eq!(var, "i");
+        assert!(is_primitive(ty, "i32"), "counter type: {ty:?}");
+        assert!(!inclusive);
+        assert_eq!(body.len(), 1);
+    }
+
+    #[test]
+    fn array_iteration_is_reported_not_panicked() {
+        let (decls, globals, types) = check(
             "func sum(xs: i32[]): i32 {\n\
              \ttotal := 0\n\
              \tfor x in xs do { total += x }\n\
              \treturn total\n\
              }",
         );
-        let err = lower_module(&decls, &globals, &types).expect_err("for-in is unsupported");
-        assert!(matches!(err, LowerError::Unsupported { what: "for-in loop", .. }));
+        let err = lower_module(&decls, &globals, &types).expect_err("array iteration is unsupported");
+        assert!(matches!(err, LowerError::Unsupported { what: "array iteration", .. }));
     }
 }

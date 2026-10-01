@@ -146,6 +146,13 @@ pub enum IrExprKind {
         stmts: Vec<IrStmt>,
         result: Box<IrExpr>,
     },
+    /// Construction of a nominal struct value. The struct's name and type arguments
+    /// are on the node's resolved type; members are carried in source order, each a
+    /// field name paired with its lowered value.
+    StructLiteral {
+        name: String,
+        members: Vec<(String, IrExpr)>,
+    },
 }
 
 /// Why lowering could not proceed.
@@ -395,9 +402,20 @@ impl Lower<'_> {
                 els: Box::new(self.expr(els)?),
             },
             ExprKind::Block(block) => self.value_block(block)?,
+            ExprKind::StructLiteral { members, .. } => {
+                let Type::Struct { name, .. } = &ty else {
+                    return Err(LowerError::MissingType(expr.span));
+                };
+                IrExprKind::StructLiteral {
+                    name: name.clone(),
+                    members: members
+                        .iter()
+                        .map(|m| Ok((m.name.clone(), self.expr(&m.value)?)))
+                        .collect::<Result<Vec<_>, LowerError>>()?,
+                }
+            }
             ExprKind::Group(_) => unreachable!("grouping collapsed above"),
             ExprKind::Range { .. } => return unsupported(expr.span, "range"),
-            ExprKind::StructLiteral { .. } => return unsupported(expr.span, "struct literal"),
             ExprKind::Match { .. } => return unsupported(expr.span, "match expression"),
             ExprKind::LetTuple { .. } => return unsupported(expr.span, "tuple destructuring"),
         };
@@ -560,8 +578,32 @@ mod tests {
     }
 
     #[test]
-    fn for_in_loops_are_reported_not_panicked() {
+    fn lowers_a_struct_literal_with_its_members_in_source_order() {
         let (decls, globals, types) = check(
+            "struct Point { x: i32, y: i32 }\n\
+             func origin(): Point { return Point { x: 1, y: 2 } }",
+        );
+        // The function whose body returns the literal is the second declaration.
+        let StmtKind::FuncDecl(func) = &decls[1].kind else {
+            panic!("expected the origin function");
+        };
+        let StmtKind::Return(Some(expr)) = &func.body[0].kind else {
+            panic!("expected a return");
+        };
+        let ir = lower_expr(expr, &globals, &types).expect("lowers");
+
+        let IrExprKind::StructLiteral { name, members } = &ir.kind else {
+            panic!("expected a struct literal, got {:?}", ir.kind);
+        };
+        assert_eq!(name, "Point");
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].0, "x");
+        assert!(is_primitive(&members[0].1.ty, "i32"));
+        assert_eq!(members[1].0, "y");
+    }
+
+    #[test]
+    fn for_in_loops_are_reported_not_panicked() {        let (decls, globals, types) = check(
             "func sum(xs: i32[]): i32 {\n\
              \ttotal := 0\n\
              \tfor x in xs do { total += x }\n\

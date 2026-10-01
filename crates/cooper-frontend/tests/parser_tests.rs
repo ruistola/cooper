@@ -1,5 +1,5 @@
-use cooper::ast::{ExprKind, Stmt, StmtKind};
-use cooper::{lexer, parser};
+use cooper_frontend::ast::{ExprKind, Stmt, StmtKind};
+use cooper_frontend::{lexer, parser};
 
 /// Lex and parse `src` (without resolution), asserting it produces no diagnostics,
 /// and return the module.
@@ -97,7 +97,7 @@ fn rejects_bare_top_level_expression() {
 }
 
 /// Parse a use block and return its flattened bindings.
-fn uses(src: &str) -> Vec<cooper::ast::UseSpec> {
+fn uses(src: &str) -> Vec<cooper_frontend::ast::UseSpec> {
     let tokens = lexer::tokenize(src).expect("lexing succeeds");
     let result = parser::parse(tokens);
     assert!(

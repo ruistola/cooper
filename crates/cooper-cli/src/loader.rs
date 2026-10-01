@@ -14,7 +14,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::project::{Module, Project, ProjectKind, SourceFile};
+use cooper_frontend::{Module, Project, ProjectKind, SourceFile};
 
 const MANIFEST: &str = "project.toml";
 const SOURCE_EXT: &str = "coop";

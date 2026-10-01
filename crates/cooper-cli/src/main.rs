@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use cooper::{Module, Project, ProjectKind, SourceFile};
+use cooper_frontend::{Module, Project, ProjectKind, SourceFile};
 
 /// Demo driver: given a path (first argument), run the frontend and render any
 /// diagnostics with `ariadne`. A directory is loaded as a project via its
@@ -23,7 +23,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let diagnostics = cooper::analyze_project(&project);
+    let diagnostics = cooper_frontend::analyze_project(&project);
     if diagnostics.is_empty() {
         println!("no errors.");
         return ExitCode::SUCCESS;
@@ -47,7 +47,7 @@ fn main() -> ExitCode {
 fn load(path: &str) -> Result<Project, String> {
     let path = Path::new(path);
     if path.is_dir() {
-        return cooper::load_project(path).map_err(|e| e.to_string());
+        return cooper_cli::load_project(path).map_err(|e| e.to_string());
     }
     let source = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let name = path.to_string_lossy().into_owned();

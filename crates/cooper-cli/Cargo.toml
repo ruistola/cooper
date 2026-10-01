@@ -1,0 +1,17 @@
+[package]
+name = "cooper-cli"
+version = "0.1.0"
+edition = "2021"
+description = "The Cooper command-line driver: filesystem project loading and diagnostic rendering over the frontend."
+
+[[bin]]
+name = "cooper"
+path = "src/main.rs"
+
+[lib]
+name = "cooper_cli"
+path = "src/lib.rs"
+
+[dependencies]
+cooper-frontend = { path = "../cooper-frontend" }
+toml = "0.8"

@@ -4,15 +4,15 @@
 
 use std::path::Path;
 
-use cooper::ProjectKind;
+use cooper_frontend::ProjectKind;
 
 fn demo_dir() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/demo")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo")
 }
 
 #[test]
 fn loads_and_analyzes_the_demo_project() {
-    let project = cooper::load_project(&demo_dir()).expect("demo project loads");
+    let project = cooper_cli::load_project(&demo_dir()).expect("demo project loads");
 
     assert_eq!(project.manifest.name, "demo");
     assert_eq!(project.manifest.kind, ProjectKind::Program);
@@ -22,7 +22,7 @@ fn loads_and_analyzes_the_demo_project() {
     paths.sort();
     assert_eq!(paths, vec!["geometry", "main", "mathx"]);
 
-    let diags = cooper::analyze_project(&project);
+    let diags = cooper_frontend::analyze_project(&project);
     assert!(
         diags.is_empty(),
         "expected the demo project to analyze clean, got: {:?}",

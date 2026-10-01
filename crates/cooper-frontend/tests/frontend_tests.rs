@@ -1,7 +1,7 @@
 //! End-to-end frontend tests exercising resolution, type checking, and semantic
-//! analysis through the public [`cooper::analyze`] entry point.
+//! analysis through the public [`cooper_frontend::analyze`] entry point.
 
-use cooper::analyze;
+use cooper_frontend::analyze;
 
 /// Assert `src` produces no diagnostics.
 fn ok(src: &str) {
@@ -438,7 +438,7 @@ fn unreachable_code_after_return_is_reported() {
 /// one namespace, so a function in one file may call one defined in another.
 #[test]
 fn module_unites_declarations_across_files() {
-    use cooper::{Module, Project, ProjectKind, SourceFile};
+    use cooper_frontend::{Module, Project, ProjectKind, SourceFile};
 
     let project = Project::new(
         "multifile",
@@ -452,7 +452,7 @@ fn module_unites_declarations_across_files() {
         )],
     );
 
-    let diags = cooper::analyze_project(&project);
+    let diags = cooper_frontend::analyze_project(&project);
     assert!(
         diags.is_empty(),
         "expected no errors, got: {:?}",
@@ -462,13 +462,13 @@ fn module_unites_declarations_across_files() {
 
 /// Build a program from one-file modules, each given as `(module path, source)`, and
 /// return its diagnostics.
-fn project_diags(modules: &[(&str, &str)]) -> Vec<cooper::Diagnostic> {
-    use cooper::{Module, Project, ProjectKind, SourceFile};
+fn project_diags(modules: &[(&str, &str)]) -> Vec<cooper_frontend::Diagnostic> {
+    use cooper_frontend::{Module, Project, ProjectKind, SourceFile};
     let modules = modules
         .iter()
         .map(|(path, src)| Module::new(path, vec![SourceFile::new(*path, *src)]))
         .collect();
-    cooper::analyze_project(&Project::new("multimodule", ProjectKind::Program, modules))
+    cooper_frontend::analyze_project(&Project::new("multimodule", ProjectKind::Program, modules))
 }
 
 /// Assert the multi-module program is clean.
@@ -684,8 +684,8 @@ fn qualified_access_to_unknown_member_is_reported() {
 fn multifile_main_diags(
     main_files: &[(&str, &str)],
     deps: &[(&str, &str)],
-) -> Vec<cooper::Diagnostic> {
-    use cooper::{Module, Project, ProjectKind, SourceFile};
+) -> Vec<cooper_frontend::Diagnostic> {
+    use cooper_frontend::{Module, Project, ProjectKind, SourceFile};
     let main = Module::new(
         "main",
         main_files
@@ -698,7 +698,7 @@ fn multifile_main_diags(
         deps.iter()
             .map(|(path, src)| Module::new(path, vec![SourceFile::new(*path, *src)])),
     );
-    cooper::analyze_project(&Project::new("multifile", ProjectKind::Program, modules))
+    cooper_frontend::analyze_project(&Project::new("multifile", ProjectKind::Program, modules))
 }
 
 #[test]

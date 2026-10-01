@@ -358,6 +358,7 @@ impl Parser {
         let mut decls = Vec::new();
         let mut seen_decl = false;
         while self.peek().kind != Eof {
+            let before = self.pos;
             if self.peek().kind == Semicolon {
                 self.advance();
                 continue;
@@ -376,14 +377,21 @@ impl Parser {
                     }
                     Err(_) => self.synchronize(),
                 }
-                continue;
-            }
-            match self.parse_top_level_decl() {
-                Ok(s) => {
-                    seen_decl = true;
-                    decls.push(s);
+            } else {
+                match self.parse_top_level_decl() {
+                    Ok(s) => {
+                        seen_decl = true;
+                        decls.push(s);
+                    }
+                    Err(_) => self.synchronize(),
                 }
-                Err(_) => self.synchronize(),
+            }
+            // Guarantee forward progress. A stray closing brace halts
+            // `synchronize` without being consumed, and it cannot begin a
+            // top-level declaration, so recovery would otherwise retry it
+            // forever; drop one token whenever an iteration consumed nothing.
+            if self.pos == before {
+                self.advance();
             }
         }
         (uses, decls)

@@ -222,3 +222,12 @@ fn header_expressions_span_multiple_lines() {
     // sit on a later line, because newlines are insignificant inside a header.
     ok("func f() {\n  while a\n    and b\n  do total += 1\n  for i in\n    0..10\n  do total += i\n}");
 }
+
+#[test]
+fn malformed_variant_payload_recovers_without_hanging() {
+    // A sum-type payload must be parenthesised (`Some(T)`); the juxtaposition
+    // `Some T` is rejected. Recovery must terminate: the stray closing brace that
+    // ends the declaration cannot begin a top-level declaration, so the parser has
+    // to consume it rather than retry it forever.
+    err("oneof Maybe T { Some T, None }", "expected");
+}

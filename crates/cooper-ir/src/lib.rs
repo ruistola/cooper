@@ -14,8 +14,8 @@
 use std::collections::{HashMap, HashSet};
 
 use cooper_frontend::ast::{
-    AssignOp, BinaryOp, Block, Expr, ExprKind, FuncDecl, Stmt, StmtKind, TypeExpr, TypedIdent,
-    UnaryOp,
+    AssignOp, BinaryOp, Block, Expr, ExprKind, FuncDecl, Pattern, PatternKind, Stmt, StmtKind,
+    TypeExpr, TypedIdent, UnaryOp,
 };
 use cooper_frontend::diag::Span;
 use cooper_frontend::resolve::{receiver_pattern_params, resolve_type, Globals};
@@ -76,6 +76,45 @@ pub enum IrStmtKind {
     Block(Vec<IrStmt>),
     Break,
     Continue,
+    /// A `match` run for effect: each arm's body is a statement. Arms are exhaustive
+    /// over the scrutinee's sum type (the checker verified coverage).
+    Match {
+        scrutinee: IrExpr,
+        arms: Vec<MatchArm<IrStmt>>,
+    },
+}
+
+/// One `match` arm: a pattern and a body, generic over whether that body is a
+/// statement (`match` statement) or an expression (`match` expression).
+#[derive(Debug, Clone)]
+pub struct MatchArm<B> {
+    pub pattern: IrPattern,
+    pub body: B,
+}
+
+#[derive(Debug, Clone)]
+pub struct IrPattern {
+    pub kind: IrPatternKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum IrPatternKind {
+    /// A sum-type variant, binding its payload slots positionally. A binder named
+    /// `_` discards its slot.
+    Variant {
+        variant: String,
+        binders: Vec<Binder>,
+    },
+    Wildcard,
+}
+
+/// A payload slot bound by a variant pattern: the name introduced and the slot's
+/// resolved type.
+#[derive(Debug, Clone)]
+pub struct Binder {
+    pub name: String,
+    pub ty: Type,
 }
 
 /// A typed expression: a shape, the resolved type it evaluates to, and the source
@@ -152,6 +191,12 @@ pub enum IrExprKind {
     StructLiteral {
         name: String,
         members: Vec<(String, IrExpr)>,
+    },
+    /// A `match` producing a value: every arm's body is an expression of the node's
+    /// resolved type.
+    Match {
+        scrutinee: Box<IrExpr>,
+        arms: Vec<MatchArm<IrExpr>>,
     },
 }
 
@@ -330,8 +375,20 @@ impl Lower<'_> {
             },
             StmtKind::Break => IrStmtKind::Break,
             StmtKind::Continue => IrStmtKind::Continue,
+            StmtKind::Match { scrutinee, arms } => {
+                let scrutinee = self.expr(scrutinee)?;
+                let arms = arms
+                    .iter()
+                    .map(|arm| {
+                        Ok(MatchArm {
+                            pattern: self.pattern(&scrutinee.ty, &arm.pattern)?,
+                            body: self.stmt(&arm.body)?,
+                        })
+                    })
+                    .collect::<Result<_, LowerError>>()?;
+                IrStmtKind::Match { scrutinee, arms }
+            }
             StmtKind::ForIn { .. } => return unsupported_stmt(stmt.span, "for-in loop"),
-            StmtKind::Match { .. } => return unsupported_stmt(stmt.span, "match statement"),
             StmtKind::FuncDecl(_) => return unsupported_stmt(stmt.span, "nested function"),
             StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } => {
                 return unsupported_stmt(stmt.span, "local type declaration");
@@ -416,7 +473,22 @@ impl Lower<'_> {
             }
             ExprKind::Group(_) => unreachable!("grouping collapsed above"),
             ExprKind::Range { .. } => return unsupported(expr.span, "range"),
-            ExprKind::Match { .. } => return unsupported(expr.span, "match expression"),
+            ExprKind::Match { scrutinee, arms } => {
+                let scrutinee = self.expr(scrutinee)?;
+                let arms = arms
+                    .iter()
+                    .map(|arm| {
+                        Ok(MatchArm {
+                            pattern: self.pattern(&scrutinee.ty, &arm.pattern)?,
+                            body: self.expr(&arm.body)?,
+                        })
+                    })
+                    .collect::<Result<_, LowerError>>()?;
+                IrExprKind::Match {
+                    scrutinee: Box::new(scrutinee),
+                    arms,
+                }
+            }
             ExprKind::LetTuple { .. } => return unsupported(expr.span, "tuple destructuring"),
         };
         Ok(IrExpr {
@@ -430,6 +502,40 @@ impl Lower<'_> {
         Ok(IrExprKind::Block {
             stmts: self.block(&block.statements)?,
             result: Box::new(self.expr(&block.result)?),
+        })
+    }
+
+    /// Lower a match-arm pattern against the scrutinee's sum type, reading each
+    /// bound slot's type from that type's (already instantiated) variant payloads.
+    /// The type checker validated the pattern, so the scrutinee is a sum type and
+    /// the variant and its arity exist.
+    fn pattern(&self, scrutinee_ty: &Type, pattern: &Pattern) -> Result<IrPattern, LowerError> {
+        let kind = match &pattern.kind {
+            PatternKind::Wildcard => IrPatternKind::Wildcard,
+            PatternKind::Variant { variant, binders, .. } => {
+                let Type::Oneof { variants, .. } = scrutinee_ty else {
+                    unreachable!("a checked match scrutinee is a sum type");
+                };
+                let payload = variants
+                    .get(variant)
+                    .expect("a checked pattern names an existing variant");
+                let binders = binders
+                    .iter()
+                    .zip(payload)
+                    .map(|(name, ty)| Binder {
+                        name: name.clone(),
+                        ty: ty.clone(),
+                    })
+                    .collect();
+                IrPatternKind::Variant {
+                    variant: variant.clone(),
+                    binders,
+                }
+            }
+        };
+        Ok(IrPattern {
+            kind,
+            span: pattern.span,
         })
     }
 
@@ -600,6 +706,88 @@ mod tests {
         assert_eq!(members[0].0, "x");
         assert!(is_primitive(&members[0].1.ty, "i32"));
         assert_eq!(members[1].0, "y");
+    }
+
+    #[test]
+    fn lowers_a_match_expression_binding_variant_payloads() {
+        let (decls, globals, types) = check(
+            "oneof Shape { Circle(i32), Rect(i32, i32) }\n\
+             func area(s: Shape): i32 {\n\
+             \ta := match s with {\n\
+             \t\tShape.Circle(r) => { r }\n\
+             \t\tShape.Rect(w, h) => { w }\n\
+             \t}\n\
+             \treturn a\n\
+             }",
+        );
+        // The match is the value of the `a := …` binding in the second declaration.
+        let StmtKind::FuncDecl(func) = &decls[1].kind else {
+            panic!("expected the area function");
+        };
+        let StmtKind::Expression(Expr { kind: ExprKind::Let { value, .. }, .. }) =
+            &func.body[0].kind
+        else {
+            panic!("expected a walrus binding");
+        };
+        let ir = lower_expr(value, &globals, &types).expect("lowers");
+
+        let IrExprKind::Match { scrutinee, arms } = &ir.kind else {
+            panic!("expected a match, got {:?}", ir.kind);
+        };
+        assert!(matches!(&scrutinee.kind, IrExprKind::Var(n) if n == "s"));
+        assert!(is_primitive(&ir.ty, "i32"), "match result type: {:?}", ir.ty);
+        assert_eq!(arms.len(), 2);
+
+        let IrPatternKind::Variant { variant, binders } = &arms[0].pattern.kind else {
+            panic!("expected a variant pattern");
+        };
+        assert_eq!(variant, "Circle");
+        assert_eq!(binders.len(), 1);
+        assert_eq!(binders[0].name, "r");
+        assert!(is_primitive(&binders[0].ty, "i32"));
+
+        let IrPatternKind::Variant { binders, .. } = &arms[1].pattern.kind else {
+            panic!("expected a variant pattern");
+        };
+        assert_eq!(binders.len(), 2);
+        assert_eq!(binders[1].name, "h");
+    }
+
+    #[test]
+    fn generic_variant_binders_lower_with_instantiated_slot_types() {
+        // A scrutinee of an instantiated generic sum type binds payload slots at
+        // their substituted types, not the sum type's parameters.
+        let (decls, globals, types) = check(
+            "oneof Maybe T { Some(T), None }\n\
+             func unwrap(m: Maybe i32): i32 {\n\
+             \ta := match m with {\n\
+             \t\tMaybe.Some(x) => { x }\n\
+             \t\tMaybe.None => { 0 }\n\
+             \t}\n\
+             \treturn a\n\
+             }",
+        );
+        let StmtKind::FuncDecl(func) = &decls[1].kind else {
+            panic!("expected the unwrap function");
+        };
+        let StmtKind::Expression(Expr { kind: ExprKind::Let { value, .. }, .. }) =
+            &func.body[0].kind
+        else {
+            panic!("expected a walrus binding");
+        };
+        let ir = lower_expr(value, &globals, &types).expect("lowers");
+        let IrExprKind::Match { arms, .. } = &ir.kind else {
+            panic!("expected a match");
+        };
+        let IrPatternKind::Variant { binders, .. } = &arms[0].pattern.kind else {
+            panic!("expected a variant pattern");
+        };
+        assert_eq!(binders[0].name, "x");
+        assert!(
+            is_primitive(&binders[0].ty, "i32"),
+            "payload slot instantiated to i32, got {:?}",
+            binders[0].ty
+        );
     }
 
     #[test]

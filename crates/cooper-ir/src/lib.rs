@@ -20,7 +20,7 @@ use cooper_frontend::ast::{
 use cooper_frontend::diag::Span;
 use cooper_frontend::resolve::{receiver_pattern_params, resolve_type, Globals};
 use cooper_frontend::typecheck::{decode_number_literal, LiteralValue};
-use cooper_frontend::types::Type;
+use cooper_frontend::types::{is_numeric_name, Type};
 
 /// A lowered function or method: its signature, its body as typed statements, and
 /// the span it was lowered from. A method carries its receiver as the first bound
@@ -215,6 +215,9 @@ pub enum IrExprKind {
         variant: String,
         args: Vec<IrExpr>,
     },
+    /// A constructor-style numeric conversion `T(x)`. The source value is the operand;
+    /// the destination type is the node's resolved type.
+    Convert(Box<IrExpr>),
 }
 
 /// Why lowering could not proceed.
@@ -481,16 +484,7 @@ impl Lower<'_> {
                 lhs: Box::new(self.expr(lhs)?),
                 rhs: Box::new(self.expr(rhs)?),
             },
-            ExprKind::Call { callee, args } => match self.variant_callee(callee, &ty) {
-                Some(variant) => IrExprKind::Variant {
-                    variant,
-                    args: self.each(args)?,
-                },
-                None => IrExprKind::Call {
-                    callee: Box::new(self.expr(callee)?),
-                    args: self.each(args)?,
-                },
-            },
+            ExprKind::Call { callee, args } => self.lower_call(callee, args, &ty)?,
             ExprKind::Field { target, name } => {
                 if matches!(self.types.get(&target.span), Some(Type::Oneof { .. })) {
                     // `Oneof.Variant` reads as a payload-free variant value, not a
@@ -609,6 +603,31 @@ impl Lower<'_> {
 
     fn each(&self, exprs: &[Expr]) -> Result<Vec<IrExpr>, LowerError> {
         exprs.iter().map(|e| self.expr(e)).collect()
+    }
+
+    /// Classify a call: a constructor-style numeric conversion `T(x)`, a sum-type
+    /// variant construction, or an ordinary function/method call.
+    fn lower_call(
+        &self,
+        callee: &Expr,
+        args: &[Expr],
+        result: &Type,
+    ) -> Result<IrExprKind, LowerError> {
+        if let ExprKind::Ident(name) = &callee.kind {
+            if is_numeric_name(name) {
+                return Ok(IrExprKind::Convert(Box::new(self.expr(&args[0])?)));
+            }
+        }
+        if let Some(variant) = self.variant_callee(callee, result) {
+            return Ok(IrExprKind::Variant {
+                variant,
+                args: self.each(args)?,
+            });
+        }
+        Ok(IrExprKind::Call {
+            callee: Box::new(self.expr(callee)?),
+            args: self.each(args)?,
+        })
     }
 
     /// The variant name a call constructs, if the callee denotes a sum-type variant
@@ -937,6 +956,18 @@ mod tests {
         assert!(is_primitive(ty, "i32"), "counter type: {ty:?}");
         assert!(!inclusive);
         assert_eq!(body.len(), 1);
+    }
+
+    #[test]
+    fn numeric_conversions_lower_to_a_convert_node() {
+        let (decls, globals, types) = check("func widen(x: i32): i64 { return i64(x) }");
+        let ir = lower_expr(return_expr(&decls), &globals, &types).expect("lowers");
+        let IrExprKind::Convert(value) = &ir.kind else {
+            panic!("expected a conversion, got {:?}", ir.kind);
+        };
+        assert!(is_primitive(&ir.ty, "i64"), "destination type: {:?}", ir.ty);
+        assert!(is_primitive(&value.ty, "i32"), "source type: {:?}", value.ty);
+        assert!(matches!(&value.kind, IrExprKind::Var(n) if n == "x"));
     }
 
     #[test]

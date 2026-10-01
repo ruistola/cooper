@@ -492,21 +492,22 @@ impl Lower<'_> {
                 rhs: Box::new(self.expr(rhs)?),
             },
             ExprKind::Call { callee, args } => self.lower_call(callee, args, &ty)?,
-            ExprKind::Field { target, name } => {
-                if matches!(self.types.get(&target.span), Some(Type::Oneof { .. })) {
-                    // `Oneof.Variant` reads as a payload-free variant value, not a
-                    // field access on a runtime target.
-                    IrExprKind::Variant {
-                        variant: name.clone(),
-                        args: Vec::new(),
-                    }
-                } else {
-                    IrExprKind::Field {
-                        target: Box::new(self.expr(target)?),
-                        name: name.clone(),
-                    }
-                }
-            }
+            ExprKind::Field { target, name } => match self.types.get(&target.span) {
+                // `Oneof.Variant` reads as a payload-free variant value, not a
+                // field access on a runtime target.
+                Some(Type::Oneof { .. }) => IrExprKind::Variant {
+                    variant: name.clone(),
+                    args: Vec::new(),
+                },
+                // `module.name` is a qualified reference to an imported item; the
+                // module prefix carries no runtime value, so it resolves to the bare
+                // name the item is known by.
+                Some(Type::Module(_)) => IrExprKind::Var(name.clone()),
+                _ => IrExprKind::Field {
+                    target: Box::new(self.expr(target)?),
+                    name: name.clone(),
+                },
+            },
             ExprKind::Index { array, index } => IrExprKind::Index {
                 array: Box::new(self.expr(array)?),
                 index: Box::new(self.expr(index)?),
@@ -1005,6 +1006,40 @@ mod tests {
         assert!(is_primitive(ty, "i32"), "counter type: {ty:?}");
         assert!(!inclusive);
         assert_eq!(body.len(), 1);
+    }
+
+    #[test]
+    fn module_qualified_reference_drops_its_prefix() {
+        // A dependency exports a function; the main module reaches it qualified as
+        // `dep.helper(..)`. The module prefix carries no runtime value, so the call's
+        // callee lowers to the bare name the function is known by.
+        let dep_tokens = lexer::tokenize("func helper(): i32 { return 1 }").expect("dep lexes");
+        let dep = parser::parse(dep_tokens);
+        assert!(dep.errors.is_empty(), "dep parses: {:?}", dep.errors);
+        let (dep_globals, dep_diags) = resolve_into(Globals::default(), &dep.decls);
+        assert!(dep_diags.is_empty(), "dep resolves: {dep_diags:?}");
+
+        let main_tokens =
+            lexer::tokenize("func main(): i32 { return dep.helper() }").expect("main lexes");
+        let main = parser::parse(main_tokens);
+        assert!(main.errors.is_empty(), "main parses: {:?}", main.errors);
+        let (globals, diags) = resolve_into(Globals::default(), &main.decls);
+        assert!(diags.is_empty(), "main resolves: {diags:?}");
+
+        let modules = HashMap::from([(vec!["dep".to_string()], dep_globals)]);
+        let checked = typecheck::check(&main.decls, &globals, &modules);
+        assert!(checked.diags.is_empty(), "main checks: {:?}", checked.diags);
+
+        let ir = lower_expr(return_expr(&main.decls), &globals, &checked.types).expect("lowers");
+        let IrExprKind::Call { callee, args } = &ir.kind else {
+            panic!("expected a call, got {:?}", ir.kind);
+        };
+        assert!(args.is_empty());
+        assert!(
+            matches!(&callee.kind, IrExprKind::Var(n) if n == "helper"),
+            "module prefix dropped to a bare callee, got {:?}",
+            callee.kind
+        );
     }
 
     #[test]

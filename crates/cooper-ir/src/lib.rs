@@ -62,11 +62,6 @@ pub enum IrStmtKind {
     },
     Expr(IrExpr),
     Return(Option<IrExpr>),
-    If {
-        cond: IrExpr,
-        then: Box<IrStmt>,
-        els: Option<Box<IrStmt>>,
-    },
     While {
         cond: IrExpr,
         body: Vec<IrStmt>,
@@ -86,20 +81,85 @@ pub enum IrStmtKind {
     Block(Vec<IrStmt>),
     Break,
     Continue,
-    /// A `match` run for effect: each arm's body is a statement. Arms are exhaustive
-    /// over the scrutinee's sum type (the checker verified coverage).
+    /// A `match` run for effect. The scrutinee is evaluated once, then `tree` tests
+    /// it to select an `action` (a statement body); `actions` is indexed by the
+    /// tree's leaves. A plain-boolean `if` desugars into this form. The checker
+    /// verified the arms exhaust the scrutinee, so a reached `Decision::Fail` is
+    /// impossible.
     Match {
         scrutinee: IrExpr,
-        arms: Vec<MatchArm<IrStmt>>,
+        actions: Vec<IrStmt>,
+        tree: Decision,
     },
 }
 
-/// One `match` arm: a pattern and a body, generic over whether that body is a
-/// statement (`match` statement) or an expression (`match` expression).
+/// A lowered decision tree: the nested tests a `match` compiles to, selecting a
+/// leaf action. Built by the usefulness/matrix algorithm so each scrutinee position
+/// is tested at most once along any path.
 #[derive(Debug, Clone)]
-pub struct MatchArm<B> {
-    pub pattern: IrPattern,
-    pub body: B,
+pub enum Decision {
+    /// Run the action at `action`, having bound each name in `bindings` to the
+    /// subvalue its access reaches.
+    Leaf {
+        bindings: Vec<MatchBinding>,
+        action: usize,
+    },
+    /// Test the subvalue at `access` (of type `ty`) against each case in turn;
+    /// `default` is taken when no case matches (absent when the cases are
+    /// exhaustive over the type).
+    Switch {
+        access: Access,
+        ty: Type,
+        cases: Vec<Case>,
+        default: Option<Box<Decision>>,
+    },
+    /// No arm matched — unreachable after the checker's exhaustiveness check.
+    Fail,
+}
+
+/// One arm of a [`Decision::Switch`]: the constructor tested and the subtree taken
+/// when it matches.
+#[derive(Debug, Clone)]
+pub struct Case {
+    pub test: Test,
+    pub tree: Decision,
+}
+
+/// A constructor a [`Switch`](Decision::Switch) discriminates on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Test {
+    /// A sum-type variant, selected by name.
+    Variant(String),
+    /// A boolean constant.
+    Bool(bool),
+    /// An integer constant: its decoded magnitude and whether it is negated.
+    Int { value: u128, negative: bool },
+}
+
+/// A name bound by a matched pattern: the subvalue it names (via `access`) and that
+/// subvalue's resolved type.
+#[derive(Debug, Clone)]
+pub struct MatchBinding {
+    pub name: String,
+    pub access: Access,
+    pub ty: Type,
+}
+
+/// A path from the `match` scrutinee to a subvalue a decision tree tests or binds.
+#[derive(Debug, Clone)]
+pub enum Access {
+    /// The scrutinee itself.
+    Root,
+    /// A named field of a struct subvalue.
+    Field { parent: Box<Access>, name: String },
+    /// A positional component of a tuple subvalue.
+    Elem { parent: Box<Access>, index: usize },
+    /// A positional payload slot of a sum-type variant subvalue.
+    Payload {
+        parent: Box<Access>,
+        variant: String,
+        index: usize,
+    },
 }
 
 /// A lowered pattern: its shape, the type of the value it matches at this position
@@ -207,11 +267,6 @@ pub enum IrExprKind {
         name: String,
         value: Box<IrExpr>,
     },
-    If {
-        cond: Box<IrExpr>,
-        then: Box<IrExpr>,
-        els: Box<IrExpr>,
-    },
     /// A value block: statements run for effect, then a trailing result expression.
     Block {
         stmts: Vec<IrStmt>,
@@ -224,11 +279,13 @@ pub enum IrExprKind {
         name: String,
         members: Vec<(String, IrExpr)>,
     },
-    /// A `match` producing a value: every arm's body is an expression of the node's
-    /// resolved type.
+    /// A `match` producing a value: the scrutinee is evaluated once, then `tree`
+    /// selects one of `actions` (each an expression of the node's resolved type). A
+    /// plain-boolean `if` expression desugars into this form.
     Match {
         scrutinee: Box<IrExpr>,
-        arms: Vec<MatchArm<IrExpr>>,
+        actions: Vec<IrExpr>,
+        tree: Box<Decision>,
     },
     /// Construction of a sum-type value: a variant name and its payload arguments
     /// (empty for a payload-free variant). The owning sum type and its type arguments
@@ -406,11 +463,24 @@ impl Lower<'_> {
             StmtKind::Return(value) => {
                 IrStmtKind::Return(value.as_ref().map(|e| self.expr(e)).transpose()?)
             }
-            StmtKind::If { cond, then, els } => IrStmtKind::If {
-                cond: self.expr(cond)?,
-                then: Box::new(self.stmt(then)?),
-                els: els.as_ref().map(|s| self.stmt(s)).transpose()?.map(Box::new),
-            },
+            StmtKind::If { cond, then, els } => {
+                let scrutinee = self.expr(cond)?;
+                let then = self.stmt(then)?;
+                let els = match els {
+                    Some(s) => self.stmt(s)?,
+                    None => IrStmt {
+                        kind: IrStmtKind::Block(Vec::new()),
+                        span: stmt.span,
+                    },
+                };
+                let patterns = bool_patterns(&scrutinee.ty, scrutinee.span);
+                let tree = compile_match(&scrutinee.ty, &patterns);
+                IrStmtKind::Match {
+                    scrutinee,
+                    actions: vec![then, els],
+                    tree,
+                }
+            }
             StmtKind::While {
                 cond,
                 body,
@@ -426,16 +496,20 @@ impl Lower<'_> {
             StmtKind::Continue => IrStmtKind::Continue,
             StmtKind::Match { scrutinee, arms } => {
                 let scrutinee = self.expr(scrutinee)?;
-                let arms = arms
+                let patterns = arms
                     .iter()
-                    .map(|arm| {
-                        Ok(MatchArm {
-                            pattern: self.pattern(&scrutinee.ty, &arm.pattern)?,
-                            body: self.stmt(&arm.body)?,
-                        })
-                    })
-                    .collect::<Result<_, LowerError>>()?;
-                IrStmtKind::Match { scrutinee, arms }
+                    .map(|arm| self.pattern(&scrutinee.ty, &arm.pattern))
+                    .collect::<Result<Vec<_>, LowerError>>()?;
+                let actions = arms
+                    .iter()
+                    .map(|arm| self.stmt(&arm.body))
+                    .collect::<Result<Vec<_>, LowerError>>()?;
+                let tree = compile_match(&scrutinee.ty, &patterns);
+                IrStmtKind::Match {
+                    scrutinee,
+                    actions,
+                    tree,
+                }
             }
             StmtKind::ForIn {
                 bindings,
@@ -545,11 +619,18 @@ impl Lower<'_> {
                 name: name.clone(),
                 value: Box::new(self.expr(value)?),
             },
-            ExprKind::If { cond, then, els } => IrExprKind::If {
-                cond: Box::new(self.expr(cond)?),
-                then: Box::new(self.expr(then)?),
-                els: Box::new(self.expr(els)?),
-            },
+            ExprKind::If { cond, then, els } => {
+                let scrutinee = self.expr(cond)?;
+                let then = self.expr(then)?;
+                let els = self.expr(els)?;
+                let patterns = bool_patterns(&scrutinee.ty, scrutinee.span);
+                let tree = compile_match(&scrutinee.ty, &patterns);
+                IrExprKind::Match {
+                    scrutinee: Box::new(scrutinee),
+                    actions: vec![then, els],
+                    tree: Box::new(tree),
+                }
+            }
             ExprKind::Block(block) => self.value_block(block)?,
             ExprKind::StructLiteral { members, .. } => {
                 let Type::Struct { name, .. } = &ty else {
@@ -567,18 +648,19 @@ impl Lower<'_> {
             ExprKind::Range { .. } => return unsupported(expr.span, "range"),
             ExprKind::Match { scrutinee, arms } => {
                 let scrutinee = self.expr(scrutinee)?;
-                let arms = arms
+                let patterns = arms
                     .iter()
-                    .map(|arm| {
-                        Ok(MatchArm {
-                            pattern: self.pattern(&scrutinee.ty, &arm.pattern)?,
-                            body: self.expr(&arm.body)?,
-                        })
-                    })
-                    .collect::<Result<_, LowerError>>()?;
+                    .map(|arm| self.pattern(&scrutinee.ty, &arm.pattern))
+                    .collect::<Result<Vec<_>, LowerError>>()?;
+                let actions = arms
+                    .iter()
+                    .map(|arm| self.expr(&arm.body))
+                    .collect::<Result<Vec<_>, LowerError>>()?;
+                let tree = compile_match(&scrutinee.ty, &patterns);
                 IrExprKind::Match {
                     scrutinee: Box::new(scrutinee),
-                    arms,
+                    actions,
+                    tree: Box::new(tree),
                 }
             }
             ExprKind::LetTuple { names, value, .. } => {
@@ -743,6 +825,433 @@ fn variant_named(name: &str, ty: &Type) -> bool {
     matches!(ty, Type::Oneof { variants, .. } if variants.contains_key(name))
 }
 
+/// The two boolean patterns an `if` desugars to: `true` (the `then` action) then
+/// `false` (the `else` action), in that order.
+fn bool_patterns(ty: &Type, span: Span) -> Vec<IrPattern> {
+    vec![
+        IrPattern {
+            kind: IrPatternKind::Bool(true),
+            ty: ty.clone(),
+            span,
+        },
+        IrPattern {
+            kind: IrPatternKind::Bool(false),
+            ty: ty.clone(),
+            span,
+        },
+    ]
+}
+
+/// A scrutinee position the matrix compiler discriminates on: where it is reached
+/// from the scrutinee and the type of value found there.
+#[derive(Clone)]
+struct Occurrence {
+    access: Access,
+    ty: Type,
+}
+
+/// One pattern-matrix row: the patterns left to test (aligned with the current
+/// occurrences), the bindings accumulated as columns were consumed, and the action
+/// to run when the row matches.
+#[derive(Clone)]
+struct Row {
+    columns: Vec<IrPattern>,
+    bindings: Vec<MatchBinding>,
+    action: usize,
+}
+
+/// Compile a match's arm patterns (in source order, the row index being the action
+/// index) over a scrutinee of `ty` into a decision tree.
+fn compile_match(ty: &Type, patterns: &[IrPattern]) -> Decision {
+    let occurrences = vec![Occurrence {
+        access: Access::Root,
+        ty: ty.clone(),
+    }];
+    let rows = patterns
+        .iter()
+        .enumerate()
+        .map(|(action, pattern)| Row {
+            columns: vec![pattern.clone()],
+            bindings: Vec::new(),
+            action,
+        })
+        .collect();
+    compile(occurrences, rows)
+}
+
+/// The matrix algorithm: the first row whose columns are all irrefutable wins;
+/// otherwise test the leftmost column the top row cares about, deconstructing a
+/// single-constructor type in place or branching on a `Switch`.
+fn compile(occurrences: Vec<Occurrence>, mut rows: Vec<Row>) -> Decision {
+    let Some(first) = rows.first() else {
+        return Decision::Fail;
+    };
+    if first.columns.iter().all(ir_is_irrefutable) {
+        let mut row = rows.swap_remove(0);
+        for (occ, pat) in occurrences.iter().zip(&row.columns) {
+            collect_bindings(pat, &occ.access, &occ.ty, &mut row.bindings);
+        }
+        return Decision::Leaf {
+            bindings: row.bindings,
+            action: row.action,
+        };
+    }
+    let col = first
+        .columns
+        .iter()
+        .position(|p| !ir_is_irrefutable(p))
+        .expect("an all-irrefutable row was handled above");
+    match &occurrences[col].ty {
+        Type::Tuple(_) | Type::Struct { .. } => deconstruct(col, occurrences, rows),
+        _ => switch(col, occurrences, rows),
+    }
+}
+
+/// Expand a single-constructor (tuple or struct) column into its fields: the column
+/// is replaced by one occurrence per field, and every row's pattern there by its
+/// sub-patterns (missing struct fields and irrefutable patterns become wildcards).
+fn deconstruct(col: usize, occurrences: Vec<Occurrence>, rows: Vec<Row>) -> Decision {
+    let subs = sub_fields(&occurrences[col].access, &occurrences[col].ty);
+    let mut new_occurrences = occurrences.clone();
+    new_occurrences.splice(col..=col, subs.clone());
+    let new_rows = rows
+        .into_iter()
+        .map(|mut row| {
+            let pat = row.columns.remove(col);
+            let subpats = deconstruct_pattern(pat, &occurrences[col], &subs, &mut row.bindings);
+            row.columns.splice(col..col, subpats);
+            row
+        })
+        .collect();
+    compile(new_occurrences, new_rows)
+}
+
+/// The sub-patterns a tuple/struct column pattern contributes, aligned with `subs`.
+/// A binding over the whole value is recorded before it is dropped to wildcards.
+fn deconstruct_pattern(
+    pat: IrPattern,
+    occ: &Occurrence,
+    subs: &[Occurrence],
+    bindings: &mut Vec<MatchBinding>,
+) -> Vec<IrPattern> {
+    let span = pat.span;
+    match pat.kind {
+        IrPatternKind::Wildcard => subs.iter().map(|s| ir_wildcard(s.ty.clone(), span)).collect(),
+        IrPatternKind::Binding(name) => {
+            bindings.push(MatchBinding {
+                name,
+                access: occ.access.clone(),
+                ty: occ.ty.clone(),
+            });
+            subs.iter().map(|s| ir_wildcard(s.ty.clone(), span)).collect()
+        }
+        IrPatternKind::Tuple(ps) => ps,
+        IrPatternKind::Struct { fields, .. } => {
+            let Type::Struct { members, .. } = &occ.ty else {
+                unreachable!("a struct pattern matches a struct occurrence");
+            };
+            sorted_members(members)
+                .into_iter()
+                .map(|(name, ty)| {
+                    fields
+                        .iter()
+                        .find(|(f, _)| *f == name)
+                        .map(|(_, p)| p.clone())
+                        .unwrap_or_else(|| ir_wildcard(ty, span))
+                })
+                .collect()
+        }
+        _ => unreachable!("deconstruct handles only tuple/struct columns"),
+    }
+}
+
+/// Branch on a column of a switchable type (`bool`, integer, or sum type): a case
+/// per head constructor, plus a default from the irrefutable rows when the cases do
+/// not exhaust the type.
+fn switch(col: usize, occurrences: Vec<Occurrence>, rows: Vec<Row>) -> Decision {
+    let access = occurrences[col].access.clone();
+    let ty = occurrences[col].ty.clone();
+    let tests = head_tests(&rows, col);
+    let mut cases = Vec::new();
+    for test in &tests {
+        let subs = test_sub_occurrences(&access, &ty, test);
+        let mut case_occurrences = occurrences.clone();
+        case_occurrences.splice(col..=col, subs.clone());
+        let case_rows = rows
+            .iter()
+            .filter_map(|row| specialize_row(row, col, test, &access, &ty, &subs))
+            .collect();
+        cases.push(Case {
+            test: test.clone(),
+            tree: compile(case_occurrences, case_rows),
+        });
+    }
+    let default = if tests_exhaustive(&ty, &tests) {
+        None
+    } else {
+        let mut default_occurrences = occurrences.clone();
+        default_occurrences.remove(col);
+        let default_rows = rows
+            .iter()
+            .filter(|row| ir_is_irrefutable(&row.columns[col]))
+            .map(|row| default_row(row, col, &access, &ty))
+            .collect();
+        Some(Box::new(compile(default_occurrences, default_rows)))
+    };
+    Decision::Switch {
+        access,
+        ty,
+        cases,
+        default,
+    }
+}
+
+/// Specialize a row against the case constructor `test`: a matching constructor
+/// row contributes its sub-patterns; an irrefutable row falls through as wildcards
+/// (recording any binding); any other constructor drops out.
+fn specialize_row(
+    row: &Row,
+    col: usize,
+    test: &Test,
+    access: &Access,
+    ty: &Type,
+    subs: &[Occurrence],
+) -> Option<Row> {
+    let span = row.columns[col].span;
+    if ir_is_irrefutable(&row.columns[col]) {
+        let mut r = row.clone();
+        let removed = r.columns.remove(col);
+        if let IrPatternKind::Binding(name) = removed.kind {
+            r.bindings.push(MatchBinding {
+                name,
+                access: access.clone(),
+                ty: ty.clone(),
+            });
+        }
+        let wilds: Vec<_> = subs.iter().map(|s| ir_wildcard(s.ty.clone(), span)).collect();
+        r.columns.splice(col..col, wilds);
+        return Some(r);
+    }
+    if pattern_test(&row.columns[col]).as_ref() != Some(test) {
+        return None;
+    }
+    let mut r = row.clone();
+    let removed = r.columns.remove(col);
+    let subpats = match removed.kind {
+        IrPatternKind::Variant { binders, .. } => binders
+            .into_iter()
+            .map(|b| {
+                let kind = if b.name == "_" {
+                    IrPatternKind::Wildcard
+                } else {
+                    IrPatternKind::Binding(b.name)
+                };
+                IrPattern {
+                    kind,
+                    ty: b.ty,
+                    span,
+                }
+            })
+            .collect(),
+        IrPatternKind::Bool(_) | IrPatternKind::Int { .. } => Vec::new(),
+        _ => unreachable!("a refutable switch column is a variant or literal"),
+    };
+    r.columns.splice(col..col, subpats);
+    Some(r)
+}
+
+/// A default-branch row: the tested (irrefutable) column is dropped, recording any
+/// whole-value binding it introduced.
+fn default_row(row: &Row, col: usize, access: &Access, ty: &Type) -> Row {
+    let mut r = row.clone();
+    let removed = r.columns.remove(col);
+    if let IrPatternKind::Binding(name) = removed.kind {
+        r.bindings.push(MatchBinding {
+            name,
+            access: access.clone(),
+            ty: ty.clone(),
+        });
+    }
+    r
+}
+
+/// The head constructors appearing in column `col`, in order of first appearance.
+fn head_tests(rows: &[Row], col: usize) -> Vec<Test> {
+    let mut tests = Vec::new();
+    for row in rows {
+        if let Some(test) = pattern_test(&row.columns[col]) {
+            if !tests.contains(&test) {
+                tests.push(test);
+            }
+        }
+    }
+    tests
+}
+
+/// The constructor a pattern tests, or `None` for an irrefutable pattern.
+fn pattern_test(pat: &IrPattern) -> Option<Test> {
+    match &pat.kind {
+        IrPatternKind::Variant { variant, .. } => Some(Test::Variant(variant.clone())),
+        IrPatternKind::Bool(b) => Some(Test::Bool(*b)),
+        IrPatternKind::Int { value, negative } => Some(Test::Int {
+            value: *value,
+            negative: *negative,
+        }),
+        _ => None,
+    }
+}
+
+/// The occurrences a matched constructor introduces: a variant exposes its payload
+/// slots; `bool` and integer constructors expose nothing.
+fn test_sub_occurrences(access: &Access, ty: &Type, test: &Test) -> Vec<Occurrence> {
+    match test {
+        Test::Variant(variant) => {
+            let Type::Oneof { variants, .. } = ty else {
+                unreachable!("a variant test discriminates a sum type");
+            };
+            let payload = variants
+                .get(variant)
+                .expect("a variant test names an existing variant");
+            payload
+                .iter()
+                .enumerate()
+                .map(|(index, slot)| Occurrence {
+                    access: Access::Payload {
+                        parent: Box::new(access.clone()),
+                        variant: variant.clone(),
+                        index,
+                    },
+                    ty: slot.clone(),
+                })
+                .collect()
+        }
+        Test::Bool(_) | Test::Int { .. } => Vec::new(),
+    }
+}
+
+/// Whether the tested constructors cover the type: both booleans, or every variant
+/// of a sum type. Integers are never exhausted by literals, so they always need a
+/// default (the checker requires an irrefutable catch-all there).
+fn tests_exhaustive(ty: &Type, tests: &[Test]) -> bool {
+    match ty {
+        Type::Primitive(name) if name == "bool" => {
+            tests.contains(&Test::Bool(true)) && tests.contains(&Test::Bool(false))
+        }
+        Type::Oneof { variant_order, .. } => variant_order
+            .iter()
+            .all(|v| tests.contains(&Test::Variant(v.clone()))),
+        _ => false,
+    }
+}
+
+/// The occurrences a tuple/struct value exposes, in a deterministic order (tuple
+/// position, struct fields sorted by name).
+fn sub_fields(access: &Access, ty: &Type) -> Vec<Occurrence> {
+    match ty {
+        Type::Tuple(elems) => elems
+            .iter()
+            .enumerate()
+            .map(|(index, elem)| Occurrence {
+                access: Access::Elem {
+                    parent: Box::new(access.clone()),
+                    index,
+                },
+                ty: elem.clone(),
+            })
+            .collect(),
+        Type::Struct { members, .. } => sorted_members(members)
+            .into_iter()
+            .map(|(name, ty)| Occurrence {
+                access: Access::Field {
+                    parent: Box::new(access.clone()),
+                    name,
+                },
+                ty,
+            })
+            .collect(),
+        _ => unreachable!("sub_fields runs on tuple/struct occurrences only"),
+    }
+}
+
+/// A struct's members as `(name, type)` pairs sorted by name, giving deconstruction
+/// a deterministic field order independent of the members map's iteration order.
+fn sorted_members(members: &HashMap<String, Type>) -> Vec<(String, Type)> {
+    let mut pairs: Vec<_> = members
+        .iter()
+        .map(|(name, ty)| (name.clone(), ty.clone()))
+        .collect();
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    pairs
+}
+
+/// Whether a pattern matches every value of its type (so it never forces a test).
+fn ir_is_irrefutable(pat: &IrPattern) -> bool {
+    match &pat.kind {
+        IrPatternKind::Wildcard | IrPatternKind::Binding(_) => true,
+        IrPatternKind::Tuple(ps) => ps.iter().all(ir_is_irrefutable),
+        IrPatternKind::Struct { fields, .. } => fields.iter().all(|(_, p)| ir_is_irrefutable(p)),
+        _ => false,
+    }
+}
+
+/// Collect the names an irrefutable pattern binds, each with the access and type of
+/// the subvalue it reaches, descending through tuple and struct patterns.
+fn collect_bindings(pat: &IrPattern, access: &Access, ty: &Type, out: &mut Vec<MatchBinding>) {
+    match &pat.kind {
+        IrPatternKind::Wildcard => {}
+        IrPatternKind::Binding(name) => out.push(MatchBinding {
+            name: name.clone(),
+            access: access.clone(),
+            ty: ty.clone(),
+        }),
+        IrPatternKind::Tuple(ps) => {
+            let Type::Tuple(elems) = ty else {
+                unreachable!("a tuple pattern matches a tuple type");
+            };
+            for (index, (sub, elem_ty)) in ps.iter().zip(elems).enumerate() {
+                collect_bindings(
+                    sub,
+                    &Access::Elem {
+                        parent: Box::new(access.clone()),
+                        index,
+                    },
+                    elem_ty,
+                    out,
+                );
+            }
+        }
+        IrPatternKind::Struct { fields, .. } => {
+            let Type::Struct { members, .. } = ty else {
+                unreachable!("a struct pattern matches a struct type");
+            };
+            for (name, sub) in fields {
+                let member_ty = members
+                    .get(name)
+                    .expect("a checked struct pattern names existing fields");
+                collect_bindings(
+                    sub,
+                    &Access::Field {
+                        parent: Box::new(access.clone()),
+                        name: name.clone(),
+                    },
+                    member_ty,
+                    out,
+                );
+            }
+        }
+        _ => unreachable!("collect_bindings runs on irrefutable patterns only"),
+    }
+}
+
+/// A wildcard pattern of a given type and span.
+fn ir_wildcard(ty: Type, span: Span) -> IrPattern {
+    IrPattern {
+        kind: IrPatternKind::Wildcard,
+        ty,
+        span,
+    }
+}
+
 fn unsupported(span: Span, what: &'static str) -> Result<IrExpr, LowerError> {
     Err(LowerError::Unsupported { span, what })
 }
@@ -785,6 +1294,14 @@ mod tests {
 
     fn is_primitive(ty: &Type, name: &str) -> bool {
         matches!(ty, Type::Primitive(n) if n == name)
+    }
+
+    /// The switch case testing a given sum-type variant.
+    fn case_for<'a>(cases: &'a [Case], variant: &str) -> &'a Case {
+        cases
+            .iter()
+            .find(|c| matches!(&c.test, Test::Variant(v) if v == variant))
+            .expect("a case for the variant")
     }
 
     #[test]
@@ -836,13 +1353,27 @@ mod tests {
         assert!(is_primitive(&max.params[0].ty, "i32"));
         assert!(is_primitive(&max.return_type, "i32"));
 
-        // The body is an `if` statement followed by a trailing return.
-        assert!(matches!(max.body[0].kind, IrStmtKind::If { .. }));
-        let IrStmtKind::If { then, els, .. } = &max.body[0].kind else {
-            unreachable!();
+        // The body is an `if` statement (desugared to a boolean `match`) followed
+        // by a trailing return. The match tests the condition and selects between a
+        // `then` action and an `else` action.
+        let IrStmtKind::Match {
+            scrutinee,
+            actions,
+            tree,
+        } = &max.body[0].kind
+        else {
+            panic!("expected a match, got {:?}", max.body[0].kind);
         };
-        assert!(matches!(then.kind, IrStmtKind::Block(_)));
-        assert!(els.is_some());
+        assert!(is_primitive(&scrutinee.ty, "bool"));
+        assert_eq!(actions.len(), 2);
+        assert!(matches!(actions[0].kind, IrStmtKind::Block(_)));
+        assert!(matches!(actions[1].kind, IrStmtKind::Block(_)));
+        // The tree switches on the boolean and is exhaustive (no default).
+        let Decision::Switch { cases, default, .. } = tree else {
+            panic!("expected a switch, got {tree:?}");
+        };
+        assert_eq!(cases.len(), 2);
+        assert!(default.is_none());
         assert!(matches!(max.body[1].kind, IrStmtKind::Return(Some(_))));
     }
 
@@ -930,26 +1461,50 @@ mod tests {
         };
         let ir = lower_expr(value, &globals, &types).expect("lowers");
 
-        let IrExprKind::Match { scrutinee, arms } = &ir.kind else {
+        let IrExprKind::Match {
+            scrutinee,
+            actions,
+            tree,
+        } = &ir.kind
+        else {
             panic!("expected a match, got {:?}", ir.kind);
         };
         assert!(matches!(&scrutinee.kind, IrExprKind::Var(n) if n == "s"));
         assert!(is_primitive(&ir.ty, "i32"), "match result type: {:?}", ir.ty);
-        assert_eq!(arms.len(), 2);
+        assert_eq!(actions.len(), 2);
 
-        let IrPatternKind::Variant { variant, binders } = &arms[0].pattern.kind else {
-            panic!("expected a variant pattern");
+        // The tree switches on the sum type, exhaustively (no default), with a case
+        // per variant whose leaf binds its payload slots by access.
+        let Decision::Switch { cases, default, .. } = tree.as_ref() else {
+            panic!("expected a switch, got {tree:?}");
         };
-        assert_eq!(variant, "Circle");
-        assert_eq!(binders.len(), 1);
-        assert_eq!(binders[0].name, "r");
-        assert!(is_primitive(&binders[0].ty, "i32"));
+        assert!(default.is_none(), "all variants covered");
+        assert_eq!(cases.len(), 2);
 
-        let IrPatternKind::Variant { binders, .. } = &arms[1].pattern.kind else {
-            panic!("expected a variant pattern");
+        let circle = case_for(cases, "Circle");
+        let Decision::Leaf { bindings, action } = &circle.tree else {
+            panic!("expected a leaf");
         };
-        assert_eq!(binders.len(), 2);
-        assert_eq!(binders[1].name, "h");
+        assert_eq!(*action, 0);
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].name, "r");
+        assert!(is_primitive(&bindings[0].ty, "i32"));
+        assert!(matches!(
+            &bindings[0].access,
+            Access::Payload { variant, index: 0, .. } if variant == "Circle"
+        ));
+
+        let rect = case_for(cases, "Rect");
+        let Decision::Leaf { bindings, action } = &rect.tree else {
+            panic!("expected a leaf");
+        };
+        assert_eq!(*action, 1);
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(bindings[1].name, "h");
+        assert!(matches!(
+            &bindings[1].access,
+            Access::Payload { variant, index: 1, .. } if variant == "Rect"
+        ));
     }
 
     #[test]
@@ -975,18 +1530,85 @@ mod tests {
             panic!("expected a walrus binding");
         };
         let ir = lower_expr(value, &globals, &types).expect("lowers");
-        let IrExprKind::Match { arms, .. } = &ir.kind else {
+        let IrExprKind::Match { tree, .. } = &ir.kind else {
             panic!("expected a match");
         };
-        let IrPatternKind::Variant { binders, .. } = &arms[0].pattern.kind else {
-            panic!("expected a variant pattern");
+        let Decision::Switch { cases, .. } = tree.as_ref() else {
+            panic!("expected a switch");
         };
-        assert_eq!(binders[0].name, "x");
+        let some = case_for(cases, "Some");
+        let Decision::Leaf { bindings, .. } = &some.tree else {
+            panic!("expected a leaf");
+        };
+        assert_eq!(bindings[0].name, "x");
         assert!(
-            is_primitive(&binders[0].ty, "i32"),
+            is_primitive(&bindings[0].ty, "i32"),
             "payload slot instantiated to i32, got {:?}",
-            binders[0].ty
+            bindings[0].ty
         );
+    }
+
+    #[test]
+    fn lowers_a_tuple_match_into_a_nested_decision_tree() {
+        // A tuple scrutinee is deconstructed into its components; a literal in the
+        // first position becomes a switch on that component, and the irrefutable
+        // catch-all supplies the default (binding both components by access).
+        let (decls, globals, types) = check(
+            "func classify(p: (i32, i32)): i32 {\n\
+             \treturn match p with {\n\
+             \t\t(0, y) => { y }\n\
+             \t\t(x, y) => { x }\n\
+             \t}\n\
+             }",
+        );
+        let ir = lower_expr(return_expr(&decls), &globals, &types).expect("lowers");
+        let IrExprKind::Match { actions, tree, .. } = &ir.kind else {
+            panic!("expected a match, got {:?}", ir.kind);
+        };
+        assert_eq!(actions.len(), 2);
+
+        // The root tuple is deconstructed: the switch tests the first component.
+        let Decision::Switch {
+            access,
+            ty,
+            cases,
+            default,
+        } = tree.as_ref()
+        else {
+            panic!("expected a switch, got {tree:?}");
+        };
+        assert!(matches!(access, Access::Elem { index: 0, .. }));
+        assert!(is_primitive(ty, "i32"));
+        assert_eq!(cases.len(), 1);
+        assert_eq!(
+            cases[0].test,
+            Test::Int {
+                value: 0,
+                negative: false
+            }
+        );
+
+        // Matching `0` leaves the first arm, binding `y` to the second component.
+        let Decision::Leaf { bindings, action } = &cases[0].tree else {
+            panic!("expected a leaf under the matched literal");
+        };
+        assert_eq!(*action, 0);
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].name, "y");
+        assert!(matches!(&bindings[0].access, Access::Elem { index: 1, .. }));
+
+        // Any other first component falls through to the catch-all, binding both.
+        let Some(default) = default else {
+            panic!("an integer switch needs a default");
+        };
+        let Decision::Leaf { bindings, action } = default.as_ref() else {
+            panic!("expected a leaf default");
+        };
+        assert_eq!(*action, 1);
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(bindings[0].name, "x");
+        assert!(matches!(&bindings[0].access, Access::Elem { index: 0, .. }));
+        assert_eq!(bindings[1].name, "y");
     }
 
     #[test]

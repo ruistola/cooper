@@ -144,8 +144,11 @@ pub struct Block {
     pub result: Box<Expr>,
 }
 
-/// A match-arm pattern: a type-qualified variant (optionally binding positional
-/// payload slots) or the wildcard `_`.
+/// A match-arm pattern. A pattern is either irrefutable (the wildcard `_` or a
+/// camelCase binding that always matches and names the value) or refutable (a
+/// sum-type variant, a primitive literal, or a structured tuple/struct pattern whose
+/// sub-patterns are matched position- or field-wise). The flat shape leaves room for
+/// further kinds to join.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pattern {
     pub kind: PatternKind,
@@ -154,12 +157,40 @@ pub struct Pattern {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PatternKind {
+    /// The wildcard `_`: matches anything, binds nothing.
+    Wildcard,
+    /// A camelCase name: matches anything and binds the whole value.
+    Binding(String),
     Variant {
         type_name: Option<String>,
         variant: String,
         binders: Vec<String>,
     },
-    Wildcard,
+    /// A boolean literal pattern matching one constant of a `bool` scrutinee.
+    Bool(bool),
+    /// An integer literal pattern matching one constant of an integer scrutinee.
+    /// The magnitude keeps the source spelling (decoded once downstream) and the
+    /// sign is held separately, since a literal carries no sign of its own.
+    Int {
+        negative: bool,
+        magnitude: String,
+    },
+    /// A tuple pattern, matching a tuple scrutinee component-wise.
+    Tuple(Vec<Pattern>),
+    /// A struct pattern naming its struct type and matching a subset of fields;
+    /// unlisted fields are implicitly wildcards.
+    Struct {
+        name: String,
+        fields: Vec<FieldPattern>,
+    },
+}
+
+/// One `field: pattern` entry inside a struct pattern.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldPattern {
+    pub name: String,
+    pub pattern: Pattern,
+    pub span: Span,
 }
 
 /// A match arm whose body is an expression.

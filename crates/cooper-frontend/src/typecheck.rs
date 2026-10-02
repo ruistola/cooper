@@ -13,7 +13,7 @@ use crate::diag::{Diagnostic, Span};
 use crate::resolve::{self, Globals};
 use crate::types::{
     is_float_name, is_integer, is_integer_name, is_numeric, is_numeric_name, is_primitive, is_unit,
-    unify, Type, DEFAULT_FLOAT, DEFAULT_INT,
+    unify, Type, DEFAULT_FLOAT, DEFAULT_INT, SIGNED_INTS,
 };
 
 /// The result of type checking one file: its diagnostics, and the type attributed to
@@ -322,42 +322,28 @@ impl<'g> TypeChecker<'g> {
     // --- match ---
 
     fn check_match_stmt(&mut self, scrutinee: &Expr, arms: &[StmtArm]) {
-        let Some(oneof) = self.check_scrutinee(scrutinee) else {
+        let Some(scrutinee_ty) = self.match_scrutinee(scrutinee) else {
             return;
         };
-        let (name, variants, order) = oneof_parts(&oneof);
-        let mut covered = HashSet::new();
-        let mut has_wildcard = false;
+        let mut coverage = Coverage::default();
         for arm in arms {
             self.scopes.push(HashMap::new());
-            match self.check_arm_pattern(&name, &variants, &arm.pattern) {
-                ArmCover::Wildcard => has_wildcard = true,
-                ArmCover::Variant(v) => {
-                    covered.insert(v);
-                }
-                ArmCover::None => {}
-            }
+            self.check_pattern(&arm.pattern, &scrutinee_ty);
+            coverage.record(arm_cover(&arm.pattern));
             self.check_stmt(&arm.body);
             self.scopes.pop();
         }
-        self.check_exhaustiveness(&name, &order, &covered, has_wildcard, scrutinee.span);
+        self.check_match_exhaustiveness(&scrutinee_ty, &coverage, scrutinee.span);
     }
 
     fn check_match_expr(&mut self, scrutinee: &Expr, arms: &[ExprArm]) -> Option<Type> {
-        let oneof = self.check_scrutinee(scrutinee)?;
-        let (name, variants, order) = oneof_parts(&oneof);
-        let mut covered = HashSet::new();
-        let mut has_wildcard = false;
+        let scrutinee_ty = self.match_scrutinee(scrutinee)?;
+        let mut coverage = Coverage::default();
         let mut match_type: Option<Type> = None;
         for arm in arms {
             self.scopes.push(HashMap::new());
-            match self.check_arm_pattern(&name, &variants, &arm.pattern) {
-                ArmCover::Wildcard => has_wildcard = true,
-                ArmCover::Variant(v) => {
-                    covered.insert(v);
-                }
-                ArmCover::None => {}
-            }
+            self.check_pattern(&arm.pattern, &scrutinee_ty);
+            coverage.record(arm_cover(&arm.pattern));
             let arm_type = self.check_expr(&arm.body);
             self.scopes.pop();
             if let Some(arm_type) = arm_type {
@@ -371,101 +357,260 @@ impl<'g> TypeChecker<'g> {
                 }
             }
         }
-        self.check_exhaustiveness(&name, &order, &covered, has_wildcard, scrutinee.span);
+        self.check_match_exhaustiveness(&scrutinee_ty, &coverage, scrutinee.span);
         Some(match_type.unwrap_or(Type::Unit))
     }
 
-    /// Check a match scrutinee and require it to be a sum type, returning that type.
-    fn check_scrutinee(&mut self, scrutinee: &Expr) -> Option<Type> {
+    /// Check a match scrutinee and require a matchable type: a sum type, a struct, a
+    /// tuple, a boolean, or an integer. Returns that type for the arm patterns to be
+    /// checked against.
+    fn match_scrutinee(&mut self, scrutinee: &Expr) -> Option<Type> {
         let ty = self.check_expr(scrutinee)?;
-        if matches!(ty, Type::Oneof { .. }) {
-            Some(ty)
-        } else {
-            self.err(
-                scrutinee.span,
-                format!("cannot match on non-sum-type value of type {ty}"),
-            );
-            None
-        }
-    }
-
-    /// Validate an arm pattern against the scrutinee's sum type and bind its
-    /// payload slots into the current (arm) scope.
-    fn check_arm_pattern(
-        &mut self,
-        oneof_name: &str,
-        variants: &HashMap<String, Vec<Type>>,
-        pattern: &Pattern,
-    ) -> ArmCover {
-        match &pattern.kind {
-            PatternKind::Wildcard => ArmCover::Wildcard,
-            PatternKind::Variant {
-                type_name,
-                variant,
-                binders,
-            } => {
-                if let Some(type_name) = type_name {
-                    if type_name != oneof_name {
-                        self.err(
-                            pattern.span,
-                            format!(
-                                "pattern names sum type {type_name} but the scrutinee has type {oneof_name}"
-                            ),
-                        );
-                        return ArmCover::None;
-                    }
-                }
-                let Some(payload) = variants.get(variant).cloned() else {
-                    self.err(
-                        pattern.span,
-                        format!("{variant} is not a variant of sum type {oneof_name}"),
-                    );
-                    return ArmCover::None;
-                };
-                if binders.len() != payload.len() {
-                    self.err(
-                        pattern.span,
-                        format!(
-                            "variant pattern {oneof_name}.{variant} binds {} slot(s) but the variant has {}",
-                            binders.len(),
-                            payload.len()
-                        ),
-                    );
-                    return ArmCover::Variant(variant.clone());
-                }
-                for (binder, slot) in binders.iter().zip(payload) {
-                    if binder != "_" {
-                        self.define_var(binder, slot);
-                    }
-                }
-                ArmCover::Variant(variant.clone())
+        match &ty {
+            Type::Oneof { .. } | Type::Struct { .. } | Type::Tuple(_) => Some(ty),
+            Type::Primitive(n) if n == "bool" || is_integer_name(n) => Some(ty),
+            _ => {
+                self.err(
+                    scrutinee.span,
+                    format!(
+                        "cannot match on value of type {ty}; match supports sum types, structs, tuples, bool, and integers"
+                    ),
+                );
+                None
             }
         }
     }
 
-    fn check_exhaustiveness(
+    /// Validate a pattern against the type of the value it matches, binding every
+    /// name it introduces into the current (arm) scope. Recurses through tuple and
+    /// struct patterns so a sub-pattern is checked against its component's type.
+    fn check_pattern(&mut self, pattern: &Pattern, ty: &Type) {
+        match &pattern.kind {
+            PatternKind::Wildcard => {}
+            PatternKind::Binding(name) => self.define_var(name, ty.clone()),
+            PatternKind::Bool(_) => {
+                if !is_primitive(ty, "bool") {
+                    self.err(
+                        pattern.span,
+                        format!("boolean pattern cannot match a value of type {ty}"),
+                    );
+                }
+            }
+            PatternKind::Int { negative, magnitude } => {
+                self.check_int_pattern(*negative, magnitude, ty, pattern.span)
+            }
+            PatternKind::Tuple(elems) => match ty {
+                Type::Tuple(types) if types.len() == elems.len() => {
+                    for (sub, elem_ty) in elems.iter().zip(types.clone()) {
+                        self.check_pattern(sub, &elem_ty);
+                    }
+                }
+                Type::Tuple(types) => self.err(
+                    pattern.span,
+                    format!(
+                        "tuple pattern binds {} element(s) but the value has {}",
+                        elems.len(),
+                        types.len()
+                    ),
+                ),
+                _ => self.err(
+                    pattern.span,
+                    format!("tuple pattern cannot match a value of type {ty}"),
+                ),
+            },
+            PatternKind::Struct { name, fields } => {
+                self.check_struct_pattern(name, fields, ty, pattern.span)
+            }
+            PatternKind::Variant {
+                type_name,
+                variant,
+                binders,
+            } => self.check_variant_pattern(type_name, variant, binders, ty, pattern.span),
+        }
+    }
+
+    fn check_struct_pattern(
         &mut self,
         name: &str,
-        order: &[String],
-        covered: &HashSet<String>,
-        has_wildcard: bool,
+        fields: &[FieldPattern],
+        ty: &Type,
         span: Span,
     ) {
-        if has_wildcard {
+        let Type::Struct {
+            name: struct_name,
+            members,
+            ..
+        } = ty
+        else {
+            self.err(
+                span,
+                format!("struct pattern cannot match a value of type {ty}"),
+            );
+            return;
+        };
+        let struct_name = struct_name.clone();
+        let members = members.clone();
+        if name != struct_name {
+            self.err(
+                span,
+                format!("pattern names struct {name} but the scrutinee has type {struct_name}"),
+            );
             return;
         }
-        let missing: Vec<&str> = order
-            .iter()
-            .filter(|v| !covered.contains(*v))
-            .map(String::as_str)
-            .collect();
-        if !missing.is_empty() {
+        let mut seen: HashSet<&str> = HashSet::new();
+        for field in fields {
+            if !seen.insert(field.name.as_str()) {
+                self.err(
+                    field.span,
+                    format!("field {} is matched more than once", field.name),
+                );
+                continue;
+            }
+            match members.get(&field.name) {
+                Some(member_ty) => {
+                    let member_ty = member_ty.clone();
+                    self.check_pattern(&field.pattern, &member_ty);
+                }
+                None => self.err(
+                    field.span,
+                    format!("{} is not a field of struct {struct_name}", field.name),
+                ),
+            }
+        }
+    }
+
+    fn check_variant_pattern(
+        &mut self,
+        type_name: &Option<String>,
+        variant: &str,
+        binders: &[String],
+        ty: &Type,
+        span: Span,
+    ) {
+        let Type::Oneof {
+            name: oneof_name,
+            variants,
+            ..
+        } = ty
+        else {
+            self.err(
+                span,
+                format!("variant pattern cannot match a value of type {ty}"),
+            );
+            return;
+        };
+        let oneof_name = oneof_name.clone();
+        if let Some(type_name) = type_name {
+            if type_name != &oneof_name {
+                self.err(
+                    span,
+                    format!(
+                        "pattern names sum type {type_name} but the scrutinee has type {oneof_name}"
+                    ),
+                );
+                return;
+            }
+        }
+        let Some(payload) = variants.get(variant).cloned() else {
+            self.err(
+                span,
+                format!("{variant} is not a variant of sum type {oneof_name}"),
+            );
+            return;
+        };
+        if binders.len() != payload.len() {
             self.err(
                 span,
                 format!(
-                    "non-exhaustive match on sum type {name}: missing variant(s) {missing:?}"
+                    "variant pattern {oneof_name}.{variant} binds {} slot(s) but the variant has {}",
+                    binders.len(),
+                    payload.len()
                 ),
             );
+            return;
+        }
+        for (binder, slot) in binders.iter().zip(payload) {
+            if binder != "_" {
+                self.define_var(binder, slot);
+            }
+        }
+    }
+
+    /// Validate an integer literal pattern, requiring it to fit the scrutinee's
+    /// integer type.
+    fn check_int_pattern(&mut self, negative: bool, magnitude: &str, ty: &Type, span: Span) {
+        let Type::Primitive(int_name) = ty else {
+            self.err(
+                span,
+                format!("integer pattern cannot match a value of type {ty}"),
+            );
+            return;
+        };
+        if !is_integer_name(int_name) {
+            self.err(
+                span,
+                format!("integer pattern cannot match a value of type {ty}"),
+            );
+            return;
+        }
+        if decode_number_literal(magnitude).is_none() {
+            self.err(span, format!("integer literal {magnitude} is out of range"));
+            return;
+        }
+        if negative && !is_signed_int(int_name) {
+            self.err(
+                span,
+                format!("negative pattern -{magnitude} cannot match unsigned {int_name}"),
+            );
+        }
+    }
+
+    fn check_match_exhaustiveness(&mut self, ty: &Type, coverage: &Coverage, span: Span) {
+        if coverage.wildcard {
+            return;
+        }
+        match ty {
+            Type::Oneof {
+                name,
+                variant_order,
+                ..
+            } => {
+                let missing: Vec<&str> = variant_order
+                    .iter()
+                    .filter(|v| !coverage.variants.contains(*v))
+                    .map(String::as_str)
+                    .collect();
+                if !missing.is_empty() {
+                    self.err(
+                        span,
+                        format!(
+                            "non-exhaustive match on sum type {name}: missing variant(s) {missing:?}"
+                        ),
+                    );
+                }
+            }
+            Type::Primitive(n) if n == "bool" => {
+                let missing: Vec<&str> = [false, true]
+                    .iter()
+                    .filter(|b| !coverage.bools.contains(*b))
+                    .map(|b| if *b { "true" } else { "false" })
+                    .collect();
+                if !missing.is_empty() {
+                    self.err(
+                        span,
+                        format!("non-exhaustive match on bool: missing {missing:?}"),
+                    );
+                }
+            }
+            // Integer and structured (tuple/struct) scrutinees cannot be shown
+            // exhaustive by enumeration here, so they require an irrefutable catch-all
+            // arm (`_` or a binding).
+            _ => self.err(
+                span,
+                format!(
+                    "non-exhaustive match on {ty}: add a catch-all arm (`_` or a binding)"
+                ),
+            ),
         }
     }
 
@@ -1432,24 +1577,74 @@ impl<'g> TypeChecker<'g> {
     }
 }
 
-/// The coverage a single match arm contributes.
+/// The domain-specific coverage a single top-level match arm contributes.
 enum ArmCover {
+    /// An irrefutable arm (wildcard, binding, or an all-irrefutable tuple/struct):
+    /// a catch-all that makes any scrutinee exhaustive.
     Wildcard,
     Variant(String),
-    None,
+    Bool(bool),
+    /// A refutable arm that enumeration cannot credit toward exhaustiveness.
+    Other,
 }
 
-/// Extract the name, variant table, and declaration order from a sum type.
-fn oneof_parts(oneof: &Type) -> (String, HashMap<String, Vec<Type>>, Vec<String>) {
-    match oneof {
-        Type::Oneof {
-            name,
-            variants,
-            variant_order,
-            ..
-        } => (name.clone(), variants.clone(), variant_order.clone()),
-        _ => unreachable!("check_scrutinee guarantees a sum type"),
+/// The accumulated coverage across a match's arms, read for exhaustiveness.
+#[derive(Default)]
+struct Coverage {
+    variants: HashSet<String>,
+    bools: HashSet<bool>,
+    wildcard: bool,
+}
+
+impl Coverage {
+    fn record(&mut self, cover: ArmCover) {
+        match cover {
+            ArmCover::Wildcard => self.wildcard = true,
+            ArmCover::Variant(v) => {
+                self.variants.insert(v);
+            }
+            ArmCover::Bool(b) => {
+                self.bools.insert(b);
+            }
+            ArmCover::Other => {}
+        }
     }
+}
+
+/// The coverage a top-level arm pattern contributes toward exhaustiveness. A tuple
+/// or struct pattern counts as a catch-all only when it is wholly irrefutable.
+fn arm_cover(pattern: &Pattern) -> ArmCover {
+    match &pattern.kind {
+        PatternKind::Wildcard | PatternKind::Binding(_) => ArmCover::Wildcard,
+        PatternKind::Variant { variant, .. } => ArmCover::Variant(variant.clone()),
+        PatternKind::Bool(b) => ArmCover::Bool(*b),
+        PatternKind::Int { .. } => ArmCover::Other,
+        PatternKind::Tuple(_) | PatternKind::Struct { .. } => {
+            if is_irrefutable(pattern) {
+                ArmCover::Wildcard
+            } else {
+                ArmCover::Other
+            }
+        }
+    }
+}
+
+/// Whether a pattern matches every value of its type, binding names but never
+/// rejecting. A struct pattern's unlisted fields are implicitly wildcards.
+fn is_irrefutable(pattern: &Pattern) -> bool {
+    match &pattern.kind {
+        PatternKind::Wildcard | PatternKind::Binding(_) => true,
+        PatternKind::Tuple(elems) => elems.iter().all(is_irrefutable),
+        PatternKind::Struct { fields, .. } => {
+            fields.iter().all(|f| is_irrefutable(&f.pattern))
+        }
+        PatternKind::Variant { .. } | PatternKind::Bool(_) | PatternKind::Int { .. } => false,
+    }
+}
+
+/// Whether an integer type is signed (admits negative literal patterns).
+fn is_signed_int(name: &str) -> bool {
+    SIGNED_INTS.contains(&name)
 }
 
 /// The type of a numeric literal. A literal's lexical form fixes its class — a `.`

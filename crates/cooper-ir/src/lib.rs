@@ -102,21 +102,43 @@ pub struct MatchArm<B> {
     pub body: B,
 }
 
+/// A lowered pattern: its shape, the type of the value it matches at this position
+/// (so bindings and sub-patterns carry a resolved type for the backend), and the
+/// span it was lowered from.
 #[derive(Debug, Clone)]
 pub struct IrPattern {
     pub kind: IrPatternKind,
+    pub ty: Type,
     pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub enum IrPatternKind {
+    /// Matches anything, binds nothing.
+    Wildcard,
+    /// Matches anything and binds the whole value to a name (its type is on the node).
+    Binding(String),
     /// A sum-type variant, binding its payload slots positionally. A binder named
     /// `_` discards its slot.
     Variant {
         variant: String,
         binders: Vec<Binder>,
     },
-    Wildcard,
+    /// A boolean literal pattern matching one constant of a `bool` scrutinee.
+    Bool(bool),
+    /// An integer literal pattern: the decoded magnitude and whether it is negated.
+    /// The node's type fixes its width and signedness.
+    Int {
+        value: u128,
+        negative: bool,
+    },
+    /// A tuple pattern, matching a tuple value component-wise.
+    Tuple(Vec<IrPattern>),
+    /// A struct pattern, matching the listed fields; unlisted fields are wildcards.
+    Struct {
+        name: String,
+        fields: Vec<(String, IrPattern)>,
+    },
 }
 
 /// A payload slot bound by a variant pattern: the name introduced and the slot's
@@ -592,16 +614,28 @@ impl Lower<'_> {
         })
     }
 
-    /// Lower a match-arm pattern against the scrutinee's sum type, reading each
-    /// bound slot's type from that type's (already instantiated) variant payloads.
-    /// The type checker validated the pattern, so the scrutinee is a sum type and
-    /// the variant and its arity exist.
-    fn pattern(&self, scrutinee_ty: &Type, pattern: &Pattern) -> Result<IrPattern, LowerError> {
+    /// Lower a match-arm pattern against the type of the value it matches. A variant
+    /// pattern reads each bound slot's type from the sum type's (already instantiated)
+    /// variant payloads; tuple and struct patterns recurse into their components;
+    /// literal patterns carry their decoded constant. The type checker validated the
+    /// pattern, so every sub-pattern's type is known and consistent.
+    fn pattern(&self, ty: &Type, pattern: &Pattern) -> Result<IrPattern, LowerError> {
         let kind = match &pattern.kind {
             PatternKind::Wildcard => IrPatternKind::Wildcard,
+            PatternKind::Binding(name) => IrPatternKind::Binding(name.clone()),
+            PatternKind::Bool(b) => IrPatternKind::Bool(*b),
+            PatternKind::Int { negative, magnitude } => {
+                let Some(LiteralValue::Int(value)) = decode_number_literal(magnitude) else {
+                    unreachable!("a checked integer pattern decodes to an in-range magnitude");
+                };
+                IrPatternKind::Int {
+                    value,
+                    negative: *negative,
+                }
+            }
             PatternKind::Variant { variant, binders, .. } => {
-                let Type::Oneof { variants, .. } = scrutinee_ty else {
-                    unreachable!("a checked match scrutinee is a sum type");
+                let Type::Oneof { variants, .. } = ty else {
+                    unreachable!("a checked variant pattern matches a sum type");
                 };
                 let payload = variants
                     .get(variant)
@@ -619,9 +653,39 @@ impl Lower<'_> {
                     binders,
                 }
             }
+            PatternKind::Tuple(elems) => {
+                let Type::Tuple(types) = ty else {
+                    unreachable!("a checked tuple pattern matches a tuple type");
+                };
+                let elems = elems
+                    .iter()
+                    .zip(types)
+                    .map(|(sub, elem_ty)| self.pattern(elem_ty, sub))
+                    .collect::<Result<_, _>>()?;
+                IrPatternKind::Tuple(elems)
+            }
+            PatternKind::Struct { name, fields } => {
+                let Type::Struct { members, .. } = ty else {
+                    unreachable!("a checked struct pattern matches a struct type");
+                };
+                let fields = fields
+                    .iter()
+                    .map(|field| {
+                        let member_ty = members
+                            .get(&field.name)
+                            .expect("a checked struct pattern names existing fields");
+                        Ok((field.name.clone(), self.pattern(member_ty, &field.pattern)?))
+                    })
+                    .collect::<Result<_, _>>()?;
+                IrPatternKind::Struct {
+                    name: name.clone(),
+                    fields,
+                }
+            }
         };
         Ok(IrPattern {
             kind,
+            ty: ty.clone(),
             span: pattern.span,
         })
     }

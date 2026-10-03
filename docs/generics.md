@@ -81,6 +81,36 @@ The binder is a run of identifiers between the declared name and the value-param
 list. It is LL(1): after `func <name>`, any identifiers before `(` are type
 parameters; a value-parameter list always starts at `(` with `name: Type` entries.
 
+### Binders introduce fresh names (param vs. concrete is never ambiguous)
+
+Whether a name in a signature denotes a type parameter or a concrete type is decided
+by **binder membership**, not by casing: `resolve_type` maps a name to a parameter
+iff it appears in the declaration's binder set, and to a concrete type otherwise. So
+casing is only a convention the linter/formatter enforce — it is never load-bearing
+for resolution, and a concrete instantiation is a first-class type everywhere a type
+is expected:
+
+```
+func f(other: Map string i32): i32 { … }   # accepts only this instantiation
+func g K (other: Map K string): i32 { … }  # K a parameter, string concrete
+```
+
+To keep that distinction unambiguous *to a reader* as well, a binder must introduce
+a **fresh** name: distinct from its sibling binders and from any type already in
+scope (a primitive or a preceding declaration). Reusing a type's name as a parameter
+is an error, not a silent shadow — so within a signature a name is never *both* a
+parameter and a concrete type, and no separate "`T` here is a parameter, not the
+type `T`" announcement (Rust's `impl<T>`) is ever needed. The rule holds at every
+binder site: struct, sum-type, and free-function/method binders, and the receiver
+pattern.
+
+The receiver pattern is where this matters most: its argument slots are
+unconditionally binders, so without the freshness rule `(m: Map string i32)` would
+silently bind phantom parameters named `string` and `i32` rather than denote the
+concrete instantiation. That collision is rejected. A method over one specific
+instantiation is therefore not expressible through the receiver — by design, since
+that is specialization, which Cooper does not provide.
+
 ## Generic methods
 
 A method receiver already introduces the receiver **value**; it also introduces the

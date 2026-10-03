@@ -106,6 +106,42 @@ fn generic_arity_mismatch_is_reported() {
     );
 }
 
+#[test]
+fn a_type_parameter_may_name_a_concrete_instantiation_in_a_parameter() {
+    // A concrete instantiation is a legal parameter type: the function accepts only
+    // `Pair i32 bool`, with `i32`/`bool` resolved concretely (not as binders).
+    ok("struct Pair A B {\n  first: A,\n  second: B,\n}\n\
+        func f(p: Pair i32 bool): i32 {\n  return 0\n}");
+}
+
+#[test]
+fn a_type_parameter_colliding_with_a_type_is_reported() {
+    // A binder may not reuse a concrete type's name; the distinction between a
+    // parameter and a concrete type rests on the binder, not on casing.
+    err(
+        "struct Celsius {\n}\nfunc convert Celsius (x: Celsius): Celsius {\n  return x\n}",
+        "collides with a type of the same name",
+    );
+}
+
+#[test]
+fn a_receiver_binder_naming_a_concrete_type_is_reported() {
+    // A receiver slot is a binder, so a concrete type there would silently bind a
+    // phantom parameter; it is rejected instead.
+    err(
+        "struct Box A {\n  value: A,\n}\n(b: Box i32) func get(): i32 {\n  return 0\n}",
+        "collides with a type of the same name",
+    );
+}
+
+#[test]
+fn a_duplicate_type_parameter_is_reported() {
+    err(
+        "func f T T (x: T): T {\n  return x\n}",
+        "duplicate type parameter T",
+    );
+}
+
 // --- type checking ---
 
 #[test]

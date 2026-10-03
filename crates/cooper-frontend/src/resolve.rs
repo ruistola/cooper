@@ -282,6 +282,7 @@ fn resolve_struct_decl(
         ));
         return;
     }
+    check_type_param_binders(type_params, span, globals, diags);
     let params: HashSet<String> = type_params.iter().cloned().collect();
     let mut resolved = HashMap::new();
     for member in members {
@@ -322,6 +323,7 @@ fn resolve_oneof_decl(
         ));
         return;
     }
+    check_type_param_binders(type_params, span, globals, diags);
     let params: HashSet<String> = type_params.iter().cloned().collect();
     let mut resolved: HashMap<String, Vec<Type>> = HashMap::new();
     let mut order = Vec::new();
@@ -378,11 +380,14 @@ fn resolve_var_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, name: &s
 fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &FuncDecl) {
     // The declaration's binders — its own type parameters plus any bound by a
     // generic receiver pattern — are in scope for the receiver, parameter, and
-    // return types.
-    let mut params: HashSet<String> = func.type_params.iter().cloned().collect();
+    // return types. Each must be a fresh name (checked together so a receiver and
+    // method-local binder cannot clash either).
+    let mut binders = func.type_params.clone();
     if let Some(receiver) = &func.receiver {
-        params.extend(receiver_pattern_params(&receiver.ty));
+        binders.extend(receiver_pattern_params(&receiver.ty));
     }
+    check_type_param_binders(&binders, func.span, globals, diags);
+    let params: HashSet<String> = binders.into_iter().collect();
 
     let return_type = match &func.return_type {
         Some(rt) => match resolve_type(rt, &params, globals, diags) {
@@ -477,6 +482,44 @@ pub fn receiver_pattern_params(type_expr: &TypeExpr) -> Vec<String> {
             })
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+/// Validate a declaration's type-parameter binders: each must introduce a *fresh*
+/// name — distinct from its siblings and from any type already in scope (a primitive
+/// or a preceding declaration). This keeps every name in a signature unambiguously
+/// either a type parameter or a concrete type, never both, so the distinction rests
+/// on the binder rather than on identifier casing. A receiver pattern's slots are
+/// binders too, so `(m: Map string i32)` — which would otherwise bind phantom
+/// parameters named after concrete types — is rejected here. Binders carry no
+/// individual span, so diagnostics point at the declaration (or receiver).
+fn check_type_param_binders(
+    names: &[String],
+    span: Span,
+    globals: &Globals,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let mut seen: HashSet<&str> = HashSet::new();
+    for name in names {
+        if !seen.insert(name) {
+            diags.push(Diagnostic::error(
+                span,
+                format!("duplicate type parameter {name}"),
+            ));
+            continue;
+        }
+        if is_primitive_name(name)
+            || globals.lookup_struct(name).is_some()
+            || globals.lookup_oneof(name).is_some()
+        {
+            diags.push(Diagnostic::error(
+                span,
+                format!(
+                    "type parameter {name} collides with a type of the same name; \
+                     a type parameter must introduce a fresh name"
+                ),
+            ));
+        }
     }
 }
 

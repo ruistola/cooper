@@ -20,7 +20,7 @@ use cooper_frontend::ast::{
 use cooper_frontend::diag::Span;
 use cooper_frontend::resolve::{receiver_pattern_params, resolve_type, Globals};
 use cooper_frontend::typecheck::{decode_number_literal, LiteralValue};
-use cooper_frontend::types::{is_numeric_name, Type};
+use cooper_frontend::types::{is_numeric_name, Type, DEFAULT_INT};
 
 /// A lowered function or method: its signature, its body as typed statements, and
 /// the span it was lowered from. A method carries its receiver as the first bound
@@ -76,6 +76,17 @@ pub enum IrStmtKind {
         start: Box<IrExpr>,
         end: Box<IrExpr>,
         inclusive: bool,
+        body: Vec<IrStmt>,
+    },
+    /// Iteration over the elements of an array. `elem` takes each element in turn;
+    /// when `index` is present it takes the element's position. The loop drives from
+    /// the array's length (the `ArrayLength` intrinsic) and reads each element
+    /// (`ArrayGet`), but carries the array and binders abstractly so the backend
+    /// chooses the lowering.
+    ForEach {
+        array: Box<IrExpr>,
+        index: Option<Binder>,
+        elem: Binder,
         body: Vec<IrStmt>,
     },
     Block(Vec<IrStmt>),
@@ -249,9 +260,12 @@ pub enum IrExprKind {
         target: Box<IrExpr>,
         name: String,
     },
-    Index {
-        array: Box<IrExpr>,
-        index: Box<IrExpr>,
+    /// A call to a runtime-touching built-in operation, modelled abstractly rather
+    /// than as a concrete runtime call. Arguments are fixed by `op`: the receiver
+    /// array first, then an index, then a value (see [`Intrinsic`]).
+    Intrinsic {
+        op: Intrinsic,
+        args: Vec<IrExpr>,
     },
     /// Postfix `^` load through a pointer.
     Deref(Box<IrExpr>),
@@ -304,6 +318,25 @@ pub enum IrExprKind {
         bindings: Vec<Binder>,
         value: Box<IrExpr>,
     },
+}
+
+/// A runtime-touching built-in operation on a blessed collection, modelled as an
+/// abstract typed intrinsic a backend lowers behind the runtime boundary. Each
+/// variant fixes its argument order; the receiver array is always first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Intrinsic {
+    /// `length(): u64` — the element count of an array. Args: `[array]`.
+    ArrayLength,
+    /// `get(i): T` — the element at an index (the `a[i]` read). Args: `[array, index]`.
+    ArrayGet,
+    /// `set(i, v): unit` — store an element at an index (the `a[i] = v` write).
+    /// Args: `[array, index, value]`.
+    ArraySet,
+    /// `push(v): T[]` — append, yielding the (possibly reallocated) array.
+    /// Args: `[array, value]`.
+    ArrayPush,
+    /// Interior pointer to an element (the `&a[i]` address-of). Args: `[array, index]`.
+    ArrayElementPtr,
 }
 
 /// Why lowering could not proceed.
@@ -532,9 +565,35 @@ impl Lower<'_> {
                         body: self.block(body)?,
                     }
                 }
-                // Array iteration drives from the backing's length, an array builtin
-                // the frontend does not yet model.
-                _ => return unsupported_stmt(stmt.span, "array iteration"),
+                // Array iteration drives from the backing's length and reads each
+                // element; it binds either `[elem]` or `[index, elem]`.
+                _ => {
+                    let array = self.expr(iterable)?;
+                    let Type::Array(elem_ty) = &array.ty else {
+                        unreachable!("a checked for-in iterates a range or an array");
+                    };
+                    let elem_ty = (**elem_ty).clone();
+                    let (index, elem_name) = match bindings.as_slice() {
+                        [elem] => (None, elem),
+                        [idx, elem] => (
+                            Some(Binder {
+                                name: idx.clone(),
+                                ty: Type::Primitive(DEFAULT_INT.to_string()),
+                            }),
+                            elem,
+                        ),
+                        _ => unreachable!("a checked array iteration binds one or two names"),
+                    };
+                    IrStmtKind::ForEach {
+                        array: Box::new(array),
+                        index,
+                        elem: Binder {
+                            name: elem_name.clone(),
+                            ty: elem_ty,
+                        },
+                        body: self.block(body)?,
+                    }
+                }
             },
             StmtKind::FuncDecl(_) => return unsupported_stmt(stmt.span, "nested function"),
             StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } => {
@@ -604,17 +663,31 @@ impl Lower<'_> {
                     name: name.clone(),
                 },
             },
-            ExprKind::Index { array, index } => IrExprKind::Index {
-                array: Box::new(self.expr(array)?),
-                index: Box::new(self.expr(index)?),
+            ExprKind::Index { array, index } => IrExprKind::Intrinsic {
+                op: Intrinsic::ArrayGet,
+                args: vec![self.expr(array)?, self.expr(index)?],
             },
             ExprKind::Deref(operand) => IrExprKind::Deref(Box::new(self.expr(operand)?)),
-            ExprKind::AddressOf(operand) => IrExprKind::AddressOf(Box::new(self.expr(operand)?)),
-            ExprKind::Assign { op, target, value } => IrExprKind::Assign {
-                op: *op,
-                target: Box::new(self.expr(target)?),
-                value: Box::new(self.expr(value)?),
+            ExprKind::AddressOf(operand) => match &strip_group(operand).kind {
+                // `&a[i]` is an interior pointer into the array's storage, an
+                // abstract intrinsic rather than an address of an ordinary place.
+                ExprKind::Index { array, index } => IrExprKind::Intrinsic {
+                    op: Intrinsic::ArrayElementPtr,
+                    args: vec![self.expr(array)?, self.expr(index)?],
+                },
+                _ => IrExprKind::AddressOf(Box::new(self.expr(operand)?)),
             },
+            ExprKind::Assign { op, target, value } => {
+                if let ExprKind::Index { array, index } = &strip_group(target).kind {
+                    self.lower_index_assign(*op, array, index, value)?
+                } else {
+                    IrExprKind::Assign {
+                        op: *op,
+                        target: Box::new(self.expr(target)?),
+                        value: Box::new(self.expr(value)?),
+                    }
+                }
+            }
             ExprKind::Let { name, value } => IrExprKind::Let {
                 name: name.clone(),
                 value: Box::new(self.expr(value)?),
@@ -776,6 +849,53 @@ impl Lower<'_> {
         exprs.iter().map(|e| self.expr(e)).collect()
     }
 
+    /// Lower an indexed assignment `a[i] <op>= v` to an `ArraySet` intrinsic. A plain
+    /// `=` stores the value directly; a compound `+=`/`-=`/`*=`/`/=` reads the current
+    /// element via `ArrayGet` and stores the combined result, since indexed places
+    /// must route through the get/set pair rather than a mutable binding.
+    fn lower_index_assign(
+        &self,
+        op: AssignOp,
+        array: &Expr,
+        index: &Expr,
+        value: &Expr,
+    ) -> Result<IrExprKind, LowerError> {
+        let array = self.expr(array)?;
+        let index = self.expr(index)?;
+        let value = self.expr(value)?;
+        let elem_ty = match &array.ty {
+            Type::Array(elem) => (**elem).clone(),
+            _ => unreachable!("a checked indexed assignment targets an array"),
+        };
+        let stored = match op {
+            AssignOp::Assign => value,
+            _ => {
+                let value_span = value.span;
+                let current = IrExpr {
+                    kind: IrExprKind::Intrinsic {
+                        op: Intrinsic::ArrayGet,
+                        args: vec![array.clone(), index.clone()],
+                    },
+                    ty: elem_ty.clone(),
+                    span: value_span,
+                };
+                IrExpr {
+                    kind: IrExprKind::Binary {
+                        op: compound_binop(op),
+                        lhs: Box::new(current),
+                        rhs: Box::new(value),
+                    },
+                    ty: elem_ty,
+                    span: value_span,
+                }
+            }
+        };
+        Ok(IrExprKind::Intrinsic {
+            op: Intrinsic::ArraySet,
+            args: vec![array, index, stored],
+        })
+    }
+
     /// Classify a call: a constructor-style numeric conversion `T(x)`, a sum-type
     /// variant construction, or an ordinary function/method call.
     fn lower_call(
@@ -795,10 +915,41 @@ impl Lower<'_> {
                 args: self.each(args)?,
             });
         }
+        if let Some(intrinsic) = self.array_method(callee, args)? {
+            return Ok(intrinsic);
+        }
         Ok(IrExprKind::Call {
             callee: Box::new(self.expr(callee)?),
             args: self.each(args)?,
         })
+    }
+
+    /// Lower a blessed array method call `a.m(..)` to its intrinsic, when the callee
+    /// is a field access whose target is a built-in array. Arrays carry no vtable, so
+    /// these never become ordinary calls.
+    fn array_method(
+        &self,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Result<Option<IrExprKind>, LowerError> {
+        let ExprKind::Field { target, name } = &callee.kind else {
+            return Ok(None);
+        };
+        if !matches!(self.types.get(&target.span), Some(Type::Array(_))) {
+            return Ok(None);
+        }
+        let op = match name.as_str() {
+            "length" => Intrinsic::ArrayLength,
+            "get" => Intrinsic::ArrayGet,
+            "set" => Intrinsic::ArraySet,
+            "push" => Intrinsic::ArrayPush,
+            _ => unreachable!("a checked array method names a blessed method"),
+        };
+        let mut lowered = vec![self.expr(target)?];
+        for arg in args {
+            lowered.push(self.expr(arg)?);
+        }
+        Ok(Some(IrExprKind::Intrinsic { op, args: lowered }))
     }
 
     /// The variant name a call constructs, if the callee denotes a sum-type variant
@@ -823,6 +974,28 @@ impl Lower<'_> {
 /// apart from an ordinary variable of some sum type.
 fn variant_named(name: &str, ty: &Type) -> bool {
     matches!(ty, Type::Oneof { variants, .. } if variants.contains_key(name))
+}
+
+/// Peel parenthesised groupings to reach the expression they wrap, so a target like
+/// `&(a[i])` is classified by its inner shape.
+fn strip_group(expr: &Expr) -> &Expr {
+    let mut current = expr;
+    while let ExprKind::Group(inner) = &current.kind {
+        current = inner;
+    }
+    current
+}
+
+/// The binary operator a compound assignment applies. `Assign` has no operator and
+/// is handled before this is reached.
+fn compound_binop(op: AssignOp) -> BinaryOp {
+    match op {
+        AssignOp::Add => BinaryOp::Add,
+        AssignOp::Sub => BinaryOp::Sub,
+        AssignOp::Mul => BinaryOp::Mul,
+        AssignOp::Div => BinaryOp::Div,
+        AssignOp::Assign => unreachable!("plain assignment has no binary operator"),
+    }
 }
 
 /// The two boolean patterns an `if` desugars to: `true` (the `then` action) then
@@ -1660,7 +1833,7 @@ mod tests {
     }
 
     #[test]
-    fn array_iteration_is_reported_not_panicked() {
+    fn lowers_array_iteration_to_a_foreach() {
         let (decls, globals, types) = check(
             "func sum(xs: i32[]): i32 {\n\
              \ttotal := 0\n\
@@ -1668,8 +1841,61 @@ mod tests {
              \treturn total\n\
              }",
         );
-        let err = lower_module(&decls, &globals, &types).expect_err("array iteration is unsupported");
-        assert!(matches!(err, LowerError::Unsupported { what: "array iteration", .. }));
+        let functions = lower_module(&decls, &globals, &types).expect("module lowers");
+        let IrStmtKind::ForEach {
+            array, index, elem, body,
+        } = &functions[0].body[1].kind
+        else {
+            panic!("expected an array loop, got {:?}", functions[0].body[1].kind);
+        };
+        assert!(matches!(&array.kind, IrExprKind::Var(n) if n == "xs"));
+        assert!(index.is_none(), "single binding has no index");
+        assert_eq!(elem.name, "x");
+        assert!(is_primitive(&elem.ty, "i32"), "element type: {:?}", elem.ty);
+        assert_eq!(body.len(), 1);
+    }
+
+    #[test]
+    fn lowers_indexed_array_iteration_with_an_index_binder() {
+        let (decls, globals, types) = check(
+            "func sum(xs: i32[]): i32 {\n\
+             \ttotal := 0\n\
+             \tfor (i, x) in xs do { total += x }\n\
+             \treturn total\n\
+             }",
+        );
+        let functions = lower_module(&decls, &globals, &types).expect("module lowers");
+        let IrStmtKind::ForEach { index, elem, .. } = &functions[0].body[1].kind else {
+            panic!("expected an array loop, got {:?}", functions[0].body[1].kind);
+        };
+        let index = index.as_ref().expect("an index binder");
+        assert_eq!(index.name, "i");
+        assert!(is_primitive(&index.ty, DEFAULT_INT), "index type: {:?}", index.ty);
+        assert_eq!(elem.name, "x");
+    }
+
+    #[test]
+    fn lowers_array_index_read_to_an_intrinsic() {
+        let (decls, globals, types) = check("func first(xs: i32[]): i32 { return xs[0] }");
+        let ir = lower_expr(return_expr(&decls), &globals, &types).expect("lowers");
+        let IrExprKind::Intrinsic { op, args } = &ir.kind else {
+            panic!("expected an intrinsic, got {:?}", ir.kind);
+        };
+        assert_eq!(*op, Intrinsic::ArrayGet);
+        assert_eq!(args.len(), 2);
+        assert!(matches!(&args[0].kind, IrExprKind::Var(n) if n == "xs"));
+    }
+
+    #[test]
+    fn lowers_array_length_method_to_an_intrinsic() {
+        let (decls, globals, types) = check("func size(xs: i32[]): u64 { return xs.length() }");
+        let ir = lower_expr(return_expr(&decls), &globals, &types).expect("lowers");
+        let IrExprKind::Intrinsic { op, args } = &ir.kind else {
+            panic!("expected an intrinsic, got {:?}", ir.kind);
+        };
+        assert_eq!(*op, Intrinsic::ArrayLength);
+        assert_eq!(args.len(), 1);
+        assert!(matches!(&args[0].kind, IrExprKind::Var(n) if n == "xs"));
     }
 
     #[test]

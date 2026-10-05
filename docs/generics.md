@@ -97,7 +97,7 @@ func g K (other: Map K string): i32 { … }  # K a parameter, string concrete
 
 To keep that distinction unambiguous *to a reader* as well, a binder must introduce
 a **fresh** name: distinct from its sibling binders and from any type already in
-scope (a primitive or a preceding declaration). Reusing a type's name as a parameter
+scope (a primitive or a declared type). Reusing a type's name as a parameter
 is an error, not a silent shadow — so within a signature a name is never *both* a
 parameter and a concrete type, and no separate "`T` here is a parameter, not the
 type `T`" announcement (Rust's `impl<T>`) is ever needed. The rule holds at every

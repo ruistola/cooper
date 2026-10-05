@@ -13,7 +13,7 @@ use crate::diag::{Diagnostic, Span};
 use crate::resolve::{self, Globals};
 use crate::types::{
     incomparable_part, is_float_name, is_integer, is_integer_name, is_numeric, is_numeric_name,
-    is_primitive, is_unit, unify, Type, DEFAULT_FLOAT, DEFAULT_INT, SIGNED_INTS,
+    is_primitive, is_unit, unify, Type, TypeDefs, TypeId, DEFAULT_FLOAT, DEFAULT_INT, SIGNED_INTS,
 };
 
 /// The result of type checking one file: its diagnostics, and the type attributed to
@@ -436,21 +436,16 @@ impl<'g> TypeChecker<'g> {
         ty: &Type,
         span: Span,
     ) {
-        let Type::Struct {
-            name: struct_name,
-            members,
-            ..
-        } = ty
-        else {
+        let Type::Struct { id, .. } = ty else {
             self.err(
                 span,
                 format!("struct pattern cannot match a value of type {ty}"),
             );
             return;
         };
-        let struct_name = struct_name.clone();
-        let members = members.clone();
-        if name != struct_name {
+        let struct_name = id.name.clone();
+        let members = self.globals.defs.struct_members(ty).unwrap_or_default();
+        if self.globals.structs.get(name) != Some(id) {
             self.err(
                 span,
                 format!("pattern names struct {name} but the scrutinee has type {struct_name}"),
@@ -487,21 +482,16 @@ impl<'g> TypeChecker<'g> {
         ty: &Type,
         span: Span,
     ) {
-        let Type::Oneof {
-            name: oneof_name,
-            variants,
-            ..
-        } = ty
-        else {
+        let Type::Oneof { id, .. } = ty else {
             self.err(
                 span,
                 format!("variant pattern cannot match a value of type {ty}"),
             );
             return;
         };
-        let oneof_name = oneof_name.clone();
+        let oneof_name = id.name.clone();
         if let Some(type_name) = type_name {
-            if type_name != &oneof_name {
+            if self.globals.oneofs.get(type_name) != Some(id) {
                 self.err(
                     span,
                     format!(
@@ -511,7 +501,7 @@ impl<'g> TypeChecker<'g> {
                 return;
             }
         }
-        let Some(payload) = variants.get(variant).cloned() else {
+        let Some(payload) = self.globals.defs.payload(ty, variant) else {
             self.err(
                 span,
                 format!("{variant} is not a variant of sum type {oneof_name}"),
@@ -570,12 +560,12 @@ impl<'g> TypeChecker<'g> {
             return;
         }
         match ty {
-            Type::Oneof {
-                name,
-                variant_order,
-                ..
-            } => {
-                let missing: Vec<&str> = variant_order
+            Type::Oneof { id, .. } => {
+                let name = &id.name;
+                let missing: Vec<&str> = self
+                    .globals
+                    .defs
+                    .variant_order(ty)
                     .iter()
                     .filter(|v| !coverage.variants.contains(*v))
                     .map(String::as_str)
@@ -700,10 +690,10 @@ impl<'g> TypeChecker<'g> {
             return Some(t.clone());
         }
         if let Some(t) = self.globals.lookup_struct(name) {
-            return Some(t.clone());
+            return Some(t);
         }
         if let Some(t) = self.globals.lookup_oneof(name) {
-            return Some(t.clone());
+            return Some(t);
         }
         if let Some(t) = self.globals.lookup_func(name) {
             return Some(t.clone());
@@ -736,23 +726,22 @@ impl<'g> TypeChecker<'g> {
     /// variant resolve against context; `self.expected` is left intact for the
     /// caller to consume when seeding type arguments.
     fn expected_variant_oneof(&self, variant: &str) -> Option<Type> {
-        let Some(Type::Oneof { name, .. }) = &self.expected else {
+        let Some(Type::Oneof { id, .. }) = &self.expected else {
             return None;
         };
-        match self.globals.lookup_oneof(name) {
-            Some(t @ Type::Oneof { variants, .. }) if variants.contains_key(variant) => {
-                Some(t.clone())
-            }
-            _ => None,
-        }
+        let template = Type::Oneof {
+            id: id.clone(),
+            type_args: Vec::new(),
+        };
+        self.globals.defs.payload(&template, variant).is_some().then_some(template)
     }
 
     /// The name of any declared sum type carrying `variant`, used only to phrase a
     /// targeted error when a bare variant appears with no expected type to fix it.
     fn any_oneof_with_variant(&self, variant: &str) -> Option<String> {
-        self.globals.oneofs.iter().find_map(|(name, ty)| match ty {
-            Type::Oneof { variants, .. } if variants.contains_key(variant) => Some(name.clone()),
-            _ => None,
+        self.globals.oneofs.iter().find_map(|(name, id)| {
+            let def = self.globals.defs.oneofs.get(id)?;
+            def.variants.contains_key(variant).then(|| name.clone())
         })
     }
 
@@ -777,9 +766,9 @@ impl<'g> TypeChecker<'g> {
             if let Some(ty) = interface
                 .lookup_struct(field)
                 .or_else(|| interface.lookup_oneof(field))
-                .or_else(|| interface.lookup_func(field))
+                .or_else(|| interface.lookup_func(field).cloned())
             {
-                return Some(ty.clone());
+                return Some(ty);
             }
             self.err(
                 span,
@@ -843,8 +832,8 @@ impl<'g> TypeChecker<'g> {
                             self.err(span, format!("cannot compare {left} and {right}"));
                             return None;
                         }
-                        if let Some(part) = incomparable_part(&left) {
-                            let reason = if std::ptr::eq(part, &left) {
+                        if let Some(part) = incomparable_part(&left, &self.globals.defs) {
+                            let reason = if part.equals(&left) {
                                 String::new()
                             } else {
                                 format!(" (it contains {part})")
@@ -1142,23 +1131,19 @@ impl<'g> TypeChecker<'g> {
     /// constructor as a function type.
     fn check_variant_access(&mut self, oneof: &Type, variant: &str, span: Span) -> Option<Type> {
         let expected = self.expected.take();
-        let (name, variants, type_params) = match oneof {
-            Type::Oneof {
-                name,
-                variants,
-                type_params,
-                ..
-            } => (name.clone(), variants, type_params.clone()),
-            _ => unreachable!(),
+        let Type::Oneof { id, .. } = oneof else {
+            unreachable!("a variant access is on a sum type")
         };
-        let Some(payload) = variants.get(variant).cloned() else {
+        let name = id.name.clone();
+        let type_params = self.globals.defs.type_params(oneof).to_vec();
+        let Some(payload) = self.globals.defs.payload(oneof, variant) else {
             self.err(span, format!("{variant} is not a variant of sum type {name}"));
             return None;
         };
         if payload.is_empty() {
             if !type_params.is_empty() {
                 let mut subst = HashMap::new();
-                if !seed_subst_from_expected(oneof, expected.as_ref(), &mut subst) {
+                if !seed_subst_from_expected(oneof, expected.as_ref(), &self.globals.defs, &mut subst) {
                     self.err(
                         span,
                         format!(
@@ -1187,16 +1172,12 @@ impl<'g> TypeChecker<'g> {
         span: Span,
     ) -> Option<Type> {
         let expected = self.expected.take();
-        let (name, variants, type_params) = match oneof {
-            Type::Oneof {
-                name,
-                variants,
-                type_params,
-                ..
-            } => (name.clone(), variants.clone(), type_params.clone()),
-            _ => unreachable!(),
+        let Type::Oneof { id, .. } = oneof else {
+            unreachable!("a variant construction is on a sum type")
         };
-        let Some(payload) = variants.get(variant).cloned() else {
+        let name = id.name.clone();
+        let type_params = self.globals.defs.type_params(oneof).to_vec();
+        let Some(payload) = self.globals.defs.payload(oneof, variant) else {
             self.err(span, format!("{variant} is not a variant of sum type {name}"));
             return None;
         };
@@ -1212,7 +1193,7 @@ impl<'g> TypeChecker<'g> {
             return None;
         }
         let mut subst = HashMap::new();
-        seed_subst_from_expected(oneof, expected.as_ref(), &mut subst);
+        seed_subst_from_expected(oneof, expected.as_ref(), &self.globals.defs, &mut subst);
         for (i, (arg, slot)) in args.iter().zip(&payload).enumerate() {
             let arg_type = self.check_expr_expecting(arg, Some(slot.substitute(&subst)))?;
             if !unify(slot, &arg_type, &mut subst) {
@@ -1241,60 +1222,42 @@ impl<'g> TypeChecker<'g> {
         subst: &HashMap<String, Type>,
         span: Span,
     ) -> Option<Type> {
-        let Type::Oneof {
-            name,
-            variants,
-            variant_order,
-            type_params,
-            ..
-        } = oneof
-        else {
-            unreachable!()
+        let Type::Oneof { id, .. } = oneof else {
+            unreachable!("only a sum type is instantiated here")
         };
-        let mut type_args = Vec::with_capacity(type_params.len());
-        for param in type_params {
+        let mut type_args = Vec::new();
+        for param in self.globals.defs.type_params(oneof) {
             let Some(arg) = subst.get(param) else {
                 self.err(
                     span,
-                    format!("cannot infer type argument {param} for sum type {name}"),
+                    format!("cannot infer type argument {param} for sum type {}", id.name),
                 );
                 return None;
             };
             type_args.push(arg.clone());
         }
         Some(Type::Oneof {
-            name: name.clone(),
-            variants: variants
-                .iter()
-                .map(|(k, slots)| (k.clone(), slots.iter().map(|s| s.substitute(subst)).collect()))
-                .collect(),
-            variant_order: variant_order.clone(),
-            type_params: type_params.clone(),
+            id: id.clone(),
             type_args,
         })
     }
 
     fn check_struct_literal(&mut self, target: &Expr, members: &[MemberInit]) -> Option<Type> {
         let target_type = self.check_expr(target)?;
-        let Type::Struct {
-            name,
-            members: struct_members,
-            type_params,
-            type_args,
-        } = &target_type
-        else {
+        let Type::Struct { id, type_args } = &target_type else {
             self.err(
                 target.span,
                 format!("expression of type {target_type} cannot be used as a struct"),
             );
             return None;
         };
-        let struct_members = struct_members.clone();
-        let name = name.clone();
+        let id = id.clone();
+        let name = id.name.clone();
+        let struct_members = self.globals.defs.struct_members(&target_type).unwrap_or_default();
         // A generic struct is constructed against its template; each member
         // assignment constrains the type arguments through unification.
+        let type_params = self.globals.defs.type_params(&target_type).to_vec();
         let is_generic = !type_params.is_empty() && type_args.is_empty();
-        let type_params = type_params.clone();
         let mut subst = HashMap::new();
         let mut assigned: HashSet<String> = HashSet::new();
         for member in members {
@@ -1345,15 +1308,14 @@ impl<'g> TypeChecker<'g> {
             }
         }
         if is_generic {
-            return self.instantiate_struct(&name, &struct_members, &type_params, &subst, target.span);
+            return self.instantiate_struct(&id, &type_params, &subst, target.span);
         }
         Some(target_type)
     }
 
     fn instantiate_struct(
         &mut self,
-        name: &str,
-        members: &HashMap<String, Type>,
+        id: &TypeId,
         type_params: &[String],
         subst: &HashMap<String, Type>,
         span: Span,
@@ -1363,19 +1325,14 @@ impl<'g> TypeChecker<'g> {
             let Some(arg) = subst.get(param) else {
                 self.err(
                     span,
-                    format!("cannot infer type argument {param} for generic struct {name}"),
+                    format!("cannot infer type argument {param} for generic struct {}", id.name),
                 );
                 return None;
             };
             type_args.push(arg.clone());
         }
         Some(Type::Struct {
-            name: name.to_string(),
-            members: members
-                .iter()
-                .map(|(k, v)| (k.clone(), v.substitute(subst)))
-                .collect(),
-            type_params: type_params.to_vec(),
+            id: id.clone(),
             type_args,
         })
     }
@@ -1409,20 +1366,21 @@ impl<'g> TypeChecker<'g> {
             self.err(span, format!("{field} is not a method of array type {target_type}"));
             return None;
         }
-        let Type::Struct { name, members, .. } = &target_type else {
+        let Type::Struct { id, .. } = &target_type else {
             self.err(
                 target.span,
                 format!("expression of type {target_type} cannot be used as a struct"),
             );
             return None;
         };
-        if let Some(member_type) = members.get(field) {
-            return Some(member_type.clone());
+        let name = &id.name;
+        if let Some(member_type) = self.globals.defs.member(&target_type, field) {
+            return Some(member_type);
         }
         // Not a data field: fall back to a method on this struct type. A bound
         // method has its receiver stripped, so it is usable wherever a matching
         // function type is expected.
-        if let Some(method_type) = self.globals.lookup_method(name, field) {
+        if let Some(method_type) = self.globals.lookup_method(id, field) {
             return Some(method_type.clone());
         }
         self.err(span, format!("{field} is not a member of struct {name}"));
@@ -1842,14 +1800,15 @@ fn bare_number_text(expr: &Expr) -> Option<&str> {
 fn seed_subst_from_expected(
     oneof: &Type,
     expected: Option<&Type>,
+    defs: &TypeDefs,
     subst: &mut HashMap<String, Type>,
 ) -> bool {
-    let (Type::Oneof { name, type_params, .. }, Some(Type::Oneof { name: exp_name, type_args, .. })) =
-        (oneof, expected)
+    let (Type::Oneof { id, .. }, Some(Type::Oneof { id: exp_id, type_args })) = (oneof, expected)
     else {
         return false;
     };
-    if name != exp_name || type_args.len() != type_params.len() {
+    let type_params = defs.type_params(oneof);
+    if id != exp_id || type_args.len() != type_params.len() {
         return false;
     }
     for (param, arg) in type_params.iter().zip(type_args) {

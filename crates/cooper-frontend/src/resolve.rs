@@ -1,29 +1,40 @@
 //! Declaration resolution: the first semantic pass.
 //!
 //! This pass collects every top-level struct, sum type, function, method, and
-//! variable into a global symbol table ([`Globals`]) and validates each declaration's signature
-//! in isolation — duplicate names, duplicate members or variants, undefined types
-//! in signatures, generic arity, and receiver/method well-formedness. Function
-//! *bodies* are not walked here; the type checker does that against the finished
-//! [`Globals`]. Types must be declared before use, so the table is built top-down
-//! and each declaration sees only those preceding it.
+//! variable into a global symbol table ([`Globals`]) and validates each declaration's
+//! signature in isolation — duplicate names, duplicate members or variants, undefined
+//! types in signatures, generic arity, value-recursive (infinitely sized) types, and
+//! receiver/method well-formedness. Function *bodies* are not walked here; the type
+//! checker does that against the finished [`Globals`].
+//!
+//! Resolution is order-insensitive. It runs in phases over a module's files:
+//! [`declare_types`] registers every struct and sum type name first, so
+//! [`define_types`] can resolve members and variants that refer to any type of the
+//! module — forward, mutually, or self-referentially. [`check_type_sizes`] then
+//! rejects a type containing itself by value, and [`resolve_signatures`] resolves
+//! functions, methods, and variables against the complete type table.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{FuncDecl, Stmt, StmtKind, TypeExpr, TypeExprKind, TypedIdent, VariantDef};
 use crate::diag::{Diagnostic, Span};
-use crate::types::{is_primitive_name, Type};
+use crate::types::{is_primitive_name, OneofDef, StructDef, Type, TypeDefs, TypeId};
 
 /// The module-wide symbol table produced by resolution. Structs, sum types, and
 /// functions are global (only variables are block-scoped), so later passes read
 /// declarations directly from here rather than from a scope tree.
 #[derive(Debug, Default, Clone)]
 pub struct Globals {
-    pub structs: HashMap<String, Type>,
-    pub oneofs: HashMap<String, Type>,
+    /// Struct names in scope, by local spelling, to their identities.
+    pub structs: HashMap<String, TypeId>,
+    /// Sum type names in scope, by local spelling, to their identities.
+    pub oneofs: HashMap<String, TypeId>,
+    /// The definitions of every type reachable from this table, including those
+    /// only reachable through another type's members.
+    pub defs: TypeDefs,
     pub funcs: HashMap<String, Type>,
-    /// Receiver struct name -> method name -> bound signature (receiver excluded).
-    pub methods: HashMap<String, HashMap<String, Type>>,
+    /// Receiver struct identity -> method name -> bound signature (receiver excluded).
+    pub methods: HashMap<TypeId, HashMap<String, Type>>,
     /// Module-level variable names. Top-level `let` bindings occupy the module
     /// namespace alongside structs, sum types, and functions; unlike a block-scoped
     /// `let` — an ordered sequence where a re-binding shadows its predecessor — the
@@ -33,53 +44,182 @@ pub struct Globals {
     /// as values by downstream passes, so this table exists purely to enforce the
     /// namespace rule.
     pub vars: HashSet<String>,
+    /// Types registered by [`declare_types`] whose bodies [`define_types`] has not yet
+    /// resolved. A redeclared name is never registered, so its body is skipped.
+    pending: HashSet<TypeId>,
 }
 
 impl Globals {
-    pub fn lookup_struct(&self, name: &str) -> Option<&Type> {
-        self.structs.get(name)
+    /// The struct named `name` in scope, as its type (a generic struct's template).
+    pub fn lookup_struct(&self, name: &str) -> Option<Type> {
+        self.structs.get(name).map(|id| Type::Struct {
+            id: id.clone(),
+            type_args: Vec::new(),
+        })
     }
 
-    pub fn lookup_oneof(&self, name: &str) -> Option<&Type> {
-        self.oneofs.get(name)
+    /// The sum type named `name` in scope, as its type (a generic one's template).
+    pub fn lookup_oneof(&self, name: &str) -> Option<Type> {
+        self.oneofs.get(name).map(|id| Type::Oneof {
+            id: id.clone(),
+            type_args: Vec::new(),
+        })
     }
 
     pub fn lookup_func(&self, name: &str) -> Option<&Type> {
         self.funcs.get(name)
     }
 
-    pub fn lookup_method(&self, recv_type: &str, name: &str) -> Option<&Type> {
-        self.methods.get(recv_type).and_then(|m| m.get(name))
+    pub fn lookup_method(&self, recv: &TypeId, name: &str) -> Option<&Type> {
+        self.methods.get(recv).and_then(|m| m.get(name))
+    }
+
+    fn type_name_taken(&self, name: &str) -> bool {
+        self.structs.contains_key(name) || self.oneofs.contains_key(name)
     }
 }
 
-/// Resolve `module`'s declarations into a symbol table already seeded with imported
-/// names, so signatures may reference types and functions brought in by `use`. The
-/// seeded imports never collide with a local declaration: an import whose local name
-/// shadows one of the module's own declarations is rejected at its `use` before it
-/// reaches this pass, so the redeclaration checks here guard only local duplicates.
-pub fn resolve_into(mut globals: Globals, module: &[Stmt]) -> (Globals, Vec<Diagnostic>) {
+/// Resolve one file's declarations — every phase in turn — into a symbol table
+/// already seeded with imported names, minting identities under `module`. A
+/// multi-file module runs the phases itself, each across all its files.
+pub fn resolve_into(mut globals: Globals, module: &str, decls: &[Stmt]) -> (Globals, Vec<Diagnostic>) {
     let mut diags = Vec::new();
-    for stmt in module {
+    declare_types(&mut globals, module, decls, &mut diags);
+    define_types(&mut globals, decls, &mut diags);
+    check_type_sizes(&globals, decls, &mut diags);
+    resolve_signatures(&mut globals, decls, &mut diags);
+    (globals, diags)
+}
+
+/// Phase one: register every struct and sum type `decls` declares, under an
+/// identity in `module`, with its type parameters but no body yet. A name already
+/// taken by a type is a redeclaration. Seeded imports never collide here: an import
+/// shadowing one of the module's own declarations is rejected at its `use`.
+pub fn declare_types(globals: &mut Globals, module: &str, decls: &[Stmt], diags: &mut Vec<Diagnostic>) {
+    for stmt in decls {
+        let (name, type_params, is_struct) = match &stmt.kind {
+            StmtKind::StructDecl { name, type_params, .. } => (name, type_params, true),
+            StmtKind::OneofDecl { name, type_params, .. } => (name, type_params, false),
+            _ => continue,
+        };
+        if globals.type_name_taken(name) {
+            diags.push(Diagnostic::error(
+                stmt.span,
+                format!("redeclared type {name} in the same scope"),
+            ));
+            continue;
+        }
+        let id = TypeId {
+            module: module.to_string(),
+            name: name.clone(),
+        };
+        let type_params = type_params.clone();
+        if is_struct {
+            globals.structs.insert(name.clone(), id.clone());
+            globals.defs.structs.insert(id.clone(), StructDef { type_params, ..Default::default() });
+        } else {
+            globals.oneofs.insert(name.clone(), id.clone());
+            globals.defs.oneofs.insert(id.clone(), OneofDef { type_params, ..Default::default() });
+        }
+        globals.pending.insert(id);
+    }
+}
+
+/// Phase two: resolve the members and variants of the types `decls` declares. Every
+/// type of the module is already registered, so a body may name any of them.
+pub fn define_types(globals: &mut Globals, decls: &[Stmt], diags: &mut Vec<Diagnostic>) {
+    for stmt in decls {
         match &stmt.kind {
             StmtKind::StructDecl {
                 name,
                 type_params,
                 members,
-            } => resolve_struct_decl(&mut globals, &mut diags, name, type_params, members, stmt.span),
+            } => define_struct(globals, diags, name, type_params, members, stmt.span),
             StmtKind::OneofDecl {
                 name,
                 type_params,
                 variants,
-            } => resolve_oneof_decl(&mut globals, &mut diags, name, type_params, variants, stmt.span),
-            StmtKind::FuncDecl(func) => resolve_func_decl(&mut globals, &mut diags, func),
-            StmtKind::VarDecl { name, .. } => {
-                resolve_var_decl(&mut globals, &mut diags, name, stmt.span)
-            }
+            } => define_oneof(globals, diags, name, type_params, variants, stmt.span),
             _ => {}
         }
     }
-    (globals, diags)
+}
+
+/// Phase four: resolve the functions, methods, and module-level variables `decls`
+/// declares, against the complete type table.
+pub fn resolve_signatures(globals: &mut Globals, decls: &[Stmt], diags: &mut Vec<Diagnostic>) {
+    for stmt in decls {
+        match &stmt.kind {
+            StmtKind::FuncDecl(func) => resolve_func_decl(globals, diags, func),
+            StmtKind::VarDecl { name, .. } => resolve_var_decl(globals, diags, name, stmt.span),
+            _ => {}
+        }
+    }
+}
+
+/// Phase three: reject every type `decls` declares that contains itself by value —
+/// through members, tuple elements, or variant payloads, possibly via other types
+/// or type arguments — since such a value would be infinitely large. Recursion is
+/// legal only through a pointer or an array, which store their target out of line.
+pub fn check_type_sizes(globals: &Globals, decls: &[Stmt], diags: &mut Vec<Diagnostic>) {
+    for stmt in decls {
+        let ty = match &stmt.kind {
+            StmtKind::StructDecl { name, .. } => globals.lookup_struct(name),
+            StmtKind::OneofDecl { name, .. } => globals.lookup_oneof(name),
+            _ => continue,
+        };
+        let Some(ty) = ty else { continue };
+        let mut path = Vec::new();
+        if contains_by_value(&ty, &ty, &globals.defs, &mut path) {
+            diags.push(Diagnostic::error(
+                stmt.span,
+                format!(
+                    "type {ty} contains itself by value and would be infinitely large; \
+                     recurse through a pointer ({ty}^) or an array ({ty}[])"
+                ),
+            ));
+        }
+    }
+}
+
+/// How deep [`contains_by_value`] follows nested instantiations before treating the
+/// nesting as unbounded: a generic type instantiating itself by value with ever
+/// larger arguments (`struct S T { s: S (T, T) }`) never repeats an instantiation.
+const MAX_VALUE_NESTING: usize = 64;
+
+/// Whether `ty`'s by-value layout reaches the declaration `root` names. `path`
+/// holds the instantiations being expanded, so an unrelated cycle elsewhere ends the
+/// walk rather than looping (it is reported at its own declaration).
+fn contains_by_value(ty: &Type, root: &Type, defs: &TypeDefs, path: &mut Vec<Type>) -> bool {
+    let components: Vec<Type> = match ty {
+        Type::Tuple(elems) => elems.clone(),
+        Type::Struct { .. } => defs.struct_members(ty).unwrap_or_default().into_values().collect(),
+        Type::Oneof { .. } => defs
+            .variant_order(ty)
+            .iter()
+            .flat_map(|v| defs.payload(ty, v).unwrap_or_default())
+            .collect(),
+        _ => return false,
+    };
+    if path.iter().any(|seen| seen.equals(ty)) || path.len() > MAX_VALUE_NESTING {
+        return path.len() > MAX_VALUE_NESTING;
+    }
+    path.push(ty.clone());
+    let found = components.iter().any(|c| {
+        same_declaration(c, root) || contains_by_value(c, root, defs, path)
+    });
+    path.pop();
+    found
+}
+
+/// Whether two struct or sum types name the same declaration, whatever their
+/// type arguments.
+fn same_declaration(a: &Type, b: &Type) -> bool {
+    match (a, b) {
+        (Type::Struct { id: x, .. }, Type::Struct { id: y, .. })
+        | (Type::Oneof { id: x, .. }, Type::Oneof { id: y, .. }) => x == y,
+        _ => false,
+    }
 }
 
 /// Convert an AST type expression to a concrete [`Type`], recording a diagnostic
@@ -102,12 +242,7 @@ pub fn resolve_type(
                 return Some(Type::Primitive(name.clone()));
             }
             if let Some(ty) = globals.lookup_struct(name).or_else(|| globals.lookup_oneof(name)) {
-                let arity = match ty {
-                    Type::Struct { type_params, .. } | Type::Oneof { type_params, .. } => {
-                        type_params.len()
-                    }
-                    _ => 0,
-                };
+                let arity = globals.defs.type_params(&ty).len();
                 if arity > 0 {
                     diags.push(Diagnostic::error(
                         type_expr.span,
@@ -115,7 +250,7 @@ pub fn resolve_type(
                     ));
                     return None;
                 }
-                return Some(ty.clone());
+                return Some(ty);
             }
             diags.push(Diagnostic::error(
                 type_expr.span,
@@ -161,7 +296,7 @@ pub fn resolve_type(
 }
 
 /// Resolve a juxtaposition type application such as `Box i32` or `Map string i32`
-/// into a fully substituted instantiation of the named generic declaration.
+/// into an instantiation of the named generic declaration.
 fn resolve_type_application(
     constructor: &TypeExpr,
     args: &[TypeExpr],
@@ -178,38 +313,27 @@ fn resolve_type_application(
         return None;
     };
 
-    let template = globals
-        .lookup_struct(name)
-        .or_else(|| globals.lookup_oneof(name))
-        .cloned();
-    let template = match template {
-        Some(t) => t,
-        None => {
-            diags.push(Diagnostic::error(
-                span,
-                format!("undefined generic type: {name}"),
-            ));
-            return None;
-        }
+    let Some(template) = globals.lookup_struct(name).or_else(|| globals.lookup_oneof(name)) else {
+        diags.push(Diagnostic::error(
+            span,
+            format!("undefined generic type: {name}"),
+        ));
+        return None;
     };
 
-    let declared_params = match &template {
-        Type::Struct { type_params, .. } | Type::Oneof { type_params, .. } => type_params.clone(),
-        _ => Vec::new(),
-    };
-    if declared_params.is_empty() {
+    let arity = globals.defs.type_params(&template).len();
+    if arity == 0 {
         diags.push(Diagnostic::error(
             span,
             format!("type {name} is not generic and takes no type arguments"),
         ));
         return None;
     }
-    if args.len() != declared_params.len() {
+    if args.len() != arity {
         diags.push(Diagnostic::error(
             span,
             format!(
-                "generic type {name} expects {} type argument(s), got {}",
-                declared_params.len(),
+                "generic type {name} expects {arity} type argument(s), got {}",
                 args.len()
             ),
         ));
@@ -220,54 +344,21 @@ fn resolve_type_application(
     for arg in args {
         arg_types.push(resolve_type(arg, type_params, globals, diags)?);
     }
-    let subst: HashMap<String, Type> = declared_params
-        .iter()
-        .cloned()
-        .zip(arg_types.iter().cloned())
-        .collect();
-
-    Some(instantiate(&template, &subst, arg_types))
+    Some(match template {
+        Type::Struct { id, .. } => Type::Struct { id, type_args: arg_types },
+        Type::Oneof { id, .. } => Type::Oneof { id, type_args: arg_types },
+        other => other,
+    })
 }
 
-/// Build an instantiation of a generic struct or sum-type template by substituting
-/// its members/variants and recording the concrete type arguments.
-fn instantiate(template: &Type, subst: &HashMap<String, Type>, type_args: Vec<Type>) -> Type {
-    match template {
-        Type::Struct {
-            name,
-            members,
-            type_params,
-            ..
-        } => Type::Struct {
-            name: name.clone(),
-            members: members
-                .iter()
-                .map(|(k, v)| (k.clone(), v.substitute(subst)))
-                .collect(),
-            type_params: type_params.clone(),
-            type_args,
-        },
-        Type::Oneof {
-            name,
-            variants,
-            variant_order,
-            type_params,
-            ..
-        } => Type::Oneof {
-            name: name.clone(),
-            variants: variants
-                .iter()
-                .map(|(k, slots)| (k.clone(), slots.iter().map(|s| s.substitute(subst)).collect()))
-                .collect(),
-            variant_order: variant_order.clone(),
-            type_params: type_params.clone(),
-            type_args,
-        },
-        other => other.clone(),
-    }
+/// The identity `name` was registered under by [`declare_types`], claimed for body
+/// resolution. `None` for a redeclaration, whose body is not resolved.
+fn claim_pending(globals: &mut Globals, id: Option<TypeId>) -> Option<TypeId> {
+    let id = id?;
+    globals.pending.remove(&id).then_some(id)
 }
 
-fn resolve_struct_decl(
+fn define_struct(
     globals: &mut Globals,
     diags: &mut Vec<Diagnostic>,
     name: &str,
@@ -275,13 +366,9 @@ fn resolve_struct_decl(
     members: &[TypedIdent],
     span: Span,
 ) {
-    if globals.structs.contains_key(name) || globals.oneofs.contains_key(name) || globals.vars.contains(name) {
-        diags.push(Diagnostic::error(
-            span,
-            format!("redeclared type {name} in the same scope"),
-        ));
+    let Some(id) = claim_pending(globals, globals.structs.get(name).cloned()) else {
         return;
-    }
+    };
     check_type_param_binders(type_params, span, globals, diags);
     let params: HashSet<String> = type_params.iter().cloned().collect();
     let mut resolved = HashMap::new();
@@ -297,18 +384,12 @@ fn resolve_struct_decl(
             resolved.insert(member.name.clone(), t);
         }
     }
-    globals.structs.insert(
-        name.to_string(),
-        Type::Struct {
-            name: name.to_string(),
-            members: resolved,
-            type_params: type_params.to_vec(),
-            type_args: Vec::new(),
-        },
-    );
+    if let Some(def) = globals.defs.structs.get_mut(&id) {
+        def.members = resolved;
+    }
 }
 
-fn resolve_oneof_decl(
+fn define_oneof(
     globals: &mut Globals,
     diags: &mut Vec<Diagnostic>,
     name: &str,
@@ -316,13 +397,9 @@ fn resolve_oneof_decl(
     variants: &[VariantDef],
     span: Span,
 ) {
-    if globals.oneofs.contains_key(name) || globals.structs.contains_key(name) || globals.vars.contains(name) {
-        diags.push(Diagnostic::error(
-            span,
-            format!("redeclared type {name} in the same scope"),
-        ));
+    let Some(id) = claim_pending(globals, globals.oneofs.get(name).cloned()) else {
         return;
-    }
+    };
     check_type_param_binders(type_params, span, globals, diags);
     let params: HashSet<String> = type_params.iter().cloned().collect();
     let mut resolved: HashMap<String, Vec<Type>> = HashMap::new();
@@ -344,16 +421,10 @@ fn resolve_oneof_decl(
         resolved.insert(variant.name.clone(), slots);
         order.push(variant.name.clone());
     }
-    globals.oneofs.insert(
-        name.to_string(),
-        Type::Oneof {
-            name: name.to_string(),
-            variants: resolved,
-            variant_order: order,
-            type_params: type_params.to_vec(),
-            type_args: Vec::new(),
-        },
-    );
+    if let Some(def) = globals.defs.oneofs.get_mut(&id) {
+        def.variants = resolved;
+        def.variant_order = order;
+    }
 }
 
 /// Record a module-level variable declaration in the global namespace. A top-level
@@ -413,7 +484,10 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
     };
 
     let Some(receiver) = &func.receiver else {
-        if globals.funcs.contains_key(&func.name) || globals.vars.contains(&func.name) {
+        if globals.funcs.contains_key(&func.name)
+            || globals.vars.contains(&func.name)
+            || globals.type_name_taken(&func.name)
+        {
             diags.push(Diagnostic::error(
                 func.span,
                 format!("redeclared function {} in the same scope", func.name),
@@ -428,12 +502,7 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
         Some(t) => t,
         None => return,
     };
-    let Some(Type::Struct {
-        name: struct_name,
-        members,
-        ..
-    }) = underlying_struct(&recv_type)
-    else {
+    let Some(Type::Struct { id, .. }) = underlying_struct(&recv_type) else {
         diags.push(Diagnostic::error(
             receiver.span,
             format!(
@@ -443,24 +512,30 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
         ));
         return;
     };
-    if members.contains_key(&func.name) {
+    let id = id.clone();
+    let struct_name = &id.name;
+    if globals
+        .defs
+        .structs
+        .get(&id)
+        .is_some_and(|def| def.members.contains_key(&func.name))
+    {
         diags.push(Diagnostic::error(
             func.span,
             format!("method {} collides with a field of struct {struct_name}", func.name),
         ));
         return;
     }
-    if globals.lookup_method(struct_name, &func.name).is_some() {
+    if globals.lookup_method(&id, &func.name).is_some() {
         diags.push(Diagnostic::error(
             func.span,
             format!("redeclared method {} on struct {struct_name}", func.name),
         ));
         return;
     }
-    let struct_name = struct_name.clone();
     globals
         .methods
-        .entry(struct_name)
+        .entry(id)
         .or_default()
         .insert(func.name.clone(), func_type);
 }
@@ -487,7 +562,7 @@ pub fn receiver_pattern_params(type_expr: &TypeExpr) -> Vec<String> {
 
 /// Validate a declaration's type-parameter binders: each must introduce a *fresh*
 /// name — distinct from its siblings and from any type already in scope (a primitive
-/// or a preceding declaration). This keeps every name in a signature unambiguously
+/// or any declared type, wherever it is declared). This keeps every name in a signature unambiguously
 /// either a type parameter or a concrete type, never both, so the distinction rests
 /// on the binder rather than on identifier casing. A receiver pattern's slots are
 /// binders too, so `(m: Map string i32)` — which would otherwise bind phantom
@@ -508,10 +583,7 @@ fn check_type_param_binders(
             ));
             continue;
         }
-        if is_primitive_name(name)
-            || globals.lookup_struct(name).is_some()
-            || globals.lookup_oneof(name).is_some()
-        {
+        if is_primitive_name(name) || globals.type_name_taken(name) {
             diags.push(Diagnostic::error(
                 span,
                 format!(

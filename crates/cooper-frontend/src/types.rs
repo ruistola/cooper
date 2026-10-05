@@ -1,6 +1,105 @@
 use std::collections::HashMap;
 use std::fmt;
 
+/// The identity of a declared struct or sum type: the dotted path of its defining
+/// module and its declared name. Two declarations are the same type exactly when
+/// their identities match, however an import spells them locally.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TypeId {
+    pub module: String,
+    pub name: String,
+}
+
+/// A struct declaration's body: its type parameters and member types, the latter
+/// written in terms of those parameters.
+#[derive(Debug, Clone, Default)]
+pub struct StructDef {
+    pub type_params: Vec<String>,
+    pub members: HashMap<String, Type>,
+}
+
+/// A sum type declaration's body: its type parameters and its variants' payload
+/// types, with the variants' declaration order.
+#[derive(Debug, Clone, Default)]
+pub struct OneofDef {
+    pub type_params: Vec<String>,
+    pub variants: HashMap<String, Vec<Type>>,
+    pub variant_order: Vec<String>,
+}
+
+/// Every struct and sum type definition known to the compilation, keyed by
+/// identity. A [`Type`] names a declaration by [`TypeId`] only; its members and
+/// variants are read here, substituted by the type's arguments.
+#[derive(Debug, Clone, Default)]
+pub struct TypeDefs {
+    pub structs: HashMap<TypeId, StructDef>,
+    pub oneofs: HashMap<TypeId, OneofDef>,
+}
+
+impl TypeDefs {
+    /// The type parameters of the struct or sum type `ty` names, or none for any
+    /// other type.
+    pub fn type_params(&self, ty: &Type) -> &[String] {
+        match ty {
+            Type::Struct { id, .. } => self.structs.get(id).map_or(&[], |d| &d.type_params),
+            Type::Oneof { id, .. } => self.oneofs.get(id).map_or(&[], |d| &d.type_params),
+            _ => &[],
+        }
+    }
+
+    /// The members of struct type `ty`, substituted by its type arguments (a
+    /// template's members keep their type parameters). `None` when `ty` is no struct.
+    pub fn struct_members(&self, ty: &Type) -> Option<HashMap<String, Type>> {
+        let Type::Struct { id, type_args } = ty else {
+            return None;
+        };
+        let def = self.structs.get(id)?;
+        let subst = binding(&def.type_params, type_args);
+        Some(
+            def.members
+                .iter()
+                .map(|(name, t)| (name.clone(), t.substitute(&subst)))
+                .collect(),
+        )
+    }
+
+    /// The type of member `name` of struct type `ty`, substituted by its arguments.
+    pub fn member(&self, ty: &Type, name: &str) -> Option<Type> {
+        let Type::Struct { id, type_args } = ty else {
+            return None;
+        };
+        let def = self.structs.get(id)?;
+        let member = def.members.get(name)?;
+        Some(member.substitute(&binding(&def.type_params, type_args)))
+    }
+
+    /// The payload of `variant` of sum type `ty`, substituted by its arguments.
+    pub fn payload(&self, ty: &Type, variant: &str) -> Option<Vec<Type>> {
+        let Type::Oneof { id, type_args } = ty else {
+            return None;
+        };
+        let def = self.oneofs.get(id)?;
+        let subst = binding(&def.type_params, type_args);
+        let slots = def.variants.get(variant)?;
+        Some(slots.iter().map(|t| t.substitute(&subst)).collect())
+    }
+
+    /// The variant names of sum type `ty` in declaration order, or none for any
+    /// other type.
+    pub fn variant_order(&self, ty: &Type) -> &[String] {
+        match ty {
+            Type::Oneof { id, .. } => self.oneofs.get(id).map_or(&[], |d| &d.variant_order),
+            _ => &[],
+        }
+    }
+}
+
+/// Pair declared type parameters with type arguments as a substitution. A template
+/// (no arguments) yields an empty substitution, leaving its parameters in place.
+fn binding(params: &[String], args: &[Type]) -> HashMap<String, Type> {
+    params.iter().cloned().zip(args.iter().cloned()).collect()
+}
+
 /// A resolved type in the Cooper language. A closed `enum` replaces the Go `Type`
 /// interface, so every `match` over it is checked for exhaustiveness at compile
 /// time — the class of "forgot a variant" bugs becomes a build error.
@@ -21,17 +120,16 @@ pub enum Type {
         return_type: Box<Type>,
         param_types: Vec<Type>,
     },
+    /// A declared struct, by identity. Its members live in the [`TypeDefs`] table,
+    /// so a struct may refer to itself (through a pointer or array). An empty
+    /// `type_args` on a generic struct denotes its uninstantiated template.
     Struct {
-        name: String,
-        members: HashMap<String, Type>,
-        type_params: Vec<String>,
+        id: TypeId,
         type_args: Vec<Type>,
     },
+    /// A declared sum type, by identity; its variants live in the [`TypeDefs`] table.
     Oneof {
-        name: String,
-        variants: HashMap<String, Vec<Type>>,
-        variant_order: Vec<String>,
-        type_params: Vec<String>,
+        id: TypeId,
         type_args: Vec<Type>,
     },
     /// A reference to a bound type parameter, e.g. `T` inside `struct Box T`.
@@ -47,8 +145,8 @@ pub enum Type {
 impl Type {
     /// Structural equality with the Cooper compatibility rules: a pointer is equal
     /// to a matching-element pointer and to the untyped `nil`; `nil` is equal to
-    /// itself and to any pointer; a nominal struct or sum type is equal by name and
-    /// type arguments only. Templates are never compared directly against
+    /// itself and to any pointer; a nominal struct or sum type is equal by identity
+    /// and type arguments only. Templates are never compared directly against
     /// instantiations: substitution eliminates every `TypeParam` first.
     pub fn equals(&self, other: &Type) -> bool {
         match (self, other) {
@@ -73,30 +171,10 @@ impl Type {
                     param_types: pb,
                 },
             ) => ra.equals(rb) && pa.len() == pb.len() && pa.iter().zip(pb).all(|(x, y)| x.equals(y)),
-            (
-                Type::Struct {
-                    name: na,
-                    type_args: aa,
-                    ..
-                },
-                Type::Struct {
-                    name: nb,
-                    type_args: ab,
-                    ..
-                },
-            ) => na == nb && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| x.equals(y)),
-            (
-                Type::Oneof {
-                    name: na,
-                    type_args: aa,
-                    ..
-                },
-                Type::Oneof {
-                    name: nb,
-                    type_args: ab,
-                    ..
-                },
-            ) => na == nb && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| x.equals(y)),
+            (Type::Struct { id: ia, type_args: aa }, Type::Struct { id: ib, type_args: ab })
+            | (Type::Oneof { id: ia, type_args: aa }, Type::Oneof { id: ib, type_args: ab }) => {
+                ia == ib && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| x.equals(y))
+            }
             (Type::TypeParam(a), Type::TypeParam(b)) => a == b,
             _ => false,
         }
@@ -120,48 +198,14 @@ impl Type {
                 return_type: Box::new(return_type.substitute(subst)),
                 param_types: param_types.iter().map(|p| p.substitute(subst)).collect(),
             },
-            Type::Struct {
-                name,
-                members,
-                type_params,
-                type_args,
-            } => {
-                if type_args.is_empty() {
-                    return self.clone();
-                }
-                Type::Struct {
-                    name: name.clone(),
-                    members: members
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.substitute(subst)))
-                        .collect(),
-                    type_params: type_params.clone(),
-                    type_args: type_args.iter().map(|a| a.substitute(subst)).collect(),
-                }
-            }
-            Type::Oneof {
-                name,
-                variants,
-                variant_order,
-                type_params,
-                type_args,
-            } => {
-                if type_args.is_empty() {
-                    return self.clone();
-                }
-                Type::Oneof {
-                    name: name.clone(),
-                    variants: variants
-                        .iter()
-                        .map(|(k, slots)| {
-                            (k.clone(), slots.iter().map(|s| s.substitute(subst)).collect())
-                        })
-                        .collect(),
-                    variant_order: variant_order.clone(),
-                    type_params: type_params.clone(),
-                    type_args: type_args.iter().map(|a| a.substitute(subst)).collect(),
-                }
-            }
+            Type::Struct { id, type_args } => Type::Struct {
+                id: id.clone(),
+                type_args: type_args.iter().map(|a| a.substitute(subst)).collect(),
+            },
+            Type::Oneof { id, type_args } => Type::Oneof {
+                id: id.clone(),
+                type_args: type_args.iter().map(|a| a.substitute(subst)).collect(),
+            },
             _ => self.clone(),
         }
     }
@@ -186,6 +230,8 @@ pub fn unify(template: &Type, concrete: &Type, subst: &mut HashMap<String, Type>
         },
         Type::Pointer(te) => match concrete {
             Type::Pointer(ce) => unify(te, ce, subst),
+            // `nil` fits any pointer slot but determines none of its parameters.
+            Type::Nil => true,
             _ => false,
         },
         Type::Tuple(telems) => match concrete {
@@ -207,6 +253,18 @@ pub fn unify(template: &Type, concrete: &Type, subst: &mut HashMap<String, Type>
             }
             _ => false,
         },
+        Type::Struct { id: ti, type_args: ta } | Type::Oneof { id: ti, type_args: ta } => {
+            match concrete {
+                Type::Struct { id: ci, type_args: ca } | Type::Oneof { id: ci, type_args: ca }
+                    if std::mem::discriminant(template) == std::mem::discriminant(concrete)
+                        && ti == ci
+                        && ta.len() == ca.len() =>
+                {
+                    ta.iter().zip(ca).all(|(t, c)| unify(t, c, subst))
+                }
+                _ => false,
+            }
+        }
         _ => template.equals(concrete),
     }
 }
@@ -269,20 +327,24 @@ pub fn is_float(t: &Type) -> bool {
 /// Functions are excluded (closure identity has no meaning), as are dynamic arrays
 /// (a view's identity and its contents are both plausible readings) and unconstrained
 /// type parameters. The same set defines which types are hashable.
-pub(crate) fn incomparable_part(t: &Type) -> Option<&Type> {
+pub(crate) fn incomparable_part(t: &Type, defs: &TypeDefs) -> Option<Type> {
     match t {
         Type::Unknown | Type::Unit | Type::Primitive(_) | Type::Pointer(_) | Type::Nil => None,
-        Type::Array(_) | Type::Func { .. } | Type::TypeParam(_) | Type::Module(_) => Some(t),
-        Type::Tuple(elems) => elems.iter().find_map(incomparable_part),
-        Type::Struct { members, .. } => {
+        Type::Array(_) | Type::Func { .. } | Type::TypeParam(_) | Type::Module(_) => {
+            Some(t.clone())
+        }
+        Type::Tuple(elems) => elems.iter().find_map(|e| incomparable_part(e, defs)),
+        Type::Struct { .. } => {
+            let members = defs.struct_members(t)?;
             let mut names: Vec<&String> = members.keys().collect();
             names.sort();
-            names.into_iter().find_map(|n| incomparable_part(&members[n]))
+            names.into_iter().find_map(|n| incomparable_part(&members[n], defs))
         }
-        Type::Oneof { variants, variant_order, .. } => variant_order
+        Type::Oneof { .. } => defs
+            .variant_order(t)
             .iter()
-            .flat_map(|v| &variants[v])
-            .find_map(incomparable_part),
+            .flat_map(|v| defs.payload(t, v).unwrap_or_default())
+            .find_map(|slot| incomparable_part(&slot, defs)),
     }
 }
 
@@ -306,12 +368,8 @@ impl fmt::Display for Type {
                 let params: Vec<String> = param_types.iter().map(|p| p.to_string()).collect();
                 write!(f, "func({}):{}", params.join(","), return_type)
             }
-            Type::Struct {
-                name, type_args, ..
-            }
-            | Type::Oneof {
-                name, type_args, ..
-            } => {
+            Type::Struct { id, type_args } | Type::Oneof { id, type_args } => {
+                let name = &id.name;
                 if type_args.is_empty() {
                     write!(f, "{}", name)
                 } else {

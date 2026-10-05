@@ -80,7 +80,8 @@ impl SemanticAnalyzer<'_> {
         // Look up the declared return type: methods are keyed by receiver struct.
         let return_type = match &func.receiver {
             Some(receiver) => resolve::underlying_struct_name(&receiver.ty)
-                .and_then(|name| self.globals.lookup_method(name, &func.name)),
+                .and_then(|name| self.globals.structs.get(name))
+                .and_then(|id| self.globals.lookup_method(id, &func.name)),
             None => self.globals.lookup_func(&func.name),
         };
         let Some(Type::Func { return_type, .. }) = return_type else {

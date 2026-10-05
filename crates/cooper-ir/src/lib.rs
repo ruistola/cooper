@@ -20,7 +20,7 @@ use cooper_frontend::ast::{
 use cooper_frontend::diag::Span;
 use cooper_frontend::resolve::{receiver_pattern_params, resolve_type, Globals};
 use cooper_frontend::typecheck::{decode_number_literal, LiteralValue};
-use cooper_frontend::types::{is_numeric_name, Type, DEFAULT_INT};
+use cooper_frontend::types::{is_numeric_name, Type, TypeDefs, DEFAULT_INT};
 
 /// A lowered function or method: its signature, its body as typed statements, and
 /// the span it was lowered from. A method carries its receiver as the first bound
@@ -510,7 +510,7 @@ impl Lower<'_> {
                     },
                 };
                 let patterns = bool_patterns(&scrutinee.ty, scrutinee.span);
-                let tree = compile_match(&scrutinee.ty, &patterns);
+                let tree = compile_match(&self.globals.defs, &scrutinee.ty, &patterns);
                 IrStmtKind::Match {
                     scrutinee,
                     actions: vec![then, els],
@@ -540,7 +540,7 @@ impl Lower<'_> {
                     .iter()
                     .map(|arm| self.stmt(&arm.body))
                     .collect::<Result<Vec<_>, LowerError>>()?;
-                let tree = compile_match(&scrutinee.ty, &patterns);
+                let tree = compile_match(&self.globals.defs, &scrutinee.ty, &patterns);
                 IrStmtKind::Match {
                     scrutinee,
                     actions,
@@ -629,7 +629,7 @@ impl Lower<'_> {
             ExprKind::Nil => IrExprKind::Nil,
             ExprKind::Unit => IrExprKind::Unit,
             ExprKind::Ident(name) => {
-                if variant_named(name, &ty) {
+                if variant_named(&self.globals.defs, name, &ty) {
                     // A bare payload-free variant inferred from the expected type.
                     IrExprKind::Variant {
                         variant: name.clone(),
@@ -704,7 +704,7 @@ impl Lower<'_> {
                 let then = self.expr(then)?;
                 let els = self.expr(els)?;
                 let patterns = bool_patterns(&scrutinee.ty, scrutinee.span);
-                let tree = compile_match(&scrutinee.ty, &patterns);
+                let tree = compile_match(&self.globals.defs, &scrutinee.ty, &patterns);
                 IrExprKind::Match {
                     scrutinee: Box::new(scrutinee),
                     actions: vec![then, els],
@@ -713,11 +713,11 @@ impl Lower<'_> {
             }
             ExprKind::Block(block) => self.value_block(block)?,
             ExprKind::StructLiteral { members, .. } => {
-                let Type::Struct { name, .. } = &ty else {
+                let Type::Struct { id, .. } = &ty else {
                     return Err(LowerError::MissingType(expr.span));
                 };
                 IrExprKind::StructLiteral {
-                    name: name.clone(),
+                    name: id.name.clone(),
                     members: members
                         .iter()
                         .map(|m| Ok((m.name.clone(), self.expr(&m.value)?)))
@@ -736,7 +736,7 @@ impl Lower<'_> {
                     .iter()
                     .map(|arm| self.expr(&arm.body))
                     .collect::<Result<Vec<_>, LowerError>>()?;
-                let tree = compile_match(&scrutinee.ty, &patterns);
+                let tree = compile_match(&self.globals.defs, &scrutinee.ty, &patterns);
                 IrExprKind::Match {
                     scrutinee: Box::new(scrutinee),
                     actions,
@@ -796,12 +796,11 @@ impl Lower<'_> {
                 }
             }
             PatternKind::Variant { variant, binders, .. } => {
-                let Type::Oneof { variants, .. } = ty else {
-                    unreachable!("a checked variant pattern matches a sum type");
-                };
-                let payload = variants
-                    .get(variant)
-                    .expect("a checked pattern names an existing variant");
+                let payload = self
+                    .globals
+                    .defs
+                    .payload(ty, variant)
+                    .expect("a checked variant pattern names a variant of its sum type");
                 let binders = binders
                     .iter()
                     .zip(payload)
@@ -827,16 +826,15 @@ impl Lower<'_> {
                 IrPatternKind::Tuple(elems)
             }
             PatternKind::Struct { name, fields } => {
-                let Type::Struct { members, .. } = ty else {
-                    unreachable!("a checked struct pattern matches a struct type");
-                };
                 let fields = fields
                     .iter()
                     .map(|field| {
-                        let member_ty = members
-                            .get(&field.name)
+                        let member_ty = self
+                            .globals
+                            .defs
+                            .member(ty, &field.name)
                             .expect("a checked struct pattern names existing fields");
-                        Ok((field.name.clone(), self.pattern(member_ty, &field.pattern)?))
+                        Ok((field.name.clone(), self.pattern(&member_ty, &field.pattern)?))
                     })
                     .collect::<Result<_, _>>()?;
                 IrPatternKind::Struct {
@@ -969,7 +967,7 @@ impl Lower<'_> {
                 matches!(self.types.get(&target.span), Some(Type::Oneof { .. }))
                     .then(|| name.clone())
             }
-            ExprKind::Ident(name) => (variant_named(name, result)
+            ExprKind::Ident(name) => (variant_named(&self.globals.defs, name, result)
                 && self.globals.lookup_func(name).is_none())
             .then(|| name.clone()),
             _ => None,
@@ -979,8 +977,8 @@ impl Lower<'_> {
 
 /// Whether `name` is a variant of sum type `ty`. Used to tell a bare variant value
 /// apart from an ordinary variable of some sum type.
-fn variant_named(name: &str, ty: &Type) -> bool {
-    matches!(ty, Type::Oneof { variants, .. } if variants.contains_key(name))
+fn variant_named(defs: &TypeDefs, name: &str, ty: &Type) -> bool {
+    defs.payload(ty, name).is_some()
 }
 
 /// Peel parenthesised groupings to reach the expression they wrap, so a target like
@@ -1042,7 +1040,7 @@ struct Row {
 
 /// Compile a match's arm patterns (in source order, the row index being the action
 /// index) over a scrutinee of `ty` into a decision tree.
-fn compile_match(ty: &Type, patterns: &[IrPattern]) -> Decision {
+fn compile_match(defs: &TypeDefs, ty: &Type, patterns: &[IrPattern]) -> Decision {
     let occurrences = vec![Occurrence {
         access: Access::Root,
         ty: ty.clone(),
@@ -1056,20 +1054,20 @@ fn compile_match(ty: &Type, patterns: &[IrPattern]) -> Decision {
             action,
         })
         .collect();
-    compile(occurrences, rows)
+    compile(defs, occurrences, rows)
 }
 
 /// The matrix algorithm: the first row whose columns are all irrefutable wins;
 /// otherwise test the leftmost column the top row cares about, deconstructing a
 /// single-constructor type in place or branching on a `Switch`.
-fn compile(occurrences: Vec<Occurrence>, mut rows: Vec<Row>) -> Decision {
+fn compile(defs: &TypeDefs, occurrences: Vec<Occurrence>, mut rows: Vec<Row>) -> Decision {
     let Some(first) = rows.first() else {
         return Decision::Fail;
     };
     if first.columns.iter().all(ir_is_irrefutable) {
         let mut row = rows.swap_remove(0);
         for (occ, pat) in occurrences.iter().zip(&row.columns) {
-            collect_bindings(pat, &occ.access, &occ.ty, &mut row.bindings);
+            collect_bindings(defs, pat, &occ.access, &occ.ty, &mut row.bindings);
         }
         return Decision::Leaf {
             bindings: row.bindings,
@@ -1082,33 +1080,34 @@ fn compile(occurrences: Vec<Occurrence>, mut rows: Vec<Row>) -> Decision {
         .position(|p| !ir_is_irrefutable(p))
         .expect("an all-irrefutable row was handled above");
     match &occurrences[col].ty {
-        Type::Tuple(_) | Type::Struct { .. } => deconstruct(col, occurrences, rows),
-        _ => switch(col, occurrences, rows),
+        Type::Tuple(_) | Type::Struct { .. } => deconstruct(defs, col, occurrences, rows),
+        _ => switch(defs, col, occurrences, rows),
     }
 }
 
 /// Expand a single-constructor (tuple or struct) column into its fields: the column
 /// is replaced by one occurrence per field, and every row's pattern there by its
 /// sub-patterns (missing struct fields and irrefutable patterns become wildcards).
-fn deconstruct(col: usize, occurrences: Vec<Occurrence>, rows: Vec<Row>) -> Decision {
-    let subs = sub_fields(&occurrences[col].access, &occurrences[col].ty);
+fn deconstruct(defs: &TypeDefs, col: usize, occurrences: Vec<Occurrence>, rows: Vec<Row>) -> Decision {
+    let subs = sub_fields(defs, &occurrences[col].access, &occurrences[col].ty);
     let mut new_occurrences = occurrences.clone();
     new_occurrences.splice(col..=col, subs.clone());
     let new_rows = rows
         .into_iter()
         .map(|mut row| {
             let pat = row.columns.remove(col);
-            let subpats = deconstruct_pattern(pat, &occurrences[col], &subs, &mut row.bindings);
+            let subpats = deconstruct_pattern(defs, pat, &occurrences[col], &subs, &mut row.bindings);
             row.columns.splice(col..col, subpats);
             row
         })
         .collect();
-    compile(new_occurrences, new_rows)
+    compile(defs, new_occurrences, new_rows)
 }
 
 /// The sub-patterns a tuple/struct column pattern contributes, aligned with `subs`.
 /// A binding over the whole value is recorded before it is dropped to wildcards.
 fn deconstruct_pattern(
+    defs: &TypeDefs,
     pat: IrPattern,
     occ: &Occurrence,
     subs: &[Occurrence],
@@ -1127,10 +1126,7 @@ fn deconstruct_pattern(
         }
         IrPatternKind::Tuple(ps) => ps,
         IrPatternKind::Struct { fields, .. } => {
-            let Type::Struct { members, .. } = &occ.ty else {
-                unreachable!("a struct pattern matches a struct occurrence");
-            };
-            sorted_members(members)
+            sorted_members(defs, &occ.ty)
                 .into_iter()
                 .map(|(name, ty)| {
                     fields
@@ -1148,13 +1144,13 @@ fn deconstruct_pattern(
 /// Branch on a column of a switchable type (`bool`, integer, or sum type): a case
 /// per head constructor, plus a default from the irrefutable rows when the cases do
 /// not exhaust the type.
-fn switch(col: usize, occurrences: Vec<Occurrence>, rows: Vec<Row>) -> Decision {
+fn switch(defs: &TypeDefs, col: usize, occurrences: Vec<Occurrence>, rows: Vec<Row>) -> Decision {
     let access = occurrences[col].access.clone();
     let ty = occurrences[col].ty.clone();
     let tests = head_tests(&rows, col);
     let mut cases = Vec::new();
     for test in &tests {
-        let subs = test_sub_occurrences(&access, &ty, test);
+        let subs = test_sub_occurrences(defs, &access, &ty, test);
         let mut case_occurrences = occurrences.clone();
         case_occurrences.splice(col..=col, subs.clone());
         let case_rows = rows
@@ -1163,10 +1159,10 @@ fn switch(col: usize, occurrences: Vec<Occurrence>, rows: Vec<Row>) -> Decision 
             .collect();
         cases.push(Case {
             test: test.clone(),
-            tree: compile(case_occurrences, case_rows),
+            tree: compile(defs, case_occurrences, case_rows),
         });
     }
-    let default = if tests_exhaustive(&ty, &tests) {
+    let default = if tests_exhaustive(defs, &ty, &tests) {
         None
     } else {
         let mut default_occurrences = occurrences.clone();
@@ -1176,7 +1172,7 @@ fn switch(col: usize, occurrences: Vec<Occurrence>, rows: Vec<Row>) -> Decision 
             .filter(|row| ir_is_irrefutable(&row.columns[col]))
             .map(|row| default_row(row, col, &access, &ty))
             .collect();
-        Some(Box::new(compile(default_occurrences, default_rows)))
+        Some(Box::new(compile(defs, default_occurrences, default_rows)))
     };
     Decision::Switch {
         access,
@@ -1283,15 +1279,12 @@ fn pattern_test(pat: &IrPattern) -> Option<Test> {
 
 /// The occurrences a matched constructor introduces: a variant exposes its payload
 /// slots; `bool` and integer constructors expose nothing.
-fn test_sub_occurrences(access: &Access, ty: &Type, test: &Test) -> Vec<Occurrence> {
+fn test_sub_occurrences(defs: &TypeDefs, access: &Access, ty: &Type, test: &Test) -> Vec<Occurrence> {
     match test {
         Test::Variant(variant) => {
-            let Type::Oneof { variants, .. } = ty else {
-                unreachable!("a variant test discriminates a sum type");
-            };
-            let payload = variants
-                .get(variant)
-                .expect("a variant test names an existing variant");
+            let payload = defs
+                .payload(ty, variant)
+                .expect("a variant test names a variant of its sum type");
             payload
                 .iter()
                 .enumerate()
@@ -1312,12 +1305,13 @@ fn test_sub_occurrences(access: &Access, ty: &Type, test: &Test) -> Vec<Occurren
 /// Whether the tested constructors cover the type: both booleans, or every variant
 /// of a sum type. Integers are never exhausted by literals, so they always need a
 /// default (the checker requires an irrefutable catch-all there).
-fn tests_exhaustive(ty: &Type, tests: &[Test]) -> bool {
+fn tests_exhaustive(defs: &TypeDefs, ty: &Type, tests: &[Test]) -> bool {
     match ty {
         Type::Primitive(name) if name == "bool" => {
             tests.contains(&Test::Bool(true)) && tests.contains(&Test::Bool(false))
         }
-        Type::Oneof { variant_order, .. } => variant_order
+        Type::Oneof { .. } => defs
+            .variant_order(ty)
             .iter()
             .all(|v| tests.contains(&Test::Variant(v.clone()))),
         _ => false,
@@ -1326,7 +1320,7 @@ fn tests_exhaustive(ty: &Type, tests: &[Test]) -> bool {
 
 /// The occurrences a tuple/struct value exposes, in a deterministic order (tuple
 /// position, struct fields sorted by name).
-fn sub_fields(access: &Access, ty: &Type) -> Vec<Occurrence> {
+fn sub_fields(defs: &TypeDefs, access: &Access, ty: &Type) -> Vec<Occurrence> {
     match ty {
         Type::Tuple(elems) => elems
             .iter()
@@ -1339,7 +1333,7 @@ fn sub_fields(access: &Access, ty: &Type) -> Vec<Occurrence> {
                 ty: elem.clone(),
             })
             .collect(),
-        Type::Struct { members, .. } => sorted_members(members)
+        Type::Struct { .. } => sorted_members(defs, ty)
             .into_iter()
             .map(|(name, ty)| Occurrence {
                 access: Access::Field {
@@ -1355,10 +1349,11 @@ fn sub_fields(access: &Access, ty: &Type) -> Vec<Occurrence> {
 
 /// A struct's members as `(name, type)` pairs sorted by name, giving deconstruction
 /// a deterministic field order independent of the members map's iteration order.
-fn sorted_members(members: &HashMap<String, Type>) -> Vec<(String, Type)> {
-    let mut pairs: Vec<_> = members
-        .iter()
-        .map(|(name, ty)| (name.clone(), ty.clone()))
+fn sorted_members(defs: &TypeDefs, ty: &Type) -> Vec<(String, Type)> {
+    let mut pairs: Vec<_> = defs
+        .struct_members(ty)
+        .expect("a struct occurrence names a defined struct")
+        .into_iter()
         .collect();
     pairs.sort_by(|a, b| a.0.cmp(&b.0));
     pairs
@@ -1376,7 +1371,7 @@ fn ir_is_irrefutable(pat: &IrPattern) -> bool {
 
 /// Collect the names an irrefutable pattern binds, each with the access and type of
 /// the subvalue it reaches, descending through tuple and struct patterns.
-fn collect_bindings(pat: &IrPattern, access: &Access, ty: &Type, out: &mut Vec<MatchBinding>) {
+fn collect_bindings(defs: &TypeDefs, pat: &IrPattern, access: &Access, ty: &Type, out: &mut Vec<MatchBinding>) {
     match &pat.kind {
         IrPatternKind::Wildcard => {}
         IrPatternKind::Binding(name) => out.push(MatchBinding {
@@ -1390,6 +1385,7 @@ fn collect_bindings(pat: &IrPattern, access: &Access, ty: &Type, out: &mut Vec<M
             };
             for (index, (sub, elem_ty)) in ps.iter().zip(elems).enumerate() {
                 collect_bindings(
+                    defs,
                     sub,
                     &Access::Elem {
                         parent: Box::new(access.clone()),
@@ -1401,14 +1397,12 @@ fn collect_bindings(pat: &IrPattern, access: &Access, ty: &Type, out: &mut Vec<M
             }
         }
         IrPatternKind::Struct { fields, .. } => {
-            let Type::Struct { members, .. } = ty else {
-                unreachable!("a struct pattern matches a struct type");
-            };
             for (name, sub) in fields {
-                let member_ty = members
-                    .get(name)
+                let member_ty = &defs
+                    .member(ty, name)
                     .expect("a checked struct pattern names existing fields");
                 collect_bindings(
+                    defs,
                     sub,
                     &Access::Field {
                         parent: Box::new(access.clone()),
@@ -1452,7 +1446,7 @@ mod tests {
         let tokens = lexer::tokenize(source).expect("snippet lexes");
         let parsed = parser::parse(tokens);
         assert!(parsed.errors.is_empty(), "snippet parses: {:?}", parsed.errors);
-        let (globals, diags) = resolve_into(Globals::default(), &parsed.decls);
+        let (globals, diags) = resolve_into(Globals::default(), "main", &parsed.decls);
         assert!(diags.is_empty(), "snippet resolves: {diags:?}");
         let checked = typecheck::check(&parsed.decls, &globals, &Default::default());
         assert!(checked.diags.is_empty(), "snippet checks: {:?}", checked.diags);
@@ -1816,7 +1810,7 @@ mod tests {
         assert_eq!(variant, "Some");
         assert_eq!(args.len(), 1);
         assert!(is_primitive(&args[0].ty, "i32"));
-        assert!(matches!(&some.ty, Type::Oneof { name, .. } if name == "Maybe"));
+        assert!(matches!(&some.ty, Type::Oneof { id, .. } if id.name == "Maybe"));
 
         // `Maybe.None` is a payload-free variant value, not a field access.
         let none = variant_return(2);
@@ -1935,14 +1929,14 @@ mod tests {
         let dep_tokens = lexer::tokenize("func helper(): i32 { return 1 }").expect("dep lexes");
         let dep = parser::parse(dep_tokens);
         assert!(dep.errors.is_empty(), "dep parses: {:?}", dep.errors);
-        let (dep_globals, dep_diags) = resolve_into(Globals::default(), &dep.decls);
+        let (dep_globals, dep_diags) = resolve_into(Globals::default(), "dep", &dep.decls);
         assert!(dep_diags.is_empty(), "dep resolves: {dep_diags:?}");
 
         let main_tokens =
             lexer::tokenize("func main(): i32 { return dep.helper() }").expect("main lexes");
         let main = parser::parse(main_tokens);
         assert!(main.errors.is_empty(), "main parses: {:?}", main.errors);
-        let (globals, diags) = resolve_into(Globals::default(), &main.decls);
+        let (globals, diags) = resolve_into(Globals::default(), "main", &main.decls);
         assert!(diags.is_empty(), "main resolves: {diags:?}");
 
         let modules = HashMap::from([(vec!["dep".to_string()], dep_globals)]);

@@ -24,6 +24,7 @@ use crate::lexer;
 use crate::parser;
 use crate::project::{Module, ModulePath, Project};
 use crate::resolve::{self, Globals};
+use crate::types::{Type, TypeDefs, TypeId};
 use crate::{semantic, typecheck};
 
 /// The dependency edges of the module graph: for each module, the set of modules it
@@ -52,11 +53,16 @@ pub fn analyze(project: &Project) -> Vec<Diagnostic> {
         }
     };
 
+    // Type definitions accumulate project-wide: a dependency's interface may expose
+    // a type whose members name types the dependent never imports, so every module
+    // is analyzed against all definitions resolved before it.
     let mut interfaces: HashMap<ModulePath, Globals> = HashMap::new();
+    let mut defs = TypeDefs::default();
     for index in order {
         let module = &parsed[index];
-        let (module_diags, interface) = analyze_module(module, &known, &interfaces);
+        let (module_diags, interface) = analyze_module(module, &known, &interfaces, &defs);
         diags.extend(module_diags);
+        defs = interface.defs.clone();
         interfaces.insert(module.path.clone(), interface);
     }
     diags
@@ -252,10 +258,10 @@ fn topological_order(
 /// the right symbol tables; an imported struct's methods travel with it.
 #[derive(Default)]
 struct Imports {
-    structs: HashMap<String, crate::types::Type>,
-    oneofs: HashMap<String, crate::types::Type>,
-    funcs: HashMap<String, crate::types::Type>,
-    methods: HashMap<String, HashMap<String, crate::types::Type>>,
+    structs: HashMap<String, TypeId>,
+    oneofs: HashMap<String, TypeId>,
+    funcs: HashMap<String, Type>,
+    methods: HashMap<TypeId, HashMap<String, Type>>,
     /// Module bindings keyed by local spelling (`["std", "io"]`, or `["web"]` when
     /// aliased), each mapped to that module's interface for qualified access.
     modules: HashMap<Vec<String>, Globals>,
@@ -266,7 +272,7 @@ impl Imports {
     /// This file's bare imports overlaid on `base` — the module's own declarations —
     /// yielding the symbol table a file's declarations and bodies are checked against.
     /// Imported structs, sum types, and functions join by local name; an imported
-    /// struct's methods merge under its own name.
+    /// struct's methods merge under its identity.
     fn overlay(&self, base: &Globals) -> Globals {
         let mut globals = base.clone();
         globals.structs.extend(self.structs.clone());
@@ -292,6 +298,7 @@ fn analyze_module(
     module: &ParsedModule,
     known: &HashSet<ModulePath>,
     interfaces: &HashMap<ModulePath, Globals>,
+    defs: &TypeDefs,
 ) -> (Vec<Diagnostic>, Globals) {
     let mut diags = Vec::new();
     let declared = declared_names(&module.files);
@@ -301,15 +308,30 @@ fn analyze_module(
         .map(|file| build_file_imports(file, &declared, known, interfaces, &mut diags))
         .collect();
 
-    // Resolve files in order, accumulating one module-wide table of the module's own
-    // declarations. Each file's signatures see that file's imports, but those imports
-    // are stripped back out before the next file, so they never leak across files.
+    // Resolve in phases, each across every file, accumulating one module-wide table
+    // of the module's own declarations: all type names first, so any file's types
+    // and signatures may name a type declared later or in another file. Each file's
+    // phase sees that file's imports, stripped back out before the next file so
+    // they never leak across files.
+    let module_name = module.path.to_string();
     let mut interface = Globals::default();
-    for (file, imports) in module.files.iter().zip(&file_imports) {
-        let base = imports.overlay(&interface);
-        let (resolved, resolve_diags) = resolve::resolve_into(base, &file.decls);
-        diags.extend(resolve_diags.into_iter().map(|d| d.in_file(&file.name)));
-        interface = strip_imports(resolved, imports);
+    interface.defs = defs.clone();
+    for file in &module.files {
+        let mut file_diags = Vec::new();
+        resolve::declare_types(&mut interface, &module_name, &file.decls, &mut file_diags);
+        diags.extend(file_diags.into_iter().map(|d| d.in_file(&file.name)));
+    }
+    type Phase = fn(&mut Globals, &[Stmt], &mut Vec<Diagnostic>);
+    let size_check: Phase = |globals, decls, diags| resolve::check_type_sizes(globals, decls, diags);
+    let phases: [Phase; 3] = [resolve::define_types, size_check, resolve::resolve_signatures];
+    for phase in phases {
+        for (file, imports) in module.files.iter().zip(&file_imports) {
+            let mut globals = imports.overlay(&interface);
+            let mut file_diags = Vec::new();
+            phase(&mut globals, &file.decls, &mut file_diags);
+            diags.extend(file_diags.into_iter().map(|d| d.in_file(&file.name)));
+            interface = strip_imports(globals, imports);
+        }
     }
 
     if diags.is_empty() {
@@ -411,13 +433,13 @@ fn build_file_imports(
                 let Some(interface) = interfaces.get(&dep) else {
                     continue;
                 };
-                if let Some(ty) = interface.lookup_struct(&item) {
-                    imports.structs.insert(local, ty.clone());
-                    if let Some(methods) = interface.methods.get(&item) {
-                        imports.methods.insert(item.clone(), methods.clone());
+                if let Some(id) = interface.structs.get(&item) {
+                    imports.structs.insert(local, id.clone());
+                    if let Some(methods) = interface.methods.get(id) {
+                        imports.methods.insert(id.clone(), methods.clone());
                     }
-                } else if let Some(ty) = interface.lookup_oneof(&item) {
-                    imports.oneofs.insert(local, ty.clone());
+                } else if let Some(id) = interface.oneofs.get(&item) {
+                    imports.oneofs.insert(local, id.clone());
                 } else if let Some(ty) = interface.lookup_func(&item) {
                     imports.funcs.insert(local, ty.clone());
                 } else {

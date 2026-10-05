@@ -78,13 +78,24 @@ heavy or native backend dependencies behind a crate boundary.
   1. **cooper-frontend/src/resolve.rs** — Declaration resolution. Collects every top-level struct, sum type,
      function, and method into a global symbol table (`Globals`) and validates each declaration's
      signature in isolation (duplicate names, duplicate members/variants, undefined types, generic
-     arity, receiver/method well-formedness). Bodies are not walked here.
+     arity, value-recursive types, receiver/method well-formedness). Bodies are not walked here. It
+     runs in phases across all of a module's files — every type name is registered before any
+     member or signature is resolved — so a type may refer to one declared later, in another file,
+     or to itself.
   2. **cooper-frontend/src/typecheck.rs** — Type checking. Walks function and module bodies against `Globals`,
      assigning a type to every expression, with its own stack of block-scoped variable bindings.
      Undefined-variable detection falls out of identifier lookup here.
   3. **cooper-frontend/src/semantic.rs** — Semantic analysis. Control-flow validation only: every function with a
      non-unit return type must return on all paths, and code made unreachable by a preceding return
      is reported.
+
+* **Types are nominal references.** A struct or sum type `Type` carries only its identity (`TypeId`:
+  defining module and declared name) and type arguments; members and variants live once in a
+  `TypeDefs` table and are read substituted by those arguments. This lets a type refer to itself
+  through a pointer or array, keeps same-named types from different modules distinct however an
+  import aliases them, and makes equality and substitution cheap. Definitions accumulate
+  project-wide, so a dependent module can reach a type it never imports through another type's
+  members. A type that contains itself by value is rejected as infinitely large.
 
 ## Toward code generation: the typed lowering IR
 

@@ -171,11 +171,19 @@ pub fn check_type_sizes(globals: &Globals, decls: &[Stmt], diags: &mut Vec<Diagn
         let Some(ty) = ty else { continue };
         let mut path = Vec::new();
         if contains_by_value(&ty, &ty, &globals.defs, &mut path) {
+            // Name the type as written at a use site: a generic one applied to its own
+            // parameters, parenthesised since juxtaposition binds looser than `^`/`[]`.
+            let params = globals.defs.type_params(&ty);
+            let spelled = if params.is_empty() {
+                ty.to_string()
+            } else {
+                format!("({ty} {})", params.join(" "))
+            };
             diags.push(Diagnostic::error(
                 stmt.span,
                 format!(
                     "type {ty} contains itself by value and would be infinitely large; \
-                     recurse through a pointer ({ty}^) or an array ({ty}[])"
+                     recurse through a pointer `{spelled}^` or an array `{spelled}[]`"
                 ),
             ));
         }

@@ -12,8 +12,9 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Span};
 use crate::resolve::{self, Globals};
 use crate::types::{
-    incomparable_part, is_float_name, is_integer, is_integer_name, is_numeric, is_numeric_name,
-    is_primitive, is_unit, unify, Type, TypeDefs, TypeId, DEFAULT_FLOAT, DEFAULT_INT, SIGNED_INTS,
+    display_pair, incomparable_part, is_float_name, is_integer, is_integer_name, is_numeric,
+    is_numeric_name, is_primitive, is_unit, unify, Type, TypeDefs, TypeId, DEFAULT_FLOAT,
+    DEFAULT_INT, SIGNED_INTS,
 };
 
 /// The result of type checking one file: its diagnostics, and the type attributed to
@@ -241,10 +242,11 @@ impl<'g> TypeChecker<'g> {
         let bound = match (&declared, &value_type) {
             (Some(declared), Some(value)) => {
                 if !declared.equals(value) {
+                    let (declared_shown, value_shown) = display_pair(declared, value);
                     self.err(
                         span,
                         format!(
-                            "type mismatch: variable {name} declared as {declared} but initialized with {value}"
+                            "type mismatch: variable {name} declared as {declared_shown} but initialized with {value_shown}"
                         ),
                     );
                 }
@@ -312,9 +314,10 @@ impl<'g> TypeChecker<'g> {
                 "cannot return a value from a function with no declared return type",
             );
         } else if !expr_type.equals(&return_type) {
+            let (return_type_shown, expr_type_shown) = display_pair(&return_type, &expr_type);
             self.err(
                 expr.span,
-                format!("return type mismatch: expected {return_type}, found {expr_type}"),
+                format!("return type mismatch: expected {return_type_shown}, found {expr_type_shown}"),
             );
         }
     }
@@ -349,10 +352,13 @@ impl<'g> TypeChecker<'g> {
             if let Some(arm_type) = arm_type {
                 match &match_type {
                     None => match_type = Some(arm_type),
-                    Some(prev) if !prev.equals(&arm_type) => self.err(
-                        arm.body.span,
-                        format!("match arms have mismatched types: {prev} and {arm_type}"),
-                    ),
+                    Some(prev) if !prev.equals(&arm_type) => {
+                        let (prev_shown, arm_shown) = display_pair(prev, &arm_type);
+                        self.err(
+                            arm.body.span,
+                            format!("match arms have mismatched types: {prev_shown} and {arm_shown}"),
+                        )
+                    }
                     _ => {}
                 }
             }
@@ -446,9 +452,14 @@ impl<'g> TypeChecker<'g> {
         let struct_name = id.name.clone();
         let members = self.globals.defs.struct_members(ty).unwrap_or_default();
         if self.globals.structs.get(name) != Some(id) {
+            let named = self.globals.lookup_struct(name);
+            let (name_shown, ty_shown) = match &named {
+                Some(named) => display_pair(named, ty),
+                None => (name.to_string(), ty.to_string()),
+            };
             self.err(
                 span,
-                format!("pattern names struct {name} but the scrutinee has type {struct_name}"),
+                format!("pattern names struct {name_shown} but the scrutinee has type {ty_shown}"),
             );
             return;
         }
@@ -492,10 +503,15 @@ impl<'g> TypeChecker<'g> {
         let oneof_name = id.name.clone();
         if let Some(type_name) = type_name {
             if self.globals.oneofs.get(type_name) != Some(id) {
+                let named = self.globals.lookup_oneof(type_name);
+                let (name_shown, ty_shown) = match &named {
+                    Some(named) => display_pair(named, ty),
+                    None => (type_name.to_string(), ty.to_string()),
+                };
                 self.err(
                     span,
                     format!(
-                        "pattern names sum type {type_name} but the scrutinee has type {oneof_name}"
+                        "pattern names sum type {name_shown} but the scrutinee has type {ty_shown}"
                     ),
                 );
                 return;
@@ -798,9 +814,10 @@ impl<'g> TypeChecker<'g> {
                 if is_primitive(&left, "bool") && is_primitive(&right, "bool") {
                     return Some(Type::Primitive("bool".to_string()));
                 }
+                let (left_shown, right_shown) = display_pair(&left, &right);
                 self.err(
                     span,
-                    format!("invalid operands for {}: {left} and {right}", op.symbol()),
+                    format!("invalid operands for {}: {left_shown} and {right_shown}", op.symbol()),
                 );
                 None
             }
@@ -821,15 +838,17 @@ impl<'g> TypeChecker<'g> {
                         {
                             return Some(Type::Primitive("string".to_string()));
                         }
+                        let (left_shown, right_shown) = display_pair(&left, &right);
                         self.err(
                             span,
-                            format!("invalid operands for {}: {left} and {right}", op.symbol()),
+                            format!("invalid operands for {}: {left_shown} and {right_shown}", op.symbol()),
                         );
                         None
                     }
                     BinaryOp::Eq | BinaryOp::Ne => {
                         if !left.equals(&right) {
-                            self.err(span, format!("cannot compare {left} and {right}"));
+                            let (left_shown, right_shown) = display_pair(&left, &right);
+                            self.err(span, format!("cannot compare {left_shown} and {right_shown}"));
                             return None;
                         }
                         if let Some(part) = incomparable_part(&left, &self.globals.defs) {
@@ -847,9 +866,10 @@ impl<'g> TypeChecker<'g> {
                         if is_numeric(&left) && left.equals(&right) {
                             return Some(Type::Primitive("bool".to_string()));
                         }
+                        let (left_shown, right_shown) = display_pair(&left, &right);
                         self.err(
                             span,
-                            format!("invalid operands for {}: {left} and {right}", op.symbol()),
+                            format!("invalid operands for {}: {left_shown} and {right_shown}", op.symbol()),
                         );
                         None
                     }
@@ -907,9 +927,10 @@ impl<'g> TypeChecker<'g> {
                 continue;
             };
             if !actual.equals(&elem_type) {
+                let (elem_type_shown, actual_shown) = display_pair(&elem_type, &actual);
                 self.err(
                     elem.span,
-                    format!("array element type mismatch: expected {elem_type}, found {actual}"),
+                    format!("array element type mismatch: expected {elem_type_shown}, found {actual_shown}"),
                 );
             }
         }
@@ -1094,9 +1115,10 @@ impl<'g> TypeChecker<'g> {
             self.expected = Some(param.clone());
             let arg_type = self.check_expr(arg)?;
             if !param.equals(&arg_type) {
+                let (param_shown, arg_type_shown) = display_pair(param, &arg_type);
                 self.err(
                     arg.span,
-                    format!("argument {} type mismatch: expected {param}, found {arg_type}", i + 1),
+                    format!("argument {} type mismatch: expected {param_shown}, found {arg_type_shown}", i + 1),
                 );
                 return None;
             }
@@ -1197,12 +1219,12 @@ impl<'g> TypeChecker<'g> {
         for (i, (arg, slot)) in args.iter().zip(&payload).enumerate() {
             let arg_type = self.check_expr_expecting(arg, Some(slot.substitute(&subst)))?;
             if !unify(slot, &arg_type, &mut subst) {
+                let (slot_shown, arg_shown) = display_pair(&slot.substitute(&subst), &arg_type);
                 self.err(
                     arg.span,
                     format!(
-                        "argument {} to variant {name}.{variant} type mismatch: expected {}, found {arg_type}",
+                        "argument {} to variant {name}.{variant} type mismatch: expected {slot_shown}, found {arg_shown}",
                         i + 1,
-                        slot.substitute(&subst)
                     ),
                 );
                 return None;
@@ -1290,10 +1312,11 @@ impl<'g> TypeChecker<'g> {
                     );
                 }
             } else if !member_type.equals(&value_type) {
+                let (value_type_shown, member_type_shown) = display_pair(&value_type, member_type);
                 self.err(
                     member.value.span,
                     format!(
-                        "cannot assign {value_type} to {member_type} of struct member {}",
+                        "cannot assign {value_type_shown} to {member_type_shown} of struct member {}",
                         member.name
                     ),
                 );
@@ -1496,24 +1519,27 @@ impl<'g> TypeChecker<'g> {
         match op {
             AssignOp::Assign => {
                 if !target_type.equals(value_type) {
-                    self.err(span, format!("cannot assign {value_type} to {target_type}"));
+                    let (value_type_shown, target_type_shown) = display_pair(value_type, target_type);
+                    self.err(span, format!("cannot assign {value_type_shown} to {target_type_shown}"));
                 }
             }
             AssignOp::Add => {
                 let numeric = is_numeric(target_type) && is_numeric(value_type);
                 let strings = is_primitive(target_type, "string") && is_primitive(value_type, "string");
                 if !numeric && !strings {
+                    let (target_type_shown, value_type_shown) = display_pair(target_type, value_type);
                     self.err(
                         span,
-                        format!("invalid operands for {}: {target_type} and {value_type}", op.symbol()),
+                        format!("invalid operands for {}: {target_type_shown} and {value_type_shown}", op.symbol()),
                     );
                 }
             }
             AssignOp::Sub | AssignOp::Mul | AssignOp::Div => {
                 if !(is_numeric(target_type) && is_numeric(value_type)) {
+                    let (target_type_shown, value_type_shown) = display_pair(target_type, value_type);
                     self.err(
                         span,
-                        format!("invalid operands for {}: {target_type} and {value_type}", op.symbol()),
+                        format!("invalid operands for {}: {target_type_shown} and {value_type_shown}", op.symbol()),
                     );
                 }
             }
@@ -1561,9 +1587,10 @@ impl<'g> TypeChecker<'g> {
             if let Some(declared) = &declared {
                 let declared_elem = &declared[i];
                 if !declared_elem.equals(&elem_type) {
+                    let (declared_elem_shown, elem_type_shown) = display_pair(declared_elem, &elem_type);
                     self.err(
                         value.span,
-                        format!("type mismatch: {name} declared as {declared_elem} but bound to {elem_type}"),
+                        format!("type mismatch: {name} declared as {declared_elem_shown} but bound to {elem_type_shown}"),
                     );
                 }
                 self.define_var(name, declared_elem.clone());
@@ -1582,9 +1609,10 @@ impl<'g> TypeChecker<'g> {
         let then_type = self.check_expr(then)?;
         let else_type = self.check_expr(els)?;
         if !then_type.equals(&else_type) {
+            let (then_type_shown, else_type_shown) = display_pair(&then_type, &else_type);
             self.err(
                 then.span.to(els.span),
-                format!("if-expression branches have mismatched types: {then_type} and {else_type}"),
+                format!("if-expression branches have mismatched types: {then_type_shown} and {else_type_shown}"),
             );
             return None;
         }

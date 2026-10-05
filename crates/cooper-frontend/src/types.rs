@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 /// The identity of a declared struct or sum type: the dotted path of its defining
@@ -348,37 +348,108 @@ pub(crate) fn incomparable_part(t: &Type, defs: &TypeDefs) -> Option<Type> {
     }
 }
 
-impl fmt::Display for Type {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+/// Render `a` and `b` for a diagnostic that sets them side by side. Distinct
+/// declarations sharing a name are qualified by their module path (`a.Node` versus
+/// `b.Node`) so the two never read alike; everything else renders as [`Display`].
+///
+/// [`Display`]: fmt::Display
+pub fn display_pair(a: &Type, b: &Type) -> (String, String) {
+    let mut ids = Vec::new();
+    a.collect_ids(&mut ids);
+    b.collect_ids(&mut ids);
+    let mut by_name: HashMap<&str, &TypeId> = HashMap::new();
+    let mut qualify = HashSet::new();
+    for id in ids {
+        if let Some(seen) = by_name.insert(&id.name, id) {
+            if seen != id {
+                qualify.insert(id.name.clone());
+            }
+        }
+    }
+    let render = |ty: &Type| Rendered { ty, qualify: &qualify }.to_string();
+    (render(a), render(b))
+}
+
+impl Type {
+    /// Every declaration identity `self` mentions, including within type arguments.
+    fn collect_ids<'a>(&'a self, out: &mut Vec<&'a TypeId>) {
         match self {
+            Type::Array(elem) | Type::Pointer(elem) => elem.collect_ids(out),
+            Type::Tuple(elems) => elems.iter().for_each(|e| e.collect_ids(out)),
+            Type::Func {
+                return_type,
+                param_types,
+            } => {
+                param_types.iter().for_each(|p| p.collect_ids(out));
+                return_type.collect_ids(out);
+            }
+            Type::Struct { id, type_args } | Type::Oneof { id, type_args } => {
+                out.push(id);
+                type_args.iter().for_each(|a| a.collect_ids(out));
+            }
+            Type::Unknown
+            | Type::Unit
+            | Type::Primitive(_)
+            | Type::Nil
+            | Type::TypeParam(_)
+            | Type::Module(_) => {}
+        }
+    }
+}
+
+/// A type rendered with the declarations named in `qualify` spelled with their
+/// module path.
+struct Rendered<'a> {
+    ty: &'a Type,
+    qualify: &'a HashSet<String>,
+}
+
+impl fmt::Display for Rendered<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let r = |ty| Rendered { ty, qualify: self.qualify };
+        match self.ty {
             Type::Unknown => write!(f, "<unknown>"),
             Type::Unit => write!(f, "()"),
             Type::Primitive(name) => write!(f, "{}", name),
-            Type::Array(elem) => write!(f, "{}[]", elem),
-            Type::Pointer(elem) => write!(f, "{}^", elem),
+            Type::Array(elem) => write!(f, "{}[]", r(elem)),
+            Type::Pointer(elem) => write!(f, "{}^", r(elem)),
             Type::Nil => write!(f, "nil"),
             Type::Tuple(elems) => {
-                let parts: Vec<String> = elems.iter().map(|e| e.to_string()).collect();
+                let parts: Vec<String> = elems.iter().map(|e| r(e).to_string()).collect();
                 write!(f, "({})", parts.join(", "))
             }
             Type::Func {
                 return_type,
                 param_types,
             } => {
-                let params: Vec<String> = param_types.iter().map(|p| p.to_string()).collect();
-                write!(f, "func({}):{}", params.join(","), return_type)
+                let params: Vec<String> = param_types.iter().map(|p| r(p).to_string()).collect();
+                write!(f, "func({}):{}", params.join(","), r(return_type))
             }
             Type::Struct { id, type_args } | Type::Oneof { id, type_args } => {
-                let name = &id.name;
+                let name = if self.qualify.contains(&id.name) {
+                    format!("{}.{}", id.module, id.name)
+                } else {
+                    id.name.clone()
+                };
                 if type_args.is_empty() {
                     write!(f, "{}", name)
                 } else {
-                    let args: Vec<String> = type_args.iter().map(|a| a.to_string()).collect();
+                    let args: Vec<String> = type_args.iter().map(|a| r(a).to_string()).collect();
                     write!(f, "{} {}", name, args.join(" "))
                 }
             }
             Type::TypeParam(name) => write!(f, "{}", name),
             Type::Module(path) => write!(f, "module {}", path.join(".")),
         }
+    }
+}
+
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Rendered {
+            ty: self,
+            qualify: &HashSet::new(),
+        }
+        .fmt(f)
     }
 }

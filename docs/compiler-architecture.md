@@ -100,12 +100,20 @@ heavy or native backend dependencies behind a crate boundary.
 ## Toward code generation: the typed lowering IR
 
 The seam between the frontend and any backend is a typed intermediate representation, built by the
-`cooper-ir` crate. Lowering consumes the types the frontend already computes: type checking records a
-per-file `span → Type` table as it checks rather than discarding each expression's type, and lowering
-reads it to produce a typed, span-carrying IR where every node knows its resolved type and no name
-resolution or inference happens downstream. The IR is also the home for desugaring (`if` to `match`,
-index syntax and array methods to intrinsics) and for monomorphization, Cooper's generics model,
-which instantiates each generic function and method per concrete type-argument set.
+`cooper-ir` crate. Lowering consumes what the frontend already computes: type checking records two
+per-file tables as it checks — `span → Type` for every expression, and `span → ItemRef` naming the
+declaration (by identity) and inferred type arguments of every function and method reference — and
+lowering reads them to produce a typed, span-carrying IR where every node knows its resolved type and
+every callee its declaration, so no name resolution or inference happens downstream. The IR is also
+the home for desugaring (`if` to `match`, index syntax and array methods to intrinsics).
+
+**Generics are monomorphized as an IR→IR pass.** Lowering keeps a generic function as a template
+whose types name its binders. `monomorphize` starts from the non-generic functions, instantiates each
+referenced (declaration, type arguments) pair once by substituting the arguments through the
+template, and follows the references each instance makes; unreached templates are dropped, and
+polymorphic recursion is reported once type arguments grow past a size bound. `check_project` and
+`lower_program` drive this for a whole project, yielding a `Program` of concrete function instances
+together with the `TypeDefs` their types name.
 
 **Runtime stays behind the IR→backend boundary.** The IR models every runtime-touching operation —
 allocation, array growth, copies — as an abstract, typed *intrinsic*, never a concrete runtime call

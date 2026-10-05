@@ -1,16 +1,9 @@
 # Control Flow
 
-## Decision
-
-Cooper has one iteration construct, `for`, over a fixed set of built-in iterables,
-and four conditional loops arranged as a pre-test/post-test × while/until matrix.
-
-Every loop follows the same shape as `if … then`: `<header> <keyword> <body>`,
-where the body is a braced block or a single statement. The delimiter keyword marks
-where the header ends and the body begins, so a struct literal in a header reads
-unambiguously.
-
-Loops are **statements** and evaluate to unit.
+Cooper has one iteration construct, `for`, over built-in iterables, and four conditional
+loops forming a pre-test/post-test × while/until matrix. Every loop has the shape of
+`if … then`: a header, a delimiter keyword, then a body that is a braced block or a single
+statement. Loops are statements of unit type.
 
 ## The loop matrix
 
@@ -34,19 +27,16 @@ BODY     ::= "{" stmt* "}" | stmt
 BINDINGS ::= ident | "(" ident ("," ident)+ ")"
 ```
 
-`break` and `continue` are bare statements that target the innermost loop;
-using either outside a loop is a compile error. Labels and break-with-value may
-get introduced later but for now, they are out of scope.
+`break` and `continue` target the innermost loop. Using either outside a loop is a compile
+error.
 
 ## Iteration
 
-* **Range** `a..b` is half-open and `a..=b` includes `b`. Both endpoints share one
-  integer type, and a bare literal range such as `0..10` defaults to `i32` like any
-  integer literal. A range binds a single loop variable of that element type and is
-  meaningful only as a `for` iterable.
-* **Array** `T[]` binds either the element (`for v in xs`) or an
-  `(index: i32, value: T)` pair (`for (i, v) in xs`).
-* Any other iterand type is rejected with "cannot iterate over type …".
+* **Range:** `a..b` is half-open and `a..=b` includes `b`. Both endpoints share one integer
+  type (a bare `0..10` is `i32`), which the single loop variable takes. A range is valid only
+  as a `for` iterable.
+* **Array:** `T[]` binds the element (`for v in xs`) or an index and the element
+  (`for (i, v) in xs`, with `i: i32`).
 
 ```
 total := 0
@@ -66,11 +56,9 @@ repeat n -= 1 until n == 0            # runs at least once
 
 ## Header expressions and newlines
 
-Semicolon inference (see [Syntax Fundamentals](syntax-fundamentals.md)) rewrites a
-newline to a statement terminator between statements. Inside a header expression —
-an `if`/`while`/`until` condition, a `for` iterable, or a `match` scrutinee —
-newlines are insignificant, exactly as they are inside brackets. A condition may
-therefore wrap across lines, and its delimiter keyword may sit on a later line:
+Newlines are insignificant inside a header expression (an `if`/`while`/`until` condition, a
+`for` iterable, or a `match` scrutinee), so a header may wrap and its delimiter keyword may
+sit on a later line:
 
 ```
 while a
@@ -82,9 +70,5 @@ for i in
 do total += i
 ```
 
-A braced block is a statement context even when it appears inside a header, so its
-own statements still terminate at newlines.
-
-The post-test condition in `do BODY while COND` and `repeat BODY until COND` is the
-final component of the statement, so its terminating newline ends the loop; a
-multi-line post-test condition is parenthesised.
+A braced block inside a header is still a statement context. A post-test condition ends at
+its newline, so a multi-line one is parenthesised.

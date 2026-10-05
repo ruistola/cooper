@@ -2,279 +2,154 @@
 
 ## Source encoding
 
-* Program sources are UTF-8.
-  * Current lexer only tokenizes a narrow ASCII subset (to be expanded).
-* Strings are by default encoded in UTF-8.
-  * TODO: `rune` type for representing an individual code point (or grapheme — TBD).
+Sources and strings are UTF-8. The lexer currently accepts an ASCII subset. A type for a
+single code point or grapheme is still to be decided.
 
 ## Semicolon inference
 
-Semicolons act as statement separators and/or terminators. However, an endline can be
-automatically converted into a semicolon, so explicit semicolons are rarely needed.
+Semicolons separate statements, and a newline becomes one when both of these hold, following
+Ahnfelt's variant of Scala's rule:
 
-One reason to type an explicit semicolon: when a function or block expression is intended to
-return nothing (the unit type).
+1. the token before the newline can end a statement, and
+2. the token after it can begin one.
 
-* `foo` at the end of a block → the block's type is the type of `foo` (e.g. `i32`).
-* `foo;` at the end of a block → the block's type is the unit type.
+Newlines are insignificant inside parentheses and brackets, inside `if`/loop/`match` headers
+(see [Control Flow](./control-flow.md#header-expressions-and-newlines)), and directly before a
+closing `}`. A block evaluates to its trailing expression; ending the block with an explicit
+`;` makes it unit instead:
 
-### Inference algorithm
-
-Based on the Ahnfelt variant of the Scala implementation:
-
-Given two consecutive tokens `a` and `b` separated by an `EOL` token (endline):
-
-1. If `a` is in the `beforeSemicolon` category (a semicolon immediately after `a` is syntactically valid), **and**
-2. If `b` is in the `afterSemicolon` category (a semicolon immediately before `b` is syntactically valid),
-
-then the `EOL` token is converted into a semicolon.
-
-### Additional details
-
-* Redundant consecutive endlines are eliminated in the tokenization phase, as are all other
-  whitespace tokens.
-* Endline-to-semicolon conversions are disabled within parentheses (allowing multi-line
-  expressions without escaping).
+```
+{ foo }      # the type of foo
+{ foo; }     # unit
+```
 
 ## Naming conventions
 
-* **Types**: PascalCase (e.g., `MyStruct`, `Color`). Capitalization disambiguates types from
-  instances — not used for visibility/access control (unlike Go).
-* **Functions, methods, variables, fields**: camelCase (e.g., `myFunc`, `isValid`).
-* **Visibility**: Not determined by capitalization. Separate mechanism TBD.
+Types are PascalCase; functions, methods, variables, and fields are camelCase. Casing carries
+no visibility meaning. The visibility mechanism is still to be designed.
 
-## Type expressions
+## Arrays
 
-### Array notation
-
-An **array** is Cooper's default sequence type: a dynamic, growable run of elements
-(conceptually `{ data, length, capacity }`). It is written with postfix brackets:
+`T[]` is the default sequence type: a growable run of elements with a length and capacity.
+A **static array** `T[N]` has a fixed compile-time length.
 
 ```
 let items: i32[]
 let matrix: i32[][]
 let callbacks: func(i32)[]
+let rgb: u8[3]
+let grid: i32[8][8]
 ```
 
-This follows C#/TypeScript convention (`Type[]`) rather than Go's prefix (`[]Type`).
-
-A **static array** has a fixed compile-time length, written by placing that length inside
-the brackets. It is the exceptional case — a known, non-resizable block of memory — chosen
-when the size is fixed and the extra guarantees enable optimization:
-
-```
-let rgb: u8[3]           # exactly three bytes, never reallocated
-let grid: i32[8][8]      # fixed 8×8
-```
-
-### Array literals
-
-An array value is written as a bracketed, comma-separated list. This keeps `[...]` for
-sequences and reserves `{...}` for records/aggregates:
+An array literal is a bracketed, comma-separated list. An annotation fixes its element type.
+Otherwise the element type comes from the first element that is not a bare numeric literal or
+`nil`, and an all-literal list takes a float type if any literal is a float. An empty literal
+needs an annotation.
 
 ```
 let xs: i32[] = [0, 1, 2, 4, 8]
-ys := [0, 1, 2, 4, 8]        # ys : i32[], element type inferred
-empty := []                  # needs an annotation to fix the element type
+ys := [1, 2.5]               # f32[]
+let empty: f64[] = []
 ```
 
-There is no `new` or `make` keyword. Zero-defaults, literals, and (later) a small set of
-ordinary builtin constructor *functions* for capacity hints cover construction; the
-programmer never chooses stack versus heap.
+Values come from zero values, literals, and (later) built-in constructor functions for
+capacity hints. Whether a value lives on the stack or the heap is the compiler's decision.
 
-### Subranging: copy by default, share with `&`
+### Subranges and views
 
-Indexing with a range yields a **new array** — an independent copy — not a view onto the
-original backing store:
-
-```
-let xs: i32[] = [0, 1, 2, 4, 8]
-let ys: i32[] = xs[2..]      # a fresh i32[] holding 2, 4, 8; independent of xs
-```
-
-Arrays have value semantics, so the safe thing happens by default: mutating `ys` never
-touches `xs`. Sharing a backing store is the less common, more hazardous case, so it costs
-one visible sigil — the `&` "reference into" operator — applied at the point the aliasing
-is introduced:
+Indexing with a range yields a fresh copy. `&` instead yields a **view**, an ordinary `T[]`
+sharing the original's storage, or, for a single index, a pointer to the element:
 
 ```
-let ws: i32[] = &xs[2..]     # a *view*: shares xs' backing, no copy
-ws[0] = 99                   # writes through — xs[2] is now 99
+let ys: i32[] = xs[2..]      # copy of 2, 4, 8
+let ws: i32[] = &xs[2..]     # view: ws[0] = 99 writes xs[2]
+let p: i32^ = &xs[2]         # pointer to one element
 ```
 
-The shape of the selection picks what `&` produces: a scalar index yields a single-element
-pointer, a range yields a shared array view.
+**`&` shares elements; growth always forks.** A view starts with capacity equal to its
+length, so appending to it reallocates into fresh storage. Appending returns the possibly-new
+array:
 
 ```
-let p: i32^  = &xs[2]        # pointer to one element
-let v: i32[] = &xs[3..]      # shared view of a run of elements
+xs = xs.push(9)
 ```
 
-A view is **not a new type.** It is an ordinary `i32[]` whose data pointer aliases another
-array's storage, so it passes to any function expecting `i32[]` and needs no separate
-annotation. Under the tracing collector, two headers sharing one backing store is memory
-safe; the only question is behavior, which one rule settles:
+A function that appends returns the array. Arrays with outstanding views may reallocate on
+growth, after which the views still see the old storage.
 
-> **`&` shares elements; growth always forks.**
+## Pointers
 
-* **Element writes are shared.** Writing through a view mutates the common backing — that
-  is exactly what you asked for by typing `&`, and it is visible at the creation site.
-* **Growth never is.** A view is born with `capacity == length` (no spare room), so *any*
-  append to it must reallocate into fresh storage and detach. A view can never grow into —
-  and clobber — the array it borrows from.
-
-Growth therefore follows an explicit return-value idiom, since an append may hand back the
-same array (if it had spare capacity) or an entirely new one (a full owner, or any view):
+`T^` is a pointer to `T`. In value position the postfix `^` dereferences, prefix `&` takes an
+address, and member access dereferences automatically. The caret is used only for pointers.
 
 ```
-xs = xs.push(9)              # reassign: the result may or may not be the original xs
+let p: Point^
+let pp: Point^^
+let ps: Point^[]         # array of pointers
+let sp: Point[]^         # pointer to an array
+
+p^.value = 10            # explicit dereference
+let x: i32 = p.value     # automatic dereference
 ```
 
-A function that appends must return the possibly-new array; a signature that does **not**
-return a `T[]` thereby signals it will not grow what it was given. The one residual sharp
-edge is inherited and mild: pushing to an array that has outstanding views may reallocate
-it, after which those views observe the pre-growth backing rather than the new one.
+`nil` is the value of a pointer with no target. Dereferencing it yields zero values (see
+[Memory and the Object Model](./memory-and-object-model.md)).
 
-### Pointer notation
+## Function types
 
-Pointers use postfix caret notation, consistent with the postfix array notation
-(the caret is dedicated to pointers, so `^` is never multiplication or bitwise
-operations):
+A function type lists parameter types and the return type, without parameter names:
 
 ```
-let p: Point^        # pointer to a Point
-let pp: Point^^      # pointer to a pointer to a Point
-let ps: Point^[]     # array of pointers to Point
-let sp: Point[]^     # pointer to an array of Point
+func run(step: func(Request, Duration): Response) { … }
 ```
 
-The same caret is the postfix dereference operator in value position, mirroring
-how `[]` constructs an array type but indexes an array value:
+Types are written where they are used. There is no alias declaration. A distinct nominal type
+backed by an existing one (e.g. `LengthMm` over `i32`) is a planned feature with its own
+keyword.
+
+## Tuples
+
+A tuple is an anonymous, structural product type of two or more elements, compared by shape.
+`(T)` is just `T` in parentheses, and `()` is unit.
 
 ```
-let x: i32 = p^.value   # dereference (explicit form: (p^).value)
-p^.value = 10           # assign through a pointer
+let pair: (i32, string) = (1, "a")
+let nested: (i32, (string, bool))
 ```
-
-Related operators and values:
-
-* **`&expr`** — prefix address-of, yielding a pointer to an addressable operand (a
-  variable, struct field, array element, or dereference). Temporaries are not addressable.
-* **`p^`** — postfix dereference. Member access auto-dereferences, so `p.value`
-  works directly on a `Point^`; the explicit `p^.value` is equivalent.
-* **`nil`** — the absent value of a pointer type. Dereferencing nil does not panic;
-  it behaves as an inert stand-in yielding zero values. See
-  [Memory and the Object Model](./memory-and-object-model.md) for the semantics of
-  nil, addressability, and how objects live in memory.
-
-### Function type expressions
-
-A function type carries only the parameter types and return type — no parameter names:
-
-```
-let handler: func(Request, Duration): Response
-```
-
-Parameter names are **not allowed** in function type expressions. Rationale: if names are
-inconsequential (not checked or matched), their presence is misleading. Names belong in
-function _declarations_ (where they're used in the body), not in type expressions.
-
-```
-# Function declaration — names required (used in body)
-func process(req: Request, timeout: Duration): Response { ... }
-
-# The same signature as a type — types only, written inline where it is needed
-func run(step: func(Request, Duration): Response) { ... }
-```
-
-Cooper has **no `type` keyword** and no cosmetic type aliases: a function type (or any
-other type) is written directly at the binding or parameter that uses it, keeping the
-shape local to its point of use rather than behind an inert nickname. Naming a distinct
-*nominal* type over an existing one (e.g. a `LengthMm` backed by `i32`) is a separate,
-deferred feature that will lead with its own declaring keyword.
-
-### Tuple types
-
-A tuple is an anonymous, structural product type written as a parenthesised list of
-element types. Tuples are compared by shape: arity and element types, positionally.
-
-```
-let pair: (i32, string)          # a 2-tuple
-let nested: (i32, (string, bool)) # tuples nest
-let pairs: (i32, string)[]       # array of tuples
-```
-
-Parentheses without a comma are not tuples: `(T)` collapses to `T` (grouping) and
-`()` is the unit type. A tuple therefore always has at least two elements. Tuple
-_values_ mirror the type syntax: `(1, "a")` is a `(i32, string)`.
 
 ## Variable bindings
 
-A `let` binds a name with an explicit type, an optional initializer, or both:
+`let` binds a name with a type, an initializer, or both. `:=` declares and initializes,
+inferring the type:
 
 ```
 let count: i32 = 0
-let name: string        # declared, no initializer
+let name: string
+total := 0
 ```
 
-The walrus operator `:=` declares and initializes in one step, inferring the type
-from the right-hand side (no annotation is permitted):
+A parenthesised pattern destructures a tuple positionally. Any annotation goes on the `let`,
+not inside the pattern. The same shape on the left of `=` reassigns existing variables:
 
 ```
-total := 0              # total: i32
-label := "start"        # label: string
-```
-
-### Destructuring
-
-A parenthesised pattern binds the elements of a tuple positionally. Patterns are
-untyped — any type annotation lives on the enclosing `let`, never inside the
-pattern. The pattern's arity must match the tuple's.
-
-```
-(x, y) := origin()              # types inferred from the result tuple
-let (a, b): (i32, string) = row # annotation on the `let`, checked element-wise
-```
-
-The same pattern shape reassigns existing variables when the left of `=` is a tuple
-of assignable targets:
-
-```
-(a, b) = (b, a)                 # positional reassignment
+(x, y) := origin()
+let (a, b): (i32, string) = row
+(a, b) = (b, a)
 ```
 
 ## Logical and bitwise operators
 
-Cooper keeps a small operator vocabulary by a single rule: **a symbol is a unary prefix,
-a keyword is a binary infix.** Negation is therefore the symbol `!`; the binary logical and
-bitwise connectives are the keywords `and`, `or`, `xor`.
+A symbol is a unary prefix and a keyword is a binary infix: negation is `!`, and the binary
+connectives are `and`, `or`, and `xor`. Each is logical on `bool` operands and bitwise on
+integer operands. Mixed operands are a type error. On `bool`, `and` and `or` short-circuit.
+Shifts are `<<` and `>>`.
 
 ```
-if !ready and pending or !blocked { ... }
+if !ready and pending or !blocked then start()
 ```
-
-`and`, `or`, `xor`, and `!` are **type-directed**: on `bool` operands they are logical, on
-integer operands they are bitwise. Mixed operands are a type error, so there is never
-ambiguity about which meaning applies.
-
-* On `bool`, `and` and `or` **short-circuit** (the right operand is skipped when the left
-  already decides the result); `!` is logical negation.
-* On integers, `and`/`or`/`xor` are **eager** bitwise operations (both operands always
-  evaluated) and `!` is bitwise complement. `xor` has no short-circuiting form in either
-  case.
-
-Bit shifts keep their conventional symbols, which are unambiguous: `x << 2`, `x >> 1`.
 
 ## Chained comparison
 
-Comparisons may be chained when they run in a single direction, which reads better than a
-repeated conjunction:
-
-```
-if min <= x <= max { ... }        # equivalent to: min <= x and x <= max
-```
-
-A chain desugars to the conjunction of its adjacent pairs, and each middle operand is
-evaluated exactly once. Only **monotonic** chains are allowed: the links must all be
-`<`/`<=` or all be `>`/`>=`. A direction-mixing chain such as `a < b > c` is rejected.
-
+A comparison chain running in one direction desugars to the conjunction of its adjacent
+pairs, evaluating each middle operand once. `min <= x <= max` means `min <= x and x <= max`.
+Chains must be all `<`/`<=` or all `>`/`>=`.

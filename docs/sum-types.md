@@ -1,11 +1,7 @@
 # Sum Types
 
-## Decision
-
-Cooper models tagged unions with the **`oneof`** keyword. A `oneof` declares a set
-of named **variants**, each optionally carrying a positional payload. It is a
-nominal type: distinct declarations never interchange, and a generic instantiation
-is identified by its name together with its inferred type arguments.
+A `oneof` declares a nominal tagged union: a set of named **variants**, each with an
+optional positional payload. Variants are not types; they exist only within their `oneof`.
 
 ```
 oneof Color { Red, Green, Blue }
@@ -21,58 +17,15 @@ oneof Result T E {
 }
 ```
 
-`Circle`, `Ok`, and friends are **variants**, not types; they exist only inside their
-`oneof` and are always reached through it.
+A payload is a parenthesised, comma-separated list of type expressions, which may be generic
+applications (`Full(Box i32)`). A generic `oneof` binds its type parameters after its name,
+like a struct. Each instantiation is a distinct type: `Maybe i32` is not `Maybe string`.
+The words `enum` and `union` are kept free for possible C-style integer enumerations and
+untagged unions.
 
-## Why `oneof`
+## Construction
 
-* `enum` and `union` are deliberately **reserved** for possible future C-style
-  features (integer-backed enumerations, untagged unions) and are not even lexed.
-  Using either here would foreclose that space.
-* `oneof` reads as exactly what the type is: a value that is one of several shapes.
-
-## Variants and payloads
-
-A variant is a PascalCase name followed by an optional **parenthesised,
-comma-delimited list of positional payload slots**:
-
-```
-None                 # payload-free
-Some(T)              # one slot
-Rect(i32, i32)       # two slots
-```
-
-Payloads are **positional only**. Named-field payloads are deferred — they are
-entangled with the anonymous-struct (record) decision and will be revisited then.
-
-Payload slots are ordinary type expressions, so they may themselves be generic
-applications:
-
-```
-oneof Holder { Full(Box i32) }
-```
-
-Juxtaposition was rejected for payloads because it collides with type-application
-juxtaposition (`Some T` would be ambiguous with applying `Some` to `T`); the
-parenthesised list keeps the two unambiguous.
-
-## Type parameters
-
-A generic `oneof` binds its type parameters by **juxtaposition on the declaration**,
-identically to `struct Map K V`:
-
-```
-oneof Maybe T { None, Some(T) }
-oneof Result T E { Ok(T), Err(E) }
-```
-
-The parameters are in scope throughout every variant's payload. An instantiation
-`Maybe i32` is nominal by name and arguments; `Maybe i32` and `Maybe string` are
-distinct types.
-
-## Construction is type-qualified
-
-A value is built by naming the `oneof` and then the variant:
+A variant is qualified by its sum type, never by a module path:
 
 ```
 Shape.Rect(3, 4)
@@ -81,129 +34,37 @@ Maybe.Some(5)
 Maybe.None
 ```
 
-Construction is qualified by the **type**, never by a module. A payload-free
-variant (`Color.Green`, `Maybe.None`) is a complete value on its own; a variant with
-a payload is completed by a call whose arguments fill its slots. The type name is the
-canonical spelling: once `Result` is brought into a file's scope by a name-binding
-`use` (`use { std.types.Result }`), one writes `Result.Ok(5)` — never the module path
-`std.types.Result.Ok(5)`.
-
-## Bare variants under an expected type
-
-The type qualifier may be **dropped** wherever the surrounding context already fixes
-which sum type is expected. There a bare variant names the variant directly:
+A payload-free variant is a complete value, and a variant with a payload is completed by a
+call that fills its slots. The qualifier may be dropped wherever an expected type fixes the
+sum type: an annotated `let`, a `return` under a declared return type, a call argument, or a
+`match` arm against its scrutinee. With no expected type, a bare variant is an error.
 
 ```
-let x: Result i32 string = Ok(5)              # annotation fixes the type
-func f(): Maybe i32 { return None }           # return type fixes the type
-match r with { Ok(n) => …, Err(e) => … }      # scrutinee fixes the type
+let x: Result i32 string = Ok(5)
+func f(): Maybe i32 { return None }
+let y = Ok(5)        # error: write Result.Ok(5)
 ```
 
-This is not the numeric-literal case, where a literal is inherently a number and
-context only chooses a width. A variant name like `Ok` is inherently nothing — it may
-belong to many sum types — so the qualifier is droppable **only** when an expected
-type pins the sum type down. With no expected type there is nothing to disambiguate
-against, and the bare form is a type error; the qualified form is required:
+A generic sum type's arguments are inferred from the payload arguments and the expected type.
+A construction that leaves a parameter undetermined is an error
+(`m := Maybe.None` cannot infer `T`).
 
-```
-let x = Ok(5)     # error: ambiguous variant; write Result.Ok(5)
-```
+## `match`
 
-The expected type is supplied by the same head-only mechanism that drives inference
-(annotated `let` initializers, `return` under a declared return type, call arguments
-against their parameter types). There is **no** leading-dot syntax: a bare variant is
-written as the plain variant name, and its sum type — carrying `Result` into scope —
-comes from the name-binding `use` described in *Modules and Projects*.
-
-## Inference and expected types
-
-There are no type arguments at construction sites; a generic `oneof`'s arguments are
-inferred. Two sources feed the inference:
-
-1. **The payload arguments.** Unifying each slot against its argument fixes the
-   parameters the payload mentions. `Maybe.Some(5)` fixes `T = i32`.
-2. **The expected type**, when the construction sits at an annotated `let`
-   initializer or a `return` whose function has a declared return type. This supplies
-   the parameters the payload cannot:
-
-```
-func good(): Result i32 string { return Ok(5) }    # payload fixes T, context fixes E
-func empty(): Maybe i32 { return None }            # context fixes T
-```
-
-Both returns sit under a declared return type, so the sum type is fixed and the
-variants are written bare; the qualified `Result.Ok(5)` / `Maybe.None` remain valid.
-The expected type is a **head-only** hint: it applies to the construction being
-checked and is not propagated into sub-expressions. Without it, a construction whose
-payload under-determines the parameters is rejected — and with no expected type there
-is also nothing to resolve a bare variant against, so it must be qualified:
-
-```
-func f() { m := Maybe.None }   # error: cannot infer type arguments for Maybe.None
-```
-
-This mirrors the discipline used for generic structs, tuples, and destructuring —
-**when in doubt, annotate; values stay clean.**
-
-## Where errors surface
-
-Everything beyond the shape of the declaration is a semantic concern, not a syntactic
-one. The parser accepts the general form; the resolver registers the type and its
-variants; the type checker enforces variant existence, payload arity, argument types,
-and argument inference. An unknown variant, a wrong arity, a mismatched payload, or an
-under-determined instantiation are all **type errors**.
-
-## Deconstruction with `match`
-
-A sum-type value is taken apart with `match`, which tests a scrutinee against a set
-of arms and runs the one whose pattern matches. The scrutinee expression is
-separated from the arm body by the **`with`** keyword, mirroring `if … then`:
+`match` tests a scrutinee against arms in order and runs the first that matches. `with`
+separates the scrutinee from the arms, as `then` does for `if`, and `=>` separates each
+pattern from its body:
 
 ```
 match shape with {
-  Circle(r) => area := pi * r * r
+  Circle(r) => area := 3 * r * r
   Rect(w, h) => area := w * h
 }
 ```
 
-The `with` keyword also removes the ambiguity between the arm-body braces and a
-struct literal in the scrutinee: the scrutinee is parsed up to `with`, and the body
-always begins at the following `{`.
-
-### Arms and patterns
-
-Each arm is `Pattern => body`. The fat arrow `=>` separates the two because a
-pattern is a richer sublanguage than a struct key — it carries its own parentheses
-and, in future, its own colons — and `=>` is the established pattern-matching
-separator. There is no fallthrough, so the C `switch` colon does not apply.
-
-A pattern is one of:
-
-* a **variant pattern** `Variant` or `Variant(binders…)`, where each binder is a
-  camelCase name that binds the corresponding positional payload slot, or `_` to
-  ignore that slot. The scrutinee fixes the sum type, so the variant is normally
-  written bare; a type-qualified `Type.Variant` is also accepted;
-* the **wildcard** `_`, a catch-all that matches any value and binds nothing.
-
-```
-Circle(r)      # binds r to the single payload slot
-Rect(w, _)     # binds w, ignores the second slot
-_              # catch-all
-```
-
-Payload binders are scoped to their own arm: a name bound in one arm is not visible
-in another, and each binder takes the type of the slot it names.
-
-An arm body follows the same rule as an `if` branch: a single expression or
-statement, or a braced `{ block }`. Arms are separated by inferred newlines or
-explicit semicolons; a braced-block arm self-terminates. There are no commas.
-
-### Statement and expression forms
-
-Like `if`, `match` exists in two forms chosen by position. In statement position
-the arm bodies are statements whose values are discarded. In expression position
-the arm bodies are expressions whose types must unify, and that common type is the
-type of the whole `match`:
+An arm body is a single expression or statement, or a braced block. Arms are separated by
+newlines or semicolons. In statement position the arm values are discarded. In expression
+position all arms must share one type, which is the type of the `match`:
 
 ```
 kind := match shape with {
@@ -212,20 +73,26 @@ kind := match shape with {
 }
 ```
 
-### Exhaustiveness
+The scrutinee may be a sum type, struct, tuple, `bool`, or integer. Patterns:
 
-A `match` must be **exhaustive** in both forms: the arms must cover every variant of
-the sum type, or end with a wildcard `_`. A match that leaves a variant unhandled
-without a wildcard is a type error. An exhaustive match whose every arm returns
-counts as returning on all paths, so it satisfies a function's return obligation.
+| Pattern | Matches |
+|---|---|
+| `_` | anything, binding nothing |
+| `name` | anything, binding it to `name` |
+| `Variant`, `Variant(a, _)` | a variant, binding payload slots by position (`_` ignores one) |
+| `Type.Variant(…)` | the same, qualified |
+| `true`, `false` | a `bool` constant |
+| `42`, `-1` | an integer constant |
+| `(p, q)` | a tuple, component-wise |
+| `Point { x: p, y: _ }` | a struct's listed fields; unlisted fields are ignored |
 
-Pattern validity, binder arity, binder types, arm-type unification, and
-exhaustiveness are all **type errors**: the parser accepts the general form and the
-type checker enforces the rest.
+Tuple and struct patterns nest. Variant payloads bind names only. A `match` must be
+exhaustive. A sum type is covered by naming every variant, and a `bool` by both constants.
+Integers, tuples, and structs need an irrefutable arm: `_`, a binding, or a tuple or struct
+pattern built only from those. An exhaustive match
+whose every arm returns counts as returning on all paths.
 
-## Deferred
+## Planned
 
-* **Named-field payloads**, tied to the anonymous-struct (record) decision.
-* **Richer patterns**: nested sub-patterns, literal patterns, or-patterns (`A | B`),
-  guards (`if cond`), and `@`-bindings. The first iteration of `match` is flat.
-
+* Named-field payloads.
+* Nested patterns inside variant payloads, or-patterns (`A | B`), and guards.

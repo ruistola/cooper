@@ -1,142 +1,83 @@
 # Compiler Architecture
 
-Cooper is written in Rust and organized as a Cargo workspace. This document describes the workspace
-layout and the compiler's internal module structure.
+The compiler is a Rust Cargo workspace.
 
-## Workspace layout
+## Crates
 
-The compiler is split across crates so that the filesystem- and host-bound pieces stay out of the
-analysis core, which keeps the frontend portable (it compiles to WebAssembly cleanly) and isolates
-heavy or native backend dependencies behind a crate boundary.
+* **cooper-frontend** — lexing, parsing, and every semantic pass over an in-memory `Project`.
+  It touches neither the filesystem nor the host, so it runs anywhere (including WebAssembly)
+  and tests drive it from in-memory sources.
+* **cooper-ir** — the typed lowering IR and monomorphization: the seam between the frontend
+  and a backend.
+* **cooper-cli** (binary `cooper`) — the host driver: the filesystem loader and the
+  command-line entry point. All filesystem and `toml` use lives here.
 
-* **crates/cooper-frontend** (library `cooper_frontend`) — The analysis core: lexing, parsing, and
-  all semantic passes over an in-memory `Project`. It touches neither the filesystem nor the host
-  environment, so it runs anywhere and is driven entirely from in-memory sources.
+## Frontend
 
-* **crates/cooper-cli** (binary `cooper`, library `cooper_cli`) — The host-facing driver. It owns the
-  filesystem loader that turns a source tree into a `Project` and the command-line entry point, and
-  depends on `cooper-frontend` to analyze what it loads. All `std::fs`/`std::path`/`toml` use lives
-  here.
+* **lib.rs** — Pipeline entry points. [`analyze_project`] runs the frontend over a `Project` and
+  returns every diagnostic. `check_project` does the same and, for a clean project, returns its
+  checked form (each file's declarations, symbol table, and checker tables, plus all type
+  definitions) for lowering. [`analyze`] wraps one source snippet as a program.
+* **project.rs** — The input model: a `Project` is a manifest plus `Module`s, and a module is
+  one or more `SourceFile`s whose top-level declarations share one namespace.
+* **modules.rs** — Module-graph analysis. It parses every file, resolves `use` bindings,
+  orders modules topologically (rejecting cycles), and analyzes each module against its
+  dependencies' exported interfaces, never their bodies. Imports are file-scoped and
+  stripped from the interface a module exports.
+* **lexer.rs** — Tokenization with [`logos`].
+* **parser.rs** — Hand-written recursive descent with Pratt expression parsing. It recovers at
+  statement boundaries to report many errors per run.
+* **ast.rs** — Every node is a `{ kind, span }` pair with a closed `*Kind` enum, so every
+  `match` is exhaustiveness-checked.
+* **types.rs** — The resolved `Type` enum, with equality, substitution, unification, and the
+  `TypeDefs` table.
+* **builtins.rs** — The fixed method sets of built-in types (array `length`, `get`, `set`,
+  `push`).
+* **diag.rs** — Diagnostics, each with the [`Span`] and file it refers to.
+* The semantic passes run per module, each only if the previous one reported no errors:
+  1. **resolve.rs** — Builds the symbol table (`Globals`) and checks declaration signatures.
+     It runs in phases across all of a module's files: register every type name, resolve
+     member and variant types, reject types that contain themselves by value, then resolve
+     functions, methods, and variables. Declaration order therefore never matters.
+  2. **typecheck.rs** — Types every expression and infers the type arguments of generic
+     constructions and references. It records two per-file tables: `span → Type` for every
+     expression, and `span → ItemRef` naming the declaration and type arguments of every
+     function or method reference.
+  3. **semantic.rs** — Control-flow checks: every path returns a value where the function
+     needs one, and no code follows a `return`.
 
-## Module overview
+**Types are nominal references.** A struct or sum `Type` holds only its identity (`TypeId`:
+defining module and name) and type arguments. Members and variants live once in `TypeDefs`
+and are read substituted by those arguments. This allows self-reference through pointers,
+keeps same-named types from different modules distinct, and makes equality cheap. Callables
+have identities too (`Callable`: module and name, or receiver type and name).
 
-* **cooper-cli/src/main.rs** — Thin CLI entry point. It reads a source file, runs the frontend, and
-  either reports "no errors" or renders every collected diagnostic with [`ariadne`]. The primary
-  focus is currently on validation by tests, so the driver stays minimal.
+## Lowering IR
 
-* **cooper-frontend/src/lib.rs** — The frontend crate root and pipeline orchestrator.
-  [`analyze_project`] runs the whole frontend over an in-memory [`Project`] and returns every
-  diagnostic; each module is analyzed independently, and within a module each semantic phase runs
-  only when the previous produced no errors, so diagnostics stay meaningful rather than cascading.
-  [`analyze`] is a thin convenience that wraps a single source snippet as a one-module program.
+`cooper-ir` lowers a checked program from the frontend's tables, so nothing is re-resolved or
+re-inferred. Every node carries its resolved type, and every callee names its declaration.
+Lowering also desugars: `if` to `match`, `match` to a decision tree, and index syntax and array
+methods to intrinsics.
 
-* **cooper-frontend/src/project.rs** — The in-memory project model, the compiler's input. A `Project`
-  (manifest plus modules) is compiled directly rather than reading a filesystem, so the frontend can
-  run anywhere and tests can build programs from in-memory sources. A `Module` is the atomic
-  compilation unit, spanning one or more `SourceFile`s whose top-level declarations unite into one
-  namespace.
+**Monomorphization** (`mono.rs`) is an IR-to-IR pass. Lowering keeps a generic function as a
+template. Starting from the non-generic functions, the pass instantiates each referenced
+declaration once per distinct set of type arguments and follows the references each instance
+makes. Unreached templates are dropped, and polymorphic recursion is an error once type
+arguments exceed a size bound. `lower_program` runs lowering and monomorphization over a
+whole project, producing a `Program` of concrete functions plus the `TypeDefs` a backend needs
+for layout.
 
-* **cooper-frontend/src/modules.rs** — Module-graph analysis: the driver behind `analyze_project`. It parses every
-  module's files, resolves each `use` binding against the project's modules, orders the module
-  dependency graph topologically (rejecting cycles), and builds each module's interface — its
-  exported signatures — in that order. Every module is checked against its own declarations plus its
-  dependencies' interfaces, never their bodies. `use` is file-scoped: each file is resolved and
-  checked against the module's united declarations plus that file's own imports, so an import is
-  invisible in sibling files and is stripped from the interface the module exports — `use` neither
-  leaks across files nor re-exports transitively.
+**The runtime stays behind the IR boundary.** Runtime-touching operations (allocation, array
+growth, copies) are abstract typed *intrinsics*, not runtime calls. A backend realises them
+under whatever memory and concurrency model it adopts, so those choices need no IR change.
 
-* **cooper-cli/src/loader.rs** — Filesystem loading: constructs a `Project` from a source tree rooted at a
-  `project.toml`. Each subdirectory of `.coop` files becomes a module named by its path relative to
-  the module root (`server/auth/` → `server.auth`); root files form the implicit `main` module, and
-  a `main.coop` there makes the project a program. A nested directory with its own `project.toml` is
-  a sub-project and is skipped rather than absorbed. This is the only filesystem-aware component; the
-  rest of the compiler consumes the abstract `Project`.
+## AST, not CST
 
-* **cooper-frontend/src/lexer.rs** — Tokenization, built on the [`logos`] derive lexer. Outputs a `Vec<Token>`
-  consumed by the parser, or a single diagnostic on an unexpected character.
-
-* **cooper-frontend/src/ast.rs** — Abstract syntax tree types. Every node is a `{ kind, span }` pair: a closed
-  `*Kind` enum for the shape plus the source [`Span`] it was parsed from, so later passes can attach
-  precise diagnostics and every `match` is exhaustiveness-checked. Operators are their own
-  `BinaryOp`/`UnaryOp`/`AssignOp` enums, decoupling later phases from token kinds.
-
-* **cooper-frontend/src/parser.rs** — Hand-written recursive-descent parsing with Pratt expression parsing. It
-  collects diagnostics and recovers at statement boundaries instead of bailing on the first error,
-  so one run reports as many problems as it can.
-
-* **cooper-frontend/src/types.rs** — The resolved `Type` model. A single closed `enum` replaces an interface
-  hierarchy, so every `match` over a type is checked for exhaustiveness at compile time. Carries
-  structural equality (with Cooper's pointer/`nil` compatibility rules), substitution, and
-  unification for generics.
-
-* **cooper-frontend/src/diag.rs** — Source spans and diagnostics. Every diagnostic carries the [`Span`] of the
-  offending range so the whole pipeline can surface many precisely located errors from one run, plus
-  the source file that span indexes into (attributed as diagnostics leave the per-file passes) so a
-  multi-file project renders each error against the right source.
-
-* Post-parsing analysis is split into three passes for source-order insensitivity:
-  1. **cooper-frontend/src/resolve.rs** — Declaration resolution. Collects every top-level struct, sum type,
-     function, and method into a global symbol table (`Globals`) and validates each declaration's
-     signature in isolation (duplicate names, duplicate members/variants, undefined types, generic
-     arity, value-recursive types, receiver/method well-formedness). Bodies are not walked here. It
-     runs in phases across all of a module's files — every type name is registered before any
-     member or signature is resolved — so a type may refer to one declared later, in another file,
-     or to itself.
-  2. **cooper-frontend/src/typecheck.rs** — Type checking. Walks function and module bodies against `Globals`,
-     assigning a type to every expression, with its own stack of block-scoped variable bindings.
-     Undefined-variable detection falls out of identifier lookup here.
-  3. **cooper-frontend/src/semantic.rs** — Semantic analysis. Control-flow validation only: every function with a
-     non-unit return type must return on all paths, and code made unreachable by a preceding return
-     is reported.
-
-* **Types are nominal references.** A struct or sum type `Type` carries only its identity (`TypeId`:
-  defining module and declared name) and type arguments; members and variants live once in a
-  `TypeDefs` table and are read substituted by those arguments. This lets a type refer to itself
-  through a pointer or array, keeps same-named types from different modules distinct however an
-  import aliases them, and makes equality and substitution cheap. Definitions accumulate
-  project-wide, so a dependent module can reach a type it never imports through another type's
-  members. A type that contains itself by value is rejected as infinitely large.
-
-## Toward code generation: the typed lowering IR
-
-The seam between the frontend and any backend is a typed intermediate representation, built by the
-`cooper-ir` crate. Lowering consumes what the frontend already computes: type checking records two
-per-file tables as it checks — `span → Type` for every expression, and `span → ItemRef` naming the
-declaration (by identity) and inferred type arguments of every function and method reference — and
-lowering reads them to produce a typed, span-carrying IR where every node knows its resolved type and
-every callee its declaration, so no name resolution or inference happens downstream. The IR is also
-the home for desugaring (`if` to `match`, index syntax and array methods to intrinsics).
-
-**Generics are monomorphized as an IR→IR pass.** Lowering keeps a generic function as a template
-whose types name its binders. `monomorphize` starts from the non-generic functions, instantiates each
-referenced (declaration, type arguments) pair once by substituting the arguments through the
-template, and follows the references each instance makes; unreached templates are dropped, and
-polymorphic recursion is reported once type arguments grow past a size bound. `check_project` and
-`lower_program` drive this for a whole project, yielding a `Program` of concrete function instances
-together with the `TypeDefs` their types name.
-
-**Runtime stays behind the IR→backend boundary.** The IR models every runtime-touching operation —
-allocation, array growth, copies — as an abstract, typed *intrinsic*, never a concrete runtime call
-or committed ABI. A backend lowers those intrinsics into real allocations, object headers, write
-barriers, and safepoints according to the memory and concurrency model chosen at that stage. This
-keeps the IR neutral about garbage collection, green-thread scheduling, how the runtime is delivered,
-and whether a runtime library crate ever exists: those are backend-epoch decisions that require no IR
-rework, because the IR commits to none of them.
-
-## Concrete syntax: AST, not a full CST
-
-Cooper's parser produces an abstract syntax tree, not a lossless concrete syntax tree (red-green
-tree). Every AST node already carries the full source [`Span`] it was parsed from, and the original
-source text is retained alongside, so trivia a formatter or language server needs — comments,
-whitespace, exact token extents — is recovered by re-lexing the span on demand rather than being
-threaded through every node. This keeps the tree small and every pass's `match` focused on meaning
-rather than layout. A full CST earns its place only once incremental reparse performance is a
-measured requirement; retrofitting one is a bounded change, because span-complete nodes over retained
-source already pin down where every construct lives.
+The parser builds an AST. Every node keeps its full source span and the source text is
+retained, so a formatter or language server recovers comments and exact token extents by
+re-lexing a span.
 
 [`analyze`]: ../crates/cooper-frontend/src/lib.rs
 [`analyze_project`]: ../crates/cooper-frontend/src/lib.rs
-[`Project`]: ../crates/cooper-frontend/src/project.rs
-[`ariadne`]: https://crates.io/crates/ariadne
 [`logos`]: https://crates.io/crates/logos
 [`Span`]: ../crates/cooper-frontend/src/diag.rs

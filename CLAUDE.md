@@ -8,17 +8,17 @@ compiler is still being built according to known best practices and industry sta
 
 Detailed language design notes live in `docs/`:
 
-* [Compiler Architecture](docs/compiler-architecture.md) — Rust module structure and pipeline stages
-* [Modules and Projects](docs/modules-and-projects.md) — project layout, module system, dependency management
-* [Syntax Fundamentals](docs/syntax-fundamentals.md) — semicolon inference, naming conventions, type expressions
-* [Control Flow](docs/control-flow.md) — ranged `for`, the while/until/do/repeat loop matrix, `break`/`continue`, ranges
-* [Polymorphism and Interfaces](docs/polymorphism-and-interfaces.md) — why Cooper has no interface construct
-* [Methods and Functions](docs/methods-and-functions.md) — method declaration, receivers, struct declarations
-* [Memory and the Object Model](docs/memory-and-object-model.md) — value layout, storage, pointers, inert nil
-* [Generics](docs/generics.md) — juxtaposition type application, type-parameter binders, generic methods
-* [Sum Types](docs/sum-types.md) — `oneof` declarations, variant payloads, type-qualified construction, inference
-* [Type System](docs/type-system.md) — nominal/structural, no subtyping/variance, constraints as sugar over passing
-* [Numeric Types](docs/numeric-types.md) — primitive grid, literal inference, same-type arithmetic, constructor-style conversions
+* [Compiler Architecture](docs/compiler-architecture.md) — crates, frontend passes, lowering IR, monomorphization
+* [Modules and Projects](docs/modules-and-projects.md) — project layout, modules, dependencies, `use`
+* [Syntax Fundamentals](docs/syntax-fundamentals.md) — semicolon inference, naming, arrays and views, pointers, tuples, bindings, operators
+* [Control Flow](docs/control-flow.md) — ranged `for`, the while/until/do/repeat loop matrix, `break`/`continue`
+* [Polymorphism](docs/polymorphism.md) — capabilities passed as function values, methods across sum-type variants
+* [Methods and Functions](docs/methods-and-functions.md) — declarations, receivers, method binding, function values, shadowing
+* [Memory and the Object Model](docs/memory-and-object-model.md) — inline values, storage, pointers, inert nil, unmanaged memory
+* [Generics](docs/generics.md) — juxtaposition type application, binders, generic methods, inference
+* [Sum Types](docs/sum-types.md) — `oneof`, variant construction, `match` and patterns
+* [Type System](docs/type-system.md) — nominal/structural types, operators, equality and hashing
+* [Numeric Types](docs/numeric-types.md) — primitive grid, literal inference, same-type arithmetic, conversions
 
 ## Coding guidelines
 

@@ -13,6 +13,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+mod mono;
+pub use mono::{monomorphize, MonoError};
+
 use cooper_frontend::ast::{
     AssignOp, BinaryOp, Block, Expr, ExprKind, FuncDecl, Pattern, PatternKind, Stmt, StmtKind,
     TypeExpr, TypedIdent, UnaryOp,

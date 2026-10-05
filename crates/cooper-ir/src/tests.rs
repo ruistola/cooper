@@ -546,3 +546,128 @@ fn lowers_tuple_destructuring_into_typed_bindings() {
     assert_eq!(bindings[1].name, "b");
     assert!(matches!(&value.kind, IrExprKind::Var(n) if n == "p"));
 }
+
+/// Check, lower, and monomorphize a one-file program.
+fn monomorphized(source: &str) -> Vec<Function> {
+    let (decls, globals, checked) = check(source);
+    let functions = lower_module(&decls, &globals, &checked).expect("program lowers");
+    monomorphize(&functions).expect("program monomorphizes")
+}
+
+/// The instances of the function or method named `name`, by type arguments.
+fn instances_of<'f>(functions: &'f [Function], name: &str) -> Vec<&'f Function> {
+    functions
+        .iter()
+        .filter(|f| match &f.item {
+            Callable::Func { name: n, .. } | Callable::Method { name: n, .. } => n == name,
+        })
+        .collect()
+}
+
+/// Whether `ty` mentions a type parameter anywhere.
+fn mentions_type_param(ty: &Type) -> bool {
+    match ty {
+        Type::TypeParam(_) => true,
+        Type::Array(e) | Type::Pointer(e) => mentions_type_param(e),
+        Type::Tuple(es) => es.iter().any(mentions_type_param),
+        Type::Func {
+            return_type,
+            param_types,
+        } => mentions_type_param(return_type) || param_types.iter().any(mentions_type_param),
+        Type::Struct { type_args, .. } | Type::Oneof { type_args, .. } => {
+            type_args.iter().any(mentions_type_param)
+        }
+        _ => false,
+    }
+}
+
+#[test]
+fn a_generic_call_lowers_to_a_reference_carrying_its_type_arguments() {
+    let (decls, globals, checked) = check(
+        "func id T (x: T): T { return x }\nfunc f(): i64 { return id(3) }",
+    );
+    let functions = lower_module(&decls, &globals, &checked).expect("module lowers");
+    let f = &functions[1];
+    let IrStmtKind::Return(Some(ret)) = &f.body[0].kind else {
+        panic!("expected a return");
+    };
+    let IrExprKind::Call { callee, .. } = &ret.kind else {
+        panic!("expected a call, got {:?}", ret.kind);
+    };
+    let IrExprKind::FuncRef { type_args, .. } = &callee.kind else {
+        panic!("expected a function reference, got {:?}", callee.kind);
+    };
+    assert!(is_primitive(&type_args[0], "i64"), "inferred from the return type");
+    assert!(!mentions_type_param(&callee.ty), "callee type is solved: {}", callee.ty);
+}
+
+#[test]
+fn monomorphization_instantiates_each_distinct_use_once() {
+    let functions = monomorphized(concat!(
+        "func id T (x: T): T { return x }\n",
+        "func f(): i32 { return id(id(1)) }\n",
+        "func g(): string { return id(\"s\") }\n",
+        "func unused T (x: T): T { return x }\n",
+    ));
+    let ids = instances_of(&functions, "id");
+    assert_eq!(ids.len(), 2, "one instance per type argument, shared between calls");
+    let args: Vec<String> = ids.iter().map(|f| f.type_args[0].to_string()).collect();
+    assert_eq!(args, ["i32", "string"]);
+    assert!(instances_of(&functions, "unused").is_empty(), "unreached templates are dropped");
+    for id in ids {
+        assert!(!mentions_type_param(&id.params[0].ty));
+        assert!(!mentions_type_param(&id.return_type));
+    }
+}
+
+#[test]
+fn monomorphization_follows_generic_calls_through_generic_bodies() {
+    // `twice` reaches `id` only through its own type parameter; instantiating `twice`
+    // at `bool` makes that reference concrete.
+    let functions = monomorphized(concat!(
+        "func id T (x: T): T { return x }\n",
+        "func twice U (x: U): U { return id(id(x)) }\n",
+        "func f(): bool { return twice(true) }\n",
+    ));
+    let twice = instances_of(&functions, "twice");
+    assert_eq!(twice.len(), 1);
+    assert!(is_primitive(&twice[0].type_args[0], "bool"));
+    let ids = instances_of(&functions, "id");
+    assert_eq!(ids.len(), 1);
+    assert!(is_primitive(&ids[0].type_args[0], "bool"));
+}
+
+#[test]
+fn monomorphization_instantiates_methods_of_generic_structs() {
+    let functions = monomorphized(concat!(
+        "struct Box T { v: T }\n",
+        "(b: Box T) func get(): T { return b.v }\n",
+        "(b: Box T) func map U (f: func(T): U): Box U { return Box{v: f(b.v)} }\n",
+        "func len(s: string): i32 { return 1 }\n",
+        "func f(b: Box string): i32 { return b.map(len).get() }\n",
+    ));
+    let map = instances_of(&functions, "map");
+    assert_eq!(map.len(), 1);
+    // `map`'s own binder comes first, then the receiver's: U = i32, T = string.
+    let args: Vec<String> = map[0].type_args.iter().map(Type::to_string).collect();
+    assert_eq!(args, ["i32", "string"]);
+    let get = instances_of(&functions, "get");
+    assert_eq!(get.len(), 1);
+    assert!(is_primitive(&get[0].type_args[0], "i32"));
+    let receiver = get[0].receiver.as_ref().expect("a method has a receiver");
+    assert_eq!(receiver.ty.to_string(), "Box i32");
+}
+
+#[test]
+fn polymorphic_recursion_is_reported_as_unbounded() {
+    let (decls, globals, checked) = check(concat!(
+        "func grow T (x: T): i32 { return grow((x, x)) }\n",
+        "func f(): i32 { return grow(1) }\n",
+    ));
+    let functions = lower_module(&decls, &globals, &checked).expect("module lowers");
+    let result = monomorphize(&functions);
+    assert!(
+        matches!(&result, Err(MonoError::UnboundedInstantiation { item: Callable::Func { name, .. }, .. }) if name == "grow"),
+        "got {result:?}"
+    );
+}

@@ -506,6 +506,7 @@ impl Parser {
             }
             Nil => ExprKind::Nil,
             OpenParen => self.parse_paren_head()?,
+            OpenBracket => self.parse_array_literal()?,
             If => self.parse_if_expr()?,
             Match => self.parse_match_expr()?,
             OpenCurly => {
@@ -544,6 +545,22 @@ impl Parser {
         }
         self.expect(CloseParen)?;
         Ok(ExprKind::Tuple(elems))
+    }
+
+    /// `[]` or `[e, e, ...]`, tolerating a trailing comma. The opening bracket is
+    /// already consumed.
+    fn parse_array_literal(&mut self) -> PResult<ExprKind> {
+        let mut elems = Vec::new();
+        while self.peek().kind != CloseBracket {
+            elems.push(self.parse_expr(0)?);
+            if self.peek().kind == Comma {
+                self.expect(Comma)?;
+            } else {
+                break;
+            }
+        }
+        self.expect(CloseBracket)?;
+        Ok(ExprKind::Array(elems))
     }
 
     fn parse_tail_expr(&mut self, head: Expr, rbp: i32) -> PResult<Expr> {

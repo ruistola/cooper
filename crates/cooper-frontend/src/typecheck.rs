@@ -642,6 +642,7 @@ impl<'g> TypeChecker<'g> {
                 }
                 Some(Type::Tuple(elem_types))
             }
+            ExprKind::Array(elems) => self.check_array_literal(elems, expr.span, expected),
             ExprKind::Ident(name) => {
                 // Restore the hint so a bare payload-free variant can see it, but
                 // clear it afterwards so an ordinary identifier never lets it leak.
@@ -867,6 +868,63 @@ impl<'g> TypeChecker<'g> {
                 }
             }
         }
+    }
+
+    /// Check an array literal, whose elements must all share one type. An expected
+    /// `T[]` fixes the element type and guides each element (so `[1, 2]` against
+    /// `u8[]` types its literals `u8`). Without one, the element type comes from the
+    /// first element that is neither a bare numeric literal nor `nil` — `[1, x]` with
+    /// `x: i64` is `i64[]`, and `[nil, p]` takes `p`'s pointer type. An all-literal
+    /// list takes its first float literal, so `[1, 2.5]` is a float array, and
+    /// otherwise its first element. An empty literal has nothing to infer from and needs an
+    /// expected type.
+    fn check_array_literal(
+        &mut self,
+        elems: &[Expr],
+        span: Span,
+        expected: Option<Type>,
+    ) -> Option<Type> {
+        let (elem_type, anchor) = match expected {
+            Some(Type::Array(elem)) => (*elem, None),
+            _ => {
+                let Some(anchor) = elems
+                    .iter()
+                    .position(|e| !is_numeric_literal(e) && !matches!(e.kind, ExprKind::Nil))
+                    .or_else(|| elems.iter().position(is_float_literal))
+                    .or(if elems.is_empty() { None } else { Some(0) })
+                else {
+                    self.err(
+                        span,
+                        "cannot infer the element type of an empty array literal; annotate the binding",
+                    );
+                    return None;
+                };
+                let elem_type = self.check_expr(&elems[anchor])?;
+                if matches!(elem_type, Type::Nil) {
+                    self.err(
+                        span,
+                        "cannot infer the element type of an array literal of only nil; annotate the binding",
+                    );
+                    return None;
+                }
+                (elem_type, Some(anchor))
+            }
+        };
+        for (i, elem) in elems.iter().enumerate() {
+            if Some(i) == anchor {
+                continue;
+            }
+            let Some(actual) = self.check_expr_expecting(elem, Some(elem_type.clone())) else {
+                continue;
+            };
+            if !actual.equals(&elem_type) {
+                self.err(
+                    elem.span,
+                    format!("array element type mismatch: expected {elem_type}, found {actual}"),
+                );
+            }
+        }
+        Some(Type::Array(Box::new(elem_type)))
     }
 
     /// Check the two operands of a numeric or comparison operator, letting a bare
@@ -1755,6 +1813,20 @@ fn integer_bits(name: &str) -> u32 {
 
 /// The literal text of a bare numeric literal seen through groupings, or `None` for
 /// any other expression — the shape a leading sign folds into for range checking.
+/// Whether `expr` is a floating-point numeric literal, seeing through grouping and a
+/// leading sign.
+fn is_float_literal(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Number(text) => literal_is_float(text),
+        ExprKind::Group(inner) => is_float_literal(inner),
+        ExprKind::Unary {
+            op: UnaryOp::Neg | UnaryOp::Pos,
+            operand,
+        } => is_float_literal(operand),
+        _ => false,
+    }
+}
+
 fn bare_number_text(expr: &Expr) -> Option<&str> {
     match &expr.kind {
         ExprKind::Number(text) => Some(text),

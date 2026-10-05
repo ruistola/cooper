@@ -218,6 +218,8 @@ pub struct Expr {
 pub enum ExprKind {
     Unit,
     Tuple(Vec<Expr>),
+    /// An array literal `[a, b, c]`: a homogeneous, bracketed element list.
+    Array(Vec<Expr>),
     Bool(bool),
     Str(String),
     Ident(String),

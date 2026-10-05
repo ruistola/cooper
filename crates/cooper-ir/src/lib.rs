@@ -322,9 +322,12 @@ pub enum IrExprKind {
 
 /// A runtime-touching built-in operation on a blessed collection, modelled as an
 /// abstract typed intrinsic a backend lowers behind the runtime boundary. Each
-/// variant fixes its argument order; the receiver array is always first.
+/// variant fixes its argument order; a receiver array, where there is one, is first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Intrinsic {
+    /// A fresh array holding the given elements in order (an `[a, b, c]` literal).
+    /// Args: the elements; the array type is on the node.
+    ArrayLiteral,
     /// `length(): u64` — the element count of an array. Args: `[array]`.
     ArrayLength,
     /// `get(i): T` — the element at an index (the `a[i]` read). Args: `[array, index]`.
@@ -637,6 +640,10 @@ impl Lower<'_> {
                 }
             }
             ExprKind::Tuple(elems) => IrExprKind::Tuple(self.each(elems)?),
+            ExprKind::Array(elems) => IrExprKind::Intrinsic {
+                op: Intrinsic::ArrayLiteral,
+                args: self.each(elems)?,
+            },
             ExprKind::Unary { op, operand } => IrExprKind::Unary {
                 op: *op,
                 operand: Box::new(self.expr(operand)?),

@@ -116,7 +116,7 @@ impl SemanticAnalyzer<'_> {
                 self.analyze_expr(end);
             }
             ExprKind::Group(inner) => self.analyze_expr(inner),
-            ExprKind::Tuple(elems) => elems.iter().for_each(|e| self.analyze_expr(e)),
+            ExprKind::Tuple(elems) | ExprKind::Array(elems) => elems.iter().for_each(|e| self.analyze_expr(e)),
             ExprKind::Call { callee, args } => {
                 self.analyze_expr(callee);
                 args.iter().for_each(|a| self.analyze_expr(a));

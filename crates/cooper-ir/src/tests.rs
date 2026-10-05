@@ -3,8 +3,8 @@ use cooper_frontend::resolve::resolve_into;
 use cooper_frontend::{lexer, parser, typecheck};
 
 /// Run the frontend over a snippet and return its declarations, the resolved
-/// globals, and the type table the checker hands off.
-fn check(source: &str) -> (Vec<Stmt>, Globals, TypeTable) {
+/// globals, and the tables the checker hands off.
+fn check(source: &str) -> (Vec<Stmt>, Globals, Typed) {
     let tokens = lexer::tokenize(source).expect("snippet lexes");
     let parsed = parser::parse(tokens);
     assert!(parsed.errors.is_empty(), "snippet parses: {:?}", parsed.errors);
@@ -12,7 +12,7 @@ fn check(source: &str) -> (Vec<Stmt>, Globals, TypeTable) {
     assert!(diags.is_empty(), "snippet resolves: {diags:?}");
     let checked = typecheck::check(&parsed.decls, &globals, &Default::default());
     assert!(checked.diags.is_empty(), "snippet checks: {:?}", checked.diags);
-    (parsed.decls, globals, checked.types)
+    (parsed.decls, globals, checked)
 }
 
 /// The expression returned by the sole function's trailing `return`.
@@ -42,8 +42,8 @@ fn case_for<'a>(cases: &'a [Case], variant: &str) -> &'a Case {
 
 #[test]
 fn lowers_a_typed_arithmetic_expression() {
-    let (decls, globals, types) = check("func add(a: i32, b: i32): i32 { return a + b }");
-    let ir = lower_expr(return_expr(&decls), &globals, &types).expect("lowers");
+    let (decls, globals, checked) = check("func add(a: i32, b: i32): i32 { return a + b }");
+    let ir = lower_expr(return_expr(&decls), &globals, &checked).expect("lowers");
 
     assert!(is_primitive(&ir.ty, "i32"), "result type carried: {:?}", ir.ty);
     let IrExprKind::Binary { op, lhs, rhs } = &ir.kind else {
@@ -58,8 +58,8 @@ fn lowers_a_typed_arithmetic_expression() {
 
 #[test]
 fn grouping_is_collapsed_and_literals_keep_their_inferred_width() {
-    let (decls, globals, types) = check("func f(x: i64): i64 { return (x + 1) }");
-    let ir = lower_expr(return_expr(&decls), &globals, &types).expect("lowers");
+    let (decls, globals, checked) = check("func f(x: i64): i64 { return (x + 1) }");
+    let ir = lower_expr(return_expr(&decls), &globals, &checked).expect("lowers");
 
     // The parenthesised group is gone; the binary is the root.
     let IrExprKind::Binary { rhs, .. } = &ir.kind else {
@@ -72,17 +72,17 @@ fn grouping_is_collapsed_and_literals_keep_their_inferred_width() {
 
 #[test]
 fn lowers_a_function_signature_and_a_conditional_body() {
-    let (decls, globals, types) = check(
+    let (decls, globals, checked) = check(
         "func max(a: i32, b: i32): i32 {\n\
          \tif a > b then { return a } else { return b }\n\
          \treturn a\n\
          }",
     );
-    let functions = lower_module(&decls, &globals, &types).expect("module lowers");
+    let functions = lower_module(&decls, &globals, &checked).expect("module lowers");
 
     assert_eq!(functions.len(), 1);
     let max = &functions[0];
-    assert_eq!(max.name, "max");
+    assert!(matches!(&max.item, Callable::Func { name, .. } if name == "max"));
     assert!(max.receiver.is_none());
     assert_eq!(max.params.len(), 2);
     assert_eq!(max.params[0].name, "a");
@@ -115,9 +115,9 @@ fn lowers_a_function_signature_and_a_conditional_body() {
 
 #[test]
 fn lowers_a_local_binding_taking_its_type_from_the_initializer() {
-    let (decls, globals, types) =
+    let (decls, globals, checked) =
         check("func f(n: i32): i32 { x := n + 1\n\treturn x }");
-    let functions = lower_module(&decls, &globals, &types).expect("module lowers");
+    let functions = lower_module(&decls, &globals, &checked).expect("module lowers");
 
     // `x := n + 1` lowers to an expression statement holding the walrus binding,
     // carrying the i32 type flowing from the initializer.
@@ -134,14 +134,14 @@ fn lowers_a_local_binding_taking_its_type_from_the_initializer() {
 #[test]
 fn numeric_literals_are_decoded_to_their_values() {
     // A hexadecimal integer with separators and a float both decode exactly.
-    let (decls, globals, types) =
+    let (decls, globals, checked) =
         check("func f(): u16 { return 0xFF_FF }");
-    let ir = lower_expr(return_expr(&decls), &globals, &types).expect("lowers");
+    let ir = lower_expr(return_expr(&decls), &globals, &checked).expect("lowers");
     assert!(matches!(ir.kind, IrExprKind::Int(0xFFFF)));
     assert!(is_primitive(&ir.ty, "u16"));
 
-    let (decls, globals, types) = check("func g(): f64 { return 1.5 }");
-    let ir = lower_expr(return_expr(&decls), &globals, &types).expect("lowers");
+    let (decls, globals, checked) = check("func g(): f64 { return 1.5 }");
+    let ir = lower_expr(return_expr(&decls), &globals, &checked).expect("lowers");
     let IrExprKind::Float(v) = ir.kind else {
         panic!("expected a float literal, got {:?}", ir.kind);
     };
@@ -151,7 +151,7 @@ fn numeric_literals_are_decoded_to_their_values() {
 
 #[test]
 fn lowers_a_struct_literal_with_its_members_in_source_order() {
-    let (decls, globals, types) = check(
+    let (decls, globals, checked) = check(
         "struct Point { x: i32, y: i32 }\n\
          func origin(): Point { return Point { x: 1, y: 2 } }",
     );
@@ -162,7 +162,7 @@ fn lowers_a_struct_literal_with_its_members_in_source_order() {
     let StmtKind::Return(Some(expr)) = &func.body[0].kind else {
         panic!("expected a return");
     };
-    let ir = lower_expr(expr, &globals, &types).expect("lowers");
+    let ir = lower_expr(expr, &globals, &checked).expect("lowers");
 
     let IrExprKind::StructLiteral { name, members } = &ir.kind else {
         panic!("expected a struct literal, got {:?}", ir.kind);
@@ -176,7 +176,7 @@ fn lowers_a_struct_literal_with_its_members_in_source_order() {
 
 #[test]
 fn lowers_a_match_expression_binding_variant_payloads() {
-    let (decls, globals, types) = check(
+    let (decls, globals, checked) = check(
         "oneof Shape { Circle(i32), Rect(i32, i32) }\n\
          func area(s: Shape): i32 {\n\
          \ta := match s with {\n\
@@ -195,7 +195,7 @@ fn lowers_a_match_expression_binding_variant_payloads() {
     else {
         panic!("expected a walrus binding");
     };
-    let ir = lower_expr(value, &globals, &types).expect("lowers");
+    let ir = lower_expr(value, &globals, &checked).expect("lowers");
 
     let IrExprKind::Match {
         scrutinee,
@@ -247,7 +247,7 @@ fn lowers_a_match_expression_binding_variant_payloads() {
 fn generic_variant_binders_lower_with_instantiated_slot_types() {
     // A scrutinee of an instantiated generic sum type binds payload slots at
     // their substituted types, not the sum type's parameters.
-    let (decls, globals, types) = check(
+    let (decls, globals, checked) = check(
         "oneof Maybe T { Some(T), None }\n\
          func unwrap(m: Maybe i32): i32 {\n\
          \ta := match m with {\n\
@@ -265,7 +265,7 @@ fn generic_variant_binders_lower_with_instantiated_slot_types() {
     else {
         panic!("expected a walrus binding");
     };
-    let ir = lower_expr(value, &globals, &types).expect("lowers");
+    let ir = lower_expr(value, &globals, &checked).expect("lowers");
     let IrExprKind::Match { tree, .. } = &ir.kind else {
         panic!("expected a match");
     };
@@ -289,7 +289,7 @@ fn lowers_a_tuple_match_into_a_nested_decision_tree() {
     // A tuple scrutinee is deconstructed into its components; a literal in the
     // first position becomes a switch on that component, and the irrefutable
     // catch-all supplies the default (binding both components by access).
-    let (decls, globals, types) = check(
+    let (decls, globals, checked) = check(
         "func classify(p: (i32, i32)): i32 {\n\
          \treturn match p with {\n\
          \t\t(0, y) => { y }\n\
@@ -297,7 +297,7 @@ fn lowers_a_tuple_match_into_a_nested_decision_tree() {
          \t}\n\
          }",
     );
-    let ir = lower_expr(return_expr(&decls), &globals, &types).expect("lowers");
+    let ir = lower_expr(return_expr(&decls), &globals, &checked).expect("lowers");
     let IrExprKind::Match { actions, tree, .. } = &ir.kind else {
         panic!("expected a match, got {:?}", ir.kind);
     };
@@ -349,7 +349,7 @@ fn lowers_a_tuple_match_into_a_nested_decision_tree() {
 
 #[test]
 fn lowers_variant_construction_and_payload_free_access() {
-    let (decls, globals, types) = check(
+    let (decls, globals, checked) = check(
         "oneof Maybe T { Some(T), None }\n\
          func some(): Maybe i32 { return Maybe.Some(5) }\n\
          func none(): Maybe i32 { return Maybe.None }",
@@ -361,7 +361,7 @@ fn lowers_variant_construction_and_payload_free_access() {
         let StmtKind::Return(Some(expr)) = &func.body[0].kind else {
             panic!("expected a return");
         };
-        lower_expr(expr, &globals, &types).expect("lowers")
+        lower_expr(expr, &globals, &checked).expect("lowers")
     };
 
     // `Maybe.Some(5)` is a payloaded construction carrying the instantiated type.
@@ -385,8 +385,8 @@ fn lowers_variant_construction_and_payload_free_access() {
 
 #[test]
 fn numeric_conversions_lower_to_a_convert_node() {
-    let (decls, globals, types) = check("func widen(x: i32): i64 { return i64(x) }");
-    let ir = lower_expr(return_expr(&decls), &globals, &types).expect("lowers");
+    let (decls, globals, checked) = check("func widen(x: i32): i64 { return i64(x) }");
+    let ir = lower_expr(return_expr(&decls), &globals, &checked).expect("lowers");
     let IrExprKind::Convert(value) = &ir.kind else {
         panic!("expected a conversion, got {:?}", ir.kind);
     };
@@ -397,14 +397,14 @@ fn numeric_conversions_lower_to_a_convert_node() {
 
 #[test]
 fn lowers_array_iteration_to_a_foreach() {
-    let (decls, globals, types) = check(
+    let (decls, globals, checked) = check(
         "func sum(xs: i32[]): i32 {\n\
          \ttotal := 0\n\
          \tfor x in xs do { total += x }\n\
          \treturn total\n\
          }",
     );
-    let functions = lower_module(&decls, &globals, &types).expect("module lowers");
+    let functions = lower_module(&decls, &globals, &checked).expect("module lowers");
     let IrStmtKind::ForEach {
         array, index, elem, body,
     } = &functions[0].body[1].kind
@@ -420,14 +420,14 @@ fn lowers_array_iteration_to_a_foreach() {
 
 #[test]
 fn lowers_indexed_array_iteration_with_an_index_binder() {
-    let (decls, globals, types) = check(
+    let (decls, globals, checked) = check(
         "func sum(xs: i32[]): i32 {\n\
          \ttotal := 0\n\
          \tfor (i, x) in xs do { total += x }\n\
          \treturn total\n\
          }",
     );
-    let functions = lower_module(&decls, &globals, &types).expect("module lowers");
+    let functions = lower_module(&decls, &globals, &checked).expect("module lowers");
     let IrStmtKind::ForEach { index, elem, .. } = &functions[0].body[1].kind else {
         panic!("expected an array loop, got {:?}", functions[0].body[1].kind);
     };
@@ -439,8 +439,8 @@ fn lowers_indexed_array_iteration_with_an_index_binder() {
 
 #[test]
 fn lowers_array_index_read_to_an_intrinsic() {
-    let (decls, globals, types) = check("func first(xs: i32[]): i32 { return xs[0] }");
-    let ir = lower_expr(return_expr(&decls), &globals, &types).expect("lowers");
+    let (decls, globals, checked) = check("func first(xs: i32[]): i32 { return xs[0] }");
+    let ir = lower_expr(return_expr(&decls), &globals, &checked).expect("lowers");
     let IrExprKind::Intrinsic { op, args } = &ir.kind else {
         panic!("expected an intrinsic, got {:?}", ir.kind);
     };
@@ -451,8 +451,8 @@ fn lowers_array_index_read_to_an_intrinsic() {
 
 #[test]
 fn lowers_array_length_method_to_an_intrinsic() {
-    let (decls, globals, types) = check("func size(xs: i32[]): u64 { return xs.length() }");
-    let ir = lower_expr(return_expr(&decls), &globals, &types).expect("lowers");
+    let (decls, globals, checked) = check("func size(xs: i32[]): u64 { return xs.length() }");
+    let ir = lower_expr(return_expr(&decls), &globals, &checked).expect("lowers");
     let IrExprKind::Intrinsic { op, args } = &ir.kind else {
         panic!("expected an intrinsic, got {:?}", ir.kind);
     };
@@ -463,14 +463,14 @@ fn lowers_array_length_method_to_an_intrinsic() {
 
 #[test]
 fn lowers_a_range_for_loop_with_a_typed_counter() {
-    let (decls, globals, types) = check(
+    let (decls, globals, checked) = check(
         "func count(): i32 {\n\
          \ttotal := 0\n\
          \tfor i in 0..10 do { total += i }\n\
          \treturn total\n\
          }",
     );
-    let functions = lower_module(&decls, &globals, &types).expect("module lowers");
+    let functions = lower_module(&decls, &globals, &checked).expect("module lowers");
     let IrStmtKind::ForRange {
         var, ty, inclusive, body, ..
     } = &functions[0].body[1].kind
@@ -484,10 +484,10 @@ fn lowers_a_range_for_loop_with_a_typed_counter() {
 }
 
 #[test]
-fn module_qualified_reference_drops_its_prefix() {
+fn module_qualified_reference_names_the_declaration() {
     // A dependency exports a function; the main module reaches it qualified as
-    // `dep.helper(..)`. The module prefix carries no runtime value, so the call's
-    // callee lowers to the bare name the function is known by.
+    // `dep.helper(..)`. The module prefix carries no runtime value: the callee lowers
+    // to a reference naming the function by its defining module and name.
     let dep_tokens = lexer::tokenize("func helper(): i32 { return 1 }").expect("dep lexes");
     let dep = parser::parse(dep_tokens);
     assert!(dep.errors.is_empty(), "dep parses: {:?}", dep.errors);
@@ -505,21 +505,25 @@ fn module_qualified_reference_drops_its_prefix() {
     let checked = typecheck::check(&main.decls, &globals, &modules);
     assert!(checked.diags.is_empty(), "main checks: {:?}", checked.diags);
 
-    let ir = lower_expr(return_expr(&main.decls), &globals, &checked.types).expect("lowers");
+    let ir = lower_expr(return_expr(&main.decls), &globals, &checked).expect("lowers");
     let IrExprKind::Call { callee, args } = &ir.kind else {
         panic!("expected a call, got {:?}", ir.kind);
     };
     assert!(args.is_empty());
     assert!(
-        matches!(&callee.kind, IrExprKind::Var(n) if n == "helper"),
-        "module prefix dropped to a bare callee, got {:?}",
+        matches!(
+            &callee.kind,
+            IrExprKind::FuncRef { item: Callable::Func { module, name }, type_args }
+                if module == "dep" && name == "helper" && type_args.is_empty()
+        ),
+        "callee names dep.helper, got {:?}",
         callee.kind
     );
 }
 
 #[test]
 fn lowers_tuple_destructuring_into_typed_bindings() {
-    let (decls, globals, types) = check(
+    let (decls, globals, checked) = check(
         "func f(): i32 {\n\
          \tp := (1, 2)\n\
          \t(a, b) := p\n\
@@ -532,7 +536,7 @@ fn lowers_tuple_destructuring_into_typed_bindings() {
     let StmtKind::Expression(expr) = &func.body[1].kind else {
         panic!("expected the destructuring statement");
     };
-    let ir = lower_expr(expr, &globals, &types).expect("lowers");
+    let ir = lower_expr(expr, &globals, &checked).expect("lowers");
     let IrExprKind::LetTuple { bindings, value } = &ir.kind else {
         panic!("expected a tuple destructuring, got {:?}", ir.kind);
     };

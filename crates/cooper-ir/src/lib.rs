@@ -18,19 +18,26 @@ use cooper_frontend::ast::{
     TypeExpr, TypedIdent, UnaryOp,
 };
 use cooper_frontend::diag::Span;
-use cooper_frontend::resolve::{receiver_pattern_params, resolve_type, Globals};
-use cooper_frontend::typecheck::{decode_number_literal, LiteralValue};
+use cooper_frontend::resolve::{
+    receiver_pattern_params, resolve_type, underlying_struct_name, Callable, Globals, Signature,
+};
+use cooper_frontend::typecheck::{decode_number_literal, ItemRef, LiteralValue, Typed};
 use cooper_frontend::types::{is_numeric_name, Type, TypeDefs, DEFAULT_INT};
 
-/// A lowered function or method: its signature, its body as typed statements, and
-/// the span it was lowered from. A method carries its receiver as the first bound
-/// place; type parameters list both the function's own binders and those a generic
-/// receiver introduces.
+/// A lowered function or method: the declaration it lowers, its signature, its body
+/// as typed statements, and the span it was lowered from. A method carries its
+/// receiver as the first bound place. `type_params` lists every binder of the
+/// declaration's signature — its own, then those a generic receiver introduces — in
+/// the order a reference supplies type arguments. A generic function as lowered is a
+/// template whose types name those binders; [`monomorphize`] stamps out instances,
+/// each with `type_args` holding one concrete argument per binder (empty for a
+/// non-generic function, and for a template).
 #[derive(Debug, Clone)]
 pub struct Function {
-    pub name: String,
+    pub item: Callable,
     pub receiver: Option<Param>,
     pub type_params: Vec<String>,
+    pub type_args: Vec<Type>,
     pub params: Vec<Param>,
     pub return_type: Type,
     pub body: Vec<IrStmt>,
@@ -240,8 +247,18 @@ pub enum IrExprKind {
     Str(String),
     Nil,
     Unit,
-    /// A reference to a bound variable, parameter, or named global.
+    /// A reference to a bound variable or parameter.
     Var(String),
+    /// A reference to a free function, instantiated at `type_args` (one per binder of
+    /// its signature; none when it is not generic).
+    FuncRef { item: Callable, type_args: Vec<Type> },
+    /// A method bound to its receiver value, instantiated at `type_args`. Calling it
+    /// passes `receiver` as the method's receiver.
+    Method {
+        receiver: Box<IrExpr>,
+        item: Callable,
+        type_args: Vec<Type>,
+    },
     Tuple(Vec<IrExpr>),
     Unary {
         op: UnaryOp,
@@ -369,13 +386,13 @@ pub type TypeTable = HashMap<Span, Type>;
 pub fn lower_module(
     decls: &[Stmt],
     globals: &Globals,
-    types: &TypeTable,
+    checked: &Typed,
 ) -> Result<Vec<Function>, LowerError> {
     let mut functions = Vec::new();
     for decl in decls {
         match &decl.kind {
             StmtKind::FuncDecl(func) => {
-                functions.push(lower_function(func, globals, types)?);
+                functions.push(lower_function(func, globals, checked)?);
             }
             StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } => {}
             StmtKind::VarDecl { .. } => {
@@ -399,14 +416,16 @@ pub fn lower_module(
 fn lower_function(
     func: &FuncDecl,
     globals: &Globals,
-    types: &TypeTable,
+    checked: &Typed,
 ) -> Result<Function, LowerError> {
     let mut type_params: HashSet<String> = func.type_params.iter().cloned().collect();
     if let Some(receiver) = &func.receiver {
         type_params.extend(receiver_pattern_params(&receiver.ty));
     }
+    let signature = signature_of(func, globals).ok_or(LowerError::UnresolvedType(func.span))?;
     let lower = Lower {
-        types,
+        types: &checked.types,
+        refs: &checked.refs,
         globals,
         type_params,
     };
@@ -422,9 +441,10 @@ fn lower_function(
     };
     let body = lower.block(&func.body)?;
     Ok(Function {
-        name: func.name.clone(),
+        item: signature.item.clone(),
         receiver,
-        type_params: func.type_params.clone(),
+        type_params: signature.type_params.clone(),
+        type_args: Vec::new(),
         params,
         return_type,
         body,
@@ -432,15 +452,25 @@ fn lower_function(
     })
 }
 
+/// The resolved signature of a function or method declaration: a free function by
+/// name, a method through its receiver struct.
+fn signature_of<'g>(func: &FuncDecl, globals: &'g Globals) -> Option<&'g Signature> {
+    match &func.receiver {
+        None => globals.lookup_func(&func.name),
+        Some(receiver) => {
+            let id = globals.structs.get(underlying_struct_name(&receiver.ty)?)?;
+            globals.lookup_method(id, &func.name)
+        }
+    }
+}
+
 /// Lower one type-checked expression into the typed IR, reading each subexpression's
-/// type from `types`. Grouping parentheses carry no semantics and are collapsed.
-pub fn lower_expr(
-    expr: &Expr,
-    globals: &Globals,
-    types: &TypeTable,
-) -> Result<IrExpr, LowerError> {
+/// type and each callee's declaration from the checker's tables. Grouping parentheses
+/// carry no semantics and are collapsed.
+pub fn lower_expr(expr: &Expr, globals: &Globals, checked: &Typed) -> Result<IrExpr, LowerError> {
     Lower {
-        types,
+        types: &checked.types,
+        refs: &checked.refs,
         globals,
         type_params: HashSet::new(),
     }
@@ -448,10 +478,11 @@ pub fn lower_expr(
 }
 
 /// The resolved-context that lowering threads through a function body: the type
-/// table to read from, the globals and type parameters a signature annotation
-/// resolves against.
+/// and reference tables to read from, the globals and type parameters a signature
+/// annotation resolves against.
 struct Lower<'a> {
     types: &'a TypeTable,
+    refs: &'a HashMap<Span, ItemRef>,
     globals: &'a Globals,
     type_params: HashSet<String>,
 }
@@ -618,6 +649,25 @@ impl Lower<'_> {
             .get(&expr.span)
             .cloned()
             .ok_or(LowerError::MissingType(expr.span))?;
+        // A reference to a function or method names its declaration; a module prefix
+        // carries no runtime value and drops away.
+        if let Some(reference) = self.refs.get(&expr.span) {
+            let item = reference.item.clone();
+            let type_args = reference.type_args.clone();
+            let kind = match (&expr.kind, &item) {
+                (ExprKind::Field { target, .. }, Callable::Method { .. }) => IrExprKind::Method {
+                    receiver: Box::new(self.expr(target)?),
+                    item,
+                    type_args,
+                },
+                _ => IrExprKind::FuncRef { item, type_args },
+            };
+            return Ok(IrExpr {
+                kind,
+                ty,
+                span: expr.span,
+            });
+        }
         let kind = match &expr.kind {
             ExprKind::Number(text) => match decode_number_literal(text) {
                 Some(LiteralValue::Int(v)) => IrExprKind::Int(v),
@@ -661,10 +711,9 @@ impl Lower<'_> {
                     variant: name.clone(),
                     args: Vec::new(),
                 },
-                // `module.name` is a qualified reference to an imported item; the
-                // module prefix carries no runtime value, so it resolves to the bare
-                // name the item is known by.
-                Some(Type::Module(_)) => IrExprKind::Var(name.clone()),
+                // A module-qualified function is a recorded reference (above); no
+                // other module item is a runtime value yet.
+                Some(Type::Module(_)) => return unsupported(expr.span, "module-qualified value"),
                 _ => IrExprKind::Field {
                     target: Box::new(self.expr(target)?),
                     name: name.clone(),

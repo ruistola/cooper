@@ -37,10 +37,31 @@ type Edges = Vec<HashMap<usize, (Span, String)>>;
 /// missing declaration would cascade into spurious cross-module errors. Otherwise
 /// the dependency graph is ordered and each module resolved and checked in turn.
 pub fn analyze(project: &Project) -> Vec<Diagnostic> {
-    let parsed = match parse_modules(project) {
-        Ok(parsed) => parsed,
-        Err(errors) => return errors,
-    };
+    check(project).err().unwrap_or_default()
+}
+
+/// One type-checked source file: its module, name, and declarations, the symbol table
+/// its bodies were checked against (the module's declarations plus the file's
+/// imports), and the checker's span tables.
+pub struct CheckedFile {
+    pub module: ModulePath,
+    pub name: String,
+    pub decls: Vec<Stmt>,
+    pub globals: Globals,
+    pub typed: typecheck::Typed,
+}
+
+/// A whole type-checked project: every file, its modules in dependency order, and
+/// the definitions of every struct and sum type the project declares.
+pub struct CheckedProject {
+    pub files: Vec<CheckedFile>,
+    pub defs: TypeDefs,
+}
+
+/// Analyze `project` as [`analyze`] does, returning its checked form when it is free
+/// of diagnostics — the input to lowering — and every diagnostic otherwise.
+pub fn check(project: &Project) -> Result<CheckedProject, Vec<Diagnostic>> {
+    let mut parsed = parse_modules(project)?;
 
     let known: HashSet<ModulePath> = parsed.iter().map(|m| m.path.clone()).collect();
 
@@ -49,7 +70,7 @@ pub fn analyze(project: &Project) -> Vec<Diagnostic> {
         Ok(order) => order,
         Err(cycle_diags) => {
             diags.extend(cycle_diags);
-            return diags;
+            return Err(diags);
         }
     };
 
@@ -58,14 +79,37 @@ pub fn analyze(project: &Project) -> Vec<Diagnostic> {
     // is analyzed against all definitions resolved before it.
     let mut interfaces: HashMap<ModulePath, Globals> = HashMap::new();
     let mut defs = TypeDefs::default();
+    let mut checked = Vec::new();
     for index in order {
         let module = &parsed[index];
-        let (module_diags, interface) = analyze_module(module, &known, &interfaces, &defs);
+        let (module_diags, interface, files) = analyze_module(module, &known, &interfaces, &defs);
         diags.extend(module_diags);
         defs = interface.defs.clone();
         interfaces.insert(module.path.clone(), interface);
+        checked.push((index, files));
     }
-    diags
+    if !diags.is_empty() {
+        return Err(diags);
+    }
+    let files = checked
+        .into_iter()
+        .flat_map(|(index, files)| {
+            let module = &mut parsed[index];
+            let path = module.path.clone();
+            std::mem::take(&mut module.files)
+                .into_iter()
+                .zip(files)
+                .map(move |(file, (globals, typed))| CheckedFile {
+                    module: path.clone(),
+                    name: file.name,
+                    decls: file.decls,
+                    globals,
+                    typed,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    Ok(CheckedProject { files, defs })
 }
 
 /// A module whose files have been parsed. Top-level declarations unite across files
@@ -290,8 +334,9 @@ impl Imports {
 }
 
 /// Resolve, type-check, and semantically analyze one module against its dependencies'
-/// interfaces, returning its diagnostics and its own exported interface for later
-/// modules. Each file is resolved and checked against the module's declarations plus
+/// interfaces, returning its diagnostics, its own exported interface for later
+/// modules, and each file's symbol table and checker tables (complete only when
+/// there are no diagnostics). Each file is resolved and checked against the module's declarations plus
 /// that file's own imports, so a `use` is visible only in the file that wrote it.
 /// Diagnostics short-circuit per phase so failures do not cascade within a file.
 fn analyze_module(
@@ -299,7 +344,7 @@ fn analyze_module(
     known: &HashSet<ModulePath>,
     interfaces: &HashMap<ModulePath, Globals>,
     defs: &TypeDefs,
-) -> (Vec<Diagnostic>, Globals) {
+) -> (Vec<Diagnostic>, Globals, Vec<(Globals, typecheck::Typed)>) {
     let mut diags = Vec::new();
     let declared = declared_names(&module.files);
     let file_imports: Vec<Imports> = module
@@ -335,12 +380,14 @@ fn analyze_module(
         }
     }
 
+    let mut checked = Vec::new();
     if diags.is_empty() {
         // Bodies are checked per file against the module's declarations plus that
         // file's imports, so type and semantic diagnostics carry their file too.
         for (file, imports) in module.files.iter().zip(&file_imports) {
             let globals = imports.overlay(&interface);
-            let type_diags = typecheck::check(&file.decls, &globals, &imports.modules).diags;
+            let mut typed = typecheck::check(&file.decls, &globals, &imports.modules);
+            let type_diags = std::mem::take(&mut typed.diags);
             if type_diags.is_empty() {
                 diags.extend(
                     semantic::analyze(&file.decls, &globals)
@@ -350,9 +397,10 @@ fn analyze_module(
             } else {
                 diags.extend(type_diags.into_iter().map(|d| d.in_file(&file.name)));
             }
+            checked.push((globals, typed));
         }
     }
-    (diags, interface)
+    (diags, interface, checked)
 }
 
 /// The names a module declares across all its files: its top-level structs, sum

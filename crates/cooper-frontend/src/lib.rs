@@ -7,6 +7,8 @@
 //! errors, so diagnostics stay meaningful rather than cascading, while within a
 //! phase collection continues past the first error. [`analyze`] is a thin
 //! convenience wrapping a single source snippet as a one-module program.
+//! [`check_project`] runs the same pipeline and, for a clean project, hands back its
+//! checked form for lowering.
 
 pub mod ast;
 mod builtins;
@@ -21,6 +23,7 @@ pub mod typecheck;
 pub mod types;
 
 pub use diag::{Diagnostic, Span};
+pub use modules::{CheckedFile, CheckedProject};
 pub use project::{Module, Project, ProjectKind, ProjectManifest, SourceFile};
 
 /// Run the full frontend over a single source snippet and return all diagnostics.
@@ -42,4 +45,11 @@ pub fn analyze(source: &str) -> Vec<Diagnostic> {
 /// dependency graph and checking each module against its dependencies' interfaces.
 pub fn analyze_project(project: &Project) -> Vec<Diagnostic> {
     modules::analyze(project)
+}
+
+/// Run the full frontend over `project`, returning its checked form — every file's
+/// declarations, symbol table, and checker tables — when it is free of diagnostics,
+/// and every diagnostic otherwise.
+pub fn check_project(project: &Project) -> Result<CheckedProject, Vec<Diagnostic>> {
+    modules::check(project)
 }

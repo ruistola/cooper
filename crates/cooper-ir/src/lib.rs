@@ -25,6 +25,7 @@ use cooper_frontend::resolve::{
     receiver_pattern_params, resolve_type, underlying_struct_name, Callable, Globals, Signature,
 };
 use cooper_frontend::typecheck::{decode_number_literal, ItemRef, LiteralValue, Typed};
+use cooper_frontend::CheckedProject;
 use cooper_frontend::types::{is_numeric_name, Type, TypeDefs, DEFAULT_INT};
 
 /// A lowered function or method: the declaration it lowers, its signature, its body
@@ -382,6 +383,42 @@ pub enum LowerError {
 
 /// The type map keyed by span that the type checker hands off.
 pub type TypeTable = HashMap<Span, Type>;
+
+/// A lowered, monomorphized program: every function instance it runs, none generic,
+/// and the definitions of the struct and sum types their types name (a [`Type`]
+/// names a declaration by identity only, so a backend reads layouts here).
+#[derive(Debug, Clone)]
+pub struct Program {
+    pub functions: Vec<Function>,
+    pub defs: TypeDefs,
+}
+
+/// Why a program could not be lowered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProgramError {
+    /// A file failed to lower; `file` names it, since spans index into one file.
+    Lower { file: String, error: LowerError },
+    Mono(MonoError),
+}
+
+/// Lower every file of a checked project and monomorphize the whole: the IR a
+/// backend consumes.
+pub fn lower_program(project: &CheckedProject) -> Result<Program, ProgramError> {
+    let mut functions = Vec::new();
+    for file in &project.files {
+        let lowered = lower_module(&file.decls, &file.globals, &file.typed).map_err(|error| {
+            ProgramError::Lower {
+                file: file.name.clone(),
+                error,
+            }
+        })?;
+        functions.extend(lowered);
+    }
+    Ok(Program {
+        functions: monomorphize(&functions).map_err(ProgramError::Mono)?,
+        defs: project.defs.clone(),
+    })
+}
 
 /// Lower a type-checked module's top-level declarations into typed functions.
 /// Struct and sum-type declarations carry no runnable body and are skipped; every

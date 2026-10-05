@@ -92,9 +92,9 @@ The seam between the frontend and any backend is a typed intermediate representa
 `cooper-ir` crate. Lowering consumes the types the frontend already computes: type checking records a
 per-file `span → Type` table as it checks rather than discarding each expression's type, and lowering
 reads it to produce a typed, span-carrying IR where every node knows its resolved type and no name
-resolution or inference happens downstream. The IR is also the home for desugaring (operators to
-method calls, `if` to `match`) and for monomorphization, Cooper's generics model, which instantiates
-each generic function and method per concrete type-argument set.
+resolution or inference happens downstream. The IR is also the home for desugaring (`if` to `match`,
+index syntax and array methods to intrinsics) and for monomorphization, Cooper's generics model,
+which instantiates each generic function and method per concrete type-argument set.
 
 **Runtime stays behind the IR→backend boundary.** The IR models every runtime-touching operation —
 allocation, array growth, copies — as an abstract, typed *intrinsic*, never a concrete runtime call

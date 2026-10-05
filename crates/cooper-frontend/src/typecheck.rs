@@ -12,8 +12,8 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Span};
 use crate::resolve::{self, Globals};
 use crate::types::{
-    is_float_name, is_integer, is_integer_name, is_numeric, is_numeric_name, is_primitive, is_unit,
-    unify, Type, DEFAULT_FLOAT, DEFAULT_INT, SIGNED_INTS,
+    incomparable_part, is_float_name, is_integer, is_integer_name, is_numeric, is_numeric_name,
+    is_primitive, is_unit, unify, Type, DEFAULT_FLOAT, DEFAULT_INT, SIGNED_INTS,
 };
 
 /// The result of type checking one file: its diagnostics, and the type attributed to
@@ -840,6 +840,15 @@ impl<'g> TypeChecker<'g> {
                     BinaryOp::Eq | BinaryOp::Ne => {
                         if !left.equals(&right) {
                             self.err(span, format!("cannot compare {left} and {right}"));
+                            return None;
+                        }
+                        if let Some(part) = incomparable_part(&left) {
+                            let reason = if std::ptr::eq(part, &left) {
+                                String::new()
+                            } else {
+                                format!(" (it contains {part})")
+                            };
+                            self.err(span, format!("values of type {left} are not comparable{reason}"));
                             return None;
                         }
                         Some(Type::Primitive("bool".to_string()))

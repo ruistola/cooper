@@ -262,6 +262,30 @@ pub fn is_float(t: &Type) -> bool {
     matches!(t, Type::Primitive(n) if is_float_name(n))
 }
 
+/// The first component of `t` that makes it non-comparable, or `None` when `==` is
+/// defined on `t`. Equality is structural, shallow, and field-wise: primitives by
+/// value (`string` by content, floats by IEEE), pointers by address, and tuples,
+/// structs, and sum types (tag, then payload) when every component is comparable.
+/// Functions are excluded (closure identity has no meaning), as are dynamic arrays
+/// (a view's identity and its contents are both plausible readings) and unconstrained
+/// type parameters. The same set defines which types are hashable.
+pub(crate) fn incomparable_part(t: &Type) -> Option<&Type> {
+    match t {
+        Type::Unknown | Type::Unit | Type::Primitive(_) | Type::Pointer(_) | Type::Nil => None,
+        Type::Array(_) | Type::Func { .. } | Type::TypeParam(_) | Type::Module(_) => Some(t),
+        Type::Tuple(elems) => elems.iter().find_map(incomparable_part),
+        Type::Struct { members, .. } => {
+            let mut names: Vec<&String> = members.keys().collect();
+            names.sort();
+            names.into_iter().find_map(|n| incomparable_part(&members[n]))
+        }
+        Type::Oneof { variants, variant_order, .. } => variant_order
+            .iter()
+            .flat_map(|v| &variants[v])
+            .find_map(incomparable_part),
+    }
+}
+
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

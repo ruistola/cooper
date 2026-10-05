@@ -104,3 +104,49 @@ fn dereferencing_non_pointer_is_reported() {
 }
 
 // --- bare variants under an expected type ---
+
+#[test]
+fn an_array_literal_takes_its_element_type_from_an_annotation_or_its_elements() {
+    ok("func f(y: i64) {\n  let xs: u8[] = [1, 2]\n  ys := [1, y]\n  let zs: i64[] = ys\n  let fs = [1, 2.5]\n}");
+}
+
+#[test]
+fn an_array_literal_must_be_homogeneous() {
+    // The first element that is not a bare literal fixes the element type.
+    err(
+        "func f(x: i32) {\n  let xs = [x, \"s\"]\n}",
+        "array element type mismatch: expected i32, found string",
+    );
+}
+
+#[test]
+fn an_empty_array_literal_needs_an_annotation() {
+    ok("func f() {\n  let xs: f64[] = []\n}");
+    err("func f() {\n  let xs = []\n}", "cannot infer the element type of an empty array literal");
+}
+
+#[test]
+fn structs_tuples_and_sum_types_of_comparable_parts_compare() {
+    ok(concat!(
+        "struct P {\n  x: i32,\n  s: string,\n  n: i32^,\n}\n",
+        "func f(a: P, b: P, p: i32^): bool {\n  return a == b and p == nil and (1, \"x\") == (1, \"x\")\n}",
+    ));
+}
+
+#[test]
+fn functions_arrays_and_aggregates_containing_them_are_not_comparable() {
+    err("func f(xs: i32[]): bool {\n  return xs == xs\n}", "values of type i32[] are not comparable");
+    err(
+        "struct S {\n  xs: i32[],\n}\nfunc f(s: S): bool {\n  return s == s\n}",
+        "values of type S are not comparable (it contains i32[])",
+    );
+    err(
+        "func g() { }\nfunc f(): bool {\n  return g == g\n}",
+        "are not comparable",
+    );
+}
+
+#[test]
+fn a_type_parameter_is_not_comparable() {
+    err("func same T (a: T, b: T): bool {\n  return a == b\n}", "values of type T are not comparable");
+}

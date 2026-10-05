@@ -10,20 +10,69 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diag::{Diagnostic, Span};
-use crate::resolve::{self, Globals};
+use crate::resolve::{self, Callable, Globals, Signature};
 use crate::types::{
     display_pair, incomparable_part, is_float_name, is_integer, is_integer_name, is_numeric,
-    is_numeric_name, is_primitive, is_unit, unify, Type, TypeDefs, TypeId, DEFAULT_FLOAT,
+    is_numeric_name, is_primitive, is_unit, unify, unify_where, Type, TypeDefs, TypeId, DEFAULT_FLOAT,
     DEFAULT_INT, SIGNED_INTS,
 };
 
-/// The result of type checking one file: its diagnostics, and the type attributed to
-/// every expression keyed by span. The span table is the lowering pass's handoff —
-/// `cooper-ir` reads it so no type need be recomputed downstream. Spans are unique
-/// per expression within a file (they are disjoint byte ranges), so the key is exact.
+/// The result of type checking one file: its diagnostics, the type attributed to
+/// every expression, and the declaration every function or method reference names,
+/// each keyed by span. The span tables are the lowering pass's handoff — `cooper-ir`
+/// reads them so no type or name need be recomputed downstream. Spans are unique per
+/// expression within a file (they are disjoint byte ranges), so the key is exact.
 pub struct Typed {
     pub diags: Vec<Diagnostic>,
     pub types: HashMap<Span, Type>,
+    pub refs: HashMap<Span, ItemRef>,
+}
+
+/// A reference to a function or method declaration, instantiated: the declaration's
+/// identity and one type argument per binder of its [`Signature`], in order. A
+/// non-generic declaration takes none. Inside a generic body the arguments may name
+/// the enclosing declaration's own type parameters.
+#[derive(Debug, Clone)]
+pub struct ItemRef {
+    pub item: Callable,
+    pub type_args: Vec<Type>,
+}
+
+/// A generic function or method reference whose type arguments are not yet known,
+/// awaiting the call (or expected function type) that infers them.
+struct PendingRef {
+    span: Span,
+    /// How diagnostics name the declaration (`function id`, `method map`).
+    label: String,
+    item: Callable,
+    /// One entry per binder: its known type, or a fresh inference variable.
+    type_args: Vec<Type>,
+    /// Inference variables still to solve, each mapped to its binder's name.
+    vars: HashMap<String, String>,
+}
+
+impl PendingRef {
+    fn is_var(&self, name: &str) -> bool {
+        self.vars.contains_key(name)
+    }
+}
+
+/// Whether `ty` mentions an inference variable — a fresh name minted for a generic
+/// reference (`T#3`), never a declared type parameter.
+fn has_inference_var(ty: &Type) -> bool {
+    match ty {
+        Type::TypeParam(name) => name.contains('#'),
+        Type::Array(elem) | Type::Pointer(elem) => has_inference_var(elem),
+        Type::Tuple(elems) => elems.iter().any(has_inference_var),
+        Type::Func {
+            return_type,
+            param_types,
+        } => has_inference_var(return_type) || param_types.iter().any(has_inference_var),
+        Type::Struct { type_args, .. } | Type::Oneof { type_args, .. } => {
+            type_args.iter().any(has_inference_var)
+        }
+        Type::Unknown | Type::Unit | Type::Primitive(_) | Type::Nil | Type::Module(_) => false,
+    }
 }
 
 /// Type check `module` against `globals`. `modules` maps each `use`-bound module's
@@ -42,6 +91,7 @@ pub fn check(
     Typed {
         diags: tc.diags,
         types: tc.types,
+        refs: tc.refs,
     }
 }
 
@@ -66,6 +116,15 @@ struct TypeChecker<'g> {
     /// How many loop bodies enclose the statement being checked, so `break` and
     /// `continue` outside any loop can be rejected.
     loop_depth: u32,
+    /// Every function and method reference, keyed by span: the lowering handoff.
+    refs: HashMap<Span, ItemRef>,
+    /// Whether the expression being checked is a call's callee. Like `expected`, a
+    /// head-only hint: a generic callee defers its type arguments to the call.
+    callee: bool,
+    /// The generic callee just referenced, for the enclosing call to solve.
+    pending: Option<PendingRef>,
+    /// The counter that keeps inference variable names unique.
+    fresh: usize,
 }
 
 impl<'g> TypeChecker<'g> {
@@ -80,6 +139,10 @@ impl<'g> TypeChecker<'g> {
             type_params: HashSet::new(),
             expected: None,
             loop_depth: 0,
+            refs: HashMap::new(),
+            callee: false,
+            pending: None,
+            fresh: 0,
         }
     }
 
@@ -635,6 +698,7 @@ impl<'g> TypeChecker<'g> {
         // clear it so it never leaks into sub-expressions. Only the dispatches that
         // can act on it restore it before recursing.
         let expected = self.expected.take();
+        let callee = std::mem::take(&mut self.callee);
         match &expr.kind {
             ExprKind::Number(text) => Some(self.number_type(text, expr.span, expected, false)),
             ExprKind::Str(_) => Some(Type::Primitive("string".to_string())),
@@ -653,7 +717,7 @@ impl<'g> TypeChecker<'g> {
                 // Restore the hint so a bare payload-free variant can see it, but
                 // clear it afterwards so an ordinary identifier never lets it leak.
                 self.expected = expected;
-                let t = self.check_ident(name, expr.span);
+                let t = self.check_ident(name, expr.span, callee);
                 self.expected = None;
                 t
             }
@@ -672,6 +736,7 @@ impl<'g> TypeChecker<'g> {
             }
             ExprKind::Group(inner) => {
                 self.expected = expected;
+                self.callee = callee;
                 self.check_expr(inner)
             }
             ExprKind::Call { callee, args } => {
@@ -683,7 +748,7 @@ impl<'g> TypeChecker<'g> {
             }
             ExprKind::Field { target, name } => {
                 self.expected = expected;
-                self.check_field(target, name, expr.span)
+                self.check_field(target, name, expr.span, callee)
             }
             ExprKind::Index { array, index } => self.check_index(array, index),
             ExprKind::AddressOf(operand) => self.check_address_of(operand, expr.span),
@@ -701,7 +766,7 @@ impl<'g> TypeChecker<'g> {
         }
     }
 
-    fn check_ident(&mut self, name: &str, span: Span) -> Option<Type> {
+    fn check_ident(&mut self, name: &str, span: Span, callee: bool) -> Option<Type> {
         if let Some(t) = self.lookup_var(name) {
             return Some(t.clone());
         }
@@ -711,8 +776,10 @@ impl<'g> TypeChecker<'g> {
         if let Some(t) = self.globals.lookup_oneof(name) {
             return Some(t);
         }
-        if let Some(t) = self.globals.lookup_func(name) {
-            return Some(t.clone());
+        if let Some(sig) = self.globals.lookup_func(name) {
+            let sig = sig.clone();
+            let expected = self.expected.clone();
+            return self.reference(span, &sig, &format!("function {name}"), None, callee, expected);
         }
         // A bare name that begins some `use`-bound module's spelling is a module
         // reference, navigated further by qualified field access.
@@ -772,19 +839,27 @@ impl<'g> TypeChecker<'g> {
     /// Extending the spelling toward a bound module yields a deeper module reference;
     /// once it names a complete module, `field` selects one of that module's exported
     /// items.
-    fn check_module_access(&mut self, prefix: &[String], field: &str, span: Span) -> Option<Type> {
+    fn check_module_access(
+        &mut self,
+        prefix: &[String],
+        field: &str,
+        span: Span,
+        callee: bool,
+    ) -> Option<Type> {
         let mut candidate = prefix.to_vec();
         candidate.push(field.to_string());
         if self.module_is_prefix(&candidate) {
             return Some(Type::Module(candidate));
         }
         if let Some(interface) = self.modules.get(prefix) {
-            if let Some(ty) = interface
-                .lookup_struct(field)
-                .or_else(|| interface.lookup_oneof(field))
-                .or_else(|| interface.lookup_func(field).cloned())
-            {
+            if let Some(ty) = interface.lookup_struct(field).or_else(|| interface.lookup_oneof(field)) {
                 return Some(ty);
+            }
+            if let Some(sig) = interface.lookup_func(field) {
+                let sig = sig.clone();
+                let expected = self.expected.take();
+                let label = format!("function {}.{field}", prefix.join("."));
+                return self.reference(span, &sig, &label, None, callee, expected);
             }
             self.err(
                 span,
@@ -1091,7 +1166,10 @@ impl<'g> TypeChecker<'g> {
                 return self.check_numeric_conversion(name, args, span);
             }
         }
+        let expected = self.expected.take();
+        self.callee = true;
         let callee_type = self.check_expr(callee)?;
+        let pending = self.pending.take();
         let Type::Func {
             return_type,
             param_types,
@@ -1111,6 +1189,9 @@ impl<'g> TypeChecker<'g> {
             );
             return None;
         }
+        if let Some(pending) = pending {
+            return self.check_generic_call(pending, callee.span, args, param_types, return_type, expected);
+        }
         for (i, (arg, param)) in args.iter().zip(param_types).enumerate() {
             self.expected = Some(param.clone());
             let arg_type = self.check_expr(arg)?;
@@ -1124,6 +1205,156 @@ impl<'g> TypeChecker<'g> {
             }
         }
         Some((**return_type).clone())
+    }
+
+    /// Instantiate a reference at `span` to the function or method `sig`. A method's
+    /// receiver-pattern binders are fixed by matching its receiver type against the
+    /// concrete `receiver`; every other binder becomes a fresh inference variable.
+    /// With none left the reference is recorded at once. A callee defers them to the
+    /// enclosing call, which infers them from its arguments; anywhere else an expected
+    /// function type must determine them. Returns the reference's function type,
+    /// written in terms of any variables still unsolved.
+    fn reference(
+        &mut self,
+        span: Span,
+        sig: &Signature,
+        label: &str,
+        receiver: Option<&Type>,
+        callee: bool,
+        expected: Option<Type>,
+    ) -> Option<Type> {
+        let mut fixed = HashMap::new();
+        if let (Some(template), Some(actual)) = (&sig.receiver, receiver) {
+            unify(template, actual, &mut fixed);
+        }
+        let mut vars = HashMap::new();
+        let mut subst = HashMap::new();
+        let mut type_args = Vec::with_capacity(sig.type_params.len());
+        for param in &sig.type_params {
+            let arg = fixed.get(param).cloned().unwrap_or_else(|| {
+                self.fresh += 1;
+                let var = format!("{param}#{}", self.fresh);
+                vars.insert(var.clone(), param.clone());
+                Type::TypeParam(var)
+            });
+            subst.insert(param.clone(), arg.clone());
+            type_args.push(arg);
+        }
+        let ty = sig.ty.substitute(&subst);
+        let pending = PendingRef {
+            span,
+            label: label.to_string(),
+            item: sig.item.clone(),
+            type_args,
+            vars,
+        };
+        if callee && !pending.vars.is_empty() {
+            self.pending = Some(pending);
+            return Some(ty);
+        }
+        let mut solved = HashMap::new();
+        if let Some(expected @ Type::Func { .. }) = &expected {
+            unify_where(&ty, expected, &|n| pending.is_var(n), &mut solved);
+        }
+        self.finish_reference(&pending, &solved)
+            .then(|| ty.substitute(&solved))
+    }
+
+    /// Record `pending` with its inference variables solved by `solved`, or report the
+    /// first variable left unsolved (or solved only in terms of another reference's
+    /// unsolved variables).
+    fn finish_reference(&mut self, pending: &PendingRef, solved: &HashMap<String, Type>) -> bool {
+        for arg in &pending.type_args {
+            let Type::TypeParam(var) = arg else { continue };
+            let Some(binder) = pending.vars.get(var) else { continue };
+            if !solved.get(var).is_some_and(|t| !has_inference_var(t)) {
+                self.err(
+                    pending.span,
+                    format!(
+                        "cannot infer type argument {binder} for {}; annotate the expected type",
+                        pending.label
+                    ),
+                );
+                return false;
+            }
+        }
+        let type_args = pending.type_args.iter().map(|t| t.substitute(solved)).collect();
+        self.refs.insert(
+            pending.span,
+            ItemRef {
+                item: pending.item.clone(),
+                type_args,
+            },
+        );
+        true
+    }
+
+    /// Check a call to a generic callee, solving its inference variables: first from
+    /// the expected result type, when that fits, then by unifying each parameter with
+    /// its argument. An argument naming a generic function is checked last, so the
+    /// other arguments can fix the function type it is expected to take; a parameter
+    /// type still holding unsolved variables guides no argument. The callee's
+    /// recorded type is replaced by its solved instantiation.
+    fn check_generic_call(
+        &mut self,
+        pending: PendingRef,
+        callee_span: Span,
+        args: &[Expr],
+        param_types: &[Type],
+        return_type: &Type,
+        expected: Option<Type>,
+    ) -> Option<Type> {
+        let is_var = |n: &str| pending.is_var(n);
+        let mut solved = HashMap::new();
+        if let Some(expected) = &expected {
+            let mut trial = HashMap::new();
+            if unify_where(return_type, expected, &is_var, &mut trial) {
+                solved = trial;
+            }
+        }
+        let (deferred, first): (Vec<usize>, Vec<usize>) =
+            (0..args.len()).partition(|&i| self.is_generic_function_ref(&args[i]));
+        for i in first.into_iter().chain(deferred) {
+            // A parameter still naming an unsolved variable gives no usable hint.
+            let hint = param_types[i].substitute(&solved);
+            let usable = (!has_inference_var(&hint)).then(|| hint.clone());
+            let arg_type = self.check_expr_expecting(&args[i], usable)?;
+            if !unify_where(&param_types[i], &arg_type, &is_var, &mut solved) {
+                let (hint_shown, arg_shown) = display_pair(&hint.substitute(&solved), &arg_type);
+                self.err(
+                    args[i].span,
+                    format!("argument {} type mismatch: expected {hint_shown}, found {arg_shown}", i + 1),
+                );
+                return None;
+            }
+        }
+        if !self.finish_reference(&pending, &solved) {
+            return None;
+        }
+        let callee_type = Type::Func {
+            return_type: Box::new(return_type.clone()),
+            param_types: param_types.to_vec(),
+        }
+        .substitute(&solved);
+        self.types.insert(pending.span, callee_type.clone());
+        self.types.insert(callee_span, callee_type);
+        Some(return_type.substitute(&solved))
+    }
+
+    /// Whether `expr` is a bare reference to a generic function, which takes its type
+    /// arguments from the function type its context expects.
+    fn is_generic_function_ref(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Ident(name) => {
+                self.lookup_var(name).is_none()
+                    && self
+                        .globals
+                        .lookup_func(name)
+                        .is_some_and(|sig| !sig.type_params.is_empty())
+            }
+            ExprKind::Group(inner) => self.is_generic_function_ref(inner),
+            _ => false,
+        }
     }
 
     /// Type check an explicit numeric conversion `Type(value)`. The argument may have
@@ -1360,7 +1591,7 @@ impl<'g> TypeChecker<'g> {
         })
     }
 
-    fn check_field(&mut self, target: &Expr, field: &str, span: Span) -> Option<Type> {
+    fn check_field(&mut self, target: &Expr, field: &str, span: Span, callee: bool) -> Option<Type> {
         let expected = self.expected.take();
         let mut target_type = self.check_expr(target)?;
         // A member access whose base is a module reference selects an exported item
@@ -1368,7 +1599,7 @@ impl<'g> TypeChecker<'g> {
         if let Type::Module(prefix) = &target_type {
             let prefix = prefix.clone();
             self.expected = expected;
-            return self.check_module_access(&prefix, field, span);
+            return self.check_module_access(&prefix, field, span, callee);
         }
         // A member access whose base is a sum type names a variant constructor.
         if matches!(target_type, Type::Oneof { .. }) {
@@ -1403,8 +1634,10 @@ impl<'g> TypeChecker<'g> {
         // Not a data field: fall back to a method on this struct type. A bound
         // method has its receiver stripped, so it is usable wherever a matching
         // function type is expected.
-        if let Some(method_type) = self.globals.lookup_method(id, field) {
-            return Some(method_type.clone());
+        if let Some(sig) = self.globals.lookup_method(id, field) {
+            let sig = sig.clone();
+            let label = format!("method {field}");
+            return self.reference(span, &sig, &label, Some(&target_type), callee, expected);
         }
         self.err(span, format!("{field} is not a member of struct {name}"));
         None

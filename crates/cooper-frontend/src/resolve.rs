@@ -23,8 +23,35 @@ use crate::types::{is_primitive_name, OneofDef, StructDef, Type, TypeDefs, TypeI
 /// The module-wide symbol table produced by resolution. Structs, sum types, and
 /// functions are global (only variables are block-scoped), so later passes read
 /// declarations directly from here rather than from a scope tree.
+/// The identity of a callable declaration: a free function by its defining module
+/// and name, or a method by its receiver struct and name. Two references call the same
+/// declaration exactly when their identities match, however an import spells them.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Callable {
+    Func { module: String, name: String },
+    Method { receiver: TypeId, name: String },
+}
+
+/// A resolved function or method signature. `type_params` lists every binder in
+/// scope for the signature — the declaration's own, then any a generic receiver
+/// pattern introduces — and is the order in which a reference supplies type
+/// arguments.
+#[derive(Debug, Clone)]
+pub struct Signature {
+    pub item: Callable,
+    pub type_params: Vec<String>,
+    /// A method's receiver struct type, pointer stripped, written in terms of the
+    /// receiver-pattern binders; matching it against a concrete receiver fixes them.
+    pub receiver: Option<Type>,
+    /// The function type, receiver excluded.
+    pub ty: Type,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct Globals {
+    /// The dotted path of the module whose declarations this table resolves; new
+    /// type and function identities are minted under it.
+    pub module: String,
     /// Struct names in scope, by local spelling, to their identities.
     pub structs: HashMap<String, TypeId>,
     /// Sum type names in scope, by local spelling, to their identities.
@@ -32,9 +59,9 @@ pub struct Globals {
     /// The definitions of every type reachable from this table, including those
     /// only reachable through another type's members.
     pub defs: TypeDefs,
-    pub funcs: HashMap<String, Type>,
+    pub funcs: HashMap<String, Signature>,
     /// Receiver struct identity -> method name -> bound signature (receiver excluded).
-    pub methods: HashMap<TypeId, HashMap<String, Type>>,
+    pub methods: HashMap<TypeId, HashMap<String, Signature>>,
     /// Module-level variable names. Top-level `let` bindings occupy the module
     /// namespace alongside structs, sum types, and functions; unlike a block-scoped
     /// `let` — an ordered sequence where a re-binding shadows its predecessor — the
@@ -66,11 +93,11 @@ impl Globals {
         })
     }
 
-    pub fn lookup_func(&self, name: &str) -> Option<&Type> {
+    pub fn lookup_func(&self, name: &str) -> Option<&Signature> {
         self.funcs.get(name)
     }
 
-    pub fn lookup_method(&self, recv: &TypeId, name: &str) -> Option<&Type> {
+    pub fn lookup_method(&self, recv: &TypeId, name: &str) -> Option<&Signature> {
         self.methods.get(recv).and_then(|m| m.get(name))
     }
 
@@ -84,7 +111,8 @@ impl Globals {
 /// multi-file module runs the phases itself, each across all its files.
 pub fn resolve_into(mut globals: Globals, module: &str, decls: &[Stmt]) -> (Globals, Vec<Diagnostic>) {
     let mut diags = Vec::new();
-    declare_types(&mut globals, module, decls, &mut diags);
+    globals.module = module.to_string();
+    declare_types(&mut globals, decls, &mut diags);
     define_types(&mut globals, decls, &mut diags);
     check_type_sizes(&globals, decls, &mut diags);
     resolve_signatures(&mut globals, decls, &mut diags);
@@ -92,10 +120,10 @@ pub fn resolve_into(mut globals: Globals, module: &str, decls: &[Stmt]) -> (Glob
 }
 
 /// Phase one: register every struct and sum type `decls` declares, under an
-/// identity in `module`, with its type parameters but no body yet. A name already
+/// identity in the table's module, with its type parameters but no body yet. A name already
 /// taken by a type is a redeclaration. Seeded imports never collide here: an import
 /// shadowing one of the module's own declarations is rejected at its `use`.
-pub fn declare_types(globals: &mut Globals, module: &str, decls: &[Stmt], diags: &mut Vec<Diagnostic>) {
+pub fn declare_types(globals: &mut Globals, decls: &[Stmt], diags: &mut Vec<Diagnostic>) {
     for stmt in decls {
         let (name, type_params, is_struct) = match &stmt.kind {
             StmtKind::StructDecl { name, type_params, .. } => (name, type_params, true),
@@ -110,7 +138,7 @@ pub fn declare_types(globals: &mut Globals, module: &str, decls: &[Stmt], diags:
             continue;
         }
         let id = TypeId {
-            module: module.to_string(),
+            module: globals.module.clone(),
             name: name.clone(),
         };
         let type_params = type_params.clone();
@@ -466,7 +494,7 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
         binders.extend(receiver_pattern_params(&receiver.ty));
     }
     check_type_param_binders(&binders, func.span, globals, diags);
-    let params: HashSet<String> = binders.into_iter().collect();
+    let params: HashSet<String> = binders.iter().cloned().collect();
 
     let return_type = match &func.return_type {
         Some(rt) => match resolve_type(rt, &params, globals, diags) {
@@ -502,7 +530,19 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
             ));
             return;
         }
-        globals.funcs.insert(func.name.clone(), func_type);
+        let item = Callable::Func {
+            module: globals.module.clone(),
+            name: func.name.clone(),
+        };
+        globals.funcs.insert(
+            func.name.clone(),
+            Signature {
+                item,
+                type_params: binders,
+                receiver: None,
+                ty: func_type,
+            },
+        );
         return;
     };
 
@@ -510,7 +550,7 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
         Some(t) => t,
         None => return,
     };
-    let Some(Type::Struct { id, .. }) = underlying_struct(&recv_type) else {
+    let Some(receiver_struct @ Type::Struct { id, .. }) = underlying_struct(&recv_type) else {
         diags.push(Diagnostic::error(
             receiver.span,
             format!(
@@ -521,6 +561,7 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
         return;
     };
     let id = id.clone();
+    let receiver_struct = receiver_struct.clone();
     let struct_name = &id.name;
     if globals
         .defs
@@ -541,11 +582,19 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
         ));
         return;
     }
-    globals
-        .methods
-        .entry(id)
-        .or_default()
-        .insert(func.name.clone(), func_type);
+    let item = Callable::Method {
+        receiver: id.clone(),
+        name: func.name.clone(),
+    };
+    globals.methods.entry(id).or_default().insert(
+        func.name.clone(),
+        Signature {
+            item,
+            type_params: binders,
+            receiver: Some(receiver_struct),
+            ty: func_type,
+        },
+    );
 }
 
 /// The type-parameter names a method receiver binds through the receiver-pattern

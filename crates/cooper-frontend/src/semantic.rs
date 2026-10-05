@@ -84,7 +84,7 @@ impl SemanticAnalyzer<'_> {
                 .and_then(|id| self.globals.lookup_method(id, &func.name)),
             None => self.globals.lookup_func(&func.name),
         };
-        let Some(Type::Func { return_type, .. }) = return_type else {
+        let Some(Type::Func { return_type, .. }) = return_type.map(|sig| &sig.ty) else {
             return;
         };
         if !is_unit(return_type) && !block_returns(&func.body) {

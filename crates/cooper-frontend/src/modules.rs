@@ -23,8 +23,8 @@ use crate::diag::{Diagnostic, Span};
 use crate::lexer;
 use crate::parser;
 use crate::project::{Module, ModulePath, Project};
-use crate::resolve::{self, Globals};
-use crate::types::{Type, TypeDefs, TypeId};
+use crate::resolve::{self, Globals, Signature};
+use crate::types::{TypeDefs, TypeId};
 use crate::{semantic, typecheck};
 
 /// The dependency edges of the module graph: for each module, the set of modules it
@@ -260,8 +260,8 @@ fn topological_order(
 struct Imports {
     structs: HashMap<String, TypeId>,
     oneofs: HashMap<String, TypeId>,
-    funcs: HashMap<String, Type>,
-    methods: HashMap<TypeId, HashMap<String, Type>>,
+    funcs: HashMap<String, Signature>,
+    methods: HashMap<TypeId, HashMap<String, Signature>>,
     /// Module bindings keyed by local spelling (`["std", "io"]`, or `["web"]` when
     /// aliased), each mapped to that module's interface for qualified access.
     modules: HashMap<Vec<String>, Globals>,
@@ -315,10 +315,11 @@ fn analyze_module(
     // they never leak across files.
     let module_name = module.path.to_string();
     let mut interface = Globals::default();
+    interface.module = module_name.clone();
     interface.defs = defs.clone();
     for file in &module.files {
         let mut file_diags = Vec::new();
-        resolve::declare_types(&mut interface, &module_name, &file.decls, &mut file_diags);
+        resolve::declare_types(&mut interface, &file.decls, &mut file_diags);
         diags.extend(file_diags.into_iter().map(|d| d.in_file(&file.name)));
     }
     type Phase = fn(&mut Globals, &[Stmt], &mut Vec<Diagnostic>);
@@ -440,8 +441,8 @@ fn build_file_imports(
                     }
                 } else if let Some(id) = interface.oneofs.get(&item) {
                     imports.oneofs.insert(local, id.clone());
-                } else if let Some(ty) = interface.lookup_func(&item) {
-                    imports.funcs.insert(local, ty.clone());
+                } else if let Some(sig) = interface.lookup_func(&item) {
+                    imports.funcs.insert(local, sig.clone());
                 } else {
                     diags.push(
                         Diagnostic::error(

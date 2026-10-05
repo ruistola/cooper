@@ -231,3 +231,21 @@ fn malformed_variant_payload_recovers_without_hanging() {
     // to consume it rather than retry it forever.
     err("oneof Maybe T { Some T, None }", "expected");
 }
+
+#[test]
+fn parses_an_array_literal_across_lines_with_a_trailing_comma() {
+    let m = ok("func f() {\n  let xs: i32[] = [\n    1,\n    2,\n  ]\n  let e: i32[] = []\n}");
+    let StmtKind::FuncDecl(f) = &m[0].kind else { panic!("expected a function") };
+    let lens: Vec<usize> = f
+        .body
+        .iter()
+        .map(|s| match &s.kind {
+            StmtKind::VarDecl { init: Some(init), .. } => match &init.kind {
+                ExprKind::Array(elems) => elems.len(),
+                other => panic!("expected an array literal, got {other:?}"),
+            },
+            other => panic!("expected a variable declaration, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(lens, [2, 0]);
+}

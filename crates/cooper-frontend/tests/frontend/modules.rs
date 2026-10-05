@@ -330,3 +330,34 @@ fn a_declaration_in_one_file_is_visible_across_the_module() {
 }
 
 // --- control flow ---
+
+#[test]
+fn same_named_types_from_two_modules_stay_distinct_and_read_qualified() {
+    project_err(
+        &[
+            ("a", "struct Node {\n  x: i32,\n}"),
+            ("b", "struct Node {\n  x: i32,\n}"),
+            (
+                "main",
+                "use {\n  a.Node as ANode,\n  b.Node as BNode,\n}\nfunc f(x: ANode): BNode {\n  return x\n}",
+            ),
+        ],
+        "return type mismatch: expected b.Node, found a.Node",
+    );
+}
+
+#[test]
+fn a_type_reaches_another_it_names_without_importing_it() {
+    project_ok(&[
+        ("a", "struct Item {\n  tag: i32,\n}\nstruct Node {\n  item: Item,\n}"),
+        ("main", "use {\n  a.Node,\n}\nfunc f(n: Node): i32 {\n  return n.item.tag\n}"),
+    ]);
+}
+
+#[test]
+fn a_generic_function_is_called_through_a_module_binding() {
+    project_ok(&[
+        ("util", "func id T (x: T): T {\n  return x\n}"),
+        ("main", "use {\n  util,\n}\nfunc f(): i32 {\n  return util.id(1)\n}"),
+    ]);
+}

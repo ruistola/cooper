@@ -118,3 +118,36 @@ fn a_duplicate_type_parameter_is_reported() {
         "duplicate type parameter T",
     );
 }
+
+#[test]
+fn a_type_may_refer_to_one_declared_later() {
+    ok("struct A {\n  b: B,\n}\nstruct B {\n  x: i32,\n}");
+}
+
+#[test]
+fn a_type_may_refer_to_itself_through_a_pointer_or_an_array() {
+    ok(concat!(
+        "struct Node {\n  next: Node^,\n  kids: Node[],\n}\n",
+        "oneof List T {\n  Cons(T, (List T)^),\n  Nil,\n}\n",
+        "func f(n: Node): i32 {\n  return 0\n}",
+    ));
+}
+
+#[test]
+fn a_type_containing_itself_by_value_is_reported() {
+    err("struct P {\n  n: P,\n}", "type P contains itself by value");
+    // Through a generic argument: `Box Q` holds a `Q` inline.
+    err(
+        "struct Box T {\n  v: T,\n}\nstruct Q {\n  b: Box Q,\n}",
+        "type Q contains itself by value",
+    );
+    err(
+        "struct G T {\n  g: G (T, T),\n}",
+        "recurse through a pointer `(G T)^`",
+    );
+}
+
+#[test]
+fn a_function_named_like_a_type_is_reported() {
+    err("struct B {\n  x: i32,\n}\nfunc B() { }", "redeclared function B");
+}

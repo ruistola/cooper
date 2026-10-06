@@ -45,7 +45,10 @@ func f(): Maybe i32 { return None }
 let y = Ok(5)        # error: write Result.Ok(5)
 ```
 
-A generic sum type's arguments are inferred from the payload arguments and the expected type.
+The zero value of a sum type is its first variant with a zero payload.
+
+A generic sum type's arguments are inferred from the payload arguments and the expected type;
+the left operand of a comparison supplies the expected type of the right (`m == None`).
 A construction that leaves a parameter undetermined is an error
 (`m := Maybe.None` cannot infer `T`).
 

@@ -1,0 +1,85 @@
+# exit: 0
+# Sum types: construction (qualified and bare), payload matching, generic sum
+# types, recursion through a pointer, equality, the zero value, and patterns that
+# switch on variants within tuples.
+oneof Shape {
+    Circle(i32),
+    Rect(i32, i32),
+    Empty,
+}
+
+oneof Maybe T {
+    Some(T),
+    None,
+}
+
+oneof Result T E {
+    Ok(T),
+    Err(E),
+}
+
+oneof List {
+    Cons(i32, List^),
+    Nil,
+}
+
+func area(s: Shape): i32 {
+    return match s with {
+        Circle(r) => 3 * r * r
+        Rect(w, h) => w * h
+        Empty => 0
+    }
+}
+
+func find(xs: List^, wanted: i32): Maybe i32 {
+    cur := xs
+    position := 0
+    while cur != nil do {
+        match cur^ with {
+            Cons(head, tail) => {
+                if head == wanted then return Some(position)
+                cur = tail
+            }
+            Nil => cur = nil
+        }
+        position += 1
+    }
+    return None
+}
+
+func divide(a: i32, b: i32): Result i32 bool {
+    if b == 0 then return Err(false)
+    return Ok(a / b)
+}
+
+func cons(head: i32, tail: List^): List^ {
+    cell := List.Cons(head, tail)
+    return &cell
+}
+
+func main(): i32 {
+    if area(Shape.Circle(2)) + area(Shape.Rect(3, 4)) + area(Shape.Empty) != 24 then return 1
+
+    list := cons(7, cons(8, cons(9, nil)))
+    if find(list, 9) != Maybe.Some(2) then return 2
+    if find(list, 1) != Maybe.None then return 3
+    if find(list, 7) == find(list, 8) then return 4
+
+    total := match divide(10, 2) with {
+        Ok(q) => q
+        Err(_) => -1
+    }
+    if total != 5 then return 5
+    if divide(1, 0) != Result.Err(false) then return 6
+
+    let zero: Shape
+    if zero != Shape.Circle(0) then return 7
+
+    both := match (find(list, 8), find(list, 0)) with {
+        (Some(a), None) => a
+        (Some(_), Some(_)) => -2
+        _ => -3
+    }
+    if both != 1 then return 8
+    return 0
+}

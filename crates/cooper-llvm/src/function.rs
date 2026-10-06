@@ -701,7 +701,20 @@ impl Emitter<'_, '_> {
                             value.ty, value.operand
                         ));
                     }
-                    _ => return self.unsupported("matching on sum types", span),
+                    None if matches!(ty, Type::Oneof { .. }) => {
+                        let tag = self.tag(&value);
+                        let mut arms = String::new();
+                        for (case, label) in cases.iter().zip(&case_labels) {
+                            let Test::Variant(variant) = &case.test else {
+                                unreachable!("a sum-type switch tests variants");
+                            };
+                            let (index, _) = self.module.variant(ty, variant);
+                            write!(arms, " i32 {index}, label %{label}")
+                                .expect("writing to a String cannot fail");
+                        }
+                        self.terminate(&format!("switch i32 {tag}, label %{default_label} [{arms} ]"));
+                    }
+                    _ => unreachable!("a switch tests a bool, an integer, or a sum type"),
                 }
                 for (case, label) in cases.iter().zip(&case_labels) {
                     self.start_block(label);
@@ -738,7 +751,15 @@ impl Emitter<'_, '_> {
                 };
                 (parent, *index, elems[*index].clone())
             }
-            Access::Payload { .. } => return self.unsupported("matching on sum types", span),
+            Access::Payload {
+                parent,
+                variant,
+                index,
+            } => {
+                let (parent, parent_ty) = self.access(parent, scrutinee, span)?;
+                let parent = parent.expect("a sum type has a value");
+                return self.payload_slot(&parent, &parent_ty, variant, *index, span);
+            }
         };
         let parent = parent.expect("an aggregate has a value");
         Ok((self.extract(&parent, index, &ty, span)?, ty))
@@ -834,7 +855,10 @@ impl Emitter<'_, '_> {
                 self.unsupported("function values", span)
             }
             IrExprKind::Intrinsic { .. } => self.unsupported("arrays", span),
-            IrExprKind::Variant { .. } => self.unsupported("sum types", span),
+            IrExprKind::Variant { variant, args } => {
+                let values = args.iter().map(|a| self.expr(a)).collect::<Result<Vec<_>, _>>()?;
+                self.construct(&expr.ty, variant, values, span).map(Some)
+            }
         }
     }
 
@@ -978,6 +1002,7 @@ impl Emitter<'_, '_> {
                 .map(|(_, member)| member)
                 .collect(),
             Type::Pointer(_) | Type::Nil => return Ok(self.assign(&format!("icmp eq ptr {l}, {r}"))),
+            Type::Oneof { .. } => return self.equal_variants(ty, left, right, span),
             _ => match Scalar::of(ty) {
                 Some(Scalar::Float { .. }) => return Ok(self.assign(&format!("fcmp oeq {} {l}, {r}", left.ty))),
                 Some(_) => return Ok(self.assign(&format!("icmp eq {} {l}, {r}", left.ty))),
@@ -992,6 +1017,98 @@ impl Emitter<'_, '_> {
             all = self.assign(&format!("and i1 {all}, {same}"));
         }
         Ok(all)
+    }
+
+    /// Whether two sum-type values are equal: the same variant, with equal payloads.
+    fn equal_variants(&mut self, ty: &Type, left: &Value, right: &Value, span: Span) -> Result<String, CodegenError> {
+        let left_tag = self.tag(left);
+        let right_tag = self.tag(right);
+        let same_tag = self.assign(&format!("icmp eq i32 {left_tag}, {right_tag}"));
+        let differ_from = self.current.clone();
+        let dispatch = self.fresh("eqtag");
+        let join = self.fresh("eqjoin");
+        self.terminate(&format!("br i1 {same_tag}, label %{dispatch}, label %{join}"));
+        self.start_block(&dispatch);
+        let variants = self.module.defs.variant_order(ty).to_vec();
+        let labels: Vec<String> = variants.iter().map(|_| self.fresh("eqvariant")).collect();
+        let arms: String = labels
+            .iter()
+            .enumerate()
+            .map(|(index, label)| format!(" i32 {index}, label %{label}"))
+            .collect();
+        let none = self.fresh("eqnone");
+        self.terminate(&format!("switch i32 {left_tag}, label %{none} [{arms} ]"));
+        self.start_block(&none);
+        self.terminate("unreachable");
+        let mut incoming = vec![format!("[ false, %{differ_from} ]")];
+        for (variant, label) in variants.iter().zip(&labels) {
+            self.start_block(label);
+            let (_, slots) = self.module.variant(ty, variant);
+            let mut all = "true".to_string();
+            for (index, slot) in slots.iter().enumerate() {
+                let (a, _) = self.payload_slot(left, ty, variant, index, span)?;
+                let (b, _) = self.payload_slot(right, ty, variant, index, span)?;
+                let same = self.equal(slot, a.as_ref(), b.as_ref(), span)?;
+                all = self.assign(&format!("and i1 {all}, {same}"));
+            }
+            incoming.push(format!("[ {all}, %{} ]", self.current));
+            self.terminate(&format!("br label %{join}"));
+        }
+        self.start_block(&join);
+        Ok(self.assign(&format!("phi i1 {}", incoming.join(", "))))
+    }
+
+    /// The variant tag of a sum-type value.
+    fn tag(&mut self, value: &Value) -> String {
+        self.assign(&format!("extractvalue {} {}, 0", value.ty, value.operand))
+    }
+
+    /// A value of sum type `ty`: variant `variant` carrying `payload`. The tag and
+    /// payload are written into a zeroed temporary, which reinterprets the payload area
+    /// as the variant's payload struct.
+    fn construct(&mut self, ty: &Type, variant: &str, payload: Vec<Option<Value>>, span: Span) -> Result<Value, CodegenError> {
+        let temp = self.slot(None, ty, span)?;
+        let llvm = temp.llvm.clone().expect("a sum type has an LLVM type");
+        let (tag, slots) = self.module.variant(ty, variant);
+        self.inst(&format!("store {llvm} zeroinitializer, ptr {}", temp.ptr));
+        let tag_ptr = self.assign(&format!("getelementptr {llvm}, ptr {}, i32 0, i32 0", temp.ptr));
+        self.inst(&format!("store i32 {tag}, ptr {tag_ptr}"));
+        if !slots.is_empty() {
+            let payload_ty = self.module.payload_type(&slots).or_else(|what| self.unsupported(&what, span))?;
+            let fields = self.aggregate(&payload_ty, payload);
+            let area = self.assign(&format!("getelementptr {llvm}, ptr {}, i32 0, i32 1", temp.ptr));
+            self.inst(&format!("store {payload_ty} {}, ptr {area}", fields.operand));
+        }
+        Ok(self.load(&temp).expect("a sum type has a value"))
+    }
+
+    /// Payload slot `index` of `variant` in the sum-type value `value`, with its type.
+    fn payload_slot(
+        &mut self,
+        value: &Value,
+        ty: &Type,
+        variant: &str,
+        index: usize,
+        span: Span,
+    ) -> Result<(Option<Value>, Type), CodegenError> {
+        let (_, slots) = self.module.variant(ty, variant);
+        let slot_ty = slots[index].clone();
+        let Some(slot_llvm) = self.value_type(&slot_ty, span)? else {
+            return Ok((None, slot_ty));
+        };
+        let payload_ty = self.module.payload_type(&slots).or_else(|what| self.unsupported(&what, span))?;
+        let temp = self.slot(None, ty, span)?;
+        self.store(&temp, Some(value));
+        let area = self.assign(&format!("getelementptr {}, ptr {}, i32 0, i32 1", value.ty, temp.ptr));
+        let field = self.assign(&format!("getelementptr {payload_ty}, ptr {area}, i32 0, i32 {index}"));
+        let operand = self.assign(&format!("load {slot_llvm}, ptr {field}"));
+        Ok((
+            Some(Value {
+                ty: slot_llvm,
+                operand,
+            }),
+            slot_ty,
+        ))
     }
 
     /// Arithmetic `op` on two values of one scalar type. Integer overflow, division by

@@ -3,8 +3,10 @@
 //! Scalars map to LLVM integer and float types, pointers to the opaque `ptr`, tuples to
 //! literal struct types, and each struct instantiation to a named struct type
 //! (`%QN4mainE5Point`, its mangled type name) whose fields follow declaration order. A
-//! unit field occupies no space, as the empty struct `{}`; a unit *value* has no LLVM
-//! value at all.
+//! sum type instantiation is a named struct of an `i32` tag (the variant's declaration
+//! index) and a payload area of 8-byte words sized for its largest variant; a variant's
+//! payload is read and written there as a literal struct of its slot types. A unit field
+//! occupies no space, as the empty struct `{}`; a unit *value* has no LLVM value at all.
 
 use cooper_frontend::types::{integer_bits, is_float_name, is_integer_name, Type};
 
@@ -70,6 +72,7 @@ impl Module<'_> {
                 format!("{{ {} }}", fields.join(", "))
             }
             Type::Struct { .. } => self.struct_type(ty)?,
+            Type::Oneof { .. } => self.oneof_type(ty)?,
             _ => return Err(format!("values of type {ty}")),
         };
         Ok(Some(llvm))
@@ -102,6 +105,47 @@ impl Module<'_> {
         Ok(name)
     }
 
+    /// The named LLVM struct type of sum type instantiation `ty`, defined on first use:
+    /// a tag and a payload area large enough for every variant.
+    fn oneof_type(&mut self, ty: &Type) -> Result<String, Unsupported> {
+        let name = format!("%{}", mangle::type_name(ty));
+        if self.types.contains_key(&name) {
+            return Ok(name);
+        }
+        self.types.insert(name.clone(), String::new());
+        let mut words = 0;
+        for variant in self.defs.variant_order(ty).to_vec() {
+            let slots = self.defs.payload(ty, &variant).unwrap_or_default();
+            // Defining the slot types up front reports any unsupported one here.
+            self.payload_type(&slots)?;
+            words = words.max(self.size_bound(&Type::Tuple(slots)).div_ceil(8));
+        }
+        self.types
+            .insert(name.clone(), format!("{name} = type {{ i32, [{words} x i64] }}"));
+        Ok(name)
+    }
+
+    /// The literal struct type a variant payload with `slots` is stored as.
+    pub(crate) fn payload_type(&mut self, slots: &[Type]) -> Result<String, Unsupported> {
+        let fields = slots
+            .iter()
+            .map(|slot| self.field_type(slot))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(format!("{{ {} }}", fields.join(", ")))
+    }
+
+    /// The tag and payload slot types of `variant` of sum type `ty`.
+    pub(crate) fn variant(&self, ty: &Type, variant: &str) -> (usize, Vec<Type>) {
+        let tag = self
+            .defs
+            .variant_order(ty)
+            .iter()
+            .position(|v| v == variant)
+            .expect("a checked variant belongs to its sum type");
+        let slots = self.defs.payload(ty, variant).expect("a checked variant has a payload");
+        (tag, slots)
+    }
+
     /// An upper bound on the size in bytes of a value of type `ty`, counting every
     /// field as at least eight bytes so that alignment padding is always covered.
     pub(crate) fn size_bound(&self, ty: &Type) -> usize {
@@ -115,6 +159,19 @@ impl Module<'_> {
                 .iter()
                 .map(|(_, member)| self.size_bound(member).max(8))
                 .sum(),
+            Type::Oneof { .. } => {
+                let largest = self
+                    .defs
+                    .variant_order(ty)
+                    .iter()
+                    .map(|v| {
+                        let slots = self.defs.payload(ty, v).unwrap_or_default();
+                        self.size_bound(&Type::Tuple(slots))
+                    })
+                    .max()
+                    .unwrap_or(0);
+                8 + largest.div_ceil(8) * 8
+            }
             _ => 8,
         }
     }

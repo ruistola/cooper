@@ -41,7 +41,15 @@ struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     paren_stack: Vec<TokenKind>,
-    in_then_branch: bool,
+    /// Keywords that end the unbraced single-statement bodies being parsed: `else`
+    /// after a `then` branch, `while`/`until` after a `do`/`repeat` body. None of
+    /// them can continue a statement, so meeting one terminates it. A braced block
+    /// starts afresh.
+    closers: Vec<TokenKind>,
+    /// Whether a `match` arm body is being parsed, where a newline also ends the arm
+    /// before a `-`: the next arm's pattern may be a negative integer. A braced block
+    /// starts afresh.
+    in_match_arm: bool,
     /// How many control-flow header expressions we are nested inside. While this
     /// is non-zero, newlines carry no meaning (like inside brackets): a long
     /// condition or iterable may span lines, and the delimiter keyword need not
@@ -86,6 +94,7 @@ fn can_follow_semicolon(kind: TokenKind) -> bool {
             | CloseCurly
             | OpenParen
             | Ampersand
+            | Not
             | Break
             | Continue
             | Do
@@ -170,7 +179,8 @@ impl Parser {
             tokens,
             pos: 0,
             paren_stack: Vec::new(),
-            in_then_branch: false,
+            closers: Vec::new(),
+            in_match_arm: false,
             header_depth: 0,
             errors: Vec::new(),
         }
@@ -243,8 +253,9 @@ impl Parser {
                 return self.peek();
             }
             let outside_parens = self.paren_stack.is_empty() && self.header_depth == 0;
+            let next = self.next_token().kind;
             let can_terminate = can_precede_semicolon(self.prev_token().kind)
-                && can_follow_semicolon(self.next_token().kind);
+                && (can_follow_semicolon(next) || self.in_match_arm && next == Dash);
             if outside_parens && can_terminate && self.next_token().kind != Eof {
                 self.tokens[self.pos] = Token {
                     kind: Semicolon,
@@ -326,7 +337,7 @@ impl Parser {
     fn statement_terminates(&mut self) -> bool {
         match self.peek().kind {
             Semicolon | Eof | CloseCurly => true,
-            Else => self.in_then_branch,
+            kind if self.closers.contains(&kind) => true,
             _ => self.prev_token().kind == CloseCurly,
         }
     }
@@ -338,7 +349,7 @@ impl Parser {
                 Ok(())
             }
             Eof | CloseCurly => Ok(()),
-            Else if self.in_then_branch => Ok(()),
+            kind if self.closers.contains(&kind) => Ok(()),
             _ if self.prev_token().kind == CloseCurly => Ok(()),
             _ => {
                 let span = self.peek().span;
@@ -1063,10 +1074,9 @@ impl Parser {
                 span: start.to(self.prev_token().span),
             })
         } else {
-            let was_then = self.in_then_branch;
-            self.in_then_branch = true;
+            self.closers.push(Else);
             let s = self.parse_stmt();
-            self.in_then_branch = was_then;
+            self.closers.pop();
             s
         }
     }
@@ -1231,8 +1241,10 @@ impl Parser {
             }
             let pattern = self.parse_pattern()?;
             self.expect(FatArrow)?;
-            let body = self.parse_branch_stmt()?;
-            arms.push(StmtArm { pattern, body });
+            let saved_in_arm = std::mem::replace(&mut self.in_match_arm, true);
+            let body = self.parse_branch_stmt();
+            self.in_match_arm = saved_in_arm;
+            arms.push(StmtArm { pattern, body: body? });
         }
         self.expect(CloseCurly)?;
         Ok(Stmt {
@@ -1253,8 +1265,10 @@ impl Parser {
             }
             let pattern = self.parse_pattern()?;
             self.expect(FatArrow)?;
-            let body = self.parse_branch_expr()?;
-            arms.push(ExprArm { pattern, body });
+            let saved_in_arm = std::mem::replace(&mut self.in_match_arm, true);
+            let body = self.parse_branch_expr();
+            self.in_match_arm = saved_in_arm;
+            arms.push(ExprArm { pattern, body: body? });
             self.consume_statement_terminator()?;
         }
         self.expect(CloseCurly)?;
@@ -1327,7 +1341,10 @@ impl Parser {
     fn parse_post_test_loop(&mut self) -> PResult<Stmt> {
         let start = self.peek().span;
         let until = self.advance().kind == Repeat;
-        let body = self.parse_loop_body()?;
+        self.closers.push(if until { Until } else { While });
+        let body = self.parse_loop_body();
+        self.closers.pop();
+        let body = body?;
         self.expect(if until { Until } else { While })?;
         let cond = self.parse_expr(0)?;
         self.consume_statement_terminator()?;
@@ -1464,6 +1481,8 @@ impl Parser {
     fn parse_block_stmt(&mut self) -> Vec<Stmt> {
         let saved_header_depth = self.header_depth;
         self.header_depth = 0;
+        let saved_closers = std::mem::take(&mut self.closers);
+        let saved_in_arm = std::mem::replace(&mut self.in_match_arm, false);
         let mut statements = Vec::new();
         loop {
             match self.peek().kind {
@@ -1478,6 +1497,8 @@ impl Parser {
             }
         }
         self.header_depth = saved_header_depth;
+        self.closers = saved_closers;
+        self.in_match_arm = saved_in_arm;
         statements
     }
 

@@ -249,3 +249,26 @@ fn parses_an_array_literal_across_lines_with_a_trailing_comma() {
         .collect();
     assert_eq!(lens, [2, 0]);
 }
+
+#[test]
+fn a_post_test_loop_may_have_a_single_statement_body() {
+    // The closing `while`/`until` ends the body statement, as `else` ends a `then`
+    // branch; nesting the two still pairs each keyword with its own construct.
+    ok("func f() {\n  do n += 1 while n < 3\n  repeat n -= 1 until n == 0\n  do if a then b() else c() while d\n}");
+}
+
+#[test]
+fn a_match_arm_ends_at_a_newline_before_a_negative_pattern() {
+    let m = ok("func f(n: i32): i32 {\n  return match n with {\n    1 => 10\n    -1 => 20\n    _ => 0\n  }\n}");
+    let StmtKind::FuncDecl(f) = &m[0].kind else { panic!("expected a function") };
+    let StmtKind::Return(Some(ret)) = &f.body[0].kind else { panic!("expected a return") };
+    let ExprKind::Match { arms, .. } = &ret.kind else { panic!("expected a match") };
+    assert_eq!(arms.len(), 3, "`10` and `-1` are separate arms, not `10 - 1`");
+}
+
+#[test]
+fn a_line_may_begin_with_negation() {
+    let m = ok("func f() {\n  x := ready\n  !x\n}");
+    let StmtKind::FuncDecl(f) = &m[0].kind else { panic!("expected a function") };
+    assert_eq!(f.body.len(), 2);
+}

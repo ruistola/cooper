@@ -1101,6 +1101,16 @@ impl<'g> TypeChecker<'g> {
             if let Some(text) = bare_number_text(operand) {
                 let expected = self.expected.take();
                 let ty = self.number_type(text, span, expected, op == UnaryOp::Neg);
+                // The literal under the sign is never checked on its own, so it takes
+                // the signed literal's type here (through any grouping), for lowering.
+                let mut inner = operand;
+                loop {
+                    self.types.insert(inner.span, ty.clone());
+                    match &inner.kind {
+                        ExprKind::Group(group) => inner = group,
+                        _ => break,
+                    }
+                }
                 return Some(ty);
             }
         }

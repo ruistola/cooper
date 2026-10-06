@@ -229,7 +229,12 @@ const MAX_VALUE_NESTING: usize = 64;
 fn contains_by_value(ty: &Type, root: &Type, defs: &TypeDefs, path: &mut Vec<Type>) -> bool {
     let components: Vec<Type> = match ty {
         Type::Tuple(elems) => elems.clone(),
-        Type::Struct { .. } => defs.struct_members(ty).unwrap_or_default().into_values().collect(),
+        Type::Struct { .. } => defs
+            .struct_members(ty)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, member)| member)
+            .collect(),
         Type::Oneof { .. } => defs
             .variant_order(ty)
             .iter()
@@ -407,9 +412,9 @@ fn define_struct(
     };
     check_type_param_binders(type_params, span, globals, diags);
     let params: HashSet<String> = type_params.iter().cloned().collect();
-    let mut resolved = HashMap::new();
+    let mut resolved: Vec<(String, Type)> = Vec::new();
     for member in members {
-        if resolved.contains_key(&member.name) {
+        if resolved.iter().any(|(name, _)| name == &member.name) {
             diags.push(Diagnostic::error(
                 member.span,
                 format!("duplicate member {} in struct {name}", member.name),
@@ -417,7 +422,7 @@ fn define_struct(
             continue;
         }
         if let Some(t) = resolve_type(&member.ty, &params, globals, diags) {
-            resolved.insert(member.name.clone(), t);
+            resolved.push((member.name.clone(), t));
         }
     }
     if let Some(def) = globals.defs.structs.get_mut(&id) {
@@ -567,7 +572,7 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
         .defs
         .structs
         .get(&id)
-        .is_some_and(|def| def.members.contains_key(&func.name))
+        .is_some_and(|def| def.members.iter().any(|(name, _)| name == &func.name))
     {
         diags.push(Diagnostic::error(
             func.span,
@@ -677,5 +682,30 @@ pub fn underlying_struct_name(type_expr: &TypeExpr) -> Option<&str> {
     match named {
         TypeExprKind::Named(name) => Some(name),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{lexer, parser};
+
+    #[test]
+    fn struct_members_keep_their_declaration_order() {
+        // The member order is the struct's layout, so it must survive resolution
+        // exactly as written, never sorted or hashed.
+        let source = "struct S {\n  zeta: i32,\n  alpha: bool,\n  mid: string,\n}";
+        let decls = parser::parse(lexer::tokenize(source).expect("lexes")).decls;
+        let (globals, diags) = resolve_into(Globals::default(), "main", &decls);
+        assert!(diags.is_empty(), "{diags:?}");
+        let s = globals.lookup_struct("S").expect("S is declared");
+        let names: Vec<String> = globals
+            .defs
+            .struct_members(&s)
+            .expect("S has members")
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(names, ["zeta", "alpha", "mid"]);
     }
 }

@@ -1215,7 +1215,7 @@ fn deconstruct_pattern(
         }
         IrPatternKind::Tuple(ps) => ps,
         IrPatternKind::Struct { fields, .. } => {
-            sorted_members(defs, &occ.ty)
+            declared_members(defs, &occ.ty)
                 .into_iter()
                 .map(|(name, ty)| {
                     fields
@@ -1408,7 +1408,7 @@ fn tests_exhaustive(defs: &TypeDefs, ty: &Type, tests: &[Test]) -> bool {
 }
 
 /// The occurrences a tuple/struct value exposes, in a deterministic order (tuple
-/// position, struct fields sorted by name).
+/// position, struct fields in declaration order).
 fn sub_fields(defs: &TypeDefs, access: &Access, ty: &Type) -> Vec<Occurrence> {
     match ty {
         Type::Tuple(elems) => elems
@@ -1422,7 +1422,7 @@ fn sub_fields(defs: &TypeDefs, access: &Access, ty: &Type) -> Vec<Occurrence> {
                 ty: elem.clone(),
             })
             .collect(),
-        Type::Struct { .. } => sorted_members(defs, ty)
+        Type::Struct { .. } => declared_members(defs, ty)
             .into_iter()
             .map(|(name, ty)| Occurrence {
                 access: Access::Field {
@@ -1436,16 +1436,11 @@ fn sub_fields(defs: &TypeDefs, access: &Access, ty: &Type) -> Vec<Occurrence> {
     }
 }
 
-/// A struct's members as `(name, type)` pairs sorted by name, giving deconstruction
-/// a deterministic field order independent of the members map's iteration order.
-fn sorted_members(defs: &TypeDefs, ty: &Type) -> Vec<(String, Type)> {
-    let mut pairs: Vec<_> = defs
-        .struct_members(ty)
+/// A struct occurrence's members as `(name, type)` pairs in declaration order, which
+/// is also the struct's layout order.
+fn declared_members(defs: &TypeDefs, ty: &Type) -> Vec<(String, Type)> {
+    defs.struct_members(ty)
         .expect("a struct occurrence names a defined struct")
-        .into_iter()
-        .collect();
-    pairs.sort_by(|a, b| a.0.cmp(&b.0));
-    pairs
 }
 
 /// Whether a pattern matches every value of its type (so it never forces a test).

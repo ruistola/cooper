@@ -537,7 +537,7 @@ impl<'g> TypeChecker<'g> {
                 );
                 continue;
             }
-            match members.get(&field.name) {
+            match members.iter().find(|(name, _)| name == &field.name).map(|(_, t)| t) {
                 Some(member_ty) => {
                     let member_ty = member_ty.clone();
                     self.check_pattern(&field.pattern, &member_ty);
@@ -1516,7 +1516,8 @@ impl<'g> TypeChecker<'g> {
         let mut subst = HashMap::new();
         let mut assigned: HashSet<String> = HashSet::new();
         for member in members {
-            let Some(member_type) = struct_members.get(&member.name) else {
+            let Some((_, member_type)) = struct_members.iter().find(|(name, _)| name == &member.name)
+            else {
                 self.err(
                     member.span,
                     format!("{} is not a member of struct {name}", member.name),
@@ -1555,7 +1556,7 @@ impl<'g> TypeChecker<'g> {
                 );
             }
         }
-        for member_name in struct_members.keys() {
+        for (member_name, _) in &struct_members {
             if !assigned.contains(member_name) {
                 self.err(
                     target.span,

@@ -10,12 +10,13 @@ pub struct TypeId {
     pub name: String,
 }
 
-/// A struct declaration's body: its type parameters and member types, the latter
-/// written in terms of those parameters.
+/// A struct declaration's body: its type parameters and its members in declaration
+/// order, their types written in terms of those parameters. The order is the struct's
+/// layout: no pass reorders it.
 #[derive(Debug, Clone, Default)]
 pub struct StructDef {
     pub type_params: Vec<String>,
-    pub members: HashMap<String, Type>,
+    pub members: Vec<(String, Type)>,
 }
 
 /// A sum type declaration's body: its type parameters and its variants' payload
@@ -47,9 +48,10 @@ impl TypeDefs {
         }
     }
 
-    /// The members of struct type `ty`, substituted by its type arguments (a
-    /// template's members keep their type parameters). `None` when `ty` is no struct.
-    pub fn struct_members(&self, ty: &Type) -> Option<HashMap<String, Type>> {
+    /// The members of struct type `ty` in declaration order, substituted by its type
+    /// arguments (a template's members keep their type parameters). `None` when `ty`
+    /// is no struct.
+    pub fn struct_members(&self, ty: &Type) -> Option<Vec<(String, Type)>> {
         let Type::Struct { id, type_args } = ty else {
             return None;
         };
@@ -69,7 +71,7 @@ impl TypeDefs {
             return None;
         };
         let def = self.structs.get(id)?;
-        let member = def.members.get(name)?;
+        let (_, member) = def.members.iter().find(|(n, _)| n == name)?;
         Some(member.substitute(&binding(&def.type_params, type_args)))
     }
 
@@ -352,12 +354,10 @@ pub(crate) fn incomparable_part(t: &Type, defs: &TypeDefs) -> Option<Type> {
             Some(t.clone())
         }
         Type::Tuple(elems) => elems.iter().find_map(|e| incomparable_part(e, defs)),
-        Type::Struct { .. } => {
-            let members = defs.struct_members(t)?;
-            let mut names: Vec<&String> = members.keys().collect();
-            names.sort();
-            names.into_iter().find_map(|n| incomparable_part(&members[n], defs))
-        }
+        Type::Struct { .. } => defs
+            .struct_members(t)?
+            .iter()
+            .find_map(|(_, member)| incomparable_part(member, defs)),
         Type::Oneof { .. } => defs
             .variant_order(t)
             .iter()

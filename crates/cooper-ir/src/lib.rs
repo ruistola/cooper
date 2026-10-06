@@ -24,7 +24,9 @@ use cooper_frontend::diag::Span;
 use cooper_frontend::resolve::{
     receiver_pattern_params, resolve_type, underlying_struct_name, Callable, Globals, Signature,
 };
-use cooper_frontend::typecheck::{decode_number_literal, ItemRef, LiteralValue, Typed};
+use cooper_frontend::typecheck::{
+    decode_number_literal, decode_string_literal, ItemRef, LiteralValue, Typed,
+};
 use cooper_frontend::CheckedProject;
 use cooper_frontend::types::{is_numeric_name, Type, TypeDefs, DEFAULT_INT};
 
@@ -250,6 +252,7 @@ pub enum IrExprKind {
     /// A floating-point literal's decoded value; its width is on the node.
     Float(f64),
     Bool(bool),
+    /// A string literal's decoded contents (escapes resolved).
     Str(String),
     Nil,
     Unit,
@@ -375,7 +378,7 @@ pub enum LowerError {
     /// after a clean type check, so this signals an internal inconsistency rather
     /// than user error.
     UnresolvedType(Span),
-    /// A numeric literal's spelling did not decode to a value. Like `UnresolvedType`,
+    /// A numeric or string literal's spelling did not decode to a value. Like `UnresolvedType`,
     /// this is unreachable after a clean type check (the checker rejects out-of-range
     /// literals) and signals an internal inconsistency.
     MalformedLiteral(Span),
@@ -721,7 +724,9 @@ impl Lower<'_> {
                 None => return Err(LowerError::MalformedLiteral(expr.span)),
             },
             ExprKind::Bool(b) => IrExprKind::Bool(*b),
-            ExprKind::Str(s) => IrExprKind::Str(s.clone()),
+            ExprKind::Str(text) => IrExprKind::Str(
+                decode_string_literal(text).map_err(|_| LowerError::MalformedLiteral(expr.span))?,
+            ),
             ExprKind::Nil => IrExprKind::Nil,
             ExprKind::Unit => IrExprKind::Unit,
             ExprKind::Ident(name) => {

@@ -156,3 +156,13 @@ fn a_unit_function_returns_only_unit_values() {
     ok("func nothing() { }\nfunc f() {\n  return nothing()\n}");
     err("func f() {\n  return 5\n}", "cannot return a value of type i32 from a function returning unit");
 }
+
+#[test]
+fn string_literals_accept_the_standard_escapes_only() {
+    ok(r#"func f() {
+  let s = "tab\there\nquote\" back\\ nul\0 apos\'"
+}"#);
+    err(r#"func f() {
+  let s = "bad\q"
+}"#, r"unknown escape sequence `\q` in string literal");
+}

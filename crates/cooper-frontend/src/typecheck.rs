@@ -703,7 +703,12 @@ impl<'g> TypeChecker<'g> {
         let callee = std::mem::take(&mut self.callee);
         match &expr.kind {
             ExprKind::Number(text) => Some(self.number_type(text, expr.span, expected, false)),
-            ExprKind::Str(_) => Some(Type::Primitive("string".to_string())),
+            ExprKind::Str(text) => {
+                if let Err(escape) = decode_string_literal(text) {
+                    self.err(expr.span, format!("unknown escape sequence `{escape}` in string literal"));
+                }
+                Some(Type::Primitive("string".to_string()))
+            }
             ExprKind::Bool(_) => Some(Type::Primitive("bool".to_string())),
             ExprKind::Nil => Some(Type::Nil),
             ExprKind::Unit => Some(Type::Unit),
@@ -2050,6 +2055,35 @@ fn parse_literal_magnitude(text: &str) -> Option<u128> {
 pub enum LiteralValue {
     Int(u128),
     Float(f64),
+}
+
+/// Decode a string literal's source spelling (quotes included) into its contents,
+/// resolving the escapes `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, and `\'`. An unknown
+/// escape is returned as the error, which the checker reports, so a clean check
+/// guarantees `Ok`. Shared with lowering so the spelling is interpreted in one place.
+pub fn decode_string_literal(text: &str) -> Result<String, String> {
+    let inner = text
+        .strip_prefix('"')
+        .and_then(|t| t.strip_suffix('"'))
+        .unwrap_or(text);
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        let escaped = chars.next().unwrap_or('\\');
+        out.push(match escaped {
+            'n' => '\n',
+            't' => '\t',
+            'r' => '\r',
+            '0' => '\0',
+            '\\' | '"' | '\'' => escaped,
+            other => return Err(format!("\\{other}")),
+        });
+    }
+    Ok(out)
 }
 
 /// Decode a numeric literal's source spelling into its value, classifying it by the

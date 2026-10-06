@@ -3,7 +3,8 @@
 ## Source encoding
 
 Sources and strings are UTF-8. The lexer currently accepts an ASCII subset. A type for a
-single code point or grapheme is still to be decided.
+single code point or grapheme is still to be decided. A string literal is double-quoted and
+accepts the escapes `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, and `\'`.
 
 ## Semicolon inference
 

@@ -32,6 +32,9 @@ const ALLOC_DECL: &str = "declare ptr @cooper_alloc(i64)";
 const CONCAT_DECL: &str = "declare void @cooper_string_concat(ptr, i64, ptr, i64, ptr)";
 const STRING_EQ_DECL: &str = "declare i32 @cooper_string_eq(ptr, i64, ptr, i64)";
 const GROW_DECL: &str = "declare ptr @cooper_array_grow(ptr, i64, i64, i64)";
+const PRINT_DECL: &str = "declare void @cooper_print(ptr, i64, i32)";
+const FORMAT_INT_DECL: &str = "declare void @cooper_format_int(i64, i32, ptr)";
+const FORMAT_FLOAT_DECL: &str = "declare void @cooper_format_float(double, i32, ptr)";
 
 /// Emit `function` as an LLVM function definition.
 pub(crate) fn emit(module: &mut Module, function: &Function) -> Result<String, CodegenError> {
@@ -1246,6 +1249,9 @@ impl Emitter<'_, '_> {
     /// source's signedness; float-to-integer conversions saturate at the target's range
     /// (NaN becomes 0), so no conversion is undefined.
     fn convert(&mut self, operand: &IrExpr, target: &Type, span: Span) -> Result<Option<Value>, CodegenError> {
+        if is_string(target) {
+            return self.format(operand, span).map(Some);
+        }
         let (Some(from), Some(to)) = (Scalar::of(&operand.ty), Scalar::of(target)) else {
             return self.unsupported(&format!("converting {} to {target}", operand.ty), span);
         };
@@ -1279,6 +1285,53 @@ impl Emitter<'_, '_> {
         };
         let operand = self.assign(&instruction);
         Ok(Some(Value { ty: dest, operand }))
+    }
+
+    /// `string(x)`: the text of a number or bool. Integers print in decimal, floats as
+    /// the shortest text that reads back as the same value, bools as `true`/`false`.
+    fn format(&mut self, operand: &IrExpr, span: Span) -> Result<Value, CodegenError> {
+        let value = self.expr(operand)?.expect("a formatted value is a scalar");
+        let string = Type::Primitive("string".to_string());
+        match Scalar::of(&operand.ty) {
+            Some(Scalar::Bool) => {
+                let yes = self.module.string("true");
+                let no = self.module.string("false");
+                let data = self.assign(&format!("select i1 {}, ptr {yes}, ptr {no}", value.operand));
+                let length = self.assign(&format!("select i1 {}, i64 4, i64 5", value.operand));
+                let fields = [("ptr", data), ("i64", length)]
+                    .into_iter()
+                    .map(|(ty, operand)| Some(Value { ty: ty.to_string(), operand }))
+                    .collect();
+                Ok(self.aggregate(STRING, fields))
+            }
+            Some(Scalar::Int { signed, .. }) => {
+                let wide = self.widen_index(&value, &operand.ty);
+                self.module.declare(FORMAT_INT_DECL);
+                let out = self.slot(None, &string, span)?;
+                self.inst(&format!(
+                    "call void @cooper_format_int(i64 {wide}, i32 {}, ptr {})",
+                    i32::from(signed),
+                    out.ptr
+                ));
+                Ok(self.load(&out).expect("a string has a value"))
+            }
+            Some(Scalar::Float { bits }) => {
+                let wide = if bits == 32 {
+                    self.assign(&format!("fpext float {} to double", value.operand))
+                } else {
+                    value.operand
+                };
+                self.module.declare(FORMAT_FLOAT_DECL);
+                let out = self.slot(None, &string, span)?;
+                self.inst(&format!(
+                    "call void @cooper_format_float(double {wide}, i32 {}, ptr {})",
+                    i32::from(bits == 32),
+                    out.ptr
+                ));
+                Ok(self.load(&out).expect("a string has a value"))
+            }
+            None => self.unsupported(&format!("converting {} to string", operand.ty), span),
+        }
     }
 
     /// `target = value` or a compound `target op= value`, yielding the stored value.
@@ -1487,6 +1540,16 @@ impl Emitter<'_, '_> {
 
     /// A built-in array operation.
     fn intrinsic(&mut self, op: Intrinsic, args: &[IrExpr], result: &Type, span: Span) -> Result<Option<Value>, CodegenError> {
+        if let Intrinsic::Print { newline } = op {
+            let text = self.expr(&args[0])?.expect("a string has a value");
+            let (data, length) = self.string_parts(&text);
+            self.module.declare(PRINT_DECL);
+            self.inst(&format!(
+                "call void @cooper_print(ptr {data}, i64 {length}, i32 {})",
+                i32::from(newline)
+            ));
+            return Ok(None);
+        }
         if op == Intrinsic::ArrayLiteral {
             let Type::Array(elem) = result else {
                 unreachable!("an array literal is an array");
@@ -1500,7 +1563,7 @@ impl Emitter<'_, '_> {
         let elem = (**elem).clone();
         let array = self.expr(&args[0])?.expect("an array has a value");
         match op {
-            Intrinsic::ArrayLiteral => unreachable!("handled above"),
+            Intrinsic::ArrayLiteral | Intrinsic::Print { .. } => unreachable!("handled above"),
             Intrinsic::ArrayLength => {
                 let operand = self.assign(&format!("extractvalue {ARRAY} {}, 1", array.operand));
                 Ok(Some(Value {
@@ -1609,7 +1672,8 @@ impl Emitter<'_, '_> {
         })
     }
 
-    /// An integer index of type `ty` as an `i64` operand, extended by its signedness.
+    /// An integer of type `ty` (an index, or a number to format) as an `i64` operand,
+    /// extended by its signedness.
     fn widen_index(&mut self, index: &Value, ty: &Type) -> String {
         match Scalar::of(ty) {
             Some(Scalar::Int { bits: 64, .. }) => index.operand.clone(),

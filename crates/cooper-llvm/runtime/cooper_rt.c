@@ -6,6 +6,7 @@
  * process exit status. It also implements the operations generated code calls into.
  */
 
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -71,4 +72,41 @@ void *cooper_array_grow(const void *data, uint64_t len, uint64_t capacity, uint6
     void *grown = cooper_alloc(capacity * size);
     if (len) memcpy(grown, data, len * size);
     return grown;
+}
+
+/* Write a string to standard output, followed by a newline when `newline` is set. */
+void cooper_print(const char *data, uint64_t len, int32_t newline) {
+    if (len) fwrite(data, 1, len, stdout);
+    if (newline) fputc('\n', stdout);
+}
+
+/* A fresh string holding the `len` bytes at `text`. */
+static void string_of(const char *text, int len, CooperString *out) {
+    char *data = cooper_alloc((size_t)len);
+    memcpy(data, text, (size_t)len);
+    out->data = data;
+    out->len = (uint64_t)len;
+}
+
+/* The decimal text of an integer: `value` as signed when `is_signed`, otherwise as the
+   unsigned number with the same bits. */
+void cooper_format_int(int64_t value, int32_t is_signed, CooperString *out) {
+    char text[32];
+    int len = is_signed ? snprintf(text, sizeof text, "%" PRId64, value)
+                        : snprintf(text, sizeof text, "%" PRIu64, (uint64_t)value);
+    string_of(text, len, out);
+}
+
+/* The shortest decimal text that reads back as the same float (an `f32` when
+   `is_f32`), so 0.1 prints as "0.1". NaN and infinities print as "nan", "inf", "-inf". */
+void cooper_format_float(double value, int32_t is_f32, CooperString *out) {
+    char text[40];
+    int len = 0;
+    for (int precision = 1; precision <= 17; precision++) {
+        len = snprintf(text, sizeof text, "%.*g", precision, value);
+        if (is_f32 ? strtof(text, NULL) == (float)value : strtod(text, NULL) == value) {
+            break;
+        }
+    }
+    string_of(text, len, out);
 }

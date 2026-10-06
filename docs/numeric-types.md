@@ -49,3 +49,6 @@ representation. An integer conversion truncates to a narrower type and extends t
 wider one by the source's signedness (`u32(-7)` is `4294967289`). A float-to-integer
 conversion rounds toward zero and saturates at the target's range, with NaN becoming 0
 (`i32(1e10)` is `2147483647`).
+
+`string(x)` formats a number or a `bool` as text: integers in decimal, floats as the shortest
+text that reads back as the same value (`string(0.1)` is `"0.1"`), bools as `true`/`false`.

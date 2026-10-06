@@ -1221,11 +1221,11 @@ impl<'g> TypeChecker<'g> {
             }
         }
         // A call whose callee names a numeric type (`i64(x)`, `f32(n)`) is an explicit
-        // constructor-style conversion. Any numeric source type is accepted; the result
-        // is the named type.
+        // constructor-style conversion, as is `string(x)`, which formats a number or a
+        // bool as text. The result is the named type.
         if let ExprKind::Ident(name) = &callee.kind {
-            if is_numeric_name(name) {
-                return self.check_numeric_conversion(name, args, span);
+            if is_numeric_name(name) || name == "string" {
+                return self.check_conversion(name, args, span);
             }
         }
         let expected = self.expected.take();
@@ -1419,9 +1419,9 @@ impl<'g> TypeChecker<'g> {
         }
     }
 
-    /// Type check an explicit numeric conversion `Type(value)`. The argument may have
-    /// any numeric type; the result is the target primitive type.
-    fn check_numeric_conversion(&mut self, name: &str, args: &[Expr], span: Span) -> Option<Type> {
+    /// Type check an explicit conversion `T(value)`: to a numeric type from any numeric
+    /// type, or to `string` from any numeric type or `bool`. The result is `T`.
+    fn check_conversion(&mut self, name: &str, args: &[Expr], span: Span) -> Option<Type> {
         if args.len() != 1 {
             self.err(
                 span,
@@ -1431,10 +1431,12 @@ impl<'g> TypeChecker<'g> {
         }
         self.expected = None;
         let arg_type = self.check_expr(&args[0])?;
-        if !is_numeric(&arg_type) {
+        let to_string = name == "string";
+        if !(is_numeric(&arg_type) || to_string && is_primitive(&arg_type, "bool")) {
+            let sources = if to_string { "numeric or bool" } else { "numeric" };
             self.err(
                 args[0].span,
-                format!("cannot convert value of type {arg_type} to {name}; source must be numeric"),
+                format!("cannot convert value of type {arg_type} to {name}; source must be {sources}"),
             );
             return None;
         }

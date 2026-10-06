@@ -19,6 +19,7 @@ pub mod parser;
 pub mod project;
 pub mod resolve;
 pub mod semantic;
+pub mod stdlib;
 pub mod typecheck;
 pub mod types;
 

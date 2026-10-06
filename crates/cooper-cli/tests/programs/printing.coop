@@ -1,0 +1,29 @@
+# exit: 0
+# stdout: total: 45
+# stdout: big: 18446744073709551615 small: -128
+# stdout: floats: 0.1 2.5 -1e+20 0.33333334 inf
+# stdout: flags: true false
+# stdout: no newline, then one
+# `string(x)` formats numbers and bools; `print` writes without a newline.
+use {
+    std.io as io,
+    std.io.print,
+}
+
+func main() {
+    total := 0
+    for i in 0..10 do total += i
+    io.println("total: " + string(total))
+
+    let big: u64 = 0xFFFF_FFFF_FFFF_FFFF
+    let small: i8 = -128
+    io.println("big: " + string(big) + " small: " + string(small))
+
+    let third: f32 = 1.0 / 3.0
+    let inf: f64 = 1.0 / 0.0
+    io.println("floats: " + string(0.1) + " " + string(2.5) + " " + string(-1e20) + " " + string(third) + " " + string(inf))
+
+    io.println("flags: " + string(true) + " " + string(1 > 2))
+    print("no newline, ")
+    io.println("then one")
+}

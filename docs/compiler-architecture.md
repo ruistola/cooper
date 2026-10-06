@@ -102,7 +102,12 @@ A string is a `{ data, length }` pair of immutable bytes, and an array a `{ data
 capacity }` triple whose copies share elements. Concatenation, string equality, and array
 growth are runtime functions; growth doubles the capacity (at least 4).
 
-A runtime error (integer overflow, division by zero, an index out of bounds) calls the runtime's `cooper_panic`, which
+The standard library's `std.io` is compiler-provided: `stdlib.rs` supplies its interface to
+the module graph, lowering turns its calls into `Intrinsic::Print`, and the runtime writes the
+output. `string(x)` lowers to a conversion that the runtime formats.
+
+A runtime error (integer overflow, division by zero, an index out of bounds) calls the
+runtime's `cooper_panic`, which
 prints `panic: <error> at <file>:<line>:<column>` to standard error and exits with status 101.
 
 Function symbols are mangled from the declaration's identity and type arguments in a

@@ -1,0 +1,9 @@
+# exit: 0
+# stdout: hello, world
+use {
+    std.io,
+}
+
+func main() {
+    std.io.println("hello, world")
+}

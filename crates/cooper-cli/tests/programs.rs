@@ -1,7 +1,8 @@
 //! Golden programs: every `tests/programs/*.coop` file is built with the system C
 //! toolchain and run, and its exit status compared with the `# exit: N` comment on
-//! its first line. Any `# stderr: text` lines that follow name text the program's
-//! standard error must contain. Requires `clang` (or `COOPER_CC`).
+//! its first line. The header lines that follow may give `# stdout: text`, one line of
+//! the exact standard output each, and `# stderr: text`, text its standard error must
+//! contain. Requires `clang` (or `COOPER_CC`).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -16,13 +17,15 @@ fn expected_exit(source: &str, path: &Path) -> i32 {
         .unwrap_or_else(|| panic!("{} must start with `# exit: N`", path.display()))
 }
 
-/// The text a program's header requires in its standard error.
-fn expected_stderr(source: &str) -> Vec<&str> {
+/// The header lines after the first that carry `prefix`, with the prefix and the one
+/// space after it removed.
+fn header<'s>(source: &'s str, prefix: &str) -> Vec<&'s str> {
     source
         .lines()
         .skip(1)
-        .map_while(|line| line.strip_prefix("# stderr:"))
-        .map(str::trim)
+        .take_while(|line| line.starts_with("# stdout:") || line.starts_with("# stderr:"))
+        .filter_map(|line| line.strip_prefix(prefix))
+        .map(|rest| rest.strip_prefix(' ').unwrap_or(rest))
         .collect()
 }
 
@@ -42,13 +45,21 @@ fn check_program(path: &Path, build_root: &Path) -> Result<(), String> {
         })?;
     let output = Command::new(&executable).output().map_err(|e| e.to_string())?;
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
     if output.status.code() != Some(expected) {
         return Err(format!(
             "expected exit status {expected}, got {:?}; stderr: {stderr}",
             output.status.code()
         ));
     }
-    match expected_stderr(&source).into_iter().find(|text| !stderr.contains(text)) {
+    let expected_stdout = header(&source, "# stdout:");
+    if !expected_stdout.is_empty() {
+        let want = expected_stdout.iter().map(|line| format!("{line}\n")).collect::<String>();
+        if stdout != want {
+            return Err(format!("expected stdout {want:?}, got {stdout:?}"));
+        }
+    }
+    match header(&source, "# stderr:").into_iter().find(|text| !stderr.contains(text)) {
         Some(missing) => Err(format!("stderr lacks {missing:?}: {stderr}")),
         None => Ok(()),
     }

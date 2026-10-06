@@ -27,7 +27,7 @@ use cooper_frontend::resolve::{
 use cooper_frontend::typecheck::{
     decode_number_literal, decode_string_literal, ItemRef, LiteralValue, Typed,
 };
-use cooper_frontend::CheckedProject;
+use cooper_frontend::{stdlib, CheckedProject};
 use cooper_frontend::types::{is_numeric_name, Type, TypeDefs, INDEX_INT};
 
 /// A lowered function or method: the declaration it lowers, its signature, its body
@@ -346,9 +346,10 @@ pub enum IrExprKind {
     },
 }
 
-/// A runtime-touching built-in operation on a blessed collection, modelled as an
-/// abstract typed intrinsic a backend lowers behind the runtime boundary. Each
-/// variant fixes its argument order; a receiver array, where there is one, is first.
+/// A runtime-touching built-in operation, on a blessed collection or of the standard
+/// library, modelled as an abstract typed intrinsic a backend lowers behind the runtime
+/// boundary. Each variant fixes its argument order; a receiver array, where there is
+/// one, is first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Intrinsic {
     /// A fresh array holding the given elements in order (an `[a, b, c]` literal).
@@ -376,6 +377,9 @@ pub enum Intrinsic {
     /// `reserve(n): T[]` — the array with room for at least `n` more elements,
     /// reallocated if it lacks it. Args: `[array, n]`.
     ArrayReserve,
+    /// `std.io.print(s)`, or `std.io.println(s)` when `newline`: write the string to
+    /// standard output. Args: `[string]`.
+    Print { newline: bool },
 }
 
 /// Why lowering could not proceed.
@@ -711,6 +715,9 @@ impl Lower<'_> {
         // A reference to a function or method names its declaration; a module prefix
         // carries no runtime value and drops away.
         if let Some(reference) = self.refs.get(&expr.span) {
+            if matches!(&reference.item, Callable::Func { module, .. } if module.starts_with("std.")) {
+                return unsupported(expr.span, "a standard library function as a value");
+            }
             let item = reference.item.clone();
             let type_args = reference.type_args.clone();
             let kind = match (&expr.kind, &item) {
@@ -1026,9 +1033,15 @@ impl Lower<'_> {
         result: &Type,
     ) -> Result<IrExprKind, LowerError> {
         if let ExprKind::Ident(name) = &callee.kind {
-            if is_numeric_name(name) {
+            if is_numeric_name(name) || name == "string" {
                 return Ok(IrExprKind::Convert(Box::new(self.expr(&args[0])?)));
             }
+        }
+        if let Some(op) = self.standard_function(callee) {
+            return Ok(IrExprKind::Intrinsic {
+                op,
+                args: self.each(args)?,
+            });
         }
         if let Some(variant) = self.variant_callee(callee, result) {
             return Ok(IrExprKind::Variant {
@@ -1043,6 +1056,23 @@ impl Lower<'_> {
             callee: Box::new(self.expr(callee)?),
             args: self.each(args)?,
         })
+    }
+
+    /// The intrinsic a call to a compiler-provided standard library function lowers to,
+    /// if `callee` names one.
+    fn standard_function(&self, callee: &Expr) -> Option<Intrinsic> {
+        let reference = self.refs.get(&strip_group(callee).span)?;
+        let Callable::Func { module, name } = &reference.item else {
+            return None;
+        };
+        if module != stdlib::IO_MODULE {
+            return None;
+        }
+        match name.as_str() {
+            "print" => Some(Intrinsic::Print { newline: false }),
+            "println" => Some(Intrinsic::Print { newline: true }),
+            _ => unreachable!("std.io declares only print and println"),
+        }
     }
 
     /// Lower a slice `array[start..end]` to the slice intrinsic. An omitted start is

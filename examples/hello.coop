@@ -1,0 +1,7 @@
+use {
+  std.io,
+}
+
+func main() {
+  std.io.println("hello, world")
+}

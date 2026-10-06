@@ -63,7 +63,12 @@ pub struct CheckedProject {
 pub fn check(project: &Project) -> Result<CheckedProject, Vec<Diagnostic>> {
     let mut parsed = parse_modules(project)?;
 
-    let known: HashSet<ModulePath> = parsed.iter().map(|m| m.path.clone()).collect();
+    let standard = crate::stdlib::interfaces();
+    let known: HashSet<ModulePath> = parsed
+        .iter()
+        .map(|m| m.path.clone())
+        .chain(standard.iter().map(|(path, _)| path.clone()))
+        .collect();
 
     let (edges, mut diags) = build_edges(&parsed, &known);
     let order = match topological_order(&parsed, &edges) {
@@ -77,7 +82,7 @@ pub fn check(project: &Project) -> Result<CheckedProject, Vec<Diagnostic>> {
     // Type definitions accumulate project-wide: a dependency's interface may expose
     // a type whose members name types the dependent never imports, so every module
     // is analyzed against all definitions resolved before it.
-    let mut interfaces: HashMap<ModulePath, Globals> = HashMap::new();
+    let mut interfaces: HashMap<ModulePath, Globals> = standard.into_iter().collect();
     let mut defs = TypeDefs::default();
     let mut checked = Vec::new();
     for index in order {

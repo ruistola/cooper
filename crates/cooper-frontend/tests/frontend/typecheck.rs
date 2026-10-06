@@ -166,3 +166,12 @@ fn string_literals_accept_the_standard_escapes_only() {
   let s = "bad\q"
 }"#, r"unknown escape sequence `\q` in string literal");
 }
+
+#[test]
+fn string_converts_numbers_and_bools_only() {
+    ok("func f(n: u8, x: f64, b: bool): string {\n  return string(n) + string(x) + string(b)\n}");
+    err(
+        "struct P {\n  x: i32,\n}\nfunc f(p: P): string {\n  return string(p)\n}",
+        "cannot convert value of type P to string; source must be numeric or bool",
+    );
+}

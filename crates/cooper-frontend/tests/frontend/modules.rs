@@ -361,3 +361,15 @@ fn a_generic_function_is_called_through_a_module_binding() {
         ("main", "use {\n  util,\n}\nfunc f(): i32 {\n  return util.id(1)\n}"),
     ]);
 }
+
+#[test]
+fn the_standard_io_module_is_provided_by_the_compiler() {
+    project_ok(&[(
+        "main",
+        "use {\n  std.io,\n  std.io.println,\n}\nfunc main() {\n  std.io.print(\"a\")\n  println(\"b\")\n}",
+    )]);
+    project_err(
+        &[("main", "use {\n  std.io,\n}\nfunc main() {\n  std.io.shout(\"a\")\n}")],
+        "module `std.io` exports no item named `shout`",
+    );
+}

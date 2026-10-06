@@ -758,6 +758,9 @@ impl<'g> TypeChecker<'g> {
                 self.check_field(target, name, expr.span, callee)
             }
             ExprKind::Index { array, index } => self.check_index(array, index),
+            ExprKind::Slice {
+                array, start, end, ..
+            } => self.check_slice(array, start.as_deref(), end.as_deref()),
             ExprKind::AddressOf(operand) => self.check_address_of(operand, expr.span),
             ExprKind::Deref(operand) => self.check_deref(operand),
             ExprKind::Assign { op, target, value } => self.check_assign(*op, target, value),
@@ -1732,7 +1735,26 @@ impl<'g> TypeChecker<'g> {
         Some(index_type)
     }
 
+    /// Check a slice `array[start..end]`: the array must be a built-in array and the
+    /// bounds integers. A slice has the array's own type, whether a copy or (under `&`)
+    /// a view.
+    fn check_slice(&mut self, array: &Expr, start: Option<&Expr>, end: Option<&Expr>) -> Option<Type> {
+        let array_type = self.check_expr(array)?;
+        if !matches!(array_type, Type::Array(_)) {
+            self.err(array.span, format!("type {array_type} cannot be sliced"));
+            return None;
+        }
+        for bound in start.into_iter().chain(end) {
+            self.check_index_value(bound)?;
+        }
+        Some(array_type)
+    }
+
     fn check_address_of(&mut self, operand: &Expr, span: Span) -> Option<Type> {
+        // `&a[lo..hi]` is a view: an array sharing `a`'s elements, not a pointer.
+        if let ExprKind::Slice { .. } = &operand.kind {
+            return self.check_expr(operand);
+        }
         // Type-check the operand first so addressability can consult its type (the
         // receiver of an index must be a built-in array). A well-typed operand is
         // re-probed without emitting further diagnostics.

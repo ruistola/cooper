@@ -63,7 +63,9 @@ capacity hints. Whether a value lives on the stack or the heap is the compiler's
 ### Subranges and views
 
 Indexing with a range yields a fresh copy. `&` instead yields a **view**, an ordinary `T[]`
-sharing the original's storage, or, for a single index, a pointer to the element:
+sharing the original's storage, or, for a single index, a pointer to the element. A range is
+`lo..hi` or `lo..=hi`; an omitted `lo` is 0 and an omitted `hi` the array's end (`xs[2..]`,
+`xs[..n]`, `xs[..]`). Bounds outside `0 <= lo <= hi <= length` stop the program.
 
 ```
 let ys: i32[] = xs[2..]      # copy of 2, 4, 8

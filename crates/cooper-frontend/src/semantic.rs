@@ -131,6 +131,12 @@ impl SemanticAnalyzer<'_> {
                 self.analyze_expr(array);
                 self.analyze_expr(index);
             }
+            ExprKind::Slice {
+                array, start, end, ..
+            } => {
+                self.analyze_expr(array);
+                start.iter().chain(end).for_each(|bound| self.analyze_expr(bound));
+            }
             ExprKind::Assign { target, value, .. } => {
                 self.analyze_expr(target);
                 self.analyze_expr(value);

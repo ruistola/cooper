@@ -1534,6 +1534,19 @@ impl Emitter<'_, '_> {
                 let value = self.expr(&args[1])?;
                 self.push(&array, &elem, value, span).map(Some)
             }
+            Intrinsic::ArraySlice { view, inclusive } => {
+                let start = self.expr(&args[1])?.expect("a bound has a value");
+                let start = self.widen_index(&start, &args[1].ty);
+                let end = match args.get(2) {
+                    Some(end_expr) => {
+                        let end = self.expr(end_expr)?.expect("a bound has a value");
+                        let end = self.widen_index(&end, &end_expr.ty);
+                        Some(if inclusive { self.assign(&format!("add i64 {end}, 1")) } else { end })
+                    }
+                    None => None,
+                };
+                self.slice(&array, &elem, &start, end, view, span).map(Some)
+            }
         }
     }
 
@@ -1603,6 +1616,53 @@ impl Emitter<'_, '_> {
             }
             _ => unreachable!("a checked index is an integer"),
         }
+    }
+
+    /// Elements `start` up to `end` (the array's end when `None`) of `array`, as a view
+    /// sharing its elements with capacity equal to its length, or as a fresh copy.
+    /// Bounds outside `0 <= start <= end <= length` stop the program.
+    fn slice(
+        &mut self,
+        array: &Value,
+        elem: &Type,
+        start: &str,
+        end: Option<String>,
+        view: bool,
+        span: Span,
+    ) -> Result<Value, CodegenError> {
+        let a = &array.operand;
+        let data = self.assign(&format!("extractvalue {ARRAY} {a}, 0"));
+        let length = self.assign(&format!("extractvalue {ARRAY} {a}, 1"));
+        let end = end.unwrap_or_else(|| length.clone());
+        // Unsigned, a negative bound is huge: checking `end <= length` and then
+        // `start <= end` rejects every bound outside the array.
+        let past_end = self.assign(&format!("icmp ugt i64 {end}, {length}"));
+        self.panic_if(&past_end, "slice bounds out of range", span);
+        let reversed = self.assign(&format!("icmp ugt i64 {start}, {end}"));
+        self.panic_if(&reversed, "slice bounds out of range", span);
+        let count = self.assign(&format!("sub i64 {end}, {start}"));
+        let storage = match self.value_type(elem, span)? {
+            Some(llvm) => {
+                let first = self.assign(&format!("getelementptr {llvm}, ptr {data}, i64 {start}"));
+                if view {
+                    first
+                } else {
+                    self.module.declare(GROW_DECL);
+                    let size = self.size_of(&llvm);
+                    self.assign(&format!(
+                        "call ptr @cooper_array_grow(ptr {first}, i64 {count}, i64 {count}, i64 {size})"
+                    ))
+                }
+            }
+            // Unit elements occupy no storage.
+            None => data,
+        };
+        let fields = [("ptr", storage), ("i64", count.clone()), ("i64", count)];
+        let fields = fields
+            .into_iter()
+            .map(|(ty, operand)| Some(Value { ty: ty.to_string(), operand }))
+            .collect();
+        Ok(self.aggregate(ARRAY, fields))
     }
 
     /// `array.push(value)`: the array with `value` appended. Spare capacity is written

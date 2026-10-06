@@ -120,3 +120,9 @@ fn break_outside_a_loop_is_reported() {
 fn continue_outside_a_loop_is_reported() {
     err("func f() {\n  continue\n}", "'continue' outside of a loop");
 }
+
+#[test]
+fn a_slice_is_an_array_and_its_address_a_view_not_a_pointer() {
+    ok("func f(xs: i32[]): i32[] {\n  let copy: i32[] = xs[1..]\n  let view: i32[] = &xs[..2]\n  return view\n}");
+    err("func f(n: i32): i32 {\n  x := n[0..1]\n  return 0\n}", "type i32 cannot be sliced");
+}

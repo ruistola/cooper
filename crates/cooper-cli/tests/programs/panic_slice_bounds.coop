@@ -1,0 +1,8 @@
+# exit: 101
+# stderr: panic: slice bounds out of range at
+func main(): i32 {
+    xs := [1, 2, 3]
+    let lo = 2
+    let hi = 1
+    return i32(xs[lo..hi].length())
+}

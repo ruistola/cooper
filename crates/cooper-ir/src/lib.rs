@@ -366,6 +366,12 @@ pub enum Intrinsic {
     ArrayPush,
     /// Interior pointer to an element (the `&a[i]` address-of). Args: `[array, index]`.
     ArrayElementPtr,
+    /// The elements from `start` up to `end` (exclusive, or inclusive when `inclusive`),
+    /// as a fresh copy (`a[lo..hi]`) or, when `view`, an array sharing the original's
+    /// elements with capacity equal to its length (`&a[lo..hi]`), so growing a view
+    /// never writes into the original. Args: `[array, start]` to the array's end, or
+    /// `[array, start, end]`.
+    ArraySlice { view: bool, inclusive: bool },
 }
 
 /// Why lowering could not proceed.
@@ -740,6 +746,12 @@ impl Lower<'_> {
                     IrExprKind::Var(name.clone())
                 }
             }
+            ExprKind::Slice {
+                array,
+                start,
+                end,
+                inclusive,
+            } => self.slice(array, start.as_deref(), end.as_deref(), *inclusive, false, expr.span)?,
             ExprKind::Tuple(elems) => IrExprKind::Tuple(self.each(elems)?),
             ExprKind::Array(elems) => IrExprKind::Intrinsic {
                 op: Intrinsic::ArrayLiteral,
@@ -782,6 +794,12 @@ impl Lower<'_> {
                     op: Intrinsic::ArrayElementPtr,
                     args: vec![self.expr(array)?, self.expr(index)?],
                 },
+                ExprKind::Slice {
+                    array,
+                    start,
+                    end,
+                    inclusive,
+                } => self.slice(array, start.as_deref(), end.as_deref(), *inclusive, true, expr.span)?,
                 _ => IrExprKind::AddressOf(Box::new(self.expr(operand)?)),
             },
             ExprKind::Assign { op, target, value } => {
@@ -1026,6 +1044,35 @@ impl Lower<'_> {
         Ok(IrExprKind::Call {
             callee: Box::new(self.expr(callee)?),
             args: self.each(args)?,
+        })
+    }
+
+    /// Lower a slice `array[start..end]` to the slice intrinsic: a copy, or a view when
+    /// taken with `&`. An omitted start is position 0; an omitted end is the array's end.
+    fn slice(
+        &self,
+        array: &Expr,
+        start: Option<&Expr>,
+        end: Option<&Expr>,
+        inclusive: bool,
+        view: bool,
+        span: Span,
+    ) -> Result<IrExprKind, LowerError> {
+        let start = match start {
+            Some(start) => self.expr(start)?,
+            None => IrExpr {
+                kind: IrExprKind::Int(0),
+                ty: Type::Primitive(INDEX_INT.to_string()),
+                span,
+            },
+        };
+        let mut args = vec![self.expr(array)?, start];
+        if let Some(end) = end {
+            args.push(self.expr(end)?);
+        }
+        Ok(IrExprKind::Intrinsic {
+            op: Intrinsic::ArraySlice { view, inclusive },
+            args,
         })
     }
 

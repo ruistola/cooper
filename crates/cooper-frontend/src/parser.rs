@@ -1439,13 +1439,41 @@ impl Parser {
         })
     }
 
+    /// `array[index]`, or a slice `array[start..end]` (`..=` for an inclusive end)
+    /// with either bound optional: `xs[2..]`, `xs[..n]`, `xs[..]`.
     fn parse_index(&mut self, array: Expr) -> PResult<ExprKind> {
         self.expect(OpenBracket)?;
-        let index = self.parse_expr(0)?;
+        let is_range = |kind| matches!(kind, DotDot | DotDotEquals);
+        // A bound stops short of `..`, which binds at 3.
+        let start = if is_range(self.peek().kind) {
+            None
+        } else {
+            Some(self.parse_expr(3)?)
+        };
+        if !is_range(self.peek().kind) {
+            let index = start.expect("an index without `..` has an expression");
+            self.expect(CloseBracket)?;
+            return Ok(ExprKind::Index {
+                array: Box::new(array),
+                index: Box::new(index),
+            });
+        }
+        let inclusive = self.advance().kind == DotDotEquals;
+        let end = if self.peek().kind == CloseBracket {
+            if inclusive {
+                let span = self.peek().span;
+                return Err(self.error(span, "an inclusive slice `..=` needs an end bound"));
+            }
+            None
+        } else {
+            Some(Box::new(self.parse_expr(3)?))
+        };
         self.expect(CloseBracket)?;
-        Ok(ExprKind::Index {
+        Ok(ExprKind::Slice {
             array: Box::new(array),
-            index: Box::new(index),
+            start: start.map(Box::new),
+            end,
+            inclusive,
         })
     }
 

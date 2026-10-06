@@ -1,0 +1,25 @@
+# exit: 0
+# Slices: `a[lo..hi]` copies the selected elements, `&a[lo..hi]` is a view sharing
+# them, and growing a view never writes into the array it views.
+func main(): i32 {
+    xs := [0, 1, 2, 4, 8]
+
+    ys := xs[2..]
+    ys[0] = 99
+    if xs[2] != 2 or ys.length() != 3 or ys[2] != 8 then return 1
+
+    ws := &xs[2..]
+    ws[0] = 99
+    if xs[2] != 99 then return 2
+
+    if xs[..2].length() != 2 or xs[..].length() != 5 then return 3
+    if xs[1..=3].length() != 3 or xs[1..=3][2] != 4 then return 4
+    if xs[5..].length() != 0 then return 5
+
+    head := &xs[0..2]
+    head = head.push(77)
+    head[0] = 55
+    if xs[2] != 99 or xs[0] != 0 then return 6
+    if head[2] != 77 or head[0] != 55 then return 7
+    return 0
+}

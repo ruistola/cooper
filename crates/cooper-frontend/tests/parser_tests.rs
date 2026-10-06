@@ -272,3 +272,34 @@ fn a_line_may_begin_with_negation() {
     let StmtKind::FuncDecl(f) = &m[0].kind else { panic!("expected a function") };
     assert_eq!(f.body.len(), 2);
 }
+
+#[test]
+fn parses_slices_with_either_bound_optional() {
+    let m = ok("func f() {\n  a := xs[1..3]\n  b := xs[2..]\n  c := xs[..n]\n  d := xs[..]\n  e := xs[0..=k]\n  g := xs[i]\n}");
+    let StmtKind::FuncDecl(f) = &m[0].kind else { panic!("expected a function") };
+    let shapes: Vec<(bool, bool, bool)> = f
+        .body
+        .iter()
+        .filter_map(|s| match &s.kind {
+            StmtKind::Expression(e) => match &e.kind {
+                ExprKind::Let { value, .. } => match &value.kind {
+                    ExprKind::Slice { start, end, inclusive, .. } => {
+                        Some((start.is_some(), end.is_some(), *inclusive))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        shapes,
+        [(true, true, false), (true, false, false), (false, true, false), (false, false, false), (true, true, true)]
+    );
+}
+
+#[test]
+fn an_inclusive_slice_needs_an_end() {
+    err("func f() {\n  a := xs[1..=]\n}", "an inclusive slice `..=` needs an end bound");
+}

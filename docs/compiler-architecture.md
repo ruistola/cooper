@@ -92,6 +92,12 @@ memory is not yet reclaimed. Inert nil costs no
 branch: an access through a pointer that is null is redirected to a zero-filled buffer for
 loads and to a discard buffer for stores.
 
+A function value is a `{ code, env }` pointer pair, and a call through one passes `env` as a
+hidden first argument. A function used as a value gets a private thunk with that convention
+and a null `env`; a bound method's `env` is its receiver pointer, or a heap copy of a value
+receiver taken when it is bound. Calling a function value that was never assigned is a
+runtime error.
+
 A runtime error (integer overflow, division by zero) calls the runtime's `cooper_panic`, which
 prints `panic: <error> at <file>:<line>:<column>` to standard error and exits with status 101.
 

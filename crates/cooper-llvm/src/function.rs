@@ -23,7 +23,7 @@ use cooper_ir::{
     Access, Decision, Function, IrExpr, IrExprKind, IrStmt, IrStmtKind, MatchBinding, Test,
 };
 
-use crate::layout::Scalar;
+use crate::layout::{Scalar, FUNC_VALUE};
 use crate::{mangle, CodegenError, Module};
 
 const PANIC_DECL: &str = "declare void @cooper_panic(ptr) noreturn";
@@ -211,12 +211,7 @@ impl Emitter<'_, '_> {
         let llvm = self.value_type(ty, span)?;
         let ptr = match &llvm {
             None => String::new(),
-            Some(llvm) if name.is_some_and(|n| self.heap.contains(n)) => {
-                self.module.declare(ALLOC_DECL);
-                let end = self.assign(&format!("getelementptr {llvm}, ptr null, i32 1"));
-                let size = self.assign(&format!("ptrtoint ptr {end} to i64"));
-                self.assign(&format!("call ptr @cooper_alloc(i64 {size})"))
-            }
+            Some(llvm) if name.is_some_and(|n| self.heap.contains(n)) => self.heap_alloc(llvm),
             Some(llvm) => {
                 let ptr = self.fresh("%v");
                 writeln!(self.allocas, "  {ptr} = alloca {llvm}")
@@ -851,8 +846,17 @@ impl Emitter<'_, '_> {
                 tree,
             } => self.matching(scrutinee, tree, Actions::Exprs(actions), &expr.ty),
             IrExprKind::Str(_) => self.unsupported("strings", span),
-            IrExprKind::FuncRef { .. } | IrExprKind::Method { .. } => {
-                self.unsupported("function values", span)
+            IrExprKind::FuncRef { item, type_args } => {
+                let symbol = mangle::symbol(item, type_args);
+                self.function_value(&symbol, &expr.ty, span).map(Some)
+            }
+            IrExprKind::Method {
+                receiver,
+                item,
+                type_args,
+            } => {
+                let symbol = mangle::symbol(item, type_args);
+                self.bound_method(receiver, &symbol, &expr.ty, span).map(Some)
             }
             IrExprKind::Intrinsic { .. } => self.unsupported("arrays", span),
             IrExprKind::Variant { variant, args } => {
@@ -1286,11 +1290,12 @@ impl Emitter<'_, '_> {
         Ok(())
     }
 
-    /// A direct call to a named function.
+    /// A call: direct to a named function or method, or indirect through a function
+    /// value, which passes the value's environment as a hidden first argument.
     fn call(&mut self, callee: &IrExpr, args: &[IrExpr], result: &Type, span: Span) -> Result<Option<Value>, CodegenError> {
         let mut operands = Vec::with_capacity(args.len() + 1);
-        let (item, type_args) = match &callee.kind {
-            IrExprKind::FuncRef { item, type_args } => (item, type_args),
+        let target = match &callee.kind {
+            IrExprKind::FuncRef { item, type_args } => format!("@{}", mangle::symbol(item, type_args)),
             IrExprKind::Method {
                 receiver,
                 item,
@@ -1300,9 +1305,17 @@ impl Emitter<'_, '_> {
                 let wanted = self.module.receivers[&symbol].clone();
                 let value = self.receiver(receiver, &wanted)?;
                 operands.push(format!("{} {}", value.ty, value.operand));
-                (item, type_args)
+                format!("@{symbol}")
             }
-            _ => return self.unsupported("calls through function values", span),
+            _ => {
+                let function = self.expr(callee)?.expect("a function value has a value");
+                let code = self.assign(&format!("extractvalue {FUNC_VALUE} {}, 0", function.operand));
+                let env = self.assign(&format!("extractvalue {FUNC_VALUE} {}, 1", function.operand));
+                let missing = self.assign(&format!("icmp eq ptr {code}, null"));
+                self.panic_if(&missing, "call of a function value that was never assigned", span);
+                operands.push(format!("ptr {env}"));
+                code
+            }
         };
         for arg in args {
             // A unit argument is evaluated for its effects and passes nothing.
@@ -1310,15 +1323,101 @@ impl Emitter<'_, '_> {
                 operands.push(format!("{ty} {operand}"));
             }
         }
-        let symbol = mangle::symbol(item, type_args);
         let ret = self.signature_type(result, span)?;
-        let call = format!("call {ret} @{symbol}({})", operands.join(", "));
+        let call = format!("call {ret} {target}({})", operands.join(", "));
         if ret == "void" {
             self.inst(&call);
             return Ok(None);
         }
         let operand = self.assign(&call);
         Ok(Some(Value { ty: ret, operand }))
+    }
+
+    /// A function value for the function instance `symbol`, of function type `ty`: its
+    /// thunk, with no environment.
+    fn function_value(&mut self, symbol: &str, ty: &Type, span: Span) -> Result<Value, CodegenError> {
+        let thunk = self.thunk(symbol, ty, None, span)?;
+        Ok(Value {
+            ty: FUNC_VALUE.to_string(),
+            operand: format!("{{ ptr {thunk}, ptr null }}"),
+        })
+    }
+
+    /// A method bound to `receiver`: the method's thunk, with the receiver as its
+    /// environment. A pointer receiver is the environment itself; a value receiver is
+    /// copied to the heap when bound, so later changes to the original do not reach it.
+    fn bound_method(&mut self, receiver: &IrExpr, symbol: &str, ty: &Type, span: Span) -> Result<Value, CodegenError> {
+        let wanted = self.module.receivers[symbol].clone();
+        let value = self.receiver(receiver, &wanted)?;
+        let env = if matches!(wanted, Type::Pointer(_)) {
+            value.operand
+        } else {
+            let copy = self.heap_alloc(&value.ty);
+            self.inst(&format!("store {} {}, ptr {copy}", value.ty, value.operand));
+            copy
+        };
+        let thunk = self.thunk(symbol, ty, Some(&wanted), span)?;
+        let pointer = |operand: String| Some(Value {
+            ty: "ptr".to_string(),
+            operand,
+        });
+        Ok(self.aggregate(FUNC_VALUE, vec![pointer(thunk), pointer(env)]))
+    }
+
+    /// The thunk giving `symbol` the function-value calling convention, defined on
+    /// first use: it takes the hidden environment and calls `symbol` with the given
+    /// arguments, first loading the receiver from the environment for a value-receiver
+    /// method (`receiver`), or passing the environment for a pointer-receiver one.
+    fn thunk(&mut self, symbol: &str, ty: &Type, receiver: Option<&Type>, span: Span) -> Result<String, CodegenError> {
+        let Type::Func {
+            param_types,
+            return_type,
+        } = ty
+        else {
+            unreachable!("a function value has a function type");
+        };
+        let name = format!("@{symbol}.{}", if receiver.is_some() { "bound" } else { "fn" });
+        if self.module.thunks.contains_key(&name) {
+            return Ok(name);
+        }
+        let ret = self.signature_type(return_type, span)?;
+        let mut params = vec!["ptr %env".to_string()];
+        let mut args = Vec::new();
+        let mut body = String::new();
+        match receiver {
+            Some(Type::Pointer(_)) => args.push("ptr %env".to_string()),
+            Some(value_receiver) => {
+                let llvm = self.value_type(value_receiver, span)?.expect("a receiver has a value");
+                body.push_str(&format!("  %receiver = load {llvm}, ptr %env\n"));
+                args.push(format!("{llvm} %receiver"));
+            }
+            None => {}
+        }
+        for (index, param) in param_types.iter().enumerate() {
+            if let Some(llvm) = self.value_type(param, span)? {
+                params.push(format!("{llvm} %a{index}"));
+                args.push(format!("{llvm} %a{index}"));
+            }
+        }
+        let call = format!("call {ret} @{symbol}({})", args.join(", "));
+        if ret == "void" {
+            body.push_str(&format!("  {call}\n  ret void\n"));
+        } else {
+            body.push_str(&format!("  %result = {call}\n  ret {ret} %result\n"));
+        }
+        self.module.thunks.insert(
+            name.clone(),
+            format!("define private {ret} {name}({}) {{\n{body}}}\n", params.join(", ")),
+        );
+        Ok(name)
+    }
+
+    /// A zeroed heap allocation for one value of LLVM type `llvm`.
+    fn heap_alloc(&mut self, llvm: &str) -> String {
+        self.module.declare(ALLOC_DECL);
+        let end = self.assign(&format!("getelementptr {llvm}, ptr null, i32 1"));
+        let size = self.assign(&format!("ptrtoint ptr {end} to i64"));
+        self.assign(&format!("call ptr @cooper_alloc(i64 {size})"))
     }
 }
 

@@ -1,0 +1,64 @@
+# exit: 0
+# Function values: free and generic functions as values, bound methods (value
+# receivers copy when bound, pointer receivers share), function-typed fields,
+# higher-order functions, and returning a function value.
+struct Counter {
+    n: i32,
+}
+
+(c: Counter) func peek(): i32 {
+    return c.n
+}
+
+(c: Counter^) func bump(by: i32) {
+    c.n += by
+}
+
+struct Button {
+    clicks: i32,
+    onClick: func(i32): i32,
+}
+
+func double(x: i32): i32 {
+    return x * 2
+}
+
+func id T (x: T): T {
+    return x
+}
+
+func apply(f: func(i32): i32, x: i32): i32 {
+    return f(x)
+}
+
+func twice(f: func(i32): i32, x: i32): i32 {
+    return f(f(x))
+}
+
+func pick(useDouble: bool): func(i32): i32 {
+    if useDouble then return double
+    return id
+}
+
+func main(): i32 {
+    if apply(double, 5) != 10 then return 1
+    if twice(double, 3) != 12 then return 2
+    if apply(id, 7) != 7 then return 3
+    let wide: func(i64): i64 = id
+    if wide(9) != 9 then return 4
+    if pick(true)(4) != 8 or pick(false)(4) != 4 then return 5
+
+    c := Counter{n: 1}
+    peek := c.peek
+    bump := c.bump
+    bump(10)
+    if c.n != 11 then return 6
+    if peek() != 1 then return 7
+    if c.peek() != 11 then return 8
+
+    b := Button{clicks: 0, onClick: double}
+    if b.onClick(21) != 42 then return 9
+    b.onClick = id
+    if b.onClick(21) != 21 then return 10
+    return 0
+}

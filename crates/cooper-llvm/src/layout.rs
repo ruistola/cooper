@@ -3,6 +3,7 @@
 //! Scalars map to LLVM integer and float types, pointers to the opaque `ptr`, tuples to
 //! literal struct types, and each struct instantiation to a named struct type
 //! (`%QN4mainE5Point`, its mangled type name) whose fields follow declaration order. A
+//! function value is a `{ code, env }` pointer pair. A
 //! sum type instantiation is a named struct of an `i32` tag (the variant's declaration
 //! index) and a payload area of 8-byte words sized for its largest variant; a variant's
 //! payload is read and written there as a literal struct of its slot types. A unit field
@@ -51,6 +52,9 @@ impl Scalar {
     }
 }
 
+/// The LLVM type of a function value: a code pointer and an environment pointer.
+pub(crate) const FUNC_VALUE: &str = "{ ptr, ptr }";
+
 /// A description of a type code generation cannot lay out yet.
 pub(crate) type Unsupported = String;
 
@@ -64,6 +68,9 @@ impl Module<'_> {
                 .ok_or_else(|| format!("values of type {ty}"))?
                 .llvm(),
             Type::Pointer(_) | Type::Nil => "ptr".to_string(),
+            // A function value: its code, and the environment passed as the hidden first
+            // argument of every call through it.
+            Type::Func { .. } => FUNC_VALUE.to_string(),
             Type::Tuple(elems) => {
                 let fields = elems
                     .iter()
@@ -172,6 +179,7 @@ impl Module<'_> {
                     .unwrap_or(0);
                 8 + largest.div_ceil(8) * 8
             }
+            Type::Func { .. } => 16,
             _ => 8,
         }
     }

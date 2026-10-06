@@ -1,0 +1,6 @@
+# exit: 101
+# stderr: panic: call of a function value that was never assigned at
+func main(): i32 {
+    let f: func(i32): i32
+    return f(1)
+}

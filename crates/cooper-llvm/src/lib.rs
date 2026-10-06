@@ -89,6 +89,7 @@ pub fn emit(program: &Program, triple: &str, project: &Project) -> Result<String
         declarations: BTreeSet::new(),
         strings: Vec::new(),
         types: BTreeMap::new(),
+        thunks: BTreeMap::new(),
         nil_size: 0,
     };
     let mut functions = String::new();
@@ -125,6 +126,10 @@ pub fn emit(program: &Program, triple: &str, project: &Project) -> Result<String
         });
     }
     out.push_str(&functions);
+    module.thunks.values().for_each(|t| {
+        out.push('\n');
+        out.push_str(t);
+    });
     out.push('\n');
     out.push_str(&entry(&program.functions)?);
     Ok(out)
@@ -142,6 +147,9 @@ struct Module<'p> {
     strings: Vec<String>,
     /// Named struct type definitions, by name.
     types: BTreeMap<String, String>,
+    /// Adapters giving functions and bound methods the function-value calling
+    /// convention (a hidden environment argument first), by name.
+    thunks: BTreeMap<String, String>,
     /// The size of the zero buffer and sink that loads and stores through nil use: the
     /// largest type accessed through a pointer.
     nil_size: usize,

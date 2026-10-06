@@ -46,7 +46,9 @@ foreign type is a free function. A method name may not collide with a field name
 ## Method binding
 
 Accessing a method on a value without calling it yields a function value whose environment
-is the receiver. The receiver is not part of the function type:
+is the receiver: the receiver's pointer for a pointer receiver, or a copy of the receiver,
+taken when the method is bound, for a value receiver. The receiver is not part of the
+function type:
 
 ```
 let check: func(i32): bool = product.isAffordable

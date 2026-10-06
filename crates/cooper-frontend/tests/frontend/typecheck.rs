@@ -150,3 +150,9 @@ fn functions_arrays_and_aggregates_containing_them_are_not_comparable() {
 fn a_type_parameter_is_not_comparable() {
     err("func same T (a: T, b: T): bool {\n  return a == b\n}", "values of type T are not comparable");
 }
+
+#[test]
+fn a_unit_function_returns_only_unit_values() {
+    ok("func nothing() { }\nfunc f() {\n  return nothing()\n}");
+    err("func f() {\n  return 5\n}", "cannot return a value of type i32 from a function returning unit");
+}

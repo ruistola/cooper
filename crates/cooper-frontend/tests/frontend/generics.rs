@@ -83,3 +83,15 @@ fn a_generic_function_value_needs_an_expected_function_type() {
         "cannot infer type argument T for function id",
     );
 }
+
+#[test]
+fn unit_is_a_type_argument_like_any_other() {
+    ok(concat!(
+        "oneof Result T E {\n  Ok(T),\n  Err(E),\n}\n",
+        "struct Box T {\n  v: T,\n}\n",
+        "func done(): Result i32 () {\n  return Err(())\n}\n",
+        "func call T (h: func(): T): T {\n  return h()\n}\n",
+        "func nothing() { }\n",
+        "func f() {\n  let b: Box () = Box{v: ()}\n  call(nothing)\n}",
+    ));
+}

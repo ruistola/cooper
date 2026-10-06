@@ -371,10 +371,12 @@ impl<'g> TypeChecker<'g> {
         let Some(expr_type) = self.check_expr(expr) else {
             return;
         };
-        if is_unit_return {
+        // A unit function may return a unit-typed value (`return ()`, or a call
+        // to another unit function), but no other value.
+        if is_unit_return && !is_unit(&expr_type) {
             self.err(
                 expr.span,
-                "cannot return a value from a function with no declared return type",
+                format!("cannot return a value of type {expr_type} from a function returning unit"),
             );
         } else if !expr_type.equals(&return_type) {
             let (return_type_shown, expr_type_shown) = display_pair(&return_type, &expr_type);

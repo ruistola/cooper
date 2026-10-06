@@ -1,0 +1,14 @@
+# exit: 7
+# Arguments reach their parameters, and each instantiation of a generic function
+# is a distinct function.
+func id T (x: T): T {
+    return x
+}
+
+func pick(a: i32, b: i32, first: bool): i32 {
+    return a
+}
+
+func main(): i32 {
+    return pick(id(7), 9, id(true))
+}

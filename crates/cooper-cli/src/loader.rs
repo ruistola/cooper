@@ -19,6 +19,8 @@ use cooper_frontend::{Module, Project, ProjectKind, SourceFile};
 const MANIFEST: &str = "project.toml";
 const SOURCE_EXT: &str = "coop";
 const MAIN_FILE: &str = "main.coop";
+/// The directory, beside the project or file, that build outputs are written to.
+const BUILD_DIR: &str = "build";
 
 /// Why a project could not be loaded from disk.
 #[derive(Debug)]
@@ -64,6 +66,34 @@ pub fn load_project(root: &Path) -> Result<Project, LoadError> {
     let mut modules = Vec::new();
     collect_modules(&module_root_dir, &[], &mut modules)?;
     Ok(Project::new(name, kind, modules))
+}
+
+/// A project loaded from the command line, and the directory its build outputs go to.
+pub struct Loaded {
+    pub project: Project,
+    pub build_dir: PathBuf,
+}
+
+/// Load `path`: a directory as a project, its outputs in `<dir>/build/`; or a single
+/// source file as a one-module program named after the file, its outputs in a
+/// `build/` directory beside it.
+pub fn load(path: &Path) -> Result<Loaded, LoadError> {
+    if path.is_dir() {
+        return Ok(Loaded {
+            project: load_project(path)?,
+            build_dir: path.join(BUILD_DIR),
+        });
+    }
+    let source = read(path)?;
+    let name = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "main".to_string());
+    let module = Module::new("main", vec![SourceFile::new(path.to_string_lossy(), source)]);
+    Ok(Loaded {
+        project: Project::new(name, ProjectKind::Program, vec![module]),
+        build_dir: path.parent().unwrap_or(Path::new(".")).join(BUILD_DIR),
+    })
 }
 
 /// The manifest's `name` (required) and optional `module_root`.

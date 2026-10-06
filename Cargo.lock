@@ -23,6 +23,8 @@ name = "cooper-cli"
 version = "0.1.0"
 dependencies = [
  "cooper-frontend",
+ "cooper-ir",
+ "cooper-llvm",
  "toml",
 ]
 
@@ -39,6 +41,14 @@ name = "cooper-ir"
 version = "0.1.0"
 dependencies = [
  "cooper-frontend",
+]
+
+[[package]]
+name = "cooper-llvm"
+version = "0.1.0"
+dependencies = [
+ "cooper-frontend",
+ "cooper-ir",
 ]
 
 [[package]]

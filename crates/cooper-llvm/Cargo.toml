@@ -1,0 +1,13 @@
+[package]
+name = "cooper-llvm"
+version = "0.1.0"
+edition = "2021"
+description = "The Cooper LLVM backend: textual LLVM IR emission from the monomorphized lowering IR, plus the C runtime it links against."
+
+[lib]
+name = "cooper_llvm"
+path = "src/lib.rs"
+
+[dependencies]
+cooper-frontend = { path = "../cooper-frontend" }
+cooper-ir = { path = "../cooper-ir" }

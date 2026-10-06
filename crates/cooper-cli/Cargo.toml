@@ -2,7 +2,7 @@
 name = "cooper-cli"
 version = "0.1.0"
 edition = "2021"
-description = "The Cooper command-line driver: filesystem project loading and diagnostic rendering over the frontend."
+description = "The Cooper command-line driver: filesystem project loading, the build pipeline, and diagnostic rendering."
 
 [[bin]]
 name = "cooper"
@@ -15,3 +15,5 @@ path = "src/lib.rs"
 [dependencies]
 cooper-frontend = { path = "../cooper-frontend" }
 toml = "0.8"
+cooper-ir = { path = "../cooper-ir" }
+cooper-llvm = { path = "../cooper-llvm" }

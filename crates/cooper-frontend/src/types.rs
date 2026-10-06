@@ -311,6 +311,17 @@ pub fn is_float_name(name: &str) -> bool {
     FLOATS.contains(&name)
 }
 
+/// The bit width of the integer type `name`.
+pub fn integer_bits(name: &str) -> u32 {
+    match name {
+        "i8" | "u8" => 8,
+        "i16" | "u16" => 16,
+        "i32" | "u32" => 32,
+        "i64" | "u64" => 64,
+        _ => unreachable!("not an integer type: {name}"),
+    }
+}
+
 pub fn is_numeric_name(name: &str) -> bool {
     is_integer_name(name) || is_float_name(name)
 }

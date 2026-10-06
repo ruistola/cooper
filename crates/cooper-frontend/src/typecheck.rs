@@ -12,8 +12,8 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Span};
 use crate::resolve::{self, Callable, Globals, Signature};
 use crate::types::{
-    display_pair, incomparable_part, is_float_name, is_integer, is_integer_name, is_numeric,
-    is_numeric_name, is_primitive, is_unit, unify, unify_where, Type, TypeDefs, TypeId, DEFAULT_FLOAT,
+    display_pair, incomparable_part, integer_bits, is_float_name, is_integer, is_integer_name,
+    is_numeric, is_numeric_name, is_primitive, is_unit, unify, unify_where, Type, TypeDefs, TypeId, DEFAULT_FLOAT,
     DEFAULT_INT, SIGNED_INTS,
 };
 
@@ -2022,19 +2022,6 @@ pub fn decode_number_literal(text: &str) -> Option<LiteralValue> {
     }
 }
 
-/// The bit width of an integer type by name.
-fn integer_bits(name: &str) -> u32 {
-    match name {
-        "i8" | "u8" => 8,
-        "i16" | "u16" => 16,
-        "i32" | "u32" => 32,
-        "i64" | "u64" => 64,
-        _ => unreachable!("not an integer type: {name}"),
-    }
-}
-
-/// The literal text of a bare numeric literal seen through groupings, or `None` for
-/// any other expression — the shape a leading sign folds into for range checking.
 /// Whether `expr` is a floating-point numeric literal, seeing through grouping and a
 /// leading sign.
 fn is_float_literal(expr: &Expr) -> bool {
@@ -2049,6 +2036,8 @@ fn is_float_literal(expr: &Expr) -> bool {
     }
 }
 
+/// The literal text of a bare numeric literal seen through groupings, or `None` for
+/// any other expression — the shape a leading sign folds into for range checking.
 fn bare_number_text(expr: &Expr) -> Option<&str> {
     match &expr.kind {
         ExprKind::Number(text) => Some(text),

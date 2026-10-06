@@ -1,0 +1,7 @@
+# exit: 0
+# A `main` returning nothing exits with status 0.
+func helper() { }
+
+func main() {
+    helper()
+}

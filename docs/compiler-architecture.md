@@ -9,8 +9,11 @@ The compiler is a Rust Cargo workspace.
   and tests drive it from in-memory sources.
 * **cooper-ir** — the typed lowering IR and monomorphization: the seam between the frontend
   and a backend.
-* **cooper-cli** (binary `cooper`) — the host driver: the filesystem loader and the
-  command-line entry point. All filesystem and `toml` use lives here.
+* **cooper-llvm** — the backend: emits a monomorphized program as textual LLVM IR, and holds
+  the C runtime (`runtime/cooper_rt.c`) every program links against.
+* **cooper-cli** (binary `cooper`) — the host driver: the filesystem loader, the build
+  pipeline, and the `check`, `build`, and `run` commands. All filesystem, process, and `toml`
+  use lives here.
 
 ## Frontend
 
@@ -70,6 +73,23 @@ for layout.
 **The runtime stays behind the IR boundary.** Runtime-touching operations (allocation, array
 growth, copies) are abstract typed *intrinsics*, not runtime calls. A backend realises them
 under whatever memory and concurrency model it adopts, so those choices need no IR change.
+
+## Backend and build
+
+`cooper build <file | project-dir>` checks, lowers, and monomorphizes the program, emits one
+LLVM IR module, and compiles it with the runtime using the system `clang` (overridable with
+`COOPER_CC`). The IR, runtime source, and executable are written to a `build/` directory beside
+the file or in the project. `cooper run` builds and runs, exiting with the program's status.
+
+The runtime owns the process entry point: its C `main` calls `cooper_main`, which the backend
+exports as a wrapper around the program's `main` (returning `i32`, or unit for status 0).
+Function symbols are mangled from the declaration's identity and type arguments in a
+length-prefixed scheme (see `cooper-llvm/src/mangle.rs`), so instances and same-named
+functions from different modules never collide. Constructs the backend does not handle yet
+are reported, never miscompiled.
+
+Golden programs in `cooper-cli/tests/programs/` are built and run by `cargo test`, each
+checked against the exit status declared on its first line.
 
 ## AST, not CST
 

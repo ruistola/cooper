@@ -1,0 +1,7 @@
+# exit: 101
+# stderr: panic: index out of bounds at
+func main(): i32 {
+    xs := [1, 2, 3]
+    let i: u64 = 3
+    return xs[i]
+}

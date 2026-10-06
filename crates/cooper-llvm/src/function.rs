@@ -20,14 +20,18 @@ use cooper_frontend::ast::{AssignOp, BinaryOp, UnaryOp};
 use cooper_frontend::diag::Span;
 use cooper_frontend::types::Type;
 use cooper_ir::{
-    Access, Decision, Function, IrExpr, IrExprKind, IrStmt, IrStmtKind, MatchBinding, Test,
+    Access, Binder, Decision, Function, Intrinsic, IrExpr, IrExprKind, IrStmt, IrStmtKind,
+    MatchBinding, Test,
 };
 
-use crate::layout::{Scalar, FUNC_VALUE};
+use crate::layout::{Scalar, ARRAY, FUNC_VALUE, STRING};
 use crate::{mangle, CodegenError, Module};
 
 const PANIC_DECL: &str = "declare void @cooper_panic(ptr) noreturn";
 const ALLOC_DECL: &str = "declare ptr @cooper_alloc(i64)";
+const CONCAT_DECL: &str = "declare void @cooper_string_concat(ptr, i64, ptr, i64, ptr)";
+const STRING_EQ_DECL: &str = "declare i32 @cooper_string_eq(ptr, i64, ptr, i64)";
+const GROW_DECL: &str = "declare ptr @cooper_array_grow(ptr, i64, i64, i64)";
 
 /// Emit `function` as an LLVM function definition.
 pub(crate) fn emit(module: &mut Module, function: &Function) -> Result<String, CodegenError> {
@@ -271,12 +275,26 @@ impl Emitter<'_, '_> {
         self.inst(&format!("store {} {}, ptr {ptr}", value.ty, value.operand));
     }
 
-    /// The place `expr` denotes, if it is one: a variable, a field of a place, or a
-    /// dereference. `None` for any other expression, which is then left unevaluated.
+    /// The place `expr` denotes, if it is one: a variable, a field of a place, an array
+    /// element, or a dereference. `None` for any other expression, which is then left unevaluated.
     fn place(&mut self, expr: &IrExpr) -> Result<Option<Place>, CodegenError> {
         match &expr.kind {
             IrExprKind::Var(name) => Ok(Some(self.lookup(name))),
             IrExprKind::Deref(pointer) => self.pointee(pointer).map(Some),
+            IrExprKind::Intrinsic {
+                op: Intrinsic::ArrayGet,
+                args,
+            } => {
+                let array = self.expr(&args[0])?.expect("an array has a value");
+                let index = self.expr(&args[1])?.expect("an index has a value");
+                let ptr = self.element(&array, &index, &expr.ty, expr.span)?;
+                Ok(Some(Place {
+                    ptr,
+                    llvm: self.value_type(&expr.ty, expr.span)?,
+                    ty: expr.ty.clone(),
+                    nullable: false,
+                }))
+            }
             IrExprKind::Field { target, name } => {
                 let base = match &target.ty {
                     Type::Pointer(_) => self.pointee(target)?,
@@ -428,7 +446,12 @@ impl Emitter<'_, '_> {
                 inclusive,
                 body,
             } => self.for_range(var, ty, start, end, *inclusive, body, stmt.span)?,
-            IrStmtKind::ForEach { .. } => return self.unsupported("array iteration", stmt.span),
+            IrStmtKind::ForEach {
+                array,
+                index,
+                elem,
+                body,
+            } => self.for_each(array, index.as_ref(), elem, body, stmt.span)?,
             IrStmtKind::Block(stmts) => self.scoped(|e| e.stmts(stmts))?,
             IrStmtKind::Break | IrStmtKind::Continue => {
                 let target = self.loops.last().expect("a checked break or continue is in a loop");
@@ -845,7 +868,13 @@ impl Emitter<'_, '_> {
                 actions,
                 tree,
             } => self.matching(scrutinee, tree, Actions::Exprs(actions), &expr.ty),
-            IrExprKind::Str(_) => self.unsupported("strings", span),
+            IrExprKind::Str(text) => {
+                let bytes = self.module.string(text);
+                Ok(Some(Value {
+                    ty: STRING.to_string(),
+                    operand: format!("{{ ptr {bytes}, i64 {} }}", text.len()),
+                }))
+            }
             IrExprKind::FuncRef { item, type_args } => {
                 let symbol = mangle::symbol(item, type_args);
                 self.function_value(&symbol, &expr.ty, span).map(Some)
@@ -858,7 +887,7 @@ impl Emitter<'_, '_> {
                 let symbol = mangle::symbol(item, type_args);
                 self.bound_method(receiver, &symbol, &expr.ty, span).map(Some)
             }
-            IrExprKind::Intrinsic { .. } => self.unsupported("arrays", span),
+            IrExprKind::Intrinsic { op, args } => self.intrinsic(*op, args, &expr.ty, span),
             IrExprKind::Variant { variant, args } => {
                 let values = args.iter().map(|a| self.expr(a)).collect::<Result<Vec<_>, _>>()?;
                 self.construct(&expr.ty, variant, values, span).map(Some)
@@ -934,6 +963,11 @@ impl Emitter<'_, '_> {
         if matches!(op, BinaryOp::And | BinaryOp::Or) {
             return self.short_circuit(op, lhs, rhs).map(Some);
         }
+        if op == BinaryOp::Add && is_string(&lhs.ty) {
+            let left = self.expr(lhs)?.expect("a string has a value");
+            let right = self.expr(rhs)?.expect("a string has a value");
+            return Ok(Some(self.concat(&left, &right, span)?));
+        }
         let Some(scalar) = Scalar::of(&lhs.ty) else {
             if !matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
                 return self.unsupported(&format!("`{}` on {}", op.symbol(), lhs.ty), span);
@@ -1007,6 +1041,15 @@ impl Emitter<'_, '_> {
                 .collect(),
             Type::Pointer(_) | Type::Nil => return Ok(self.assign(&format!("icmp eq ptr {l}, {r}"))),
             Type::Oneof { .. } => return self.equal_variants(ty, left, right, span),
+            _ if is_string(ty) => {
+                self.module.declare(STRING_EQ_DECL);
+                let (a, a_len) = self.string_parts(left);
+                let (b, b_len) = self.string_parts(right);
+                let same = self.assign(&format!(
+                    "call i32 @cooper_string_eq(ptr {a}, i64 {a_len}, ptr {b}, i64 {b_len})"
+                ));
+                return Ok(self.assign(&format!("icmp ne i32 {same}, 0")));
+            }
             _ => match Scalar::of(ty) {
                 Some(Scalar::Float { .. }) => return Ok(self.assign(&format!("fcmp oeq {} {l}, {r}", left.ty))),
                 Some(_) => return Ok(self.assign(&format!("icmp eq {} {l}, {r}", left.ty))),
@@ -1259,16 +1302,20 @@ impl Emitter<'_, '_> {
             AssignOp::Mul => BinaryOp::Mul,
             _ => BinaryOp::Div,
         };
-        let Some(scalar) = Scalar::of(&target.ty) else {
-            return self.unsupported(&format!("`{}` on {}", op.symbol(), target.ty), span);
-        };
         let place = self.place(target)?.expect("a checked assignment target is a place");
-        let current = self.load(&place).expect("a compound target is a number");
-        let value = value.expect("a compound operand is a number");
-        let operand = self.arithmetic(binary, scalar, &current, &value, span);
-        let stored = Value {
-            ty: current.ty,
-            operand,
+        let current = self.load(&place).expect("a compound target has a value");
+        let value = value.expect("a compound operand has a value");
+        let stored = if is_string(&target.ty) {
+            self.concat(&current, &value, span)?
+        } else {
+            let Some(scalar) = Scalar::of(&target.ty) else {
+                return self.unsupported(&format!("`{}` on {}", op.symbol(), target.ty), span);
+            };
+            let operand = self.arithmetic(binary, scalar, &current, &value, span);
+            Value {
+                ty: current.ty,
+                operand,
+            }
         };
         self.store(&place, Some(&stored));
         Ok(Some(stored))
@@ -1412,11 +1459,242 @@ impl Emitter<'_, '_> {
         Ok(name)
     }
 
+    /// The data pointer and length of a string value.
+    fn string_parts(&mut self, string: &Value) -> (String, String) {
+        let data = self.assign(&format!("extractvalue {STRING} {}, 0", string.operand));
+        let len = self.assign(&format!("extractvalue {STRING} {}, 1", string.operand));
+        (data, len)
+    }
+
+    /// A fresh string holding `left` followed by `right`.
+    fn concat(&mut self, left: &Value, right: &Value, span: Span) -> Result<Value, CodegenError> {
+        self.module.declare(CONCAT_DECL);
+        let (a, a_len) = self.string_parts(left);
+        let (b, b_len) = self.string_parts(right);
+        let out = self.slot(None, &Type::Primitive("string".to_string()), span)?;
+        self.inst(&format!(
+            "call void @cooper_string_concat(ptr {a}, i64 {a_len}, ptr {b}, i64 {b_len}, ptr {})",
+            out.ptr
+        ));
+        Ok(self.load(&out).expect("a string has a value"))
+    }
+
+    /// The size in bytes of one value of LLVM type `llvm`, as an `i64` operand.
+    fn size_of(&mut self, llvm: &str) -> String {
+        let end = self.assign(&format!("getelementptr {llvm}, ptr null, i32 1"));
+        self.assign(&format!("ptrtoint ptr {end} to i64"))
+    }
+
+    /// A built-in array operation.
+    fn intrinsic(&mut self, op: Intrinsic, args: &[IrExpr], result: &Type, span: Span) -> Result<Option<Value>, CodegenError> {
+        if op == Intrinsic::ArrayLiteral {
+            let Type::Array(elem) = result else {
+                unreachable!("an array literal is an array");
+            };
+            let values = args.iter().map(|a| self.expr(a)).collect::<Result<Vec<_>, _>>()?;
+            return self.array_literal(elem, values, span).map(Some);
+        }
+        let Type::Array(elem) = &args[0].ty else {
+            unreachable!("an array intrinsic's first argument is the array");
+        };
+        let elem = (**elem).clone();
+        let array = self.expr(&args[0])?.expect("an array has a value");
+        match op {
+            Intrinsic::ArrayLiteral => unreachable!("handled above"),
+            Intrinsic::ArrayLength => {
+                let operand = self.assign(&format!("extractvalue {ARRAY} {}, 1", array.operand));
+                Ok(Some(Value {
+                    ty: "i64".to_string(),
+                    operand,
+                }))
+            }
+            Intrinsic::ArrayGet | Intrinsic::ArraySet | Intrinsic::ArrayElementPtr => {
+                let index = self.expr(&args[1])?.expect("an index has a value");
+                let ptr = self.element(&array, &index, &elem, span)?;
+                let place = Place {
+                    ptr: ptr.clone(),
+                    llvm: self.value_type(&elem, span)?,
+                    ty: elem,
+                    nullable: false,
+                };
+                match op {
+                    Intrinsic::ArrayGet => Ok(self.load(&place)),
+                    Intrinsic::ArraySet => {
+                        let value = self.expr(&args[2])?;
+                        self.store(&place, value.as_ref());
+                        Ok(None)
+                    }
+                    _ => Ok(Some(Value {
+                        ty: "ptr".to_string(),
+                        operand: ptr,
+                    })),
+                }
+            }
+            Intrinsic::ArrayPush => {
+                let value = self.expr(&args[1])?;
+                self.push(&array, &elem, value, span).map(Some)
+            }
+        }
+    }
+
+    /// A fresh array of the given elements, its capacity exactly its length.
+    fn array_literal(&mut self, elem: &Type, values: Vec<Option<Value>>, span: Span) -> Result<Value, CodegenError> {
+        let count = values.len();
+        if count == 0 {
+            return Ok(Value {
+                ty: ARRAY.to_string(),
+                operand: "zeroinitializer".to_string(),
+            });
+        }
+        let data = match self.value_type(elem, span)? {
+            Some(llvm) => {
+                let storage = self.heap_alloc(&format!("[{count} x {llvm}]"));
+                for (index, value) in values.iter().enumerate() {
+                    let value = value.as_ref().expect("an element has a value");
+                    let slot = self.assign(&format!("getelementptr {llvm}, ptr {storage}, i64 {index}"));
+                    self.inst(&format!("store {llvm} {}, ptr {slot}", value.operand));
+                }
+                storage
+            }
+            None => "null".to_string(),
+        };
+        let pointer = Value {
+            ty: "ptr".to_string(),
+            operand: data,
+        };
+        let length = Value {
+            ty: "i64".to_string(),
+            operand: count.to_string(),
+        };
+        Ok(self.aggregate(ARRAY, vec![Some(pointer), Some(length.clone()), Some(length)]))
+    }
+
+    /// The address of element `index` of `array`, stopping the program when the index
+    /// is out of bounds.
+    fn element(&mut self, array: &Value, index: &Value, elem: &Type, span: Span) -> Result<String, CodegenError> {
+        let length = self.assign(&format!("extractvalue {ARRAY} {}, 1", array.operand));
+        let outside = self.assign(&format!("icmp uge i64 {}, {length}", index.operand));
+        self.panic_if(&outside, "index out of bounds", span);
+        let data = self.assign(&format!("extractvalue {ARRAY} {}, 0", array.operand));
+        Ok(match self.value_type(elem, span)? {
+            Some(llvm) => self.assign(&format!("getelementptr {llvm}, ptr {data}, i64 {}", index.operand)),
+            None => data,
+        })
+    }
+
+    /// `array.push(value)`: the array with `value` appended. Spare capacity is written
+    /// in place, so the result shares the original's storage; a full array is copied
+    /// into fresh storage of twice the capacity (at least four) first.
+    fn push(&mut self, array: &Value, elem: &Type, value: Option<Value>, span: Span) -> Result<Value, CodegenError> {
+        let a = &array.operand;
+        let data = self.assign(&format!("extractvalue {ARRAY} {a}, 0"));
+        let length = self.assign(&format!("extractvalue {ARRAY} {a}, 1"));
+        let capacity = self.assign(&format!("extractvalue {ARRAY} {a}, 2"));
+        let Some(llvm) = self.value_type(elem, span)? else {
+            let longer = self.assign(&format!("add i64 {length}, 1"));
+            let fields = [("ptr", data), ("i64", longer.clone()), ("i64", longer)];
+            let fields = fields
+                .into_iter()
+                .map(|(ty, operand)| Some(Value { ty: ty.to_string(), operand }))
+                .collect();
+            return Ok(self.aggregate(ARRAY, fields));
+        };
+        let full = self.assign(&format!("icmp eq i64 {length}, {capacity}"));
+        let from = self.current.clone();
+        let grow = self.fresh("grow");
+        let ready = self.fresh("ready");
+        self.terminate(&format!("br i1 {full}, label %{grow}, label %{ready}"));
+        self.start_block(&grow);
+        self.module.declare(GROW_DECL);
+        let empty = self.assign(&format!("icmp eq i64 {capacity}, 0"));
+        let doubled = self.assign(&format!("shl i64 {capacity}, 1"));
+        let grown_capacity = self.assign(&format!("select i1 {empty}, i64 4, i64 {doubled}"));
+        let size = self.size_of(&llvm);
+        let grown = self.assign(&format!(
+            "call ptr @cooper_array_grow(ptr {data}, i64 {length}, i64 {grown_capacity}, i64 {size})"
+        ));
+        let grown_from = self.current.clone();
+        self.start_block(&ready);
+        let storage = self.assign(&format!("phi ptr [ {data}, %{from} ], [ {grown}, %{grown_from} ]"));
+        let room = self.assign(&format!(
+            "phi i64 [ {capacity}, %{from} ], [ {grown_capacity}, %{grown_from} ]"
+        ));
+        let slot = self.assign(&format!("getelementptr {llvm}, ptr {storage}, i64 {length}"));
+        if let Some(value) = value {
+            self.inst(&format!("store {llvm} {}, ptr {slot}", value.operand));
+        }
+        let longer = self.assign(&format!("add i64 {length}, 1"));
+        let fields = [("ptr", storage), ("i64", longer), ("i64", room)];
+        let fields = fields
+            .into_iter()
+            .map(|(ty, operand)| Some(Value { ty: ty.to_string(), operand }))
+            .collect();
+        Ok(self.aggregate(ARRAY, fields))
+    }
+
+    /// `for elem in array` (or `for (index, elem) in array`): the array is evaluated
+    /// once, and each pass binds the element (and its index, as an `i32`).
+    fn for_each(
+        &mut self,
+        array: &IrExpr,
+        index: Option<&Binder>,
+        elem: &Binder,
+        body: &[IrStmt],
+        span: Span,
+    ) -> Result<(), CodegenError> {
+        let array = self.expr(array)?.expect("an array has a value");
+        let data = self.assign(&format!("extractvalue {ARRAY} {}, 0", array.operand));
+        let length = self.assign(&format!("extractvalue {ARRAY} {}, 1", array.operand));
+        let counter = self.slot(None, &Type::Primitive("u64".to_string()), span)?;
+        self.store(&counter, Some(&Value { ty: "i64".to_string(), operand: "0".to_string() }));
+        let head = self.fresh("head");
+        let pass = self.fresh("body");
+        let step = self.fresh("step");
+        let exit = self.fresh("exit");
+        self.start_block(&head);
+        let position = self.load(&counter).expect("a counter has a value");
+        let more = self.assign(&format!("icmp ult i64 {}, {length}", position.operand));
+        self.terminate(&format!("br i1 {more}, label %{pass}, label %{exit}"));
+        self.start_block(&pass);
+        self.scoped(|e| -> Result<(), CodegenError> {
+            let element_ty = e.value_type(&elem.ty, span)?;
+            let element = match &element_ty {
+                Some(llvm) => {
+                    let slot = e.assign(&format!("getelementptr {llvm}, ptr {data}, i64 {}", position.operand));
+                    let operand = e.assign(&format!("load {llvm}, ptr {slot}"));
+                    Some(Value { ty: llvm.clone(), operand })
+                }
+                None => None,
+            };
+            let bound = e.bind(&elem.name, &elem.ty, span)?;
+            e.store(&bound, element.as_ref());
+            if let Some(index) = index {
+                let llvm = e.value_type(&index.ty, span)?.expect("an index is an integer");
+                let narrowed = e.assign(&format!("trunc i64 {} to {llvm}", position.operand));
+                let bound = e.bind(&index.name, &index.ty, span)?;
+                e.store(&bound, Some(&Value { ty: llvm, operand: narrowed }));
+            }
+            e.loops.push(Loop {
+                continue_to: step.clone(),
+                break_to: exit.clone(),
+            });
+            let result = e.stmts(body);
+            e.loops.pop();
+            result
+        })?;
+        self.start_block(&step);
+        let position = self.load(&counter).expect("a counter has a value");
+        let next = self.assign(&format!("add nuw i64 {}, 1", position.operand));
+        self.store(&counter, Some(&Value { ty: "i64".to_string(), operand: next }));
+        self.terminate(&format!("br label %{head}"));
+        self.start_block(&exit);
+        Ok(())
+    }
+
     /// A zeroed heap allocation for one value of LLVM type `llvm`.
     fn heap_alloc(&mut self, llvm: &str) -> String {
         self.module.declare(ALLOC_DECL);
-        let end = self.assign(&format!("getelementptr {llvm}, ptr null, i32 1"));
-        let size = self.assign(&format!("ptrtoint ptr {end} to i64"));
+        let size = self.size_of(llvm);
         self.assign(&format!("call ptr @cooper_alloc(i64 {size})"))
     }
 }
@@ -1448,6 +1726,11 @@ impl Emitter<'_, '_> {
             _ => Ok(self.expr(receiver)?.expect("a receiver has a value")),
         }
     }
+}
+
+/// Whether `ty` is the built-in `string`.
+fn is_string(ty: &Type) -> bool {
+    matches!(ty, Type::Primitive(name) if name == "string")
 }
 
 /// The local variable a place expression is rooted in, if the place is stored in that

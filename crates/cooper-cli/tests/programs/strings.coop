@@ -1,0 +1,19 @@
+# exit: 0
+# Strings: literals with escapes, concatenation, compound concatenation, and
+# equality by content.
+func greet(name: string): string {
+    return "hello, " + name
+}
+
+func main(): i32 {
+    s := greet("world")
+    if s != "hello, world" then return 1
+    s += "!"
+    if s != "hello, world!" then return 2
+    if s == "hello, world" then return 3
+    let empty: string
+    if empty != "" then return 4
+    if "a\tb" == "a b" then return 5
+    if ("x", "y") != ("x", "y") then return 6
+    return 0
+}

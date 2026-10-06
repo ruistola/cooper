@@ -98,7 +98,11 @@ and a null `env`; a bound method's `env` is its receiver pointer, or a heap copy
 receiver taken when it is bound. Calling a function value that was never assigned is a
 runtime error.
 
-A runtime error (integer overflow, division by zero) calls the runtime's `cooper_panic`, which
+A string is a `{ data, length }` pair of immutable bytes, and an array a `{ data, length,
+capacity }` triple whose copies share elements. Concatenation, string equality, and array
+growth are runtime functions; growth doubles the capacity (at least 4).
+
+A runtime error (integer overflow, division by zero, an index out of bounds) calls the runtime's `cooper_panic`, which
 prints `panic: <error> at <file>:<line>:<column>` to standard error and exits with status 101.
 
 Function symbols are mangled from the declaration's identity and type arguments in a

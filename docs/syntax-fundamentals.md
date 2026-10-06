@@ -32,7 +32,9 @@ no visibility meaning. The visibility mechanism is still to be designed.
 ## Arrays
 
 `T[]` is the default sequence type: a growable run of elements with a length and capacity.
-A **static array** `T[N]` has a fixed compile-time length.
+Assigning or passing an array copies its length and capacity but shares its elements, so a
+function may change the elements it is given. An index outside the array stops the program
+with a runtime error. A **static array** `T[N]` has a fixed compile-time length.
 
 ```
 let items: i32[]

@@ -6,8 +6,10 @@
  * process exit status. It also implements the operations generated code calls into.
  */
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* The exit status of a program stopped by a runtime error. */
 #define PANIC_STATUS 101
@@ -33,4 +35,40 @@ void *cooper_alloc(size_t size) {
         cooper_panic("out of memory");
     }
     return memory;
+}
+
+/* A string as generated code lays it out: its bytes and their count. */
+typedef struct {
+    const char *data;
+    uint64_t len;
+} CooperString;
+
+/* Concatenate two strings into a fresh one, written to `out`. */
+void cooper_string_concat(const char *a, uint64_t a_len, const char *b, uint64_t b_len,
+                          CooperString *out) {
+    uint64_t len = a_len + b_len;
+    if (len < a_len) {
+        cooper_panic("string too long");
+    }
+    char *data = cooper_alloc(len);
+    if (a_len) memcpy(data, a, a_len);
+    if (b_len) memcpy(data + a_len, b, b_len);
+    out->data = data;
+    out->len = len;
+}
+
+/* Whether two strings hold the same bytes: 1 if so, 0 if not. */
+int32_t cooper_string_eq(const char *a, uint64_t a_len, const char *b, uint64_t b_len) {
+    return a_len == b_len && (a_len == 0 || memcmp(a, b, a_len) == 0);
+}
+
+/* Fresh element storage of `capacity` elements of `size` bytes, holding a copy of the
+   `len` elements at `data`. */
+void *cooper_array_grow(const void *data, uint64_t len, uint64_t capacity, uint64_t size) {
+    if (size && capacity > UINT64_MAX / size) {
+        cooper_panic("array too large");
+    }
+    void *grown = cooper_alloc(capacity * size);
+    if (len) memcpy(grown, data, len * size);
+    return grown;
 }

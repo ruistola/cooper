@@ -3,7 +3,8 @@
 //! Scalars map to LLVM integer and float types, pointers to the opaque `ptr`, tuples to
 //! literal struct types, and each struct instantiation to a named struct type
 //! (`%QN4mainE5Point`, its mangled type name) whose fields follow declaration order. A
-//! function value is a `{ code, env }` pointer pair. A
+//! function value is a `{ code, env }` pointer pair, a string a `{ data, length }` pair,
+//! and an array a `{ data, length, capacity }` triple whose copies share elements. A
 //! sum type instantiation is a named struct of an `i32` tag (the variant's declaration
 //! index) and a payload area of 8-byte words sized for its largest variant; a variant's
 //! payload is read and written there as a literal struct of its slot types. A unit field
@@ -52,6 +53,13 @@ impl Scalar {
     }
 }
 
+/// The LLVM type of a string: its UTF-8 bytes and their count. Strings are immutable.
+pub(crate) const STRING: &str = "{ ptr, i64 }";
+
+/// The LLVM type of an array: its element storage, length, and capacity. Copies of an
+/// array share its elements.
+pub(crate) const ARRAY: &str = "{ ptr, i64, i64 }";
+
 /// The LLVM type of a function value: a code pointer and an environment pointer.
 pub(crate) const FUNC_VALUE: &str = "{ ptr, ptr }";
 
@@ -64,6 +72,8 @@ impl Module<'_> {
     pub(crate) fn llvm_type(&mut self, ty: &Type) -> Result<Option<String>, Unsupported> {
         let llvm = match ty {
             Type::Unit => return Ok(None),
+            Type::Primitive(name) if name == "string" => STRING.to_string(),
+            Type::Array(_) => ARRAY.to_string(),
             Type::Primitive(_) => Scalar::of(ty)
                 .ok_or_else(|| format!("values of type {ty}"))?
                 .llvm(),
@@ -180,6 +190,8 @@ impl Module<'_> {
                 8 + largest.div_ceil(8) * 8
             }
             Type::Func { .. } => 16,
+            Type::Primitive(name) if name == "string" => 16,
+            Type::Array(_) => 24,
             _ => 8,
         }
     }

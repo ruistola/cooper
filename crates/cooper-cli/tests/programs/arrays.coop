@@ -1,0 +1,56 @@
+# exit: 0
+# Arrays: literals, indexing, assignment through an index, growth with `push`,
+# iteration, element pointers, nested arrays, and shared elements between copies.
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+func sum(xs: i32[]): i32 {
+    total := 0
+    for x in xs do total += x
+    return total
+}
+
+func fill(n: i32): i32[] {
+    let out: i32[] = []
+    for i in 0..n do out = out.push(i * i)
+    return out
+}
+
+func main(): i32 {
+    xs := [1, 2, 3]
+    if xs.length() != 3 or xs[0] != 1 or xs[2] != 3 then return 1
+    xs[1] = 20
+    xs[2] += 10
+    if sum(xs) != 34 then return 2
+
+    squares := fill(10)
+    if squares.length() != 10 or squares[9] != 81 then return 3
+    if sum(squares) != 285 then return 4
+
+    weighted := 0
+    for (i, x) in squares do weighted += i * x
+    if weighted != 2025 then return 5
+
+    shared := xs
+    shared[0] = 100
+    if xs[0] != 100 then return 6
+
+    p := &xs[0]
+    p^ = 7
+    if xs[0] != 7 then return 7
+
+    points := [Point{x: 1, y: 2}, Point{x: 3, y: 4}]
+    points[1].x = 30
+    if points[1].x != 30 then return 8
+
+    grid := [[1, 2], [3]]
+    grid[1] = grid[1].push(4)
+    if grid[1][1] != 4 or grid[0].length() != 2 then return 9
+
+    let none: i32[]
+    if none.length() != 0 then return 10
+    for x in none do return 11
+    return 0
+}

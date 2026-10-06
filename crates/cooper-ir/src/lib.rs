@@ -28,7 +28,7 @@ use cooper_frontend::typecheck::{
     decode_number_literal, decode_string_literal, ItemRef, LiteralValue, Typed,
 };
 use cooper_frontend::CheckedProject;
-use cooper_frontend::types::{is_numeric_name, Type, TypeDefs, DEFAULT_INT};
+use cooper_frontend::types::{is_numeric_name, Type, TypeDefs, INDEX_INT};
 
 /// A lowered function or method: the declaration it lowers, its signature, its body
 /// as typed statements, and the span it was lowered from. A method carries its
@@ -661,7 +661,7 @@ impl Lower<'_> {
                         [idx, elem] => (
                             Some(Binder {
                                 name: idx.clone(),
-                                ty: Type::Primitive(DEFAULT_INT.to_string()),
+                                ty: Type::Primitive(INDEX_INT.to_string()),
                             }),
                             elem,
                         ),

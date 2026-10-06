@@ -22,27 +22,29 @@ fn range_over_non_integer_bounds_is_reported() {
 
 #[test]
 fn array_iteration_binds_element_and_index_value_pair() {
-    ok("func f(xs: i32[]): i32 {\n  total := 0\n  for v in xs do total += v\n  for (i, v) in xs do total += i + v\n  return total\n}");
+    // The index is an `i64`, like an array's length.
+    ok("func f(xs: i32[]): i64 {\n  let total: i64 = 0\n  for v in xs do total += i64(v)\n  for (i, v) in xs do total += i + i64(v)\n  return total\n}");
 }
 
 #[test]
 fn array_exposes_a_blessed_length_method() {
-    // `length` is a compiler-blessed method on any array, yielding a `u64` count.
-    ok("func f(xs: i32[]): u64 {\n  return xs.length()\n}");
+    // `length` is a compiler-blessed method on any array, yielding an `i64` count.
+    ok("func f(xs: i32[]): i64 {\n  return xs.length()\n}");
 }
 
 #[test]
 fn array_index_syntax_binds_to_blessed_get_and_set() {
-    // `a[i]` reads through the blessed `get` and `a[i] = v` writes through `set`;
-    // both are also reachable as explicit methods, all sharing the `u64` index type.
-    ok("func f(xs: i32[], i: u64): i32 {\n  xs[i] = xs.get(i) + 1\n  xs.set(i, 0)\n  return xs[i]\n}");
+    // `a[i]` reads like the blessed `get` and `a[i] = v` writes like `set`; the
+    // explicit methods take an `i64` index.
+    ok("func f(xs: i32[], i: i64): i32 {\n  xs[i] = xs.get(i) + 1\n  xs.set(i, 0)\n  return xs[i]\n}");
 }
 
 #[test]
-fn array_index_of_the_wrong_integer_type_is_reported() {
+fn index_syntax_accepts_any_integer_type_but_nothing_else() {
+    ok("func f(xs: i32[], a: i32, b: u8, c: i64): i32 {\n  return xs[a] + xs[b] + xs[c] + xs[0]\n}");
     err(
-        "func f(xs: i32[], i: i32): i32 {\n  return xs[i]\n}",
-        "index must be u64, found i32",
+        "func f(xs: i32[], i: f64): i32 {\n  return xs[i]\n}",
+        "index must be an integer, found f64",
     );
 }
 

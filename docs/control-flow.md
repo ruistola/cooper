@@ -36,7 +36,7 @@ error.
   type (a bare `0..10` is `i32`), which the single loop variable takes. A range is valid only
   as a `for` iterable.
 * **Array:** `T[]` binds the element (`for v in xs`) or an index and the element
-  (`for (i, v) in xs`, with `i: i32`).
+  (`for (i, v) in xs`, with `i: i64`).
 
 ```
 total := 0

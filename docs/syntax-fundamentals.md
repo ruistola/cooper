@@ -33,8 +33,10 @@ no visibility meaning. The visibility mechanism is still to be designed.
 
 `T[]` is the default sequence type: a growable run of elements with a length and capacity.
 Assigning or passing an array copies its length and capacity but shares its elements, so a
-function may change the elements it is given. An index outside the array stops the program
-with a runtime error. A **static array** `T[N]` has a fixed compile-time length.
+function may change the elements it is given. An index may be of any integer type; one outside
+the array, negative included, stops the program with a runtime error. Lengths, and the
+positions built-in iteration exposes, are `i64`: signed, so `length - 1` on an empty array is
+-1, and still wider than any addressable size. A **static array** `T[N]` has a fixed compile-time length.
 
 ```
 let items: i32[]

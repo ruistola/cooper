@@ -253,7 +253,7 @@ impl<'g> TypeChecker<'g> {
             _ => match self.check_expr(iterable) {
                 Some(Type::Array(elem)) => match bindings.len() {
                     1 => Some(vec![*elem]),
-                    2 => Some(vec![Type::Primitive(DEFAULT_INT.to_string()), *elem]),
+                    2 => Some(vec![crate::builtins::index_type(), *elem]),
                     _ => {
                         self.err(span, "an array binds either one loop variable or an (index, value) pair");
                         None
@@ -1709,22 +1709,27 @@ impl<'g> TypeChecker<'g> {
     /// (`xs.length()`, `xs.push(v)`) go through the builtins registry via `check_field`.
     fn check_index(&mut self, array: &Expr, index: &Expr) -> Option<Type> {
         let array_type = self.check_expr(array)?;
-        // Index syntax is a built-in-array privilege: `a[i]` is the blessed read
-        // `a.get(i)`, with a `u64` index. User-defined collections are not indexable —
-        // they expose ordinary methods (`at`, `set`, …), visibly userspace.
+        // Index syntax is a built-in-array privilege: `a[i]` reads like `a.get(i)` but
+        // takes an index of any integer type. User-defined collections are not
+        // indexable — they expose ordinary methods (`at`, `set`, …), visibly userspace.
         let Type::Array(elem) = &array_type else {
             self.err(array.span, format!("type {array_type} cannot be indexed"));
             return None;
         };
         let element = (**elem).clone();
-        let want = crate::builtins::index_type();
-        self.expected = Some(want.clone());
+        self.check_index_value(index)?;
+        Some(element)
+    }
+
+    /// Check an index or slice bound: any integer type, a bare literal taking `i64`.
+    fn check_index_value(&mut self, index: &Expr) -> Option<Type> {
+        self.expected = Some(crate::builtins::index_type());
         let index_type = self.check_expr(index)?;
-        if !index_type.equals(&want) {
-            self.err(index.span, format!("index must be {want}, found {index_type}"));
+        if !is_integer(&index_type) {
+            self.err(index.span, format!("index must be an integer, found {index_type}"));
             return None;
         }
-        Some(element)
+        Some(index_type)
     }
 
     fn check_address_of(&mut self, operand: &Expr, span: Span) -> Option<Type> {
@@ -1795,13 +1800,7 @@ impl<'g> TypeChecker<'g> {
             return None;
         };
         let element = (**elem).clone();
-        let want = crate::builtins::index_type();
-        self.expected = Some(want.clone());
-        let index_type = self.check_expr(index)?;
-        if !index_type.equals(&want) {
-            self.err(index.span, format!("index must be {want}, found {index_type}"));
-            return None;
-        }
+        self.check_index_value(index)?;
         self.expected = Some(element.clone());
         let value_type = self.check_expr(value)?;
         self.check_assign_op(op, &element, &value_type, span);

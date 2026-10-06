@@ -298,6 +298,11 @@ pub const FLOATS: [&str; 2] = ["f32", "f64"];
 /// The non-numeric primitives.
 pub const OTHER_PRIMITIVES: [&str; 2] = ["bool", "string"];
 
+/// The integer type of array lengths and of the positions built-in iteration exposes.
+/// Signed, so `length - 1` on an empty array is -1 rather than a wrapped maximum; a
+/// signed 64-bit range still exceeds any addressable size.
+pub const INDEX_INT: &str = "i64";
+
 /// The type a bare integer literal takes with no contextual type to guide it.
 pub const DEFAULT_INT: &str = "i32";
 /// The type a bare floating-point literal takes with no contextual type to guide it.

@@ -287,7 +287,7 @@ impl Emitter<'_, '_> {
             } => {
                 let array = self.expr(&args[0])?.expect("an array has a value");
                 let index = self.expr(&args[1])?.expect("an index has a value");
-                let ptr = self.element(&array, &index, &expr.ty, expr.span)?;
+                let ptr = self.element(&array, &index, &args[1].ty, &expr.ty, expr.span)?;
                 Ok(Some(Place {
                     ptr,
                     llvm: self.value_type(&expr.ty, expr.span)?,
@@ -1510,7 +1510,7 @@ impl Emitter<'_, '_> {
             }
             Intrinsic::ArrayGet | Intrinsic::ArraySet | Intrinsic::ArrayElementPtr => {
                 let index = self.expr(&args[1])?.expect("an index has a value");
-                let ptr = self.element(&array, &index, &elem, span)?;
+                let ptr = self.element(&array, &index, &args[1].ty, &elem, span)?;
                 let place = Place {
                     ptr: ptr.clone(),
                     llvm: self.value_type(&elem, span)?,
@@ -1569,17 +1569,40 @@ impl Emitter<'_, '_> {
         Ok(self.aggregate(ARRAY, vec![Some(pointer), Some(length.clone()), Some(length)]))
     }
 
-    /// The address of element `index` of `array`, stopping the program when the index
-    /// is out of bounds.
-    fn element(&mut self, array: &Value, index: &Value, elem: &Type, span: Span) -> Result<String, CodegenError> {
+    /// The address of element `index` (of integer type `index_ty`) of `array`, stopping
+    /// the program when the index is out of bounds.
+    fn element(
+        &mut self,
+        array: &Value,
+        index: &Value,
+        index_ty: &Type,
+        elem: &Type,
+        span: Span,
+    ) -> Result<String, CodegenError> {
+        let index = self.widen_index(index, index_ty);
         let length = self.assign(&format!("extractvalue {ARRAY} {}, 1", array.operand));
-        let outside = self.assign(&format!("icmp uge i64 {}, {length}", index.operand));
+        // Compared unsigned, a negative index is a huge one: one test rejects both.
+        let outside = self.assign(&format!("icmp uge i64 {index}, {length}"));
         self.panic_if(&outside, "index out of bounds", span);
         let data = self.assign(&format!("extractvalue {ARRAY} {}, 0", array.operand));
         Ok(match self.value_type(elem, span)? {
-            Some(llvm) => self.assign(&format!("getelementptr {llvm}, ptr {data}, i64 {}", index.operand)),
+            Some(llvm) => self.assign(&format!("getelementptr {llvm}, ptr {data}, i64 {index}")),
             None => data,
         })
+    }
+
+    /// An integer index of type `ty` as an `i64` operand, extended by its signedness.
+    fn widen_index(&mut self, index: &Value, ty: &Type) -> String {
+        match Scalar::of(ty) {
+            Some(Scalar::Int { bits: 64, .. }) => index.operand.clone(),
+            Some(Scalar::Int { signed: true, .. }) => {
+                self.assign(&format!("sext {} {} to i64", index.ty, index.operand))
+            }
+            Some(Scalar::Int { signed: false, .. }) => {
+                self.assign(&format!("zext {} {} to i64", index.ty, index.operand))
+            }
+            _ => unreachable!("a checked index is an integer"),
+        }
     }
 
     /// `array.push(value)`: the array with `value` appended. Spare capacity is written
@@ -1633,7 +1656,7 @@ impl Emitter<'_, '_> {
     }
 
     /// `for elem in array` (or `for (index, elem) in array`): the array is evaluated
-    /// once, and each pass binds the element (and its index, as an `i32`).
+    /// once, and each pass binds the element (and its `i64` index).
     fn for_each(
         &mut self,
         array: &IrExpr,
@@ -1669,10 +1692,8 @@ impl Emitter<'_, '_> {
             let bound = e.bind(&elem.name, &elem.ty, span)?;
             e.store(&bound, element.as_ref());
             if let Some(index) = index {
-                let llvm = e.value_type(&index.ty, span)?.expect("an index is an integer");
-                let narrowed = e.assign(&format!("trunc i64 {} to {llvm}", position.operand));
                 let bound = e.bind(&index.name, &index.ty, span)?;
-                e.store(&bound, Some(&Value { ty: llvm, operand: narrowed }));
+                e.store(&bound, Some(&position));
             }
             e.loops.push(Loop {
                 continue_to: step.clone(),

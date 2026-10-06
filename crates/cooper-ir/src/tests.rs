@@ -433,7 +433,7 @@ fn lowers_indexed_array_iteration_with_an_index_binder() {
     };
     let index = index.as_ref().expect("an index binder");
     assert_eq!(index.name, "i");
-    assert!(is_primitive(&index.ty, DEFAULT_INT), "index type: {:?}", index.ty);
+    assert!(is_primitive(&index.ty, INDEX_INT), "index type: {:?}", index.ty);
     assert_eq!(elem.name, "x");
 }
 
@@ -451,7 +451,7 @@ fn lowers_array_index_read_to_an_intrinsic() {
 
 #[test]
 fn lowers_array_length_method_to_an_intrinsic() {
-    let (decls, globals, checked) = check("func size(xs: i32[]): u64 { return xs.length() }");
+    let (decls, globals, checked) = check("func size(xs: i32[]): i64 { return xs.length() }");
     let ir = lower_expr(return_expr(&decls), &globals, &checked).expect("lowers");
     let IrExprKind::Intrinsic { op, args } = &ir.kind else {
         panic!("expected an intrinsic, got {:?}", ir.kind);

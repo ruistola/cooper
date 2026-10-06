@@ -30,7 +30,7 @@ func main(): i32 {
     if sum(squares) != 285 then return 4
 
     weighted := 0
-    for (i, x) in squares do weighted += i * x
+    for (i, x) in squares do weighted += i32(i) * x
     if weighted != 2025 then return 5
 
     shared := xs

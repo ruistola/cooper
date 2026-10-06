@@ -19,15 +19,12 @@
 //! carry the static subset (everything but growth), realising the static- vs
 //! dynamic-array-like split once it exists.
 
-use crate::types::Type;
+use crate::types::{Type, INDEX_INT};
 
-/// The integer type array indices and lengths take. Provisional pending a dedicated
-/// pointer-sized index type.
-const INDEX_TYPE: &str = "u64";
-
-/// The integer type an array index and length take.
+/// The integer type of an array's length and of the `get`/`set` index parameter.
+/// Index syntax (`a[i]`) accepts any integer type.
 pub(crate) fn index_type() -> Type {
-    Type::Primitive(INDEX_TYPE.to_string())
+    Type::Primitive(INDEX_INT.to_string())
 }
 
 /// The bound signature of the blessed method `name` on an array of `elem`, or `None`

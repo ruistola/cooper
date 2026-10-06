@@ -131,3 +131,17 @@ fn numeric_conversion_wrong_arity_is_reported() {
         "takes exactly one argument",
     );
 }
+
+#[test]
+fn assignment_types_its_value_at_the_targets_width() {
+    ok("func f() {\n  let x: i64 = 0\n  x = 1\n  x += 2\n}");
+    err("func f() {\n  let z: u8 = 1\n  z -= 300\n}", "integer literal 300 is out of range for u8");
+}
+
+#[test]
+fn compound_assignment_requires_one_numeric_type() {
+    err(
+        "func f(y: i32) {\n  let x: i64 = 0\n  x += y\n}",
+        "invalid operands for +=: i64 and i32",
+    );
+}

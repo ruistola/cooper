@@ -1714,6 +1714,9 @@ impl<'g> TypeChecker<'g> {
             return self.check_index_assign(op, array, index, value, target.span);
         }
         let target_type = self.check_expr(target)?;
+        // The target's type guides the value, so `x = 1` and `x += 1` type the literal
+        // at `x`'s width (and range-check it there).
+        self.expected = Some(target_type.clone());
         let value_type = self.check_expr(value)?;
         self.check_assign_op(op, &target_type, &value_type, target.span);
         Some(target_type)
@@ -1748,38 +1751,28 @@ impl<'g> TypeChecker<'g> {
         Some(element)
     }
 
-    /// Apply an assignment operator's type rule, reporting a diagnostic on mismatch: a
-    /// plain assignment requires equal types, a compound `+=` two numbers or two
-    /// strings, and the other compound operators two numbers.
+    /// Apply an assignment operator's type rule, reporting a diagnostic on mismatch. A
+    /// plain assignment requires equal types. A compound operator follows its binary
+    /// operator: two values of one numeric type, or two strings for `+=`.
     fn check_assign_op(&mut self, op: AssignOp, target_type: &Type, value_type: &Type, span: Span) {
-        match op {
-            AssignOp::Assign => {
-                if !target_type.equals(value_type) {
-                    let (value_type_shown, target_type_shown) = display_pair(value_type, target_type);
-                    self.err(span, format!("cannot assign {value_type_shown} to {target_type_shown}"));
-                }
+        let valid = match op {
+            AssignOp::Assign => target_type.equals(value_type),
+            AssignOp::Add if is_primitive(target_type, "string") => {
+                is_primitive(value_type, "string")
             }
-            AssignOp::Add => {
-                let numeric = is_numeric(target_type) && is_numeric(value_type);
-                let strings = is_primitive(target_type, "string") && is_primitive(value_type, "string");
-                if !numeric && !strings {
-                    let (target_type_shown, value_type_shown) = display_pair(target_type, value_type);
-                    self.err(
-                        span,
-                        format!("invalid operands for {}: {target_type_shown} and {value_type_shown}", op.symbol()),
-                    );
-                }
+            AssignOp::Add | AssignOp::Sub | AssignOp::Mul | AssignOp::Div => {
+                is_numeric(target_type) && target_type.equals(value_type)
             }
-            AssignOp::Sub | AssignOp::Mul | AssignOp::Div => {
-                if !(is_numeric(target_type) && is_numeric(value_type)) {
-                    let (target_type_shown, value_type_shown) = display_pair(target_type, value_type);
-                    self.err(
-                        span,
-                        format!("invalid operands for {}: {target_type_shown} and {value_type_shown}", op.symbol()),
-                    );
-                }
-            }
+        };
+        if valid {
+            return;
         }
+        let (value_shown, target_shown) = display_pair(value_type, target_type);
+        let message = match op {
+            AssignOp::Assign => format!("cannot assign {value_shown} to {target_shown}"),
+            _ => format!("invalid operands for {}: {target_shown} and {value_shown}", op.symbol()),
+        };
+        self.err(span, message);
     }
 
     fn check_let_tuple(

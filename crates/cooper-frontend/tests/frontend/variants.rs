@@ -71,3 +71,10 @@ fn bare_variant_foreign_to_expected_type_is_reported() {
 }
 
 // --- semantic analysis ---
+
+#[test]
+fn a_comparison_supplies_its_left_operands_type_to_a_variant_on_the_right() {
+    ok(&format!(
+        "{MAYBE}func f(m: Maybe i32): bool {{\n  return m == Maybe.None or m != None\n}}"
+    ));
+}

@@ -1016,8 +1016,9 @@ impl<'g> TypeChecker<'g> {
 
     /// Check the two operands of a numeric or comparison operator, letting a bare
     /// numeric literal borrow its width from the opposite, non-literal operand so
-    /// `x + 1` needs no suffix. When neither or both sides is a literal, the enclosing
-    /// `expected` hint guides both equally.
+    /// `x + 1` needs no suffix. When both sides are literals, the enclosing `expected`
+    /// hint guides both; when neither is, it guides the left, whose type guides the
+    /// right.
     fn check_numeric_operands(
         &mut self,
         lhs: &Expr,
@@ -1037,8 +1038,10 @@ impl<'g> TypeChecker<'g> {
             let right = self.check_expr_expecting(rhs, hint)?;
             Some((left, right))
         } else {
-            let left = self.check_expr_expecting(lhs, expected.clone())?;
-            let right = self.check_expr_expecting(rhs, expected)?;
+            // The left operand's type guides the right, so a value that needs context
+            // takes it from its partner: `x == Maybe.None` infers `None`'s argument.
+            let left = self.check_expr_expecting(lhs, expected)?;
+            let right = self.check_expr_expecting(rhs, Some(left.clone()))?;
             Some((left, right))
         }
     }

@@ -1736,8 +1736,7 @@ impl<'g> TypeChecker<'g> {
     }
 
     /// Check a slice `array[start..end]`: the array must be a built-in array and the
-    /// bounds integers. A slice has the array's own type, whether a copy or (under `&`)
-    /// a view.
+    /// bounds integers. A slice is an array of the same type sharing the elements.
     fn check_slice(&mut self, array: &Expr, start: Option<&Expr>, end: Option<&Expr>) -> Option<Type> {
         let array_type = self.check_expr(array)?;
         if !matches!(array_type, Type::Array(_)) {
@@ -1751,9 +1750,13 @@ impl<'g> TypeChecker<'g> {
     }
 
     fn check_address_of(&mut self, operand: &Expr, span: Span) -> Option<Type> {
-        // `&a[lo..hi]` is a view: an array sharing `a`'s elements, not a pointer.
+        // A slice already shares its array's elements, so there is nothing to address.
         if let ExprKind::Slice { .. } = &operand.kind {
-            return self.check_expr(operand);
+            self.err(
+                span,
+                "a slice already shares its array's elements; write `a[lo..hi]`, or `a[lo..hi].copy()` for a copy",
+            );
+            return None;
         }
         // Type-check the operand first so addressability can consult its type (the
         // receiver of an index must be a built-in array). A well-typed operand is

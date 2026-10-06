@@ -247,7 +247,7 @@ pub enum ExprKind {
         inclusive: bool,
     },
     /// `array[start..end]` (or `..=`), either bound omitted to mean the array's start
-    /// or end. On its own it copies the selected elements; under `&` it is a view.
+    /// or end: an array sharing the selected elements.
     Slice {
         array: Box<Expr>,
         start: Option<Box<Expr>>,

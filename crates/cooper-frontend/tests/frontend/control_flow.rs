@@ -122,7 +122,11 @@ fn continue_outside_a_loop_is_reported() {
 }
 
 #[test]
-fn a_slice_is_an_array_and_its_address_a_view_not_a_pointer() {
-    ok("func f(xs: i32[]): i32[] {\n  let copy: i32[] = xs[1..]\n  let view: i32[] = &xs[..2]\n  return view\n}");
+fn a_slice_is_an_array_and_cannot_be_addressed() {
+    ok("func f(xs: i32[]): i32[] {\n  let shared: i32[] = xs[1..]\n  return shared.copy()\n}");
+    err(
+        "func f(xs: i32[]): i32[] {\n  return &xs[..2]\n}",
+        "a slice already shares its array's elements",
+    );
     err("func f(n: i32): i32 {\n  x := n[0..1]\n  return 0\n}", "type i32 cannot be sliced");
 }

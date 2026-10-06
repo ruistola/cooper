@@ -23,7 +23,7 @@ cover closed heterogeneity, and function values cover open behavior (see
   `mat3x3`, …). A user-defined numeric type exposes ordinary methods (`a.mul(b)`).
 * **Index and slice syntax applies to built-in collections only:** arrays, and later hash
   maps and sets. A user-defined collection exposes ordinary methods (`at`, `set`, …). The
-  full index surface includes interior pointers (`&a[i]`) and shared views (`&a[lo..hi]`),
+  full index surface includes interior pointers (`&a[i]`) and shared slices (`a[lo..hi]`),
   which rely on a representation only the compiler controls.
 * **User types do not hook into equality, ordering, hashing, or copying through methods.**
   Equality and hashing are built in (below). An algorithm that needs another operation on a

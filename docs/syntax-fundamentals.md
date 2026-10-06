@@ -31,12 +31,10 @@ no visibility meaning. The visibility mechanism is still to be designed.
 
 ## Arrays
 
-`T[]` is the default sequence type: a growable run of elements with a length and capacity.
-Assigning or passing an array copies its length and capacity but shares its elements, so a
-function may change the elements it is given. An index may be of any integer type; one outside
-the array, negative included, stops the program with a runtime error. Lengths, and the
-positions built-in iteration exposes, are `i64`: signed, so `length - 1` on an empty array is
--1, and still wider than any addressable size. A **static array** `T[N]` has a fixed compile-time length.
+`T[]` is the default sequence type: a growable run of elements with a length and capacity. An
+array value refers to its elements, so assigning or passing an array, or slicing one, shares
+them; `copy()` makes an independent copy. A **static array** `T[N]` has a fixed compile-time
+length.
 
 ```
 let items: i32[]
@@ -57,32 +55,38 @@ ys := [1, 2.5]               # f32[]
 let empty: f64[] = []
 ```
 
-Values come from zero values, literals, and (later) built-in constructor functions for
-capacity hints. Whether a value lives on the stack or the heap is the compiler's decision.
+An index may be of any integer type; one outside the array, negative included, stops the
+program with a runtime error. Lengths, and the positions built-in iteration exposes, are
+`i64`: signed, so `length - 1` on an empty array is -1, and still wider than any addressable
+size. `&xs[i]` is a pointer to one element, and `&xs` a pointer to the array variable itself.
 
-### Subranges and views
+### Slices
 
-Indexing with a range yields a fresh copy. `&` instead yields a **view**, an ordinary `T[]`
-sharing the original's storage, or, for a single index, a pointer to the element. A range is
-`lo..hi` or `lo..=hi`; an omitted `lo` is 0 and an omitted `hi` the array's end (`xs[2..]`,
-`xs[..n]`, `xs[..]`). Bounds outside `0 <= lo <= hi <= length` stop the program.
+`xs[lo..hi]` (or `lo..=hi`) is an array of the selected elements, sharing them with `xs`. An
+omitted `lo` is 0 and an omitted `hi` the array's end (`xs[2..]`, `xs[..n]`, `xs[..]`). Bounds
+outside `0 <= lo <= hi <= length` stop the program.
 
 ```
-let ys: i32[] = xs[2..]      # copy of 2, 4, 8
-let ws: i32[] = &xs[2..]     # view: ws[0] = 99 writes xs[2]
-let p: i32^ = &xs[2]         # pointer to one element
+tail := xs[2..]              # shares 2, 4, 8 with xs: tail[0] = 99 writes xs[2]
+copied := xs[2..].copy()     # an independent copy
 ```
 
-**`&` shares elements; growth always forks.** A view starts with capacity equal to its
-length, so appending to it reallocates into fresh storage. Appending returns the possibly-new
-array:
+### Growth
+
+Appending follows a return-value idiom, since it may hand back the same array (when there is
+spare capacity) or one in fresh storage, which no other array shares:
 
 ```
 xs = xs.push(9)
+xs = xs.reserve(1000)        # room for at least 1000 more elements
 ```
 
-A function that appends returns the array. Arrays with outstanding views may reallocate on
-growth, after which the views still see the old storage.
+A function that appends returns the array, or takes a pointer to the caller's array
+(`log^ = log^.push(line)`). **A slice's capacity is its length**, so growing a slice always
+moves it to fresh storage first and never writes into the array it came from. Two copies of
+one array with spare capacity both append into the same storage, so after `xs = xs.push(..)`
+other copies of the old `xs` should not be appended to. Arrays shared with a grown array keep
+seeing its old storage.
 
 ## Pointers
 

@@ -1534,7 +1534,7 @@ impl Emitter<'_, '_> {
                 let value = self.expr(&args[1])?;
                 self.push(&array, &elem, value, span).map(Some)
             }
-            Intrinsic::ArraySlice { view, inclusive } => {
+            Intrinsic::ArraySlice { inclusive } => {
                 let start = self.expr(&args[1])?.expect("a bound has a value");
                 let start = self.widen_index(&start, &args[1].ty);
                 let end = match args.get(2) {
@@ -1545,7 +1545,12 @@ impl Emitter<'_, '_> {
                     }
                     None => None,
                 };
-                self.slice(&array, &elem, &start, end, view, span).map(Some)
+                self.slice(&array, &elem, &start, end, span).map(Some)
+            }
+            Intrinsic::ArrayCopy => self.copy(&array, &elem, span).map(Some),
+            Intrinsic::ArrayReserve => {
+                let count = self.expr(&args[1])?.expect("a count has a value");
+                self.reserve(&array, &elem, &count.operand, span).map(Some)
             }
         }
     }
@@ -1618,16 +1623,15 @@ impl Emitter<'_, '_> {
         }
     }
 
-    /// Elements `start` up to `end` (the array's end when `None`) of `array`, as a view
-    /// sharing its elements with capacity equal to its length, or as a fresh copy.
-    /// Bounds outside `0 <= start <= end <= length` stop the program.
+    /// Elements `start` up to `end` (the array's end when `None`) of `array`, sharing
+    /// its elements, with capacity equal to its length so growing the slice copies
+    /// first. Bounds outside `0 <= start <= end <= length` stop the program.
     fn slice(
         &mut self,
         array: &Value,
         elem: &Type,
         start: &str,
         end: Option<String>,
-        view: bool,
         span: Span,
     ) -> Result<Value, CodegenError> {
         let a = &array.operand;
@@ -1641,28 +1645,78 @@ impl Emitter<'_, '_> {
         let reversed = self.assign(&format!("icmp ugt i64 {start}, {end}"));
         self.panic_if(&reversed, "slice bounds out of range", span);
         let count = self.assign(&format!("sub i64 {end}, {start}"));
-        let storage = match self.value_type(elem, span)? {
-            Some(llvm) => {
-                let first = self.assign(&format!("getelementptr {llvm}, ptr {data}, i64 {start}"));
-                if view {
-                    first
-                } else {
-                    self.module.declare(GROW_DECL);
-                    let size = self.size_of(&llvm);
-                    self.assign(&format!(
-                        "call ptr @cooper_array_grow(ptr {first}, i64 {count}, i64 {count}, i64 {size})"
-                    ))
-                }
-            }
+        let first = match self.value_type(elem, span)? {
+            Some(llvm) => self.assign(&format!("getelementptr {llvm}, ptr {data}, i64 {start}")),
             // Unit elements occupy no storage.
             None => data,
         };
-        let fields = [("ptr", storage), ("i64", count.clone()), ("i64", count)];
-        let fields = fields
+        Ok(self.array_value(first, count.clone(), count))
+    }
+
+    /// `array.copy()`: a fresh array holding a copy of the elements, with capacity
+    /// equal to its length.
+    fn copy(&mut self, array: &Value, elem: &Type, span: Span) -> Result<Value, CodegenError> {
+        let a = &array.operand;
+        let data = self.assign(&format!("extractvalue {ARRAY} {a}, 0"));
+        let length = self.assign(&format!("extractvalue {ARRAY} {a}, 1"));
+        let storage = match self.value_type(elem, span)? {
+            Some(llvm) => self.grown(&data, &length, &length, &llvm),
+            None => data,
+        };
+        Ok(self.array_value(storage, length.clone(), length))
+    }
+
+    /// `array.reserve(n)`: the array itself when its spare capacity holds `n` more
+    /// elements, otherwise a copy with capacity for the larger of `length + n` and
+    /// twice the current capacity. A negative `n` reserves nothing.
+    fn reserve(&mut self, array: &Value, elem: &Type, count: &str, span: Span) -> Result<Value, CodegenError> {
+        let Some(llvm) = self.value_type(elem, span)? else {
+            return Ok(array.clone());
+        };
+        let a = &array.operand;
+        let data = self.assign(&format!("extractvalue {ARRAY} {a}, 0"));
+        let length = self.assign(&format!("extractvalue {ARRAY} {a}, 1"));
+        let capacity = self.assign(&format!("extractvalue {ARRAY} {a}, 2"));
+        let negative = self.assign(&format!("icmp slt i64 {count}, 0"));
+        let wanted = self.assign(&format!("select i1 {negative}, i64 0, i64 {count}"));
+        let spare = self.assign(&format!("sub i64 {capacity}, {length}"));
+        let fits = self.assign(&format!("icmp ule i64 {wanted}, {spare}"));
+        let from = self.current.clone();
+        let grow = self.fresh("reserve");
+        let ready = self.fresh("reserved");
+        self.terminate(&format!("br i1 {fits}, label %{ready}, label %{grow}"));
+        self.start_block(&grow);
+        let needed = self.assign(&format!("add i64 {length}, {wanted}"));
+        let doubled = self.assign(&format!("shl i64 {capacity}, 1"));
+        let more = self.assign(&format!("icmp ugt i64 {needed}, {doubled}"));
+        let grown_capacity = self.assign(&format!("select i1 {more}, i64 {needed}, i64 {doubled}"));
+        let grown = self.grown(&data, &length, &grown_capacity, &llvm);
+        let grown_from = self.current.clone();
+        self.start_block(&ready);
+        let storage = self.assign(&format!("phi ptr [ {data}, %{from} ], [ {grown}, %{grown_from} ]"));
+        let room = self.assign(&format!(
+            "phi i64 [ {capacity}, %{from} ], [ {grown_capacity}, %{grown_from} ]"
+        ));
+        Ok(self.array_value(storage, length, room))
+    }
+
+    /// Fresh storage for `capacity` elements of LLVM type `llvm`, holding a copy of the
+    /// `length` elements at `data`.
+    fn grown(&mut self, data: &str, length: &str, capacity: &str, llvm: &str) -> String {
+        self.module.declare(GROW_DECL);
+        let size = self.size_of(llvm);
+        self.assign(&format!(
+            "call ptr @cooper_array_grow(ptr {data}, i64 {length}, i64 {capacity}, i64 {size})"
+        ))
+    }
+
+    /// An array value from its storage, length, and capacity operands.
+    fn array_value(&mut self, storage: String, length: String, capacity: String) -> Value {
+        let fields = [("ptr", storage), ("i64", length), ("i64", capacity)]
             .into_iter()
             .map(|(ty, operand)| Some(Value { ty: ty.to_string(), operand }))
             .collect();
-        Ok(self.aggregate(ARRAY, fields))
+        self.aggregate(ARRAY, fields)
     }
 
     /// `array.push(value)`: the array with `value` appended. Spare capacity is written
@@ -1675,12 +1729,7 @@ impl Emitter<'_, '_> {
         let capacity = self.assign(&format!("extractvalue {ARRAY} {a}, 2"));
         let Some(llvm) = self.value_type(elem, span)? else {
             let longer = self.assign(&format!("add i64 {length}, 1"));
-            let fields = [("ptr", data), ("i64", longer.clone()), ("i64", longer)];
-            let fields = fields
-                .into_iter()
-                .map(|(ty, operand)| Some(Value { ty: ty.to_string(), operand }))
-                .collect();
-            return Ok(self.aggregate(ARRAY, fields));
+            return Ok(self.array_value(data, longer.clone(), longer));
         };
         let full = self.assign(&format!("icmp eq i64 {length}, {capacity}"));
         let from = self.current.clone();
@@ -1688,14 +1737,10 @@ impl Emitter<'_, '_> {
         let ready = self.fresh("ready");
         self.terminate(&format!("br i1 {full}, label %{grow}, label %{ready}"));
         self.start_block(&grow);
-        self.module.declare(GROW_DECL);
         let empty = self.assign(&format!("icmp eq i64 {capacity}, 0"));
         let doubled = self.assign(&format!("shl i64 {capacity}, 1"));
         let grown_capacity = self.assign(&format!("select i1 {empty}, i64 4, i64 {doubled}"));
-        let size = self.size_of(&llvm);
-        let grown = self.assign(&format!(
-            "call ptr @cooper_array_grow(ptr {data}, i64 {length}, i64 {grown_capacity}, i64 {size})"
-        ));
+        let grown = self.grown(&data, &length, &grown_capacity, &llvm);
         let grown_from = self.current.clone();
         self.start_block(&ready);
         let storage = self.assign(&format!("phi ptr [ {data}, %{from} ], [ {grown}, %{grown_from} ]"));
@@ -1707,12 +1752,7 @@ impl Emitter<'_, '_> {
             self.inst(&format!("store {llvm} {}, ptr {slot}", value.operand));
         }
         let longer = self.assign(&format!("add i64 {length}, 1"));
-        let fields = [("ptr", storage), ("i64", longer), ("i64", room)];
-        let fields = fields
-            .into_iter()
-            .map(|(ty, operand)| Some(Value { ty: ty.to_string(), operand }))
-            .collect();
-        Ok(self.aggregate(ARRAY, fields))
+        Ok(self.array_value(storage, longer, room))
     }
 
     /// `for elem in array` (or `for (index, elem) in array`): the array is evaluated

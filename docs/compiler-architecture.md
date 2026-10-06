@@ -83,13 +83,17 @@ the file or in the project. `cooper run` builds and runs, exiting with the progr
 
 The runtime owns the process entry point: its C `main` calls `cooper_main`, which the backend
 exports as a wrapper around the program's `main` (returning `i32`, or unit for status 0).
+A runtime error (integer overflow, division by zero) calls the runtime's `cooper_panic`, which
+prints `panic: <error> at <file>:<line>:<column>` to standard error and exits with status 101.
+
 Function symbols are mangled from the declaration's identity and type arguments in a
 length-prefixed scheme (see `cooper-llvm/src/mangle.rs`), so instances and same-named
 functions from different modules never collide. Constructs the backend does not handle yet
 are reported, never miscompiled.
 
 Golden programs in `cooper-cli/tests/programs/` are built and run by `cargo test`, each
-checked against the exit status declared on its first line.
+checked against the exit status declared on its first line (`# exit: N`) and any text its
+`# stderr:` lines require.
 
 ## AST, not CST
 

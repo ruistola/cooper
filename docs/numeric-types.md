@@ -38,9 +38,14 @@ an operator **borrows its width from the other, non-literal operand**: in `x + 1
 with `x: i64`, the `1` is typed `i64`. When both sides are literals, or neither is,
 the enclosing expected type guides both equally.
 
+Integer arithmetic is checked: an overflowing result, division or remainder by zero, and
+the signed `MIN / -1` stop the program with a runtime error. Float arithmetic follows IEEE.
+
 ## Conversions are explicit and constructor-style
 
 A numeric conversion is spelled as a **constructor-style call on the target
-primitive**: `i64(x)`, `u8(n)`, `f64(i)`. Conversions are value-changing — truncation,
-sign reinterpretation, and integer/float rounding all happen here — and are always
-written explicitly at the point they occur.
+primitive**: `i64(x)`, `u8(n)`, `f64(i)`, and is the only place a value changes
+representation. An integer conversion truncates to a narrower type and extends to a
+wider one by the source's signedness (`u32(-7)` is `4294967289`). A float-to-integer
+conversion rounds toward zero and saturates at the target's range, with NaN becoming 0
+(`i32(1e10)` is `2147483647`).

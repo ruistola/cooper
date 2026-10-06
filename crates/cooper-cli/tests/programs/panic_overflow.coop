@@ -1,0 +1,10 @@
+# exit: 101
+# stderr: panic: integer overflow at
+# stderr: panic_overflow.coop:5:12
+func grow(x: i32): i32 {
+    return x + 1
+}
+
+func main(): i32 {
+    return grow(2147483647)
+}

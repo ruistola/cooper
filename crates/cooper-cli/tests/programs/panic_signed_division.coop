@@ -1,0 +1,8 @@
+# exit: 101
+# stderr: panic: integer overflow at
+# The one overflowing signed division: the minimum divided by -1.
+func main(): i32 {
+    let min: i32 = -2147483648
+    let divisor = -1
+    return min / divisor
+}

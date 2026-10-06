@@ -1,0 +1,35 @@
+# exit: 0
+# Integer and float arithmetic, literal widths, and numeric conversions. Each check
+# returns its own status on failure.
+func main(): i32 {
+    let a: i64 = 10
+    a = a * 3 + 4 - 1
+    if a != 33 then return 1
+
+    b := -7
+    if b / 2 != -3 then return 2
+    if b % 2 != -1 then return 3
+
+    let h: u8 = 250
+    h += 5
+    if h != 255 then return 4
+    let big: u32 = 0xFFFF_FFFF
+    if big / 2 != 2147483647 then return 5
+
+    let f: f64 = 2.5
+    let g = f * 4.0 - 1.0
+    if g != 9.0 then return 6
+    let third: f32 = 1.0 / 3.0
+    if third * 3.0 != 1.0 then return 7
+
+    if i32(h) + i32(g) != 264 then return 8
+    if i8(300) != 44 then return 9
+    if i64(b) != -7 then return 10
+    if u32(b) != 4294967289 then return 11
+    if i32(1e10) != 2147483647 then return 12
+    if f32(b) != -7.0 then return 13
+
+    let min: i8 = -128
+    if -(min + 1) != 127 then return 14
+    return 0
+}

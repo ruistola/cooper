@@ -27,6 +27,14 @@ impl Span {
     }
 }
 
+/// The 1-based line and column (in characters) of byte `offset` within `source`.
+pub fn line_col(source: &str, offset: usize) -> (usize, usize) {
+    let before = &source[..offset.min(source.len())];
+    let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+    let line = before.matches('\n').count() + 1;
+    (line, before[line_start..].chars().count() + 1)
+}
+
 impl From<Span> for Range<usize> {
     fn from(span: Span) -> Range<usize> {
         span.start..span.end

@@ -78,7 +78,7 @@ fn lowers_a_function_signature_and_a_conditional_body() {
          \treturn a\n\
          }",
     );
-    let functions = lower_module(&decls, &globals, &checked).expect("module lowers");
+    let functions = lower_module("main", &decls, &globals, &checked).expect("module lowers");
 
     assert_eq!(functions.len(), 1);
     let max = &functions[0];
@@ -117,7 +117,7 @@ fn lowers_a_function_signature_and_a_conditional_body() {
 fn lowers_a_local_binding_taking_its_type_from_the_initializer() {
     let (decls, globals, checked) =
         check("func f(n: i32): i32 { x := n + 1\n\treturn x }");
-    let functions = lower_module(&decls, &globals, &checked).expect("module lowers");
+    let functions = lower_module("main", &decls, &globals, &checked).expect("module lowers");
 
     // `x := n + 1` lowers to an expression statement holding the walrus binding,
     // carrying the i32 type flowing from the initializer.
@@ -404,7 +404,7 @@ fn lowers_array_iteration_to_a_foreach() {
          \treturn total\n\
          }",
     );
-    let functions = lower_module(&decls, &globals, &checked).expect("module lowers");
+    let functions = lower_module("main", &decls, &globals, &checked).expect("module lowers");
     let IrStmtKind::ForEach {
         array, index, elem, body,
     } = &functions[0].body[1].kind
@@ -427,7 +427,7 @@ fn lowers_indexed_array_iteration_with_an_index_binder() {
          \treturn total\n\
          }",
     );
-    let functions = lower_module(&decls, &globals, &checked).expect("module lowers");
+    let functions = lower_module("main", &decls, &globals, &checked).expect("module lowers");
     let IrStmtKind::ForEach { index, elem, .. } = &functions[0].body[1].kind else {
         panic!("expected an array loop, got {:?}", functions[0].body[1].kind);
     };
@@ -470,7 +470,7 @@ fn lowers_a_range_for_loop_with_a_typed_counter() {
          \treturn total\n\
          }",
     );
-    let functions = lower_module(&decls, &globals, &checked).expect("module lowers");
+    let functions = lower_module("main", &decls, &globals, &checked).expect("module lowers");
     let IrStmtKind::ForRange {
         var, ty, inclusive, body, ..
     } = &functions[0].body[1].kind
@@ -550,7 +550,7 @@ fn lowers_tuple_destructuring_into_typed_bindings() {
 /// Check, lower, and monomorphize a one-file program.
 fn monomorphized(source: &str) -> Vec<Function> {
     let (decls, globals, checked) = check(source);
-    let functions = lower_module(&decls, &globals, &checked).expect("program lowers");
+    let functions = lower_module("main", &decls, &globals, &checked).expect("program lowers");
     monomorphize(&functions).expect("program monomorphizes")
 }
 
@@ -586,7 +586,7 @@ fn a_generic_call_lowers_to_a_reference_carrying_its_type_arguments() {
     let (decls, globals, checked) = check(
         "func id T (x: T): T { return x }\nfunc f(): i64 { return id(3) }",
     );
-    let functions = lower_module(&decls, &globals, &checked).expect("module lowers");
+    let functions = lower_module("main", &decls, &globals, &checked).expect("module lowers");
     let f = &functions[1];
     let IrStmtKind::Return(Some(ret)) = &f.body[0].kind else {
         panic!("expected a return");
@@ -664,10 +664,26 @@ fn polymorphic_recursion_is_reported_as_unbounded() {
         "func grow T (x: T): i32 { return grow((x, x)) }\n",
         "func f(): i32 { return grow(1) }\n",
     ));
-    let functions = lower_module(&decls, &globals, &checked).expect("module lowers");
+    let functions = lower_module("main", &decls, &globals, &checked).expect("module lowers");
     let result = monomorphize(&functions);
     assert!(
         matches!(&result, Err(MonoError::UnboundedInstantiation { item: Callable::Func { name, .. }, .. }) if name == "grow"),
         "got {result:?}"
     );
+}
+
+#[test]
+fn a_negative_literal_lowers_to_a_typed_negation() {
+    // The checker folds the sign into the literal for range checking; the literal
+    // beneath still carries the type, so lowering finds it.
+    let (decls, globals, checked) = check("func f(): i32 { let d = -1\n return d }");
+    let functions = lower_module("main", &decls, &globals, &checked).expect("module lowers");
+    let IrStmtKind::Var { init: Some(init), .. } = &functions[0].body[0].kind else {
+        panic!("expected a variable");
+    };
+    let IrExprKind::Unary { operand, .. } = &init.kind else {
+        panic!("expected a negation, got {:?}", init.kind);
+    };
+    assert!(matches!(operand.kind, IrExprKind::Int(1)));
+    assert!(is_primitive(&operand.ty, "i32"));
 }

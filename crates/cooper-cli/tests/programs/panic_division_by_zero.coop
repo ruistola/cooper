@@ -1,0 +1,10 @@
+# exit: 101
+# stderr: panic: division by zero at
+func divide(a: u64, b: u64): u64 {
+    return a / b
+}
+
+func main(): i32 {
+    divide(1, 0)
+    return 0
+}

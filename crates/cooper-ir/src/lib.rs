@@ -39,6 +39,8 @@ use cooper_frontend::types::{is_numeric_name, Type, TypeDefs, DEFAULT_INT};
 #[derive(Debug, Clone)]
 pub struct Function {
     pub item: Callable,
+    /// The source file the declaration is in, which its spans index into.
+    pub file: String,
     pub receiver: Option<Param>,
     pub type_params: Vec<String>,
     pub type_args: Vec<Type>,
@@ -406,7 +408,7 @@ pub enum ProgramError {
 pub fn lower_program(project: &CheckedProject) -> Result<Program, ProgramError> {
     let mut functions = Vec::new();
     for file in &project.files {
-        let lowered = lower_module(&file.decls, &file.globals, &file.typed).map_err(|error| {
+        let lowered = lower_module(&file.name, &file.decls, &file.globals, &file.typed).map_err(|error| {
             ProgramError::Lower {
                 file: file.name.clone(),
                 error,
@@ -420,10 +422,12 @@ pub fn lower_program(project: &CheckedProject) -> Result<Program, ProgramError> 
     })
 }
 
-/// Lower a type-checked module's top-level declarations into typed functions.
+/// Lower the type-checked top-level declarations of the source file `file` into typed
+/// functions.
 /// Struct and sum-type declarations carry no runnable body and are skipped; every
 /// other top-level form that is not a function is rejected as unsupported.
 pub fn lower_module(
+    file: &str,
     decls: &[Stmt],
     globals: &Globals,
     checked: &Typed,
@@ -432,7 +436,7 @@ pub fn lower_module(
     for decl in decls {
         match &decl.kind {
             StmtKind::FuncDecl(func) => {
-                functions.push(lower_function(func, globals, checked)?);
+                functions.push(lower_function(file, func, globals, checked)?);
             }
             StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } => {}
             StmtKind::VarDecl { .. } => {
@@ -454,6 +458,7 @@ pub fn lower_module(
 
 /// Lower a single type-checked function declaration.
 fn lower_function(
+    file: &str,
     func: &FuncDecl,
     globals: &Globals,
     checked: &Typed,
@@ -482,6 +487,7 @@ fn lower_function(
     let body = lower.block(&func.body)?;
     Ok(Function {
         item: signature.item.clone(),
+        file: file.to_string(),
         receiver,
         type_params: signature.type_params.clone(),
         type_args: Vec::new(),

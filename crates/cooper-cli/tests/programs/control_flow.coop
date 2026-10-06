@@ -1,0 +1,74 @@
+# exit: 0
+# Loops, ranges, break and continue, matching on integers and bools, value blocks,
+# shadowing, and short-circuit evaluation.
+func boom(): bool {
+    let zero = 0
+    return 1 / zero == 0
+}
+
+func classify(n: i32): i32 {
+    return match n with {
+        0 => 100
+        1 => 101
+        -1 => 99
+        other => other * 2
+    }
+}
+
+func main(): i32 {
+    total := 0
+    for i in 0..10 do total += i
+    if total != 45 then return 1
+
+    let count: u32 = 0
+    for b in 0..=255 do {
+        let byte: u8 = 0
+        count += 1
+    }
+    if count != 256 then return 2
+
+    # An inclusive range ending at its type's maximum stops without overflowing.
+    let lo: u8 = 250
+    let small: u8 = 0
+    for k in lo..=255 do small = k
+    if small != 255 then return 3
+
+    n := 0
+    while n < 100 do {
+        n += 1
+        if n % 2 == 0 then continue
+        if n > 7 then break
+    }
+    if n != 9 then return 4
+
+    m := 10
+    until m == 0 repeat m -= 1
+    if m != 0 then return 5
+    runs := 0
+    do runs += 1 while false
+    repeat runs += 1 until true
+    if runs != 2 then return 6
+
+    if classify(0) + classify(1) + classify(-1) + classify(21) != 342 then return 7
+
+    flag := true
+    picked := match flag with {
+        true => 1
+        false => 2
+    }
+    if picked != 1 then return 8
+    sign := if total > 0 then 1 else -1
+    if sign != 1 then return 9
+
+    x := 1
+    x := x + 1
+    block := {
+        x := x * 10
+        x + 1
+    }
+    if block != 21 or x != 2 then return 10
+
+    if false and boom() then return 11
+    if !(true or boom()) then return 12
+    return 0
+}

@@ -58,7 +58,7 @@ pub fn build(project: &Project, build_dir: &Path) -> Result<PathBuf, BuildError>
     let program = cooper_ir::lower_program(&checked).map_err(BuildError::Lower)?;
     let cc = std::env::var(CC_VAR).unwrap_or_else(|_| DEFAULT_CC.to_string());
     let triple = target_triple(&cc)?;
-    let ir = cooper_llvm::emit(&program, &triple).map_err(BuildError::Codegen)?;
+    let ir = cooper_llvm::emit(&program, &triple, project).map_err(BuildError::Codegen)?;
 
     let name = &project.manifest.name;
     let ir_path = build_dir.join(format!("{name}.ll"));

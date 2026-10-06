@@ -61,6 +61,11 @@ fn build(loaded: &Loaded) -> Option<std::path::PathBuf> {
             report(&loaded.project, &diagnostics);
             None
         }
+        Err(BuildError::Codegen(error)) if error.location().is_some() => {
+            let (file, span) = error.location().expect("checked by the guard");
+            report(&loaded.project, &[Diagnostic::error(span, error.to_string()).in_file(file)]);
+            None
+        }
         Err(error) => {
             eprintln!("error: {error}");
             None

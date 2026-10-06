@@ -1,0 +1,24 @@
+# exit: 0
+# Tuple values, destructuring, swapping, tuple patterns, and equality.
+func divmod(a: i32, b: i32): (i32, i32) {
+    return (a / b, a % b)
+}
+
+func main(): i32 {
+    (q, r) := divmod(17, 5)
+    if q != 3 or r != 2 then return 1
+
+    t := (1, (true, 2.5))
+    if t != (1, (true, 2.5)) then return 2
+
+    (a, b) := (1, 2)
+    (a, b) = (b, a)
+    if a != 2 or b != 1 then return 3
+
+    exact := match divmod(9, 3) with {
+        (n, 0) => n
+        _ => -1
+    }
+    if exact != 3 then return 4
+    return 0
+}

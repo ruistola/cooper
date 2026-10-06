@@ -25,3 +25,12 @@ _Noreturn void cooper_panic(const char *message) {
     fprintf(stderr, "panic: %s\n", message);
     exit(PANIC_STATUS);
 }
+
+/* Allocate `size` zeroed bytes on the heap. Memory is not yet reclaimed. */
+void *cooper_alloc(size_t size) {
+    void *memory = calloc(1, size ? size : 1);
+    if (memory == NULL) {
+        cooper_panic("out of memory");
+    }
+    return memory;
+}

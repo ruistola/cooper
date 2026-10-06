@@ -83,6 +83,13 @@ the file or in the project. `cooper run` builds and runs, exiting with the progr
 
 The runtime owns the process entry point: its C `main` calls `cooper_main`, which the backend
 exports as a wrapper around the program's `main` (returning `i32`, or unit for status 0).
+Structs are named LLVM struct types laid out in declaration order, and tuples are literal
+struct types; both are first-class values. Locals live in stack slots, except a local whose
+address is taken (with `&`, or as the receiver of a pointer-receiver method), which is
+allocated on the heap where it is bound. Heap memory is not yet reclaimed. Inert nil costs no
+branch: an access through a pointer that is null is redirected to a zero-filled buffer for
+loads and to a discard buffer for stores.
+
 A runtime error (integer overflow, division by zero) calls the runtime's `cooper_panic`, which
 prints `panic: <error> at <file>:<line>:<column>` to standard error and exits with status 101.
 

@@ -50,6 +50,14 @@ pub fn symbol(item: &Callable, type_args: &[Type]) -> String {
     out
 }
 
+/// The mangled encoding of `ty` alone (the `type` production), which names its LLVM
+/// struct type.
+pub(crate) fn type_name(ty: &Type) -> String {
+    let mut out = String::new();
+    self::ty(&mut out, ty);
+    out
+}
+
 fn ident(out: &mut String, name: &str) {
     write!(out, "{}{name}", name.len()).expect("writing to a String cannot fail");
 }

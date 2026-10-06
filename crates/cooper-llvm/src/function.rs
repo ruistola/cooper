@@ -1,23 +1,33 @@
 //! Code generation for one function body.
 //!
 //! Every local — parameters included — lives in an `alloca` in the entry block, which
-//! an optimizing build promotes to registers. Control flow becomes explicit basic
-//! blocks. Integer arithmetic is checked: overflow and division by zero branch to a
-//! call of the runtime's `cooper_panic`.
+//! an optimizing build promotes to registers, unless its address is taken: such a
+//! local may outlive its frame, so it is allocated on the heap where it is bound.
+//! Structs and tuples are first-class aggregate values; a *place* (a variable, a field
+//! of a place, or a dereference) is addressed by pointer, so fields can be assigned
+//! and addressed. Control flow becomes explicit basic blocks. Integer arithmetic is
+//! checked: overflow and division by zero branch to the runtime's `cooper_panic`.
+//!
+//! Nil is inert. A place reached through a pointer is *nullable*: field offsets keep a
+//! null base null, and only the final access substitutes a target — a load reads the
+//! all-zero `@cooper.zero`, so it yields the zero value, and a store writes the
+//! never-read `@cooper.sink`, so it is discarded.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 use cooper_frontend::ast::{AssignOp, BinaryOp, UnaryOp};
 use cooper_frontend::diag::Span;
-use cooper_frontend::types::{integer_bits, is_float_name, is_integer_name, Type};
+use cooper_frontend::types::Type;
 use cooper_ir::{
     Access, Decision, Function, IrExpr, IrExprKind, IrStmt, IrStmtKind, MatchBinding, Test,
 };
 
+use crate::layout::Scalar;
 use crate::{mangle, CodegenError, Module};
 
 const PANIC_DECL: &str = "declare void @cooper_panic(ptr) noreturn";
+const ALLOC_DECL: &str = "declare ptr @cooper_alloc(i64)";
 
 /// Emit `function` as an LLVM function definition.
 pub(crate) fn emit(module: &mut Module, function: &Function) -> Result<String, CodegenError> {
@@ -31,15 +41,19 @@ pub(crate) fn emit(module: &mut Module, function: &Function) -> Result<String, C
         current: "entry".to_string(),
         scopes: vec![HashMap::new()],
         loops: Vec::new(),
+        heap: HashSet::new(),
     };
-    if let Some(receiver) = &function.receiver {
-        return emitter.unsupported("methods", receiver.span);
-    }
+    let mut heap = HashSet::new();
+    function
+        .body
+        .iter()
+        .for_each(|s| walk_stmt(s, &mut |e| emitter.note_escape(e, &mut heap)));
+    emitter.heap = heap;
     let ret = emitter.signature_type(&function.return_type, function.span)?;
     let mut params = Vec::new();
-    for (index, param) in function.params.iter().enumerate() {
+    for (index, param) in function.receiver.iter().chain(&function.params).enumerate() {
         let slot = emitter.bind(&param.name, &param.ty, param.span)?;
-        if let Some(ty) = &slot.ty {
+        if let Some(ty) = &slot.llvm {
             let operand = format!("%arg{index}");
             params.push(format!("{ty} {operand}"));
             emitter.inst(&format!("store {ty} {operand}, ptr {}", slot.ptr));
@@ -62,45 +76,6 @@ pub(crate) fn emit(module: &mut Module, function: &Function) -> Result<String, C
     ))
 }
 
-/// How a scalar type computes: it selects the LLVM type and instructions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Scalar {
-    Bool,
-    Int { bits: u32, signed: bool },
-    Float { bits: u32 },
-}
-
-impl Scalar {
-    fn of(ty: &Type) -> Option<Scalar> {
-        let Type::Primitive(name) = ty else {
-            return None;
-        };
-        if name == "bool" {
-            Some(Scalar::Bool)
-        } else if is_integer_name(name) {
-            Some(Scalar::Int {
-                bits: integer_bits(name),
-                signed: name.starts_with('i'),
-            })
-        } else if is_float_name(name) {
-            Some(Scalar::Float {
-                bits: if name == "f32" { 32 } else { 64 },
-            })
-        } else {
-            None
-        }
-    }
-
-    fn llvm(self) -> String {
-        match self {
-            Scalar::Bool => "i1".to_string(),
-            Scalar::Int { bits, .. } => format!("i{bits}"),
-            Scalar::Float { bits: 32 } => "float".to_string(),
-            Scalar::Float { .. } => "double".to_string(),
-        }
-    }
-}
-
 /// An SSA value: its LLVM type and operand spelling. Unit-typed expressions have none.
 #[derive(Debug, Clone)]
 struct Value {
@@ -108,11 +83,15 @@ struct Value {
     operand: String,
 }
 
-/// A local variable's storage: an `alloca` of its LLVM type, or nothing for unit.
+/// A storage location: a pointer to a value of type `ty` (whose LLVM type is `llvm`,
+/// `None` for unit, which has no storage). A local's place is never null; a place
+/// reached through a pointer is `nullable`, and accessing it when null is inert.
 #[derive(Debug, Clone)]
-struct Slot {
+struct Place {
     ptr: String,
-    ty: Option<String>,
+    ty: Type,
+    llvm: Option<String>,
+    nullable: bool,
 }
 
 /// The targets of `continue` and `break` in an enclosing loop.
@@ -141,8 +120,10 @@ struct Emitter<'m, 'p> {
     terminated: bool,
     /// The label of the block being emitted, for `phi` predecessors.
     current: String,
-    scopes: Vec<HashMap<String, Slot>>,
+    scopes: Vec<HashMap<String, Place>>,
     loops: Vec<Loop>,
+    /// Names of locals whose address is taken, allocated on the heap.
+    heap: HashSet<String>,
 }
 
 impl Emitter<'_, '_> {
@@ -213,39 +194,47 @@ impl Emitter<'_, '_> {
     // --- types and variables ---
 
     /// The LLVM type of a value of type `ty`, or `None` for unit.
-    fn value_type(&self, ty: &Type, span: Span) -> Result<Option<String>, CodegenError> {
-        match ty {
-            Type::Unit => Ok(None),
-            _ => match Scalar::of(ty) {
-                Some(scalar) => Ok(Some(scalar.llvm())),
-                None => self.unsupported(&format!("values of type {ty}"), span),
-            },
-        }
+    fn value_type(&mut self, ty: &Type, span: Span) -> Result<Option<String>, CodegenError> {
+        self.module
+            .llvm_type(ty)
+            .or_else(|what| self.unsupported(&what, span))
     }
 
     /// The LLVM type of `ty` as a function's return type, where unit is `void`.
-    fn signature_type(&self, ty: &Type, span: Span) -> Result<String, CodegenError> {
+    fn signature_type(&mut self, ty: &Type, span: Span) -> Result<String, CodegenError> {
         Ok(self.value_type(ty, span)?.unwrap_or_else(|| "void".to_string()))
     }
 
-    /// Storage for a value of type `ty`, not yet bound to any name.
-    fn slot(&mut self, ty: &Type, span: Span) -> Result<Slot, CodegenError> {
+    /// Fresh storage for a value of type `ty`, for the local `name` if it has one: on
+    /// the heap when that local's address is taken, in the frame otherwise.
+    fn slot(&mut self, name: Option<&str>, ty: &Type, span: Span) -> Result<Place, CodegenError> {
         let llvm = self.value_type(ty, span)?;
         let ptr = match &llvm {
+            None => String::new(),
+            Some(llvm) if name.is_some_and(|n| self.heap.contains(n)) => {
+                self.module.declare(ALLOC_DECL);
+                let end = self.assign(&format!("getelementptr {llvm}, ptr null, i32 1"));
+                let size = self.assign(&format!("ptrtoint ptr {end} to i64"));
+                self.assign(&format!("call ptr @cooper_alloc(i64 {size})"))
+            }
             Some(llvm) => {
                 let ptr = self.fresh("%v");
                 writeln!(self.allocas, "  {ptr} = alloca {llvm}")
                     .expect("writing to a String cannot fail");
                 ptr
             }
-            None => String::new(),
         };
-        Ok(Slot { ptr, ty: llvm })
+        Ok(Place {
+            ptr,
+            ty: ty.clone(),
+            llvm,
+            nullable: false,
+        })
     }
 
     /// Declare a new local named `name` in the innermost scope, shadowing any outer one.
-    fn bind(&mut self, name: &str, ty: &Type, span: Span) -> Result<Slot, CodegenError> {
-        let slot = self.slot(ty, span)?;
+    fn bind(&mut self, name: &str, ty: &Type, span: Span) -> Result<Place, CodegenError> {
+        let slot = self.slot(Some(name), ty, span)?;
         self.scopes
             .last_mut()
             .expect("a function body has a scope")
@@ -253,7 +242,7 @@ impl Emitter<'_, '_> {
         Ok(slot)
     }
 
-    fn lookup(&self, name: &str) -> Slot {
+    fn lookup(&self, name: &str) -> Place {
         self.scopes
             .iter()
             .rev()
@@ -262,15 +251,134 @@ impl Emitter<'_, '_> {
             .unwrap_or_else(|| unreachable!("a checked program binds `{name}` before use"))
     }
 
-    fn load(&mut self, slot: &Slot) -> Option<Value> {
-        let ty = slot.ty.clone()?;
-        let operand = self.assign(&format!("load {ty}, ptr {}", slot.ptr));
+    /// The pointer an access to `place` uses: its own, or `nil_target` when a nullable
+    /// place is null. Records the size the nil buffers must cover.
+    fn access_ptr(&mut self, place: &Place, nil_target: &str) -> String {
+        if !place.nullable {
+            return place.ptr.clone();
+        }
+        let size = self.module.size_bound(&place.ty);
+        self.module.nil_size = self.module.nil_size.max(size);
+        let is_nil = self.assign(&format!("icmp eq ptr {}, null", place.ptr));
+        self.assign(&format!("select i1 {is_nil}, ptr {nil_target}, ptr {}", place.ptr))
+    }
+
+    fn load(&mut self, place: &Place) -> Option<Value> {
+        let ty = place.llvm.clone()?;
+        let ptr = self.access_ptr(place, "@cooper.zero");
+        let operand = self.assign(&format!("load {ty}, ptr {ptr}"));
         Some(Value { ty, operand })
     }
 
-    fn store(&mut self, slot: &Slot, value: Option<&Value>) {
-        if let Some(value) = value {
-            self.inst(&format!("store {} {}, ptr {}", value.ty, value.operand, slot.ptr));
+    fn store(&mut self, place: &Place, value: Option<&Value>) {
+        let Some(value) = value else { return };
+        let ptr = self.access_ptr(place, "@cooper.sink");
+        self.inst(&format!("store {} {}, ptr {ptr}", value.ty, value.operand));
+    }
+
+    /// The place `expr` denotes, if it is one: a variable, a field of a place, or a
+    /// dereference. `None` for any other expression, which is then left unevaluated.
+    fn place(&mut self, expr: &IrExpr) -> Result<Option<Place>, CodegenError> {
+        match &expr.kind {
+            IrExprKind::Var(name) => Ok(Some(self.lookup(name))),
+            IrExprKind::Deref(pointer) => self.pointee(pointer).map(Some),
+            IrExprKind::Field { target, name } => {
+                let base = match &target.ty {
+                    Type::Pointer(_) => self.pointee(target)?,
+                    _ => match self.place(target)? {
+                        Some(base) => base,
+                        None => return Ok(None),
+                    },
+                };
+                self.field_place(&base, name, expr.span).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// The nullable place `pointer` (an expression of pointer type) points to.
+    fn pointee(&mut self, pointer: &IrExpr) -> Result<Place, CodegenError> {
+        let Type::Pointer(target) = &pointer.ty else {
+            unreachable!("a dereference is of a pointer");
+        };
+        let ptr = self.expr(pointer)?.expect("a pointer has a value").operand;
+        let llvm = self.value_type(target, pointer.span)?;
+        Ok(Place {
+            ptr,
+            ty: (**target).clone(),
+            llvm,
+            nullable: true,
+        })
+    }
+
+    /// The place of field `name` within the struct at `base`. A null base yields a
+    /// null field place.
+    fn field_place(&mut self, base: &Place, name: &str, span: Span) -> Result<Place, CodegenError> {
+        let (index, ty) = self.module.field(&base.ty, name);
+        let llvm = self.value_type(&ty, span)?;
+        let aggregate = base.llvm.clone().expect("a struct has an LLVM type");
+        let mut ptr = self.assign(&format!(
+            "getelementptr {aggregate}, ptr {}, i32 0, i32 {index}",
+            base.ptr
+        ));
+        if base.nullable {
+            let is_nil = self.assign(&format!("icmp eq ptr {}, null", base.ptr));
+            ptr = self.assign(&format!("select i1 {is_nil}, ptr null, ptr {ptr}"));
+        }
+        Ok(Place {
+            ptr,
+            ty,
+            llvm,
+            nullable: base.nullable,
+        })
+    }
+
+    /// Component `index` (of type `ty`) of the aggregate `value`.
+    fn extract(&mut self, value: &Value, index: usize, ty: &Type, span: Span) -> Result<Option<Value>, CodegenError> {
+        let Some(llvm) = self.value_type(ty, span)? else {
+            return Ok(None);
+        };
+        let operand = self.assign(&format!("extractvalue {} {}, {index}", value.ty, value.operand));
+        Ok(Some(Value { ty: llvm, operand }))
+    }
+
+    /// An aggregate of LLVM type `ty` holding `fields` at their positions; a missing
+    /// (unit) field keeps the zero-initialized empty struct.
+    fn aggregate(&mut self, ty: &str, fields: Vec<Option<Value>>) -> Value {
+        let mut operand = "zeroinitializer".to_string();
+        for (index, field) in fields.into_iter().enumerate() {
+            if let Some(field) = field {
+                operand = self.assign(&format!(
+                    "insertvalue {ty} {operand}, {} {}, {index}",
+                    field.ty, field.operand
+                ));
+            }
+        }
+        Value {
+            ty: ty.to_string(),
+            operand,
+        }
+    }
+
+    /// Record in `heap` the local whose address `expr` takes, explicitly with `&` or
+    /// implicitly as the value receiver of a pointer-receiver method.
+    fn note_escape(&self, expr: &IrExpr, heap: &mut HashSet<String>) {
+        let addressed = match &expr.kind {
+            IrExprKind::AddressOf(operand) => Some(operand.as_ref()),
+            IrExprKind::Method {
+                receiver,
+                item,
+                type_args,
+            } => {
+                let symbol = mangle::symbol(item, type_args);
+                let wants_pointer =
+                    matches!(self.module.receivers.get(&symbol), Some(Type::Pointer(_)));
+                (wants_pointer && !matches!(receiver.ty, Type::Pointer(_))).then_some(receiver.as_ref())
+            }
+            _ => None,
+        };
+        if let Some(name) = addressed.and_then(root_local) {
+            heap.insert(name.to_string());
         }
     }
 
@@ -346,17 +454,20 @@ impl Emitter<'_, '_> {
         Ok(())
     }
 
-    /// The zero value of `ty`, which an uninitialized `let` takes.
-    fn zero(&self, ty: &Type, span: Span) -> Result<Option<Value>, CodegenError> {
+    /// The zero value of `ty`, which an uninitialized `let` takes: all bits zero.
+    fn zero(&mut self, ty: &Type, span: Span) -> Result<Option<Value>, CodegenError> {
+        let Some(llvm) = self.value_type(ty, span)? else {
+            return Ok(None);
+        };
         let operand = match Scalar::of(ty) {
             Some(Scalar::Bool) => "false",
             Some(Scalar::Int { .. }) => "0",
             Some(Scalar::Float { .. }) => "0.0",
-            None if matches!(ty, Type::Unit) => return Ok(None),
-            None => return self.unsupported(&format!("values of type {ty}"), span),
+            None if llvm == "ptr" => "null",
+            None => "zeroinitializer",
         };
         Ok(Some(Value {
-            ty: self.value_type(ty, span)?.expect("a scalar has an LLVM type"),
+            ty: llvm,
             operand: operand.to_string(),
         }))
     }
@@ -491,12 +602,12 @@ impl Emitter<'_, '_> {
         // Each action's bindings get one slot, shared by every leaf that reaches it.
         let mut bindings: Vec<Vec<&MatchBinding>> = vec![Vec::new(); count];
         collect_bindings(tree, &mut bindings);
-        let mut slots: Vec<HashMap<String, Slot>> = Vec::with_capacity(count);
+        let mut slots: Vec<HashMap<String, Place>> = Vec::with_capacity(count);
         for action_bindings in &bindings {
             let mut action_slots = HashMap::new();
             for binding in action_bindings {
                 if !action_slots.contains_key(&binding.name) {
-                    let slot = self.slot(&binding.ty, scrutinee.span)?;
+                    let slot = self.slot(Some(&binding.name), &binding.ty, scrutinee.span)?;
                     action_slots.insert(binding.name.clone(), slot);
                 }
             }
@@ -504,13 +615,14 @@ impl Emitter<'_, '_> {
         }
         let result_slot = match actions {
             Actions::Exprs(_) if !matches!(result, Type::Unit) => {
-                Some(self.slot(result, scrutinee.span)?)
+                Some(self.slot(None, result, scrutinee.span)?)
             }
             _ => None,
         };
         let labels: Vec<String> = (0..count).map(|_| self.fresh("arm")).collect();
         let join = self.fresh("join");
-        self.decision(tree, value.as_ref(), &labels, &slots, scrutinee.span)?;
+        let root = (value, scrutinee.ty.clone());
+        self.decision(tree, &root, &labels, &slots, scrutinee.span)?;
         for (index, label) in labels.iter().enumerate() {
             self.start_block(label);
             self.scopes.push(slots[index].clone());
@@ -532,15 +644,15 @@ impl Emitter<'_, '_> {
     fn decision(
         &mut self,
         tree: &Decision,
-        scrutinee: Option<&Value>,
+        scrutinee: &(Option<Value>, Type),
         labels: &[String],
-        slots: &[HashMap<String, Slot>],
+        slots: &[HashMap<String, Place>],
         span: Span,
     ) -> Result<(), CodegenError> {
         match tree {
             Decision::Leaf { bindings, action } => {
                 for binding in bindings {
-                    let value = self.access(&binding.access, scrutinee, span)?;
+                    let (value, _) = self.access(&binding.access, scrutinee, span)?;
                     let slot = slots[*action][&binding.name].clone();
                     self.store(&slot, value.as_ref());
                 }
@@ -555,6 +667,7 @@ impl Emitter<'_, '_> {
             } => {
                 let value = self
                     .access(access, scrutinee, span)?
+                    .0
                     .expect("a switched value is a scalar");
                 let case_labels: Vec<String> = cases.iter().map(|_| self.fresh("case")).collect();
                 let default_label = self.fresh("default");
@@ -604,17 +717,31 @@ impl Emitter<'_, '_> {
         Ok(())
     }
 
-    /// The subvalue of the scrutinee at `access`.
+    /// The subvalue of the scrutinee at `access`, with its type.
     fn access(
-        &self,
+        &mut self,
         access: &Access,
-        scrutinee: Option<&Value>,
+        scrutinee: &(Option<Value>, Type),
         span: Span,
-    ) -> Result<Option<Value>, CodegenError> {
-        match access {
-            Access::Root => Ok(scrutinee.cloned()),
-            _ => self.unsupported("tuple, struct, and variant patterns", span),
-        }
+    ) -> Result<(Option<Value>, Type), CodegenError> {
+        let (parent, index, ty) = match access {
+            Access::Root => return Ok(scrutinee.clone()),
+            Access::Field { parent, name } => {
+                let (parent, parent_ty) = self.access(parent, scrutinee, span)?;
+                let (index, ty) = self.module.field(&parent_ty, name);
+                (parent, index, ty)
+            }
+            Access::Elem { parent, index } => {
+                let (parent, parent_ty) = self.access(parent, scrutinee, span)?;
+                let Type::Tuple(elems) = parent_ty else {
+                    unreachable!("an element access is into a tuple");
+                };
+                (parent, *index, elems[*index].clone())
+            }
+            Access::Payload { .. } => return self.unsupported("matching on sum types", span),
+        };
+        let parent = parent.expect("an aggregate has a value");
+        Ok((self.extract(&parent, index, &ty, span)?, ty))
     }
 
     // --- expressions ---
@@ -630,9 +757,56 @@ impl Emitter<'_, '_> {
                 operand: b.to_string(),
             })),
             IrExprKind::Unit => Ok(None),
-            IrExprKind::Var(name) => {
-                let slot = self.lookup(name);
-                Ok(self.load(&slot))
+            IrExprKind::Var(_) | IrExprKind::Deref(_) => {
+                let place = self.place(expr)?.expect("a variable or dereference is a place");
+                Ok(self.load(&place))
+            }
+            IrExprKind::Field { target, name } => match self.place(expr)? {
+                Some(place) => Ok(self.load(&place)),
+                None => {
+                    let aggregate = self.expr(target)?.expect("a struct has a value");
+                    let (index, ty) = self.module.field(&target.ty, name);
+                    self.extract(&aggregate, index, &ty, span)
+                }
+            },
+            IrExprKind::AddressOf(operand) => match self.place(operand)? {
+                Some(place) if place.llvm.is_some() => Ok(Some(Value {
+                    ty: "ptr".to_string(),
+                    operand: place.ptr,
+                })),
+                _ => self.unsupported("taking this address", span),
+            },
+            IrExprKind::Nil => Ok(Some(Value {
+                ty: "ptr".to_string(),
+                operand: "null".to_string(),
+            })),
+            IrExprKind::StructLiteral { members, .. } => {
+                let llvm = self.value_type(&expr.ty, span)?.expect("a struct has an LLVM type");
+                // Members are evaluated in source order, then placed in layout order.
+                let mut values = HashMap::new();
+                for (name, value) in members {
+                    values.insert(name.as_str(), self.expr(value)?);
+                }
+                let order = self.module.defs.struct_members(&expr.ty).expect("a defined struct");
+                let fields = order
+                    .iter()
+                    .map(|(name, _)| values.remove(name.as_str()).flatten())
+                    .collect();
+                Ok(Some(self.aggregate(&llvm, fields)))
+            }
+            IrExprKind::Tuple(elems) => {
+                let llvm = self.value_type(&expr.ty, span)?.expect("a tuple has an LLVM type");
+                let fields = elems.iter().map(|e| self.expr(e)).collect::<Result<_, _>>()?;
+                Ok(Some(self.aggregate(&llvm, fields)))
+            }
+            IrExprKind::LetTuple { bindings, value } => {
+                let tuple = self.expr(value)?.expect("a tuple has a value");
+                for (index, binder) in bindings.iter().enumerate() {
+                    let component = self.extract(&tuple, index, &binder.ty, span)?;
+                    let slot = self.bind(&binder.name, &binder.ty, span)?;
+                    self.store(&slot, component.as_ref());
+                }
+                Ok(Some(tuple))
             }
             IrExprKind::Unary { op, operand } => self.unary(*op, operand, &expr.ty, span),
             IrExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, span),
@@ -656,23 +830,17 @@ impl Emitter<'_, '_> {
                 tree,
             } => self.matching(scrutinee, tree, Actions::Exprs(actions), &expr.ty),
             IrExprKind::Str(_) => self.unsupported("strings", span),
-            IrExprKind::Nil => self.unsupported("`nil`", span),
             IrExprKind::FuncRef { .. } | IrExprKind::Method { .. } => {
                 self.unsupported("function values", span)
             }
-            IrExprKind::Tuple(_) | IrExprKind::LetTuple { .. } => self.unsupported("tuples", span),
-            IrExprKind::Field { .. } | IrExprKind::StructLiteral { .. } => {
-                self.unsupported("structs", span)
-            }
             IrExprKind::Intrinsic { .. } => self.unsupported("arrays", span),
-            IrExprKind::Deref(_) | IrExprKind::AddressOf(_) => self.unsupported("pointers", span),
             IrExprKind::Variant { .. } => self.unsupported("sum types", span),
         }
     }
 
     /// A numeric literal of type `ty`: `int` when it is an integer type, `float` when
     /// it is a float type (an integer literal may take a float type).
-    fn literal(&self, ty: &Type, float: f64, int: i128, span: Span) -> Result<Option<Value>, CodegenError> {
+    fn literal(&mut self, ty: &Type, float: f64, int: i128, span: Span) -> Result<Option<Value>, CodegenError> {
         let operand = match Scalar::of(ty) {
             Some(Scalar::Int { bits, .. }) => int_constant(int, bits),
             Some(Scalar::Float { bits }) => float_constant(float, bits),
@@ -739,7 +907,19 @@ impl Emitter<'_, '_> {
             return self.short_circuit(op, lhs, rhs).map(Some);
         }
         let Some(scalar) = Scalar::of(&lhs.ty) else {
-            return self.unsupported(&format!("`{}` on {}", op.symbol(), lhs.ty), span);
+            if !matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
+                return self.unsupported(&format!("`{}` on {}", op.symbol(), lhs.ty), span);
+            }
+            let left = self.expr(lhs)?;
+            let right = self.expr(rhs)?;
+            let mut operand = self.equal(&lhs.ty, left.as_ref(), right.as_ref(), span)?;
+            if op == BinaryOp::Ne {
+                operand = self.assign(&format!("xor i1 {operand}, true"));
+            }
+            return Ok(Some(Value {
+                ty: "i1".to_string(),
+                operand,
+            }));
         };
         let left = self.expr(lhs)?.expect("a scalar operand has a value");
         let right = self.expr(rhs)?.expect("a scalar operand has a value");
@@ -772,6 +952,46 @@ impl Emitter<'_, '_> {
             ty: left.ty,
             operand,
         }))
+    }
+
+    /// Whether two values of comparable type `ty` are equal: scalars by value (floats by
+    /// IEEE), pointers by address, and aggregates field by field.
+    fn equal(
+        &mut self,
+        ty: &Type,
+        left: Option<&Value>,
+        right: Option<&Value>,
+        span: Span,
+    ) -> Result<String, CodegenError> {
+        let (Some(left), Some(right)) = (left, right) else {
+            return Ok("true".to_string()); // unit
+        };
+        let (l, r) = (&left.operand, &right.operand);
+        let components: Vec<Type> = match ty {
+            Type::Tuple(elems) => elems.clone(),
+            Type::Struct { .. } => self
+                .module
+                .defs
+                .struct_members(ty)
+                .expect("a defined struct")
+                .into_iter()
+                .map(|(_, member)| member)
+                .collect(),
+            Type::Pointer(_) | Type::Nil => return Ok(self.assign(&format!("icmp eq ptr {l}, {r}"))),
+            _ => match Scalar::of(ty) {
+                Some(Scalar::Float { .. }) => return Ok(self.assign(&format!("fcmp oeq {} {l}, {r}", left.ty))),
+                Some(_) => return Ok(self.assign(&format!("icmp eq {} {l}, {r}", left.ty))),
+                None => return self.unsupported(&format!("comparing values of type {ty}"), span),
+            },
+        };
+        let mut all = "true".to_string();
+        for (index, component) in components.iter().enumerate() {
+            let a = self.extract(left, index, component, span)?;
+            let b = self.extract(right, index, component, span)?;
+            let same = self.equal(component, a.as_ref(), b.as_ref(), span)?;
+            all = self.assign(&format!("and i1 {all}, {same}"));
+        }
+        Ok(all)
     }
 
     /// Arithmetic `op` on two values of one scalar type. Integer overflow, division by
@@ -898,6 +1118,8 @@ impl Emitter<'_, '_> {
     }
 
     /// `target = value` or a compound `target op= value`, yielding the stored value.
+    /// The value is evaluated before the target's place. A tuple target assigns each
+    /// component to its own place.
     fn assignment(
         &mut self,
         op: AssignOp,
@@ -905,42 +1127,66 @@ impl Emitter<'_, '_> {
         value: &IrExpr,
         span: Span,
     ) -> Result<Option<Value>, CodegenError> {
-        let IrExprKind::Var(name) = &target.kind else {
-            return self.unsupported("assignment through fields, pointers, or tuples", span);
-        };
-        let slot = self.lookup(name);
         let value = self.expr(value)?;
-        let stored = match op {
-            AssignOp::Assign => value,
-            _ => {
-                let binary = match op {
-                    AssignOp::Add => BinaryOp::Add,
-                    AssignOp::Sub => BinaryOp::Sub,
-                    AssignOp::Mul => BinaryOp::Mul,
-                    _ => BinaryOp::Div,
-                };
-                let Some(scalar) = Scalar::of(&target.ty) else {
-                    return self.unsupported(&format!("`{}` on {}", op.symbol(), target.ty), span);
-                };
-                let current = self.load(&slot).expect("a compound target is a number");
-                let value = value.expect("a compound operand is a number");
-                let operand = self.arithmetic(binary, scalar, &current, &value, span);
-                Some(Value {
-                    ty: current.ty,
-                    operand,
-                })
-            }
+        if op == AssignOp::Assign {
+            self.assign_to(target, value.as_ref(), span)?;
+            return Ok(value);
+        }
+        let binary = match op {
+            AssignOp::Add => BinaryOp::Add,
+            AssignOp::Sub => BinaryOp::Sub,
+            AssignOp::Mul => BinaryOp::Mul,
+            _ => BinaryOp::Div,
         };
-        self.store(&slot, stored.as_ref());
-        Ok(stored)
+        let Some(scalar) = Scalar::of(&target.ty) else {
+            return self.unsupported(&format!("`{}` on {}", op.symbol(), target.ty), span);
+        };
+        let place = self.place(target)?.expect("a checked assignment target is a place");
+        let current = self.load(&place).expect("a compound target is a number");
+        let value = value.expect("a compound operand is a number");
+        let operand = self.arithmetic(binary, scalar, &current, &value, span);
+        let stored = Value {
+            ty: current.ty,
+            operand,
+        };
+        self.store(&place, Some(&stored));
+        Ok(Some(stored))
+    }
+
+    /// Store `value` into the place `target` denotes, or component-wise into a tuple of
+    /// places.
+    fn assign_to(&mut self, target: &IrExpr, value: Option<&Value>, span: Span) -> Result<(), CodegenError> {
+        if let IrExprKind::Tuple(targets) = &target.kind {
+            let value = value.expect("a tuple has a value");
+            for (index, element) in targets.iter().enumerate() {
+                let component = self.extract(value, index, &element.ty, span)?;
+                self.assign_to(element, component.as_ref(), span)?;
+            }
+            return Ok(());
+        }
+        let place = self.place(target)?.expect("a checked assignment target is a place");
+        self.store(&place, value);
+        Ok(())
     }
 
     /// A direct call to a named function.
     fn call(&mut self, callee: &IrExpr, args: &[IrExpr], result: &Type, span: Span) -> Result<Option<Value>, CodegenError> {
-        let IrExprKind::FuncRef { item, type_args } = &callee.kind else {
-            return self.unsupported("calls through function values or methods", span);
+        let mut operands = Vec::with_capacity(args.len() + 1);
+        let (item, type_args) = match &callee.kind {
+            IrExprKind::FuncRef { item, type_args } => (item, type_args),
+            IrExprKind::Method {
+                receiver,
+                item,
+                type_args,
+            } => {
+                let symbol = mangle::symbol(item, type_args);
+                let wanted = self.module.receivers[&symbol].clone();
+                let value = self.receiver(receiver, &wanted)?;
+                operands.push(format!("{} {}", value.ty, value.operand));
+                (item, type_args)
+            }
+            _ => return self.unsupported("calls through function values", span),
         };
-        let mut operands = Vec::with_capacity(args.len());
         for arg in args {
             // A unit argument is evaluated for its effects and passes nothing.
             if let Some(Value { ty, operand }) = self.expr(arg)? {
@@ -957,6 +1203,135 @@ impl Emitter<'_, '_> {
         let operand = self.assign(&call);
         Ok(Some(Value { ty: ret, operand }))
     }
+}
+
+impl Emitter<'_, '_> {
+    /// The receiver argument a method declared with receiver type `wanted` takes from
+    /// the receiver expression `receiver`: its address for a pointer receiver called on
+    /// a value (a temporary's, if the value is no place), the pointee for a value
+    /// receiver called through a pointer, and the value itself otherwise.
+    fn receiver(&mut self, receiver: &IrExpr, wanted: &Type) -> Result<Value, CodegenError> {
+        let pointer = |operand: String| Value {
+            ty: "ptr".to_string(),
+            operand,
+        };
+        match (matches!(wanted, Type::Pointer(_)), matches!(receiver.ty, Type::Pointer(_))) {
+            (true, false) => match self.place(receiver)? {
+                Some(place) => Ok(pointer(place.ptr)),
+                None => {
+                    let value = self.expr(receiver)?;
+                    let temp = self.slot(None, &receiver.ty, receiver.span)?;
+                    self.store(&temp, value.as_ref());
+                    Ok(pointer(temp.ptr))
+                }
+            },
+            (false, true) => {
+                let place = self.pointee(receiver)?;
+                Ok(self.load(&place).expect("a receiver has a value"))
+            }
+            _ => Ok(self.expr(receiver)?.expect("a receiver has a value")),
+        }
+    }
+}
+
+/// The local variable a place expression is rooted in, if the place is stored in that
+/// local's own storage (not reached through a pointer).
+fn root_local(expr: &IrExpr) -> Option<&str> {
+    match &expr.kind {
+        IrExprKind::Var(name) => Some(name),
+        IrExprKind::Field { target, .. } if !matches!(target.ty, Type::Pointer(_)) => {
+            root_local(target)
+        }
+        _ => None,
+    }
+}
+
+/// Visit every expression in `stmt`, outermost first.
+fn walk_stmt(stmt: &IrStmt, visit: &mut impl FnMut(&IrExpr)) {
+    match &stmt.kind {
+        IrStmtKind::Var { init, .. } => init.iter().for_each(|e| walk_expr(e, visit)),
+        IrStmtKind::Expr(expr) => walk_expr(expr, visit),
+        IrStmtKind::Return(value) => value.iter().for_each(|e| walk_expr(e, visit)),
+        IrStmtKind::While { cond, body, .. } => {
+            walk_expr(cond, visit);
+            body.iter().for_each(|s| walk_stmt(s, visit));
+        }
+        IrStmtKind::ForRange {
+            start, end, body, ..
+        } => {
+            walk_expr(start, visit);
+            walk_expr(end, visit);
+            body.iter().for_each(|s| walk_stmt(s, visit));
+        }
+        IrStmtKind::ForEach { array, body, .. } => {
+            walk_expr(array, visit);
+            body.iter().for_each(|s| walk_stmt(s, visit));
+        }
+        IrStmtKind::Block(stmts) => stmts.iter().for_each(|s| walk_stmt(s, visit)),
+        IrStmtKind::Break | IrStmtKind::Continue => {}
+        IrStmtKind::Match {
+            scrutinee, actions, ..
+        } => {
+            walk_expr(scrutinee, visit);
+            actions.iter().for_each(|s| walk_stmt(s, visit));
+        }
+    }
+}
+
+/// Visit `expr` and every expression within it, outermost first.
+fn walk_expr(expr: &IrExpr, visit: &mut impl FnMut(&IrExpr)) {
+    visit(expr);
+    match &expr.kind {
+        IrExprKind::Int(_)
+        | IrExprKind::Float(_)
+        | IrExprKind::Bool(_)
+        | IrExprKind::Str(_)
+        | IrExprKind::Nil
+        | IrExprKind::Unit
+        | IrExprKind::Var(_)
+        | IrExprKind::FuncRef { .. } => {}
+        IrExprKind::Method { receiver, .. } => walk_expr(receiver, visit),
+        IrExprKind::Tuple(elems) | IrExprKind::Intrinsic { args: elems, .. } => walk_all(elems, visit),
+        IrExprKind::Variant { args, .. } => walk_all(args, visit),
+        IrExprKind::Unary { operand, .. }
+        | IrExprKind::Deref(operand)
+        | IrExprKind::AddressOf(operand)
+        | IrExprKind::Convert(operand)
+        | IrExprKind::Field {
+            target: operand, ..
+        }
+        | IrExprKind::Let { value: operand, .. }
+        | IrExprKind::LetTuple { value: operand, .. } => walk_expr(operand, visit),
+        IrExprKind::Binary { lhs, rhs, .. } => {
+            walk_expr(lhs, visit);
+            walk_expr(rhs, visit);
+        }
+        IrExprKind::Assign { target, value, .. } => {
+            walk_expr(target, visit);
+            walk_expr(value, visit);
+        }
+        IrExprKind::Call { callee, args } => {
+            walk_expr(callee, visit);
+            walk_all(args, visit);
+        }
+        IrExprKind::Block { stmts, result } => {
+            stmts.iter().for_each(|s| walk_stmt(s, visit));
+            walk_expr(result, visit);
+        }
+        IrExprKind::StructLiteral { members, .. } => {
+            members.iter().for_each(|(_, value)| walk_expr(value, visit));
+        }
+        IrExprKind::Match {
+            scrutinee, actions, ..
+        } => {
+            walk_expr(scrutinee, visit);
+            walk_all(actions, visit);
+        }
+    }
+}
+
+fn walk_all(exprs: &[IrExpr], visit: &mut impl FnMut(&IrExpr)) {
+    exprs.iter().for_each(|e| walk_expr(e, visit));
 }
 
 /// Each action's bindings, from every leaf of `tree` that reaches it.

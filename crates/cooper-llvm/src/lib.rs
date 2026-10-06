@@ -12,14 +12,15 @@
 //! [`CodegenError::Unsupported`] rather than miscompiled.
 
 mod function;
+mod layout;
 mod mangle;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::{self, Write};
 
 use cooper_frontend::diag::{line_col, Span};
 use cooper_frontend::resolve::Callable;
-use cooper_frontend::types::Type;
+use cooper_frontend::types::{Type, TypeDefs};
 use cooper_frontend::Project;
 use cooper_ir::{Function, Program};
 
@@ -73,10 +74,22 @@ impl std::error::Error for CodegenError {}
 /// Emit `program` as a textual LLVM IR module for the target `triple`. `project`
 /// supplies the source text that runtime error messages locate their cause in.
 pub fn emit(program: &Program, triple: &str, project: &Project) -> Result<String, CodegenError> {
+    let receivers = program
+        .functions
+        .iter()
+        .filter_map(|f| {
+            let receiver = f.receiver.as_ref()?;
+            Some((mangle::symbol(&f.item, &f.type_args), receiver.ty.clone()))
+        })
+        .collect();
     let mut module = Module {
         project,
+        defs: &program.defs,
+        receivers,
         declarations: BTreeSet::new(),
         strings: Vec::new(),
+        types: BTreeMap::new(),
+        nil_size: 0,
     };
     let mut functions = String::new();
     for function in &program.functions {
@@ -84,6 +97,22 @@ pub fn emit(program: &Program, triple: &str, project: &Project) -> Result<String
         functions.push_str(&function::emit(&mut module, function)?);
     }
     let mut out = format!("target triple = \"{triple}\"\n");
+    if !module.types.is_empty() {
+        out.push('\n');
+        module.types.values().for_each(|t| {
+            out.push_str(t);
+            out.push('\n');
+        });
+    }
+    if module.nil_size > 0 {
+        // Loads through nil read the zero buffer; stores through nil land in the sink,
+        // which nothing reads. See `function::Place`.
+        let size = module.nil_size;
+        out.push_str(&format!(
+            "\n@cooper.zero = private constant [{size} x i8] zeroinitializer, align 16\n\
+             @cooper.sink = private global [{size} x i8] zeroinitializer, align 16\n"
+        ));
+    }
     if !module.strings.is_empty() {
         out.push('\n');
         module.strings.iter().for_each(|s| out.push_str(s));
@@ -105,8 +134,17 @@ pub fn emit(program: &Program, triple: &str, project: &Project) -> Result<String
 /// string constants, each emitted once at the top of the module.
 struct Module<'p> {
     project: &'p Project,
+    defs: &'p TypeDefs,
+    /// Each method instance's symbol to its receiver's type, so a call site can pass
+    /// the receiver by value or by address as the method expects.
+    receivers: HashMap<String, Type>,
     declarations: BTreeSet<String>,
     strings: Vec<String>,
+    /// Named struct type definitions, by name.
+    types: BTreeMap<String, String>,
+    /// The size of the zero buffer and sink that loads and stores through nil use: the
+    /// largest type accessed through a pointer.
+    nil_size: usize,
 }
 
 impl Module<'_> {

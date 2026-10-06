@@ -1,0 +1,49 @@
+# exit: 0
+# Pointers: address-of, dereference, auto-dereferenced fields, a linked list of
+# escaping locals, and inert nil (reads yield zero, writes are discarded).
+struct Node {
+    value: i32,
+    next: Node^,
+}
+
+func make(value: i32): Node^ {
+    node := Node{value: value, next: nil}
+    return &node
+}
+
+func sum(list: Node^): i32 {
+    total := 0
+    cur := list
+    while cur != nil do {
+        total += cur.value
+        cur = cur.next
+    }
+    return total
+}
+
+func main(): i32 {
+    a := make(1)
+    b := make(2)
+    a.next = b
+    b.next = make(3)
+    if sum(a) != 6 then return 1
+
+    let p: Node^ = nil
+    if p.value != 0 then return 2
+    p.value = 5
+    if p.value != 0 then return 3
+    if p.next.next.value != 0 then return 4
+    let q: i32^ = &p.value
+    if q != nil then return 5
+
+    x := 10
+    px := &x
+    px^ = 20
+    if x != 20 then return 6
+
+    pv := &a.value
+    pv^ += 1
+    if a.value != 2 then return 7
+    if a^.value != 2 then return 8
+    return 0
+}

@@ -1,0 +1,53 @@
+# exit: 0
+# Struct values, fields, copies, methods with value and pointer receivers, struct
+# patterns, and field-wise equality.
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+struct Line {
+    from: Point,
+    to: Point,
+}
+
+(p: Point) func sum(): i32 {
+    return p.x + p.y
+}
+
+(p: Point^) func shift(dx: i32) {
+    p.x += dx
+}
+
+func origin(): Point {
+    return Point{y: 0, x: 0}
+}
+
+func main(): i32 {
+    p := Point{x: 1, y: 2}
+    if p.sum() != 3 then return 1
+    p.shift(10)
+    if p.x != 11 then return 2
+
+    q := p
+    q.y = 5
+    if p.y != 2 then return 3
+
+    l := Line{from: p, to: q}
+    l.to.x = 100
+    if l.to.x != 100 or q.x != 11 then return 4
+
+    if origin() != Point{x: 0, y: 0} then return 5
+    if p == q then return 6
+    let z: Point
+    if z != origin() then return 7
+    if origin().sum() != 0 then return 8
+    origin().shift(1)
+
+    found := match p with {
+        Point{x: 11, y: py} => py
+        _ => -1
+    }
+    if found != 2 then return 9
+    return 0
+}

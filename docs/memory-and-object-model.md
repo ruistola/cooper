@@ -15,11 +15,12 @@ let line: Point[]     # contiguous Points
 
 ## Storage
 
-Storage location is not part of a type. Escape analysis places a value on the stack when its
-lifetime is bounded by its scope, and on the heap when it must outlive it. A tracing garbage
-collector reclaims heap memory; there is no manual free. The collector does not relocate
-objects, and it resolves an interior address to its containing allocation through span
-metadata.
+Storage location is not part of a type. Escape analysis, modelled on Go's, places a value on
+the (green-thread) stack when its lifetime is bounded by its scope, and on the heap only when
+it must outlive it; keeping as much as possible on the stack is a goal. A tracing garbage
+collector, modelled on Go's Green Tea collector, reclaims heap memory; there is no manual
+free. The collector does not relocate objects, and it resolves an interior address to its
+containing allocation through span metadata.
 
 ## Pointers and addressability
 
@@ -51,7 +52,8 @@ let y: i32 = p.x     # still 0
 ```
 
 Chains propagate: `a.b.c.value` through a nil link yields the zero value of `value`. Code
-that depends on a pointer being live checks for nil explicitly. Nil models only referential
+that depends on a pointer being live checks for nil explicitly. A build option will offer the
+traditional treatment instead: stopping the program on any access through nil. Nil models only referential
 absence. Optional values and failures use sum types (`Maybe T`, `Result T E`).
 
 ## Unmanaged memory (future direction)

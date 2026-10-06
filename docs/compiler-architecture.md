@@ -86,7 +86,9 @@ exports as a wrapper around the program's `main` (returning `i32`, or unit for s
 Structs are named LLVM struct types laid out in declaration order, and tuples are literal
 struct types; both are first-class values. Locals live in stack slots, except a local whose
 address is taken (with `&`, or as the receiver of a pointer-receiver method), which is
-allocated on the heap where it is bound. Heap memory is not yet reclaimed. Inert nil costs no
+allocated on the heap where it is bound. This stands in for Go-style escape analysis, which
+will keep such locals on the stack whenever their address does not outlive the frame. Heap
+memory is not yet reclaimed. Inert nil costs no
 branch: an access through a pointer that is null is redirected to a zero-filled buffer for
 loads and to a discard buffer for stores.
 

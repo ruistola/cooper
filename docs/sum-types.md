@@ -47,8 +47,9 @@ let y = Ok(5)        # error: write Result.Ok(5)
 
 The zero value of a sum type is its first variant with a zero payload.
 
-A generic sum type's arguments are inferred from the payload arguments and the expected type;
-the left operand of a comparison supplies the expected type of the right (`m == None`).
+A generic sum type's arguments are inferred from the payload arguments and the expected type.
+In a comparison, a typed operand supplies the expected type of a variant on either side
+(`m == None`, `None == m`).
 A construction that leaves a parameter undetermined is an error
 (`m := Maybe.None` cannot infer `T`).
 

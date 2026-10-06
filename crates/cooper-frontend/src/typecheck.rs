@@ -1014,36 +1014,75 @@ impl<'g> TypeChecker<'g> {
         Some(Type::Array(Box::new(elem_type)))
     }
 
-    /// Check the two operands of a numeric or comparison operator, letting a bare
-    /// numeric literal borrow its width from the opposite, non-literal operand so
-    /// `x + 1` needs no suffix. When both sides are literals, the enclosing `expected`
-    /// hint guides both; when neither is, it guides the left, whose type guides the
-    /// right.
+    /// Check the two operands of a binary operator so type information flows from
+    /// the better-known operand to the less-known one. An operand that needs context —
+    /// a bare numeric literal, a bare variant, or a payload-free variant of a generic
+    /// sum type — is checked second, against its partner's type: `x + 1` types `1` at
+    /// `x`'s width, and `None == m` takes `m`'s sum type. Otherwise the left operand is
+    /// checked first and guides the right. The enclosing `expected` hint guides the
+    /// operand checked first.
     fn check_numeric_operands(
         &mut self,
         lhs: &Expr,
         rhs: &Expr,
         expected: Option<Type>,
     ) -> Option<(Type, Type)> {
-        let lhs_lit = is_numeric_literal(lhs);
-        let rhs_lit = is_numeric_literal(rhs);
-        if lhs_lit && !rhs_lit {
-            let right = self.check_expr_expecting(rhs, expected.clone())?;
-            let hint = if is_numeric(&right) { Some(right.clone()) } else { expected };
-            let left = self.check_expr_expecting(lhs, hint)?;
-            Some((left, right))
-        } else if rhs_lit && !lhs_lit {
-            let left = self.check_expr_expecting(lhs, expected.clone())?;
-            let hint = if is_numeric(&left) { Some(left.clone()) } else { expected };
-            let right = self.check_expr_expecting(rhs, hint)?;
-            Some((left, right))
+        let right_first = self.needs_context(lhs) && !self.needs_context(rhs);
+        let (first, second) = if right_first { (rhs, lhs) } else { (lhs, rhs) };
+        let first_type = self.check_expr_expecting(first, expected.clone())?;
+        // A literal takes its partner's width only from a number; for anything else it
+        // keeps the enclosing hint (and is then reported against its partner).
+        let hint = if is_numeric_literal(second) && !is_numeric(&first_type) {
+            expected
         } else {
-            // The left operand's type guides the right, so a value that needs context
-            // takes it from its partner: `x == Maybe.None` infers `None`'s argument.
-            let left = self.check_expr_expecting(lhs, expected)?;
-            let right = self.check_expr_expecting(rhs, Some(left.clone()))?;
-            Some((left, right))
+            Some(first_type.clone())
+        };
+        let second_type = self.check_expr_expecting(second, hint)?;
+        Some(if right_first {
+            (second_type, first_type)
+        } else {
+            (first_type, second_type)
+        })
+    }
+
+    /// Whether `expr` cannot be typed without an expected type: a bare numeric literal,
+    /// a bare variant (named or called), or a payload-free variant of a generic sum type.
+    fn needs_context(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            _ if is_numeric_literal(expr) => true,
+            ExprKind::Group(inner) => self.needs_context(inner),
+            ExprKind::Ident(name) => self.is_bare_variant(name),
+            ExprKind::Call { callee, .. } => {
+                matches!(&callee.kind, ExprKind::Ident(name) if self.is_bare_variant(name))
+            }
+            ExprKind::Field { target, name } => {
+                let ExprKind::Ident(type_name) = &target.kind else {
+                    return false;
+                };
+                if self.lookup_var(type_name).is_some() {
+                    return false;
+                }
+                self.globals.lookup_oneof(type_name).is_some_and(|oneof| {
+                    !self.globals.defs.type_params(&oneof).is_empty()
+                        && self
+                            .globals
+                            .defs
+                            .payload(&oneof, name)
+                            .is_some_and(|payload| payload.is_empty())
+                })
+            }
+            _ => false,
         }
+    }
+
+    /// Whether `name` can only be a variant of some sum type: no variable, function,
+    /// or type of that name is in scope, but a sum type has such a variant.
+    fn is_bare_variant(&self, name: &str) -> bool {
+        self.lookup_var(name).is_none()
+            && self.globals.lookup_func(name).is_none()
+            && self.globals.lookup_struct(name).is_none()
+            && self.globals.lookup_oneof(name).is_none()
+            && self.any_oneof_with_variant(name).is_some()
     }
 
     fn check_expr_expecting(&mut self, expr: &Expr, expected: Option<Type>) -> Option<Type> {

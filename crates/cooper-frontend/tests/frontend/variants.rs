@@ -78,3 +78,18 @@ fn a_comparison_supplies_its_left_operands_type_to_a_variant_on_the_right() {
         "{MAYBE}func f(m: Maybe i32): bool {{\n  return m == Maybe.None or m != None\n}}"
     ));
 }
+
+#[test]
+fn a_comparison_infers_a_variant_from_its_typed_partner_on_either_side() {
+    ok(&format!(
+        "{MAYBE}func f(m: Maybe i32): bool {{\n  return None == m and Maybe.None == m and Some(1) == m\n}}"
+    ));
+}
+
+#[test]
+fn a_comparison_of_two_bare_variants_has_no_context() {
+    err(
+        "oneof Color {\n  Red,\n  Green,\n}\nfunc f(): bool {\n  return Red != Green\n}",
+        "cannot infer sum type for bare variant Red",
+    );
+}

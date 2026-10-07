@@ -51,13 +51,9 @@ fn mixed_width_arithmetic_is_rejected() {
 }
 
 #[test]
-fn default_integer_literal_is_i32() {
-    // With no annotation, a bare integer literal is i32; combining it with an i64
-    // therefore fails, pinning the default.
-    err(
-        "func f(y: i64): i64 {\n  z := 1\n  return z + y\n}",
-        "invalid operands",
-    );
+fn a_literal_binding_takes_its_type_from_a_later_use() {
+    // The later arithmetic fixes the literal binding to i64 before defaulting.
+    ok("func f(y: i64): i64 {\n  z := 1\n  return z + y\n}");
 }
 
 #[test]

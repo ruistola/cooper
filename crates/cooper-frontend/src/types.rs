@@ -226,68 +226,6 @@ impl Type {
     }
 }
 
-/// Match a template type (which may contain `TypeParam` placeholders) against a
-/// concrete type, recording each parameter's inferred binding in `subst`. Returns
-/// false on a structural mismatch or a parameter bound inconsistently to two
-/// different types. Concrete-vs-concrete positions are compared with `equals`.
-pub fn unify(template: &Type, concrete: &Type, subst: &mut HashMap<String, Type>) -> bool {
-    match template {
-        Type::TypeParam(name) => {
-            // A bare `nil` fits a pointer-typed parameter but says nothing about it.
-            if matches!(concrete, Type::Nil) {
-                return subst.get(name).is_none_or(|bound| bound.equals(concrete));
-            }
-            if let Some(bound) = subst.get(name) {
-                return bound.equals(concrete);
-            }
-            subst.insert(name.clone(), concrete.clone());
-            true
-        }
-        Type::Array(te) => match concrete {
-            Type::Array(ce) => unify(te, ce, subst),
-            _ => false,
-        },
-        Type::Pointer(te) => match concrete {
-            Type::Pointer(ce) => unify(te, ce, subst),
-            // `nil` fits any pointer slot but determines none of its parameters.
-            Type::Nil => true,
-            _ => false,
-        },
-        Type::Tuple(telems) => match concrete {
-            Type::Tuple(celems) if telems.len() == celems.len() => telems
-                .iter()
-                .zip(celems)
-                .all(|(t, c)| unify(t, c, subst)),
-            _ => false,
-        },
-        Type::Func {
-            return_type: tr,
-            param_types: tp,
-        } => match concrete {
-            Type::Func {
-                return_type: cr,
-                param_types: cp,
-            } if tp.len() == cp.len() => {
-                tp.iter().zip(cp).all(|(t, c)| unify(t, c, subst)) && unify(tr, cr, subst)
-            }
-            _ => false,
-        },
-        Type::Struct { id: ti, type_args: ta } | Type::Oneof { id: ti, type_args: ta } => {
-            match concrete {
-                Type::Struct { id: ci, type_args: ca } | Type::Oneof { id: ci, type_args: ca }
-                    if std::mem::discriminant(template) == std::mem::discriminant(concrete)
-                        && ti == ci
-                        && ta.len() == ca.len() =>
-                {
-                    ta.iter().zip(ca).all(|(t, c)| unify(t, c, subst))
-                }
-                _ => false,
-            }
-        }
-        _ => template.equals(concrete),
-    }
-}
-
 /// The signed integer types, narrowest to widest.
 pub const SIGNED_INTS: [&str; 4] = ["i8", "i16", "i32", "i64"];
 /// The unsigned integer types, narrowest to widest.

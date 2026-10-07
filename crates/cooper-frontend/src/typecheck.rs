@@ -14,8 +14,7 @@ use crate::infer::{InferKind, InferTable};
 use crate::resolve::{self, Callable, Globals, Signature};
 use crate::types::{
     display_pair, incomparable_part, integer_bits, is_float_name, is_integer, is_integer_name,
-    is_numeric, is_numeric_name, is_primitive, is_unit, unify, Type, TypeDefs, TypeId, DEFAULT_FLOAT,
-    DEFAULT_INT, SIGNED_INTS,
+    is_numeric, is_numeric_name, is_primitive, is_unit, InferId, Type, TypeDefs, TypeId, SIGNED_INTS,
 };
 
 /// The result of type checking one file: its diagnostics, the type attributed to
@@ -41,6 +40,7 @@ pub struct ItemRef {
 
 /// A generic function or method reference whose type arguments are not yet known,
 /// awaiting the call (or expected function type) that infers them.
+#[derive(Clone)]
 struct PendingRef {
     span: Span,
     /// How diagnostics name the declaration (`function id`, `method map`).
@@ -48,6 +48,48 @@ struct PendingRef {
     item: Callable,
     /// Each binder's name and the inference variable for its type argument.
     type_args: Vec<(String, Type)>,
+}
+
+#[derive(Clone, Copy)]
+enum PredicateKind {
+    Numeric,
+    Addable,
+    Integer,
+    Comparable,
+    Formattable,
+}
+
+enum PredicateSite {
+    Binary(BinaryOp, Type),
+    Unary(UnaryOp),
+    Assignment(AssignOp, Type),
+    Conversion(String),
+    Index,
+    Range,
+    Match,
+    IntegerPattern { negative: bool, magnitude: String },
+}
+
+struct Predicate {
+    kind: PredicateKind,
+    ty: Type,
+    span: Span,
+    site: PredicateSite,
+}
+
+struct Literal {
+    ty: Type,
+    span: Span,
+    text: String,
+    negated: bool,
+}
+
+#[derive(Default)]
+struct BodyConstraints {
+    predicates: Vec<Predicate>,
+    literals: Vec<Literal>,
+    references: HashMap<Span, PendingRef>,
+    spans: Vec<Span>,
 }
 
 /// Type check `module` against `globals`. `modules` maps each `use`-bound module's
@@ -63,10 +105,7 @@ pub fn check(
     for stmt in module {
         tc.check_stmt(stmt);
     }
-    // Callee expressions are recorded before their calls solve the type arguments.
-    for ty in tc.types.values_mut() {
-        *ty = tc.infer.resolve(ty);
-    }
+    tc.finish_body();
     Typed {
         diags: tc.diags,
         types: tc.types,
@@ -104,6 +143,7 @@ struct TypeChecker<'g> {
     pending: Option<PendingRef>,
     /// The variables and bindings used to instantiate generic references.
     infer: InferTable,
+    body: BodyConstraints,
 }
 
 impl<'g> TypeChecker<'g> {
@@ -122,11 +162,148 @@ impl<'g> TypeChecker<'g> {
             callee: false,
             pending: None,
             infer: InferTable::default(),
+            body: BodyConstraints::default(),
         }
     }
 
     fn err(&mut self, span: Span, msg: impl Into<String>) {
         self.diags.push(Diagnostic::error(span, msg.into()));
+    }
+
+    /// Types in an error use literal defaults without binding the live variables.
+    fn shown_pair(&self, left: &Type, right: &Type) -> (String, String) {
+        let mut view = self.infer.clone();
+        view.default_literals();
+        display_pair(&view.resolve(left), &view.resolve(right))
+    }
+
+    fn shown_type(&self, ty: &Type) -> Type {
+        let mut view = self.infer.clone();
+        view.default_literals();
+        view.resolve(ty)
+    }
+
+    fn predicate(&mut self, kind: PredicateKind, ty: Type, span: Span, site: PredicateSite) {
+        self.body.predicates.push(Predicate { kind, ty, span, site });
+    }
+
+    fn fresh_subst(&mut self, params: &[String]) -> HashMap<String, Type> {
+        params.iter()
+            .map(|param| (param.clone(), self.infer.fresh(InferKind::General)))
+            .collect()
+    }
+
+    fn array_element(&mut self, ty: &Type) -> Option<Type> {
+        let elem = self.infer.fresh(InferKind::General);
+        self.infer.unify(ty, &Type::Array(Box::new(elem.clone()))).ok()?;
+        Some(elem)
+    }
+
+    /// Complete the current body's constraints before its types reach lowering.
+    fn finish_body(&mut self) {
+        let mut body = std::mem::take(&mut self.body);
+        for literal in &body.literals {
+            self.infer.default_literal(&literal.ty);
+        }
+        for predicate in body.predicates {
+            self.check_predicate(predicate);
+        }
+        for literal in body.literals {
+            if !literal_is_float(&literal.text) {
+                if let Type::Primitive(name) = self.infer.resolve(&literal.ty) {
+                    if is_integer_name(&name) {
+                        self.check_integer_range(&literal.text, &name, literal.negated, literal.span);
+                    }
+                }
+            }
+        }
+        let mut reported = HashSet::new();
+        let mut references: Vec<_> = body.references.into_values().collect();
+        references.sort_by_key(|reference| reference.span.start);
+        for reference in references {
+            self.finish_reference(&reference, &mut reported);
+        }
+        body.spans.sort_by_key(|span| (span.start, span.end));
+        body.spans.dedup();
+        for span in body.spans {
+            let Some(ty) = self.types.get(&span).map(|ty| self.infer.resolve(ty)) else {
+                continue;
+            };
+            let mut ids = Vec::new();
+            self.infer.unbound_ids(&ty, &mut ids);
+            let mut unreported = false;
+            for id in ids {
+                unreported |= reported.insert(id);
+            }
+            if unreported {
+                self.err(span, "cannot infer the type of this value; add a type annotation");
+            }
+            self.types.insert(span, ty);
+        }
+    }
+
+    fn check_predicate(&mut self, predicate: Predicate) {
+        let ty = self.infer.resolve(&predicate.ty);
+        if !self.infer.is_resolved(&ty) {
+            return;
+        }
+        let valid = match predicate.kind {
+            PredicateKind::Numeric => is_numeric(&ty),
+            PredicateKind::Addable => is_numeric(&ty) || is_primitive(&ty, "string"),
+            PredicateKind::Integer => is_integer(&ty),
+            PredicateKind::Comparable => incomparable_part(&ty, &self.globals.defs).is_none(),
+            PredicateKind::Formattable => is_numeric(&ty) || is_primitive(&ty, "bool"),
+        };
+        if !valid {
+            let message = match predicate.kind {
+                PredicateKind::Comparable => {
+                    let part = incomparable_part(&ty, &self.globals.defs)
+                        .expect("a failed comparable predicate has an incomparable component");
+                    let reason = if part.equals(&ty) {
+                        String::new()
+                    } else {
+                        format!(" (it contains {part})")
+                    };
+                    format!("values of type {ty} are not comparable{reason}")
+                }
+                _ => match predicate.site {
+                    PredicateSite::Binary(op, other) => {
+                        let (left, right) = self.shown_pair(&ty, &other);
+                        format!("invalid operands for {}: {left} and {right}", op.symbol())
+                    }
+                    PredicateSite::Unary(op) => format!("invalid operand for {}: {ty}", op.symbol()),
+                    PredicateSite::Assignment(op, other) => {
+                        let (left, right) = self.shown_pair(&ty, &other);
+                        format!("invalid operands for {}: {left} and {right}", op.symbol())
+                    }
+                    PredicateSite::Conversion(name) => {
+                        let sources = if name == "string" { "numeric or bool" } else { "numeric" };
+                        format!("cannot convert value of type {ty} to {name}; source must be {sources}")
+                    }
+                    PredicateSite::Index => format!("index must be an integer, found {ty}"),
+                    PredicateSite::Range => format!("range bounds must be an integer type, found {ty}"),
+                    PredicateSite::Match => format!(
+                        "cannot match on value of type {ty}; match supports sum types, structs, tuples, bool, and integers"
+                    ),
+                    PredicateSite::IntegerPattern { .. } => {
+                        format!("integer pattern cannot match a value of type {ty}")
+                    }
+                },
+            };
+            self.err(predicate.span, message);
+            return;
+        }
+        if let PredicateSite::IntegerPattern { negative, magnitude } = predicate.site {
+            if decode_number_literal(&magnitude).is_none() {
+                self.err(predicate.span, format!("integer literal {magnitude} is out of range"));
+            } else if negative {
+                if let Type::Primitive(name) = ty {
+                    if !is_signed_int(&name) {
+                        self.err(predicate.span, format!("negative pattern -{magnitude} cannot match unsigned {name}"));
+                    }
+                }
+            }
+        }
     }
 
     // --- variable scope stack ---
@@ -159,7 +336,7 @@ impl<'g> TypeChecker<'g> {
             StmtKind::FuncDecl(func) => self.check_func_decl(func),
             StmtKind::If { cond, then, els } => {
                 let cond_type = self.check_expr(cond);
-                if !matches!(cond_type, Some(t) if is_primitive(&t, "bool")) {
+                if !cond_type.is_some_and(|ty| self.infer.unify(&ty, &Type::Primitive("bool".to_string())).is_ok()) {
                     self.err(cond.span, "if-statement condition does not evaluate to a boolean type");
                 }
                 self.check_stmt(then);
@@ -175,7 +352,7 @@ impl<'g> TypeChecker<'g> {
             } => self.check_for_in(bindings, iterable, body, stmt.span),
             StmtKind::While { cond, body, .. } => {
                 let cond_type = self.check_expr(cond);
-                if !matches!(cond_type, Some(t) if is_primitive(&t, "bool")) {
+                if !cond_type.is_some_and(|ty| self.infer.unify(&ty, &Type::Primitive("bool".to_string())).is_ok()) {
                     self.err(cond.span, "loop condition does not evaluate to a boolean type");
                 }
                 self.scopes.push(HashMap::new());
@@ -210,13 +387,12 @@ impl<'g> TypeChecker<'g> {
                 let end_type = self.check_expr(end);
                 let elem = match (start_type, end_type) {
                     (Some(s), Some(e)) => {
-                        if !is_integer(&s) {
-                            self.err(start.span, format!("range bounds must be an integer type, found {s}"));
-                            None
-                        } else if !s.equals(&e) {
+                        if self.infer.unify(&s, &e).is_err() {
+                            let (s, e) = self.shown_pair(&s, &e);
                             self.err(end.span, format!("range bounds must share one type: {s} and {e}"));
                             None
                         } else {
+                            self.predicate(PredicateKind::Integer, s.clone(), start.span, PredicateSite::Range);
                             Some(s)
                         }
                     }
@@ -230,18 +406,21 @@ impl<'g> TypeChecker<'g> {
                 }
             }
             _ => match self.check_expr(iterable) {
-                Some(Type::Array(elem)) => match bindings.len() {
-                    1 => Some(vec![*elem]),
-                    2 => Some(vec![crate::builtins::index_type(), *elem]),
-                    _ => {
-                        self.err(span, "an array binds either one loop variable or an (index, value) pair");
+                Some(array) => match self.array_element(&array) {
+                    Some(elem) => match bindings.len() {
+                        1 => Some(vec![elem]),
+                        2 => Some(vec![crate::builtins::index_type(), elem]),
+                        _ => {
+                            self.err(span, "an array binds either one loop variable or an (index, value) pair");
+                            None
+                        }
+                    },
+                    None => {
+                        let shown = self.shown_type(&array);
+                        self.err(iterable.span, format!("cannot iterate over type {shown}"));
                         None
                     }
                 },
-                Some(other) => {
-                    self.err(iterable.span, format!("cannot iterate over type {other}"));
-                    None
-                }
                 None => None,
             },
         };
@@ -283,8 +462,8 @@ impl<'g> TypeChecker<'g> {
         };
         let bound = match (&declared, &value_type) {
             (Some(declared), Some(value)) => {
-                if !declared.equals(value) {
-                    let (declared_shown, value_shown) = display_pair(declared, value);
+                if self.infer.unify(declared, value).is_err() {
+                    let (declared_shown, value_shown) = self.shown_pair(declared, value);
                     self.err(
                         span,
                         format!(
@@ -302,6 +481,7 @@ impl<'g> TypeChecker<'g> {
     }
 
     fn check_func_decl(&mut self, func: &FuncDecl) {
+        let saved_body = std::mem::take(&mut self.body);
         let mut type_params: HashSet<String> = func.type_params.iter().cloned().collect();
         if let Some(receiver) = &func.receiver {
             type_params.extend(resolve::receiver_pattern_params(&receiver.ty));
@@ -329,6 +509,8 @@ impl<'g> TypeChecker<'g> {
         for stmt in &func.body {
             self.check_stmt(stmt);
         }
+        self.finish_body();
+        self.body = saved_body;
         self.current_return = saved_return;
         self.scopes.pop();
         self.type_params = saved_params;
@@ -352,17 +534,14 @@ impl<'g> TypeChecker<'g> {
         };
         // A unit function may return a unit-typed value (`return ()`, or a call
         // to another unit function), but no other value.
-        if is_unit_return && !is_unit(&expr_type) {
-            self.err(
-                expr.span,
-                format!("cannot return a value of type {expr_type} from a function returning unit"),
-            );
-        } else if !expr_type.equals(&return_type) {
-            let (return_type_shown, expr_type_shown) = display_pair(&return_type, &expr_type);
-            self.err(
-                expr.span,
-                format!("return type mismatch: expected {return_type_shown}, found {expr_type_shown}"),
-            );
+        if self.infer.unify(&return_type, &expr_type).is_err() {
+            let (return_type_shown, expr_type_shown) = self.shown_pair(&return_type, &expr_type);
+            let message = if is_unit_return {
+                format!("cannot return a value of type {expr_type_shown} from a function returning unit")
+            } else {
+                format!("return type mismatch: expected {return_type_shown}, found {expr_type_shown}")
+            };
+            self.err(expr.span, message);
         }
     }
 
@@ -396,8 +575,8 @@ impl<'g> TypeChecker<'g> {
             if let Some(arm_type) = arm_type {
                 match &match_type {
                     None => match_type = Some(arm_type),
-                    Some(prev) if !prev.equals(&arm_type) => {
-                        let (prev_shown, arm_shown) = display_pair(prev, &arm_type);
+                    Some(prev) if self.infer.unify(prev, &arm_type).is_err() => {
+                        let (prev_shown, arm_shown) = self.shown_pair(prev, &arm_type);
                         self.err(
                             arm.body.span,
                             format!("match arms have mismatched types: {prev_shown} and {arm_shown}"),
@@ -416,6 +595,10 @@ impl<'g> TypeChecker<'g> {
     /// checked against.
     fn match_scrutinee(&mut self, scrutinee: &Expr) -> Option<Type> {
         let ty = self.check_expr(scrutinee)?;
+        if !self.infer.is_bound(&ty) && is_integer(&self.shown_type(&ty)) {
+            self.predicate(PredicateKind::Integer, ty.clone(), scrutinee.span, PredicateSite::Match);
+            return Some(ty);
+        }
         match &ty {
             Type::Oneof { .. } | Type::Struct { .. } | Type::Tuple(_) => Some(ty),
             Type::Primitive(n) if n == "bool" || is_integer_name(n) => Some(ty),
@@ -435,15 +618,15 @@ impl<'g> TypeChecker<'g> {
     /// name it introduces into the current (arm) scope. Recurses through tuple and
     /// struct patterns so a sub-pattern is checked against its component's type.
     fn check_pattern(&mut self, pattern: &Pattern, ty: &Type) {
+        let resolved = self.infer.resolve(ty);
+        let ty = &resolved;
         match &pattern.kind {
             PatternKind::Wildcard => {}
             PatternKind::Binding(name) => self.define_var(name, ty.clone()),
             PatternKind::Bool(_) => {
-                if !is_primitive(ty, "bool") {
-                    self.err(
-                        pattern.span,
-                        format!("boolean pattern cannot match a value of type {ty}"),
-                    );
+                if self.infer.unify(ty, &Type::Primitive("bool".to_string())).is_err() {
+                    let shown = self.shown_type(ty);
+                    self.err(pattern.span, format!("boolean pattern cannot match a value of type {shown}"));
                 }
             }
             PatternKind::Int { negative, magnitude } => {
@@ -589,30 +772,12 @@ impl<'g> TypeChecker<'g> {
     /// Validate an integer literal pattern, requiring it to fit the scrutinee's
     /// integer type.
     fn check_int_pattern(&mut self, negative: bool, magnitude: &str, ty: &Type, span: Span) {
-        let Type::Primitive(int_name) = ty else {
-            self.err(
-                span,
-                format!("integer pattern cannot match a value of type {ty}"),
-            );
-            return;
-        };
-        if !is_integer_name(int_name) {
-            self.err(
-                span,
-                format!("integer pattern cannot match a value of type {ty}"),
-            );
-            return;
-        }
-        if decode_number_literal(magnitude).is_none() {
-            self.err(span, format!("integer literal {magnitude} is out of range"));
-            return;
-        }
-        if negative && !is_signed_int(int_name) {
-            self.err(
-                span,
-                format!("negative pattern -{magnitude} cannot match unsigned {int_name}"),
-            );
-        }
+        self.predicate(
+            PredicateKind::Integer,
+            ty.clone(),
+            span,
+            PredicateSite::IntegerPattern { negative, magnitude: magnitude.to_string() },
+        );
     }
 
     fn check_match_exhaustiveness(&mut self, ty: &Type, coverage: &Coverage, span: Span) {
@@ -667,8 +832,9 @@ impl<'g> TypeChecker<'g> {
     // --- expressions ---
 
     fn check_expr(&mut self, expr: &Expr) -> Option<Type> {
-        let ty = self.check_expr_kind(expr);
+        let ty = self.check_expr_kind(expr).map(|ty| self.infer.resolve(&ty));
         if let Some(ty) = &ty {
+            self.body.spans.push(expr.span);
             self.types.insert(expr.span, ty.clone());
         }
         ty
@@ -871,75 +1037,39 @@ impl<'g> TypeChecker<'g> {
         span: Span,
         expected: Option<Type>,
     ) -> Option<Type> {
+        let boolean = Type::Primitive("bool".to_string());
+        if matches!(op, BinaryOp::And | BinaryOp::Or) {
+            let left = self.check_expr(lhs)?;
+            let right = self.check_expr(rhs)?;
+            let left_ok = self.infer.unify(&left, &boolean).is_ok();
+            let right_ok = self.infer.unify(&right, &boolean).is_ok();
+            if left_ok && right_ok {
+                return Some(boolean);
+            }
+            let (left, right) = self.shown_pair(&left, &right);
+            self.err(span, format!("invalid operands for {}: {left} and {right}", op.symbol()));
+            return None;
+        }
+        let (left, right) = self.check_numeric_operands(lhs, rhs, expected)?;
+        if self.infer.unify(&left, &right).is_err() {
+            let (left, right) = self.shown_pair(&left, &right);
+            let message = if matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
+                format!("cannot compare {left} and {right}")
+            } else {
+                format!("invalid operands for {}: {left} and {right}", op.symbol())
+            };
+            self.err(span, message);
+            return None;
+        }
+        let kind = match op {
+            BinaryOp::Add => PredicateKind::Addable,
+            BinaryOp::Eq | BinaryOp::Ne => PredicateKind::Comparable,
+            _ => PredicateKind::Numeric,
+        };
+        self.predicate(kind, left.clone(), span, PredicateSite::Binary(op, right));
         match op {
-            BinaryOp::And | BinaryOp::Or => {
-                let left = self.check_expr(lhs)?;
-                let right = self.check_expr(rhs)?;
-                if is_primitive(&left, "bool") && is_primitive(&right, "bool") {
-                    return Some(Type::Primitive("bool".to_string()));
-                }
-                let (left_shown, right_shown) = display_pair(&left, &right);
-                self.err(
-                    span,
-                    format!("invalid operands for {}: {left_shown} and {right_shown}", op.symbol()),
-                );
-                None
-            }
-            // Every other operator relates two numbers of one type. Operands are
-            // checked so a bare literal adopts the other side's width — `x + 1` with
-            // `x: i64` types `1` as `i64` — and the arithmetic result carries the
-            // shared type, while the comparisons yield `bool`.
-            _ => {
-                let (left, right) = self.check_numeric_operands(lhs, rhs, expected)?;
-                match op {
-                    BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => {
-                        if is_numeric(&left) && left.equals(&right) {
-                            return Some(left);
-                        }
-                        if op == BinaryOp::Add
-                            && is_primitive(&left, "string")
-                            && is_primitive(&right, "string")
-                        {
-                            return Some(Type::Primitive("string".to_string()));
-                        }
-                        let (left_shown, right_shown) = display_pair(&left, &right);
-                        self.err(
-                            span,
-                            format!("invalid operands for {}: {left_shown} and {right_shown}", op.symbol()),
-                        );
-                        None
-                    }
-                    BinaryOp::Eq | BinaryOp::Ne => {
-                        if !left.equals(&right) {
-                            let (left_shown, right_shown) = display_pair(&left, &right);
-                            self.err(span, format!("cannot compare {left_shown} and {right_shown}"));
-                            return None;
-                        }
-                        if let Some(part) = incomparable_part(&left, &self.globals.defs) {
-                            let reason = if part.equals(&left) {
-                                String::new()
-                            } else {
-                                format!(" (it contains {part})")
-                            };
-                            self.err(span, format!("values of type {left} are not comparable{reason}"));
-                            return None;
-                        }
-                        Some(Type::Primitive("bool".to_string()))
-                    }
-                    BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-                        if is_numeric(&left) && left.equals(&right) {
-                            return Some(Type::Primitive("bool".to_string()));
-                        }
-                        let (left_shown, right_shown) = display_pair(&left, &right);
-                        self.err(
-                            span,
-                            format!("invalid operands for {}: {left_shown} and {right_shown}", op.symbol()),
-                        );
-                        None
-                    }
-                    BinaryOp::And | BinaryOp::Or => unreachable!("handled above"),
-                }
-            }
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => Some(left),
+            _ => Some(boolean),
         }
     }
 
@@ -990,8 +1120,8 @@ impl<'g> TypeChecker<'g> {
             let Some(actual) = self.check_expr_expecting(elem, Some(elem_type.clone())) else {
                 continue;
             };
-            if !actual.equals(&elem_type) {
-                let (elem_type_shown, actual_shown) = display_pair(&elem_type, &actual);
+            if self.infer.unify(&elem_type, &actual).is_err() {
+                let (elem_type_shown, actual_shown) = self.shown_pair(&elem_type, &actual);
                 self.err(
                     elem.span,
                     format!("array element type mismatch: expected {elem_type_shown}, found {actual_shown}"),
@@ -1077,15 +1207,20 @@ impl<'g> TypeChecker<'g> {
         self.check_expr(expr)
     }
 
-    /// The type of a numeric literal, range-checked when it resolves to an integer.
-    /// `negated` folds a leading sign into the literal so a negative value is checked
-    /// against the type's minimum rather than its maximum.
+    /// A numeric literal gets a class variable; its range is checked at body completion.
+    /// A leading sign is recorded with the magnitude for signed-minimum checks.
     fn number_type(&mut self, text: &str, span: Span, expected: Option<Type>, negated: bool) -> Type {
-        let ty = number_literal_type(text, expected.as_ref());
-        if let Type::Primitive(name) = &ty {
-            if is_integer_name(name) {
-                self.check_integer_range(text, name, negated, span);
-            }
+        let ty = if let Some(literal) = self.body.literals.iter().find(|literal| literal.span == span) {
+            literal.ty.clone()
+        } else {
+            let kind = if literal_is_float(text) { InferKind::FloatLiteral } else { InferKind::IntLiteral };
+            let ty = self.infer.fresh(kind);
+            self.body.literals.push(Literal { ty: ty.clone(), span, text: text.to_string(), negated });
+            ty
+        };
+        let expected = expected.as_ref().map(|ty| self.infer.resolve(ty));
+        if let Some(hint) = number_literal_type(text, expected.as_ref()) {
+            let _ = self.infer.unify(&ty, &hint);
         }
         ty
     }
@@ -1134,6 +1269,7 @@ impl<'g> TypeChecker<'g> {
                 // the signed literal's type here (through any grouping), for lowering.
                 let mut inner = operand;
                 loop {
+                    self.body.spans.push(inner.span);
                     self.types.insert(inner.span, ty.clone());
                     match &inner.kind {
                         ExprKind::Group(group) => inner = group,
@@ -1146,23 +1282,16 @@ impl<'g> TypeChecker<'g> {
         let operand_type = self.check_expr(operand)?;
         match op {
             UnaryOp::Neg | UnaryOp::Pos => {
-                if is_numeric(&operand_type) {
-                    return Some(operand_type);
-                }
-                self.err(
-                    span,
-                    format!("invalid operand for {}: {operand_type}", op.symbol()),
-                );
-                None
+                self.predicate(PredicateKind::Numeric, operand_type.clone(), span, PredicateSite::Unary(op));
+                Some(operand_type)
             }
             UnaryOp::Not => {
-                if is_primitive(&operand_type, "bool") {
-                    return Some(Type::Primitive("bool".to_string()));
+                let boolean = Type::Primitive("bool".to_string());
+                if self.infer.unify(&operand_type, &boolean).is_ok() {
+                    return Some(boolean);
                 }
-                self.err(
-                    span,
-                    format!("invalid operand for {}: {operand_type}", op.symbol()),
-                );
+                let shown = self.shown_type(&operand_type);
+                self.err(span, format!("invalid operand for {}: {shown}", op.symbol()));
                 None
             }
         }
@@ -1211,6 +1340,20 @@ impl<'g> TypeChecker<'g> {
         self.callee = true;
         let callee_type = self.check_expr(callee)?;
         let pending = self.pending.take();
+        let callee_type = if matches!(callee_type, Type::Infer(_)) {
+            let signature = Type::Func {
+                return_type: Box::new(self.infer.fresh(InferKind::General)),
+                param_types: args.iter().map(|_| self.infer.fresh(InferKind::General)).collect(),
+            };
+            if self.infer.unify(&callee_type, &signature).is_err() {
+                let shown = self.shown_type(&callee_type);
+                self.err(span, format!("cannot call non-function value of type {shown}"));
+                return None;
+            }
+            self.infer.resolve(&signature)
+        } else {
+            callee_type
+        };
         let Type::Func {
             return_type,
             param_types,
@@ -1236,8 +1379,8 @@ impl<'g> TypeChecker<'g> {
         for (i, (arg, param)) in args.iter().zip(param_types).enumerate() {
             self.expected = Some(param.clone());
             let arg_type = self.check_expr(arg)?;
-            if !param.equals(&arg_type) {
-                let (param_shown, arg_type_shown) = display_pair(param, &arg_type);
+            if self.infer.unify(param, &arg_type).is_err() {
+                let (param_shown, arg_type_shown) = self.shown_pair(param, &arg_type);
                 self.err(
                     arg.span,
                     format!("argument {} type mismatch: expected {param_shown}, found {arg_type_shown}", i + 1),
@@ -1251,10 +1394,9 @@ impl<'g> TypeChecker<'g> {
     /// Instantiate a reference at `span` to the function or method `sig`, with one
     /// fresh variable per binder. Matching a method's receiver against the concrete
     /// `receiver` fixes its receiver-pattern variables.
-    /// With none left the reference is recorded at once. A callee defers them to the
-    /// enclosing call, which infers them from its arguments; anywhere else an expected
-    /// function type must determine them. Returns the reference's function type,
-    /// written in terms of any variables still unsolved.
+    /// The enclosing call or expected function type constrains those variables.
+    /// The body's finalization records the resolved reference. Returns its function
+    /// type, written in terms of any variables still unsolved.
     fn reference(
         &mut self,
         span: Span,
@@ -1278,6 +1420,7 @@ impl<'g> TypeChecker<'g> {
             item: sig.item.clone(),
             type_args,
         };
+        self.body.references.insert(span, pending.clone());
         if callee && pending.type_args.iter().any(|(_, arg)| !self.infer.is_resolved(arg)) {
             self.pending = Some(pending);
             return Some(ty);
@@ -1285,15 +1428,24 @@ impl<'g> TypeChecker<'g> {
         if let Some(expected @ Type::Func { .. }) = &expected {
             let _ = self.infer.unify(&ty, expected);
         }
-        self.finish_reference(&pending)
-            .then(|| self.infer.resolve(&ty))
+        Some(self.infer.resolve(&ty))
     }
 
     /// Record `pending` with every type argument resolved, or report the first
     /// binder whose argument still contains an unbound inference variable.
-    fn finish_reference(&mut self, pending: &PendingRef) -> bool {
+    fn finish_reference(&mut self, pending: &PendingRef, reported: &mut HashSet<InferId>) {
+        let mut unresolved = false;
         for (binder, arg) in &pending.type_args {
-            if !self.infer.is_resolved(arg) {
+            let mut ids = Vec::new();
+            self.infer.unbound_ids(arg, &mut ids);
+            if !ids.is_empty() {
+                unresolved = true;
+            }
+            if ids.iter().any(|id| !reported.contains(id)) {
+                for (_, arg) in &pending.type_args {
+                    self.infer.unbound_ids(arg, &mut ids);
+                }
+                reported.extend(ids);
                 self.err(
                     pending.span,
                     format!(
@@ -1301,8 +1453,11 @@ impl<'g> TypeChecker<'g> {
                         pending.label
                     ),
                 );
-                return false;
+                return;
             }
+        }
+        if unresolved {
+            return;
         }
         let type_args = pending.type_args.iter()
             .map(|(_, arg)| self.infer.resolve(arg))
@@ -1314,7 +1469,6 @@ impl<'g> TypeChecker<'g> {
                 type_args,
             },
         );
-        true
     }
 
     /// Check a call to a generic callee, solving its inference variables: first from
@@ -1347,16 +1501,13 @@ impl<'g> TypeChecker<'g> {
             let usable = self.infer.is_resolved(&hint).then_some(hint);
             let arg_type = self.check_expr_expecting(&args[i], usable)?;
             if let Err(conflict) = self.infer.unify(&param_types[i], &arg_type) {
-                let (hint_shown, arg_shown) = display_pair(&conflict.left, &conflict.right);
+                let (hint_shown, arg_shown) = self.shown_pair(&conflict.left, &conflict.right);
                 self.err(
                     args[i].span,
                     format!("argument {} type mismatch: expected {hint_shown}, found {arg_shown}", i + 1),
                 );
                 return None;
             }
-        }
-        if !self.finish_reference(&pending) {
-            return None;
         }
         let callee_type = self.infer.resolve(&Type::Func {
             return_type: Box::new(return_type.clone()),
@@ -1395,15 +1546,8 @@ impl<'g> TypeChecker<'g> {
         }
         self.expected = None;
         let arg_type = self.check_expr(&args[0])?;
-        let to_string = name == "string";
-        if !(is_numeric(&arg_type) || to_string && is_primitive(&arg_type, "bool")) {
-            let sources = if to_string { "numeric or bool" } else { "numeric" };
-            self.err(
-                args[0].span,
-                format!("cannot convert value of type {arg_type} to {name}; source must be {sources}"),
-            );
-            return None;
-        }
+        let kind = if name == "string" { PredicateKind::Formattable } else { PredicateKind::Numeric };
+        self.predicate(kind, arg_type, args[0].span, PredicateSite::Conversion(name.to_string()));
         Some(Type::Primitive(name.to_string()))
     }
 
@@ -1437,9 +1581,11 @@ impl<'g> TypeChecker<'g> {
             }
             return Some(oneof.clone());
         }
+        let subst = self.fresh_subst(&type_params);
+        let instantiated = self.instantiate_oneof(oneof, &subst, span)?;
         Some(Type::Func {
-            return_type: Box::new(oneof.clone()),
-            param_types: payload,
+            return_type: Box::new(instantiated),
+            param_types: payload.iter().map(|slot| slot.substitute(&subst)).collect(),
         })
     }
 
@@ -1473,12 +1619,13 @@ impl<'g> TypeChecker<'g> {
             );
             return None;
         }
-        let mut subst = HashMap::new();
+        let mut subst = self.fresh_subst(&type_params);
         seed_subst_from_expected(oneof, expected.as_ref(), &self.globals.defs, &mut subst);
         for (i, (arg, slot)) in args.iter().zip(&payload).enumerate() {
-            let arg_type = self.check_expr_expecting(arg, Some(slot.substitute(&subst)))?;
-            if !unify(slot, &arg_type, &mut subst) {
-                let (slot_shown, arg_shown) = display_pair(&slot.substitute(&subst), &arg_type);
+            let slot = slot.substitute(&subst);
+            let arg_type = self.check_expr_expecting(arg, Some(slot.clone()))?;
+            if self.infer.unify(&slot, &arg_type).is_err() {
+                let (slot_shown, arg_shown) = self.shown_pair(&slot, &arg_type);
                 self.err(
                     arg.span,
                     format!(
@@ -1534,12 +1681,14 @@ impl<'g> TypeChecker<'g> {
         };
         let id = id.clone();
         let name = id.name.clone();
-        let struct_members = self.globals.defs.struct_members(&target_type).unwrap_or_default();
-        // A generic struct is constructed against its template; each member
-        // assignment constrains the type arguments through unification.
+        // A generic struct's members constrain fresh variables for its type arguments.
         let type_params = self.globals.defs.type_params(&target_type).to_vec();
         let is_generic = !type_params.is_empty() && type_args.is_empty();
-        let mut subst = HashMap::new();
+        let subst = if is_generic { self.fresh_subst(&type_params) } else { HashMap::new() };
+        let struct_members: Vec<_> = self.globals.defs.struct_members(&target_type)
+            .unwrap_or_default().into_iter()
+            .map(|(name, ty)| (name, ty.substitute(&subst)))
+            .collect();
         let mut assigned: HashSet<String> = HashSet::new();
         for member in members {
             let Some((_, member_type)) = struct_members.iter().find(|(name, _)| name == &member.name)
@@ -1561,25 +1710,14 @@ impl<'g> TypeChecker<'g> {
             else {
                 continue;
             };
-            if is_generic {
-                if !unify(member_type, &value_type, &mut subst) {
-                    self.err(
-                        member.value.span,
-                        format!(
-                            "cannot assign {value_type} to member {} of generic struct {name}",
-                            member.name
-                        ),
-                    );
-                }
-            } else if !member_type.equals(&value_type) {
-                let (value_type_shown, member_type_shown) = display_pair(&value_type, member_type);
-                self.err(
-                    member.value.span,
-                    format!(
-                        "cannot assign {value_type_shown} to {member_type_shown} of struct member {}",
-                        member.name
-                    ),
-                );
+            if self.infer.unify(member_type, &value_type).is_err() {
+                let (value_type_shown, member_type_shown) = self.shown_pair(&value_type, member_type);
+                let message = if is_generic {
+                    format!("cannot assign {value_type_shown} to member {} of generic struct {name}", member.name)
+                } else {
+                    format!("cannot assign {value_type_shown} to {member_type_shown} of struct member {}", member.name)
+                };
+                self.err(member.value.span, message);
             }
         }
         for (member_name, _) in &struct_members {
@@ -1681,11 +1819,11 @@ impl<'g> TypeChecker<'g> {
         // Index syntax is a built-in-array privilege: `a[i]` reads like `a.get(i)` but
         // takes an index of any integer type. User-defined collections are not
         // indexable — they expose ordinary methods (`at`, `set`, …), visibly userspace.
-        let Type::Array(elem) = &array_type else {
-            self.err(array.span, format!("type {array_type} cannot be indexed"));
+        let Some(element) = self.array_element(&array_type) else {
+            let shown = self.shown_type(&array_type);
+            self.err(array.span, format!("type {shown} cannot be indexed"));
             return None;
         };
-        let element = (**elem).clone();
         self.check_index_value(index)?;
         Some(element)
     }
@@ -1694,10 +1832,7 @@ impl<'g> TypeChecker<'g> {
     fn check_index_value(&mut self, index: &Expr) -> Option<Type> {
         self.expected = Some(crate::builtins::index_type());
         let index_type = self.check_expr(index)?;
-        if !is_integer(&index_type) {
-            self.err(index.span, format!("index must be an integer, found {index_type}"));
-            return None;
-        }
+        self.predicate(PredicateKind::Integer, index_type.clone(), index.span, PredicateSite::Index);
         Some(index_type)
     }
 
@@ -1705,8 +1840,9 @@ impl<'g> TypeChecker<'g> {
     /// bounds integers. A slice is an array of the same type sharing the elements.
     fn check_slice(&mut self, array: &Expr, start: Option<&Expr>, end: Option<&Expr>) -> Option<Type> {
         let array_type = self.check_expr(array)?;
-        if !matches!(array_type, Type::Array(_)) {
-            self.err(array.span, format!("type {array_type} cannot be sliced"));
+        if self.array_element(&array_type).is_none() {
+            let shown = self.shown_type(&array_type);
+            self.err(array.span, format!("type {shown} cannot be sliced"));
             return None;
         }
         for bound in start.into_iter().chain(end) {
@@ -1737,14 +1873,13 @@ impl<'g> TypeChecker<'g> {
 
     fn check_deref(&mut self, operand: &Expr) -> Option<Type> {
         let operand_type = self.check_expr(operand)?;
-        let Type::Pointer(elem) = &operand_type else {
-            self.err(
-                operand.span,
-                format!("cannot dereference non-pointer type {operand_type}"),
-            );
+        let elem = self.infer.fresh(InferKind::General);
+        if self.infer.unify(&operand_type, &Type::Pointer(Box::new(elem.clone()))).is_err() {
+            let shown = self.shown_type(&operand_type);
+            self.err(operand.span, format!("cannot dereference non-pointer type {shown}"));
             return None;
-        };
-        Some((**elem).clone())
+        }
+        Some(elem)
     }
 
     /// Whether an expression denotes a storage location whose address can be taken.
@@ -1786,11 +1921,11 @@ impl<'g> TypeChecker<'g> {
         span: Span,
     ) -> Option<Type> {
         let recv = self.check_expr(array)?;
-        let Type::Array(elem) = &recv else {
-            self.err(span, format!("type {recv} cannot be assigned by index"));
+        let Some(element) = self.array_element(&recv) else {
+            let shown = self.shown_type(&recv);
+            self.err(span, format!("type {shown} cannot be assigned by index"));
             return None;
         };
-        let element = (**elem).clone();
         self.check_index_value(index)?;
         self.expected = Some(element.clone());
         let value_type = self.check_expr(value)?;
@@ -1802,24 +1937,21 @@ impl<'g> TypeChecker<'g> {
     /// plain assignment requires equal types. A compound operator follows its binary
     /// operator: two values of one numeric type, or two strings for `+=`.
     fn check_assign_op(&mut self, op: AssignOp, target_type: &Type, value_type: &Type, span: Span) {
-        let valid = match op {
-            AssignOp::Assign => target_type.equals(value_type),
-            AssignOp::Add if is_primitive(target_type, "string") => {
-                is_primitive(value_type, "string")
-            }
-            AssignOp::Add | AssignOp::Sub | AssignOp::Mul | AssignOp::Div => {
-                is_numeric(target_type) && target_type.equals(value_type)
-            }
-        };
-        if valid {
+        if self.infer.unify(target_type, value_type).is_err() {
+            let (value_shown, target_shown) = self.shown_pair(value_type, target_type);
+            let message = match op {
+                AssignOp::Assign => format!("cannot assign {value_shown} to {target_shown}"),
+                _ => format!("invalid operands for {}: {target_shown} and {value_shown}", op.symbol()),
+            };
+            self.err(span, message);
             return;
         }
-        let (value_shown, target_shown) = display_pair(value_type, target_type);
-        let message = match op {
-            AssignOp::Assign => format!("cannot assign {value_shown} to {target_shown}"),
-            _ => format!("invalid operands for {}: {target_shown} and {value_shown}", op.symbol()),
+        let kind = match op {
+            AssignOp::Assign => return,
+            AssignOp::Add => PredicateKind::Addable,
+            _ => PredicateKind::Numeric,
         };
-        self.err(span, message);
+        self.predicate(kind, target_type.clone(), span, PredicateSite::Assignment(op, value_type.clone()));
     }
 
     fn check_let_tuple(
@@ -1840,6 +1972,11 @@ impl<'g> TypeChecker<'g> {
             None => None,
         };
         let rhs_type = self.check_expr(value)?;
+        if !self.infer.is_bound(&rhs_type) {
+            let tuple = Type::Tuple(names.iter().map(|_| self.infer.fresh(InferKind::General)).collect());
+            let _ = self.infer.unify(&rhs_type, &tuple);
+        }
+        let rhs_type = self.infer.resolve(&rhs_type);
         let Type::Tuple(elem_types) = &rhs_type else {
             self.err(
                 value.span,
@@ -1858,12 +1995,21 @@ impl<'g> TypeChecker<'g> {
             );
             return None;
         }
+        if let Some(declared) = &declared {
+            if declared.len() != names.len() {
+                self.err(value.span, format!(
+                    "destructuring pattern binds {} names but the annotation has {} elements",
+                    names.len(), declared.len()
+                ));
+                return None;
+            }
+        }
         for (i, name) in names.iter().enumerate() {
             let elem_type = elem_types[i].clone();
             if let Some(declared) = &declared {
                 let declared_elem = &declared[i];
-                if !declared_elem.equals(&elem_type) {
-                    let (declared_elem_shown, elem_type_shown) = display_pair(declared_elem, &elem_type);
+                if self.infer.unify(declared_elem, &elem_type).is_err() {
+                    let (declared_elem_shown, elem_type_shown) = self.shown_pair(declared_elem, &elem_type);
                     self.err(
                         value.span,
                         format!("type mismatch: {name} declared as {declared_elem_shown} but bound to {elem_type_shown}"),
@@ -1879,13 +2025,13 @@ impl<'g> TypeChecker<'g> {
 
     fn check_if_expr(&mut self, cond: &Expr, then: &Expr, els: &Expr) -> Option<Type> {
         let cond_type = self.check_expr(cond);
-        if !matches!(cond_type, Some(t) if is_primitive(&t, "bool")) {
+        if !cond_type.is_some_and(|ty| self.infer.unify(&ty, &Type::Primitive("bool".to_string())).is_ok()) {
             self.err(cond.span, "if-expression condition does not evaluate to a boolean type");
         }
         let then_type = self.check_expr(then)?;
         let else_type = self.check_expr(els)?;
-        if !then_type.equals(&else_type) {
-            let (then_type_shown, else_type_shown) = display_pair(&then_type, &else_type);
+        if self.infer.unify(&then_type, &else_type).is_err() {
+            let (then_type_shown, else_type_shown) = self.shown_pair(&then_type, &else_type);
             self.err(
                 then.span.to(els.span),
                 format!("if-expression branches have mismatched types: {then_type_shown} and {else_type_shown}"),
@@ -1980,8 +2126,8 @@ fn is_signed_int(name: &str) -> bool {
 /// or exponent (outside a hex/binary prefix) makes it floating-point — and an
 /// `expected` type of the matching class fixes its width: an integer literal adopts
 /// any expected numeric type (so `f32 = 5` holds), a float literal only an expected
-/// float type. Absent a usable hint, the class default (`i32` or `f32`) applies.
-fn number_literal_type(text: &str, expected: Option<&Type>) -> Type {
+/// float type. Without a usable hint, the variable stays unbound.
+fn number_literal_type(text: &str, expected: Option<&Type>) -> Option<Type> {
     let is_float = literal_is_float(text);
     if let Some(Type::Primitive(name)) = expected {
         let adopts = if is_float {
@@ -1990,11 +2136,10 @@ fn number_literal_type(text: &str, expected: Option<&Type>) -> Type {
             is_numeric_name(name)
         };
         if adopts {
-            return Type::Primitive(name.clone());
+            return Some(Type::Primitive(name.clone()));
         }
     }
-    let default = if is_float { DEFAULT_FLOAT } else { DEFAULT_INT };
-    Type::Primitive(default.to_string())
+    None
 }
 
 /// Whether a numeric literal is floating-point. Hexadecimal and binary literals are

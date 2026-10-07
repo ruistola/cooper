@@ -135,21 +135,52 @@ impl InferTable {
         types.iter().map(|ty| self.resolve(ty)).collect()
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "generic references do not require literal defaulting")
-    )]
     pub(crate) fn default_literals(&mut self) {
-        for (index, entry) in self.entries.iter_mut().enumerate() {
-            if entry.parent != index || entry.binding.is_some() {
-                continue;
+        for index in 0..self.entries.len() {
+            let id = InferId::new(index, self.entries[index].kind);
+            self.default_literal(&Type::Infer(id));
+        }
+    }
+
+    /// Default the representative of `ty`, leaving unrelated variables untouched.
+    /// Aliases and already-bound variables require no action.
+    pub(crate) fn default_literal(&mut self, ty: &Type) {
+        let Type::Infer(id) = ty else { return };
+        let index = self.root_mut(id.index());
+        let entry = &mut self.entries[index];
+        if entry.binding.is_some() {
+            return;
+        }
+        let name = match entry.kind {
+            InferKind::General => return,
+            InferKind::IntLiteral => DEFAULT_INT,
+            InferKind::FloatLiteral => DEFAULT_FLOAT,
+        };
+        entry.binding = Some(Type::Primitive(name.to_string()));
+    }
+
+    /// Collect canonical unbound variables throughout a type.
+    pub(crate) fn unbound_ids(&self, ty: &Type, out: &mut Vec<InferId>) {
+        match self.shallow(ty) {
+            Type::Infer(id) => out.push(id),
+            Type::Array(elem) | Type::Pointer(elem) => self.unbound_ids(&elem, out),
+            Type::Tuple(elems) => {
+                for elem in elems {
+                    self.unbound_ids(&elem, out);
+                }
             }
-            let name = match entry.kind {
-                InferKind::General => continue,
-                InferKind::IntLiteral => DEFAULT_INT,
-                InferKind::FloatLiteral => DEFAULT_FLOAT,
-            };
-            entry.binding = Some(Type::Primitive(name.to_string()));
+            Type::Func { return_type, param_types } => {
+                for param in param_types {
+                    self.unbound_ids(&param, out);
+                }
+                self.unbound_ids(&return_type, out);
+            }
+            Type::Struct { type_args, .. } | Type::Oneof { type_args, .. } => {
+                for arg in type_args {
+                    self.unbound_ids(&arg, out);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -262,8 +293,33 @@ impl InferTable {
         if !self.entries[index].kind.accepts(ty) || self.occurs(index, ty) {
             return Err(());
         }
-        self.entries[index].binding = Some(ty.clone());
+        let binding = self.pointer_nils(ty);
+        self.entries[index].binding = Some(binding);
         Ok(())
+    }
+
+    /// Nil in a variable's binding denotes a pointer with an unknown pointee, also
+    /// inside composites. It cannot become a concrete generic type argument.
+    fn pointer_nils(&mut self, ty: &Type) -> Type {
+        match ty {
+            Type::Nil => Type::Pointer(Box::new(self.fresh(InferKind::General))),
+            Type::Array(elem) => Type::Array(Box::new(self.pointer_nils(elem))),
+            Type::Pointer(elem) => Type::Pointer(Box::new(self.pointer_nils(elem))),
+            Type::Tuple(elems) => Type::Tuple(elems.iter().map(|ty| self.pointer_nils(ty)).collect()),
+            Type::Func { return_type, param_types } => Type::Func {
+                return_type: Box::new(self.pointer_nils(return_type)),
+                param_types: param_types.iter().map(|ty| self.pointer_nils(ty)).collect(),
+            },
+            Type::Struct { id, type_args } => Type::Struct {
+                id: id.clone(),
+                type_args: type_args.iter().map(|ty| self.pointer_nils(ty)).collect(),
+            },
+            Type::Oneof { id, type_args } => Type::Oneof {
+                id: id.clone(),
+                type_args: type_args.iter().map(|ty| self.pointer_nils(ty)).collect(),
+            },
+            _ => ty.clone(),
+        }
     }
 
     fn occurs(&self, index: usize, ty: &Type) -> bool {

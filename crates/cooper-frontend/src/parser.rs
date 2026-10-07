@@ -46,10 +46,6 @@ struct Parser {
     /// them can continue a statement, so meeting one terminates it. A braced block
     /// starts afresh.
     closers: Vec<TokenKind>,
-    /// Whether a `match` arm body is being parsed, where a newline also ends the arm
-    /// before a `-`: the next arm's pattern may be a negative integer. A braced block
-    /// starts afresh.
-    in_match_arm: bool,
     /// How many control-flow header expressions we are nested inside. While this
     /// is non-zero, newlines carry no meaning (like inside brackets): a long
     /// condition or iterable may span lines, and the delimiter keyword need not
@@ -95,6 +91,8 @@ fn can_follow_semicolon(kind: TokenKind) -> bool {
             | OpenParen
             | Ampersand
             | Not
+            | Plus
+            | Dash
             | Break
             | Continue
             | Do
@@ -180,7 +178,6 @@ impl Parser {
             pos: 0,
             paren_stack: Vec::new(),
             closers: Vec::new(),
-            in_match_arm: false,
             header_depth: 0,
             errors: Vec::new(),
         }
@@ -253,9 +250,8 @@ impl Parser {
                 return self.peek();
             }
             let outside_parens = self.paren_stack.is_empty() && self.header_depth == 0;
-            let next = self.next_token().kind;
             let can_terminate = can_precede_semicolon(self.prev_token().kind)
-                && (can_follow_semicolon(next) || self.in_match_arm && next == Dash);
+                && can_follow_semicolon(self.next_token().kind);
             if outside_parens && can_terminate && self.next_token().kind != Eof {
                 self.tokens[self.pos] = Token {
                     kind: Semicolon,
@@ -1241,10 +1237,8 @@ impl Parser {
             }
             let pattern = self.parse_pattern()?;
             self.expect(FatArrow)?;
-            let saved_in_arm = std::mem::replace(&mut self.in_match_arm, true);
-            let body = self.parse_branch_stmt();
-            self.in_match_arm = saved_in_arm;
-            arms.push(StmtArm { pattern, body: body? });
+            let body = self.parse_branch_stmt()?;
+            arms.push(StmtArm { pattern, body });
         }
         self.expect(CloseCurly)?;
         Ok(Stmt {
@@ -1265,10 +1259,8 @@ impl Parser {
             }
             let pattern = self.parse_pattern()?;
             self.expect(FatArrow)?;
-            let saved_in_arm = std::mem::replace(&mut self.in_match_arm, true);
-            let body = self.parse_branch_expr();
-            self.in_match_arm = saved_in_arm;
-            arms.push(ExprArm { pattern, body: body? });
+            let body = self.parse_branch_expr()?;
+            arms.push(ExprArm { pattern, body });
             self.consume_statement_terminator()?;
         }
         self.expect(CloseCurly)?;
@@ -1510,7 +1502,6 @@ impl Parser {
         let saved_header_depth = self.header_depth;
         self.header_depth = 0;
         let saved_closers = std::mem::take(&mut self.closers);
-        let saved_in_arm = std::mem::replace(&mut self.in_match_arm, false);
         let mut statements = Vec::new();
         loop {
             match self.peek().kind {
@@ -1526,7 +1517,6 @@ impl Parser {
         }
         self.header_depth = saved_header_depth;
         self.closers = saved_closers;
-        self.in_match_arm = saved_in_arm;
         statements
     }
 

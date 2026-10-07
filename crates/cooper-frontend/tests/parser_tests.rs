@@ -303,3 +303,12 @@ fn parses_slices_with_either_bound_optional() {
 fn an_inclusive_slice_needs_an_end() {
     err("func f() {\n  a := xs[1..=]\n}", "an inclusive slice `..=` needs an end bound");
 }
+
+#[test]
+fn a_line_starting_with_a_sign_begins_a_new_statement() {
+    // `1` can end a statement and `-` can begin one, so the newline between them
+    // separates two statements; a trailing operator continues the expression instead.
+    let m = ok("func f() {\n  a := 1\n  -2\n  b := 1 -\n    2\n  c := (1\n    - 2)\n}");
+    let StmtKind::FuncDecl(f) = &m[0].kind else { panic!("expected a function") };
+    assert_eq!(f.body.len(), 4, "a := 1; -2; b := 1 - 2; c := (1 - 2)");
+}

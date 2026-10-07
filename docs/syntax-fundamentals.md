@@ -16,7 +16,9 @@ Ahnfelt's variant of Scala's rule:
 
 Newlines are insignificant inside parentheses and brackets, inside `if`/loop/`match` headers
 (see [Control Flow](./control-flow.md#header-expressions-and-newlines)), and directly before a
-closing `}`. A block evaluates to its trailing expression; ending the block with an explicit
+closing `}`. Since a prefix operator (`-`, `+`, `!`) can begin a statement, a line starting
+with one is a new statement; to continue an expression onto the next line, end the line with
+its operator (`total := a +`) or wrap the expression in parentheses. A block evaluates to its trailing expression; ending the block with an explicit
 `;` makes it unit instead:
 
 ```

@@ -231,22 +231,8 @@ impl Type {
 /// false on a structural mismatch or a parameter bound inconsistently to two
 /// different types. Concrete-vs-concrete positions are compared with `equals`.
 pub fn unify(template: &Type, concrete: &Type, subst: &mut HashMap<String, Type>) -> bool {
-    unify_where(template, concrete, &|_| true, subst)
-}
-
-/// [`unify`], binding only the type parameters `is_var` accepts; any other
-/// `TypeParam` in the template is fixed and must match the concrete type exactly.
-/// This keeps a callee's inference variables apart from the caller's own type
-/// parameters when both appear in one template.
-pub fn unify_where(
-    template: &Type,
-    concrete: &Type,
-    is_var: &dyn Fn(&str) -> bool,
-    subst: &mut HashMap<String, Type>,
-) -> bool {
-    let unify = |t: &Type, c: &Type, s: &mut HashMap<String, Type>| unify_where(t, c, is_var, s);
     match template {
-        Type::TypeParam(name) if is_var(name) => {
+        Type::TypeParam(name) => {
             // A bare `nil` fits a pointer-typed parameter but says nothing about it.
             if matches!(concrete, Type::Nil) {
                 return subst.get(name).is_none_or(|bound| bound.equals(concrete));
@@ -489,8 +475,7 @@ impl fmt::Display for Rendered<'_> {
                     write!(f, "{} {}", name, args.join(" "))
                 }
             }
-            // An inference variable (`T#3`) reads as the binder it stands for.
-            Type::TypeParam(name) => write!(f, "{}", name.split('#').next().unwrap_or(name)),
+            Type::TypeParam(name) => write!(f, "{name}"),
             Type::Module(path) => write!(f, "module {}", path.join(".")),
         }
     }

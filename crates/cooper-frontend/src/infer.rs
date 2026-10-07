@@ -65,7 +65,7 @@ impl fmt::Display for InferId {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Entry {
     parent: usize,
     rank: u8,
@@ -83,7 +83,7 @@ pub(crate) struct Conflict {
 
 /// A union-find table with structural bindings on representatives. Variables belong
 /// to this table only; declared type parameters are rigid, not inference variables.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct InferTable {
     entries: Vec<Entry>,
 }
@@ -135,6 +135,10 @@ impl InferTable {
         types.iter().map(|ty| self.resolve(ty)).collect()
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "generic references do not require literal defaulting")
+    )]
     pub(crate) fn default_literals(&mut self) {
         for (index, entry) in self.entries.iter_mut().enumerate() {
             if entry.parent != index || entry.binding.is_some() {
@@ -152,6 +156,24 @@ impl InferTable {
     /// Whether the outer type is known, even if its components contain variables.
     pub(crate) fn is_bound(&self, ty: &Type) -> bool {
         !matches!(self.shallow(ty), Type::Infer(_))
+    }
+
+    /// Whether every inference variable in a type has a binding. Declared type
+    /// parameters are resolved types, even though they are not concrete.
+    pub(crate) fn is_resolved(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Infer(_) => self.is_bound(ty) && self.is_resolved(&self.shallow(ty)),
+            Type::Array(elem) | Type::Pointer(elem) => self.is_resolved(elem),
+            Type::Tuple(elems) => elems.iter().all(|ty| self.is_resolved(ty)),
+            Type::Func { return_type, param_types } => {
+                self.is_resolved(return_type)
+                    && param_types.iter().all(|ty| self.is_resolved(ty))
+            }
+            Type::Struct { type_args, .. } | Type::Oneof { type_args, .. } => {
+                type_args.iter().all(|ty| self.is_resolved(ty))
+            }
+            _ => true,
+        }
     }
 
     fn root(&self, mut index: usize) -> usize {
@@ -178,6 +200,14 @@ impl InferTable {
             (Type::Infer(a), Type::Infer(b)) => {
                 self.merge(*a, *b);
                 Ok(())
+            }
+            (Type::Infer(id), Type::Nil) | (Type::Nil, Type::Infer(id)) => {
+                if self.entries[id.index()].kind != InferKind::General {
+                    return Err(());
+                }
+                // Nil determines the pointer shape, but not the pointee type.
+                let elem = self.fresh(InferKind::General);
+                self.bind(*id, &Type::Pointer(Box::new(elem)))
             }
             (Type::Infer(id), ty) | (ty, Type::Infer(id)) => self.bind(*id, ty),
             (Type::Array(a), Type::Array(b)) | (Type::Pointer(a), Type::Pointer(b)) => {

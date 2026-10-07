@@ -10,10 +10,11 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diag::{Diagnostic, Span};
+use crate::infer::{InferKind, InferTable};
 use crate::resolve::{self, Callable, Globals, Signature};
 use crate::types::{
     display_pair, incomparable_part, integer_bits, is_float_name, is_integer, is_integer_name,
-    is_numeric, is_numeric_name, is_primitive, is_unit, unify, unify_where, Type, TypeDefs, TypeId, DEFAULT_FLOAT,
+    is_numeric, is_numeric_name, is_primitive, is_unit, unify, Type, TypeDefs, TypeId, DEFAULT_FLOAT,
     DEFAULT_INT, SIGNED_INTS,
 };
 
@@ -45,35 +46,8 @@ struct PendingRef {
     /// How diagnostics name the declaration (`function id`, `method map`).
     label: String,
     item: Callable,
-    /// One entry per binder: its known type, or a fresh inference variable.
-    type_args: Vec<Type>,
-    /// Inference variables still to solve, each mapped to its binder's name.
-    vars: HashMap<String, String>,
-}
-
-impl PendingRef {
-    fn is_var(&self, name: &str) -> bool {
-        self.vars.contains_key(name)
-    }
-}
-
-/// Whether `ty` mentions an inference variable — a fresh name minted for a generic
-/// reference (`T#3`), never a declared type parameter.
-fn has_inference_var(ty: &Type) -> bool {
-    match ty {
-        Type::TypeParam(name) => name.contains('#'),
-        Type::Array(elem) | Type::Pointer(elem) => has_inference_var(elem),
-        Type::Tuple(elems) => elems.iter().any(has_inference_var),
-        Type::Func {
-            return_type,
-            param_types,
-        } => has_inference_var(return_type) || param_types.iter().any(has_inference_var),
-        Type::Struct { type_args, .. } | Type::Oneof { type_args, .. } => {
-            type_args.iter().any(has_inference_var)
-        }
-        Type::Infer(_) => true,
-        Type::Unknown | Type::Unit | Type::Primitive(_) | Type::Nil | Type::Module(_) => false,
-    }
+    /// Each binder's name and the inference variable for its type argument.
+    type_args: Vec<(String, Type)>,
 }
 
 /// Type check `module` against `globals`. `modules` maps each `use`-bound module's
@@ -88,6 +62,10 @@ pub fn check(
     tc.scopes.push(HashMap::new());
     for stmt in module {
         tc.check_stmt(stmt);
+    }
+    // Callee expressions are recorded before their calls solve the type arguments.
+    for ty in tc.types.values_mut() {
+        *ty = tc.infer.resolve(ty);
     }
     Typed {
         diags: tc.diags,
@@ -124,8 +102,8 @@ struct TypeChecker<'g> {
     callee: bool,
     /// The generic callee just referenced, for the enclosing call to solve.
     pending: Option<PendingRef>,
-    /// The counter that keeps inference variable names unique.
-    fresh: usize,
+    /// The variables and bindings used to instantiate generic references.
+    infer: InferTable,
 }
 
 impl<'g> TypeChecker<'g> {
@@ -143,7 +121,7 @@ impl<'g> TypeChecker<'g> {
             refs: HashMap::new(),
             callee: false,
             pending: None,
-            fresh: 0,
+            infer: InferTable::default(),
         }
     }
 
@@ -1270,9 +1248,9 @@ impl<'g> TypeChecker<'g> {
         Some((**return_type).clone())
     }
 
-    /// Instantiate a reference at `span` to the function or method `sig`. A method's
-    /// receiver-pattern binders are fixed by matching its receiver type against the
-    /// concrete `receiver`; every other binder becomes a fresh inference variable.
+    /// Instantiate a reference at `span` to the function or method `sig`, with one
+    /// fresh variable per binder. Matching a method's receiver against the concrete
+    /// `receiver` fixes its receiver-pattern variables.
     /// With none left the reference is recorded at once. A callee defers them to the
     /// enclosing call, which infers them from its arguments; anywhere else an expected
     /// function type must determine them. Returns the reference's function type,
@@ -1286,51 +1264,36 @@ impl<'g> TypeChecker<'g> {
         callee: bool,
         expected: Option<Type>,
     ) -> Option<Type> {
-        let mut fixed = HashMap::new();
+        let type_args: Vec<_> = sig.type_params.iter()
+            .map(|param| (param.clone(), self.infer.fresh(InferKind::General)))
+            .collect();
+        let subst = type_args.iter().cloned().collect();
         if let (Some(template), Some(actual)) = (&sig.receiver, receiver) {
-            unify(template, actual, &mut fixed);
+            let _ = self.infer.unify(&template.substitute(&subst), actual);
         }
-        let mut vars = HashMap::new();
-        let mut subst = HashMap::new();
-        let mut type_args = Vec::with_capacity(sig.type_params.len());
-        for param in &sig.type_params {
-            let arg = fixed.get(param).cloned().unwrap_or_else(|| {
-                self.fresh += 1;
-                let var = format!("{param}#{}", self.fresh);
-                vars.insert(var.clone(), param.clone());
-                Type::TypeParam(var)
-            });
-            subst.insert(param.clone(), arg.clone());
-            type_args.push(arg);
-        }
-        let ty = sig.ty.substitute(&subst);
+        let ty = self.infer.resolve(&sig.ty.substitute(&subst));
         let pending = PendingRef {
             span,
             label: label.to_string(),
             item: sig.item.clone(),
             type_args,
-            vars,
         };
-        if callee && !pending.vars.is_empty() {
+        if callee && pending.type_args.iter().any(|(_, arg)| !self.infer.is_resolved(arg)) {
             self.pending = Some(pending);
             return Some(ty);
         }
-        let mut solved = HashMap::new();
         if let Some(expected @ Type::Func { .. }) = &expected {
-            unify_where(&ty, expected, &|n| pending.is_var(n), &mut solved);
+            let _ = self.infer.unify(&ty, expected);
         }
-        self.finish_reference(&pending, &solved)
-            .then(|| ty.substitute(&solved))
+        self.finish_reference(&pending)
+            .then(|| self.infer.resolve(&ty))
     }
 
-    /// Record `pending` with its inference variables solved by `solved`, or report the
-    /// first variable left unsolved (or solved only in terms of another reference's
-    /// unsolved variables).
-    fn finish_reference(&mut self, pending: &PendingRef, solved: &HashMap<String, Type>) -> bool {
-        for arg in &pending.type_args {
-            let Type::TypeParam(var) = arg else { continue };
-            let Some(binder) = pending.vars.get(var) else { continue };
-            if !solved.get(var).is_some_and(|t| !has_inference_var(t)) {
+    /// Record `pending` with every type argument resolved, or report the first
+    /// binder whose argument still contains an unbound inference variable.
+    fn finish_reference(&mut self, pending: &PendingRef) -> bool {
+        for (binder, arg) in &pending.type_args {
+            if !self.infer.is_resolved(arg) {
                 self.err(
                     pending.span,
                     format!(
@@ -1341,7 +1304,9 @@ impl<'g> TypeChecker<'g> {
                 return false;
             }
         }
-        let type_args = pending.type_args.iter().map(|t| t.substitute(solved)).collect();
+        let type_args = pending.type_args.iter()
+            .map(|(_, arg)| self.infer.resolve(arg))
+            .collect();
         self.refs.insert(
             pending.span,
             ItemRef {
@@ -1367,23 +1332,22 @@ impl<'g> TypeChecker<'g> {
         return_type: &Type,
         expected: Option<Type>,
     ) -> Option<Type> {
-        let is_var = |n: &str| pending.is_var(n);
-        let mut solved = HashMap::new();
         if let Some(expected) = &expected {
-            let mut trial = HashMap::new();
-            if unify_where(return_type, expected, &is_var, &mut trial) {
-                solved = trial;
+            // Only a compatible expected result contributes inference bindings.
+            let mut trial = self.infer.clone();
+            if trial.unify(return_type, expected).is_ok() {
+                self.infer = trial;
             }
         }
         let (deferred, first): (Vec<usize>, Vec<usize>) =
             (0..args.len()).partition(|&i| self.is_generic_function_ref(&args[i]));
         for i in first.into_iter().chain(deferred) {
-            // A parameter still naming an unsolved variable gives no usable hint.
-            let hint = param_types[i].substitute(&solved);
-            let usable = (!has_inference_var(&hint)).then(|| hint.clone());
+            // A parameter still containing an unbound variable gives no usable hint.
+            let hint = self.infer.resolve(&param_types[i]);
+            let usable = self.infer.is_resolved(&hint).then_some(hint);
             let arg_type = self.check_expr_expecting(&args[i], usable)?;
-            if !unify_where(&param_types[i], &arg_type, &is_var, &mut solved) {
-                let (hint_shown, arg_shown) = display_pair(&hint.substitute(&solved), &arg_type);
+            if let Err(conflict) = self.infer.unify(&param_types[i], &arg_type) {
+                let (hint_shown, arg_shown) = display_pair(&conflict.left, &conflict.right);
                 self.err(
                     args[i].span,
                     format!("argument {} type mismatch: expected {hint_shown}, found {arg_shown}", i + 1),
@@ -1391,17 +1355,16 @@ impl<'g> TypeChecker<'g> {
                 return None;
             }
         }
-        if !self.finish_reference(&pending, &solved) {
+        if !self.finish_reference(&pending) {
             return None;
         }
-        let callee_type = Type::Func {
+        let callee_type = self.infer.resolve(&Type::Func {
             return_type: Box::new(return_type.clone()),
             param_types: param_types.to_vec(),
-        }
-        .substitute(&solved);
+        });
         self.types.insert(pending.span, callee_type.clone());
         self.types.insert(callee_span, callee_type);
-        Some(return_type.substitute(&solved))
+        Some(self.infer.resolve(return_type))
     }
 
     /// Whether `expr` is a bare reference to a generic function, which takes its type

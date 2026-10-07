@@ -102,7 +102,12 @@ fn binding(params: &[String], args: &[Type]) -> HashMap<String, Type> {
     params.iter().cloned().zip(args.iter().cloned()).collect()
 }
 
-/// A resolved type in the Cooper language. A closed `enum` replaces the Go `Type`
+/// An inference variable's table index and diagnostic class. The class is a hint
+/// for display; the inference table owns the variable's current class and binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InferId(pub(crate) u32);
+
+/// A type in the Cooper language. A closed `enum` replaces the Go `Type`
 /// interface, so every `match` over it is checked for exhaustiveness at compile
 /// time — the class of "forgot a variant" bugs becomes a build error.
 #[derive(Debug, Clone)]
@@ -111,6 +116,8 @@ pub enum Type {
     /// tuple-destructuring bindings). It satisfies identifier-existence checks
     /// during the resolve pass and never participates in a real equality check.
     Unknown,
+    /// A variable solved by the body's inference table before lowering.
+    Infer(InferId),
     Unit,
     Primitive(String),
     Array(Box<Type>),
@@ -153,6 +160,7 @@ impl Type {
     pub fn equals(&self, other: &Type) -> bool {
         match (self, other) {
             (Type::Unknown, Type::Unknown) => true,
+            (Type::Infer(a), Type::Infer(b)) => a == b,
             (Type::Unit, Type::Unit) => true,
             (Type::Primitive(a), Type::Primitive(b)) => a == b,
             (Type::Array(a), Type::Array(b)) => a.equals(b),
@@ -208,7 +216,12 @@ impl Type {
                 id: id.clone(),
                 type_args: type_args.iter().map(|a| a.substitute(subst)).collect(),
             },
-            _ => self.clone(),
+            Type::Unknown
+            | Type::Infer(_)
+            | Type::Unit
+            | Type::Primitive(_)
+            | Type::Nil
+            | Type::Module(_) => self.clone(),
         }
     }
 }
@@ -366,9 +379,11 @@ pub fn is_float(t: &Type) -> bool {
 pub(crate) fn incomparable_part(t: &Type, defs: &TypeDefs) -> Option<Type> {
     match t {
         Type::Unknown | Type::Unit | Type::Primitive(_) | Type::Pointer(_) | Type::Nil => None,
-        Type::Array(_) | Type::Func { .. } | Type::TypeParam(_) | Type::Module(_) => {
-            Some(t.clone())
-        }
+        Type::Array(_)
+        | Type::Func { .. }
+        | Type::TypeParam(_)
+        | Type::Infer(_)
+        | Type::Module(_) => Some(t.clone()),
         Type::Tuple(elems) => elems.iter().find_map(|e| incomparable_part(e, defs)),
         Type::Struct { .. } => defs
             .struct_members(t)?
@@ -422,6 +437,7 @@ impl Type {
                 type_args.iter().for_each(|a| a.collect_ids(out));
             }
             Type::Unknown
+            | Type::Infer(_)
             | Type::Unit
             | Type::Primitive(_)
             | Type::Nil
@@ -443,6 +459,7 @@ impl fmt::Display for Rendered<'_> {
         let r = |ty| Rendered { ty, qualify: self.qualify };
         match self.ty {
             Type::Unknown => write!(f, "<unknown>"),
+            Type::Infer(id) => write!(f, "{id}"),
             Type::Unit => write!(f, "()"),
             Type::Primitive(name) => write!(f, "{}", name),
             Type::Array(elem) => write!(f, "{}[]", r(elem)),

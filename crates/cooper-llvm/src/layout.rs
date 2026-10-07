@@ -90,6 +90,7 @@ impl Module<'_> {
             }
             Type::Struct { .. } => self.struct_type(ty)?,
             Type::Oneof { .. } => self.oneof_type(ty)?,
+            Type::Infer(_) => unreachable!("inference variables are resolved before code generation"),
             _ => return Err(format!("values of type {ty}")),
         };
         Ok(Some(llvm))
@@ -192,6 +193,7 @@ impl Module<'_> {
             Type::Func { .. } => 16,
             Type::Primitive(name) if name == "string" => 16,
             Type::Array(_) => 24,
+            Type::Infer(_) => unreachable!("inference variables are resolved before code generation"),
             _ => 8,
         }
     }

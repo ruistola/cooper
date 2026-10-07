@@ -89,6 +89,7 @@ fn size(ty: &Type) -> usize {
         | Type::Primitive(_)
         | Type::Nil
         | Type::TypeParam(_)
+        | Type::Infer(_)
         | Type::Module(_) => 0,
     }
 }

@@ -1,0 +1,420 @@
+//! Per-body type variables and structural unification.
+
+use std::fmt;
+
+use crate::types::{is_float, is_numeric, InferId, Type, DEFAULT_FLOAT, DEFAULT_INT};
+
+/// The types an unbound variable may take. Literal classes intersect when merged:
+/// an integer literal can take a float type, but a float literal cannot take an integer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub(crate) enum InferKind {
+    General,
+    IntLiteral,
+    FloatLiteral,
+}
+
+impl InferKind {
+    fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::General, kind) | (kind, Self::General) => kind,
+            (Self::FloatLiteral, _) | (_, Self::FloatLiteral) => Self::FloatLiteral,
+            (Self::IntLiteral, Self::IntLiteral) => Self::IntLiteral,
+        }
+    }
+
+    fn accepts(self, ty: &Type) -> bool {
+        match self {
+            Self::General => true,
+            Self::IntLiteral => is_numeric(ty),
+            Self::FloatLiteral => is_float(ty),
+        }
+    }
+}
+
+impl InferId {
+    // The low two bits carry a display hint; the remaining bits index the table.
+    // Resolution refreshes the hint from the representative's current class.
+    fn new(index: usize, kind: InferKind) -> Self {
+        let index = u32::try_from(index).expect("too many inference variables");
+        assert!(index <= u32::MAX >> 2, "too many inference variables");
+        Self((index << 2) | kind as u32)
+    }
+
+    fn index(self) -> usize {
+        (self.0 >> 2) as usize
+    }
+
+    fn kind(self) -> InferKind {
+        match self.0 & 3 {
+            0 => InferKind::General,
+            1 => InferKind::IntLiteral,
+            2 => InferKind::FloatLiteral,
+            _ => unreachable!("an inference variable has a valid display class"),
+        }
+    }
+}
+
+impl fmt::Display for InferId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.kind() {
+            InferKind::General => "_",
+            InferKind::IntLiteral => "{integer}",
+            InferKind::FloatLiteral => "{float}",
+        })
+    }
+}
+
+#[derive(Debug)]
+struct Entry {
+    parent: usize,
+    rank: u8,
+    kind: InferKind,
+    binding: Option<Type>,
+}
+
+/// The resolved operands of a failed equality. The caller supplies the diagnostic
+/// wording and source span; failure can leave earlier components unified.
+#[derive(Debug)]
+pub(crate) struct Conflict {
+    pub(crate) left: Box<Type>,
+    pub(crate) right: Box<Type>,
+}
+
+/// A union-find table with structural bindings on representatives. Variables belong
+/// to this table only; declared type parameters are rigid, not inference variables.
+#[derive(Debug, Default)]
+pub(crate) struct InferTable {
+    entries: Vec<Entry>,
+}
+
+impl InferTable {
+    pub(crate) fn fresh(&mut self, kind: InferKind) -> Type {
+        let index = self.entries.len();
+        let id = InferId::new(index, kind);
+        self.entries.push(Entry {
+            parent: index,
+            rank: 0,
+            kind,
+            binding: None,
+        });
+        Type::Infer(id)
+    }
+
+    /// Equate two types, following variable bindings and checking recursive types.
+    pub(crate) fn unify(&mut self, left: &Type, right: &Type) -> Result<(), Conflict> {
+        self.unify_inner(left, right).map_err(|()| Conflict {
+            left: Box::new(self.resolve(left)),
+            right: Box::new(self.resolve(right)),
+        })
+    }
+
+    /// Resolve variables throughout a type, retaining canonical unbound variables.
+    pub(crate) fn resolve(&self, ty: &Type) -> Type {
+        match self.shallow(ty) {
+            Type::Array(elem) => Type::Array(Box::new(self.resolve(&elem))),
+            Type::Pointer(elem) => Type::Pointer(Box::new(self.resolve(&elem))),
+            Type::Tuple(elems) => Type::Tuple(self.resolve_all(&elems)),
+            Type::Func { return_type, param_types } => Type::Func {
+                return_type: Box::new(self.resolve(&return_type)),
+                param_types: self.resolve_all(&param_types),
+            },
+            Type::Struct { id, type_args } => Type::Struct {
+                id,
+                type_args: self.resolve_all(&type_args),
+            },
+            Type::Oneof { id, type_args } => Type::Oneof {
+                id,
+                type_args: self.resolve_all(&type_args),
+            },
+            leaf => leaf,
+        }
+    }
+
+    fn resolve_all(&self, types: &[Type]) -> Vec<Type> {
+        types.iter().map(|ty| self.resolve(ty)).collect()
+    }
+
+    pub(crate) fn default_literals(&mut self) {
+        for (index, entry) in self.entries.iter_mut().enumerate() {
+            if entry.parent != index || entry.binding.is_some() {
+                continue;
+            }
+            let name = match entry.kind {
+                InferKind::General => continue,
+                InferKind::IntLiteral => DEFAULT_INT,
+                InferKind::FloatLiteral => DEFAULT_FLOAT,
+            };
+            entry.binding = Some(Type::Primitive(name.to_string()));
+        }
+    }
+
+    /// Whether the outer type is known, even if its components contain variables.
+    pub(crate) fn is_bound(&self, ty: &Type) -> bool {
+        !matches!(self.shallow(ty), Type::Infer(_))
+    }
+
+    fn root(&self, mut index: usize) -> usize {
+        while self.entries[index].parent != index {
+            index = self.entries[index].parent;
+        }
+        index
+    }
+
+    fn root_mut(&mut self, index: usize) -> usize {
+        let parent = self.entries[index].parent;
+        if parent == index {
+            return index;
+        }
+        let root = self.root_mut(parent);
+        self.entries[index].parent = root;
+        root
+    }
+
+    fn unify_inner(&mut self, left: &Type, right: &Type) -> Result<(), ()> {
+        let left = self.shallow(left);
+        let right = self.shallow(right);
+        match (&left, &right) {
+            (Type::Infer(a), Type::Infer(b)) => {
+                self.merge(*a, *b);
+                Ok(())
+            }
+            (Type::Infer(id), ty) | (ty, Type::Infer(id)) => self.bind(*id, ty),
+            (Type::Array(a), Type::Array(b)) | (Type::Pointer(a), Type::Pointer(b)) => {
+                self.unify_inner(a, b)
+            }
+            (Type::Pointer(_), Type::Nil) | (Type::Nil, Type::Pointer(_)) => Ok(()),
+            (Type::Tuple(a), Type::Tuple(b)) => self.unify_all(a, b),
+            (
+                Type::Func { return_type: a, param_types: pa },
+                Type::Func { return_type: b, param_types: pb },
+            ) => {
+                self.unify_all(pa, pb)?;
+                self.unify_inner(a, b)
+            }
+            (Type::Struct { id: a, type_args: aa }, Type::Struct { id: b, type_args: ab })
+            | (Type::Oneof { id: a, type_args: aa }, Type::Oneof { id: b, type_args: ab })
+                if a == b => self.unify_all(aa, ab),
+            _ if left.equals(&right) => Ok(()),
+            _ => Err(()),
+        }
+    }
+
+    fn unify_all(&mut self, left: &[Type], right: &[Type]) -> Result<(), ()> {
+        if left.len() != right.len() {
+            return Err(());
+        }
+        for (a, b) in left.iter().zip(right) {
+            self.unify_inner(a, b)?;
+        }
+        Ok(())
+    }
+
+    fn merge(&mut self, left: InferId, right: InferId) {
+        let mut a = self.root_mut(left.index());
+        let mut b = self.root_mut(right.index());
+        if a == b {
+            return;
+        }
+        if self.entries[a].rank < self.entries[b].rank {
+            std::mem::swap(&mut a, &mut b);
+        }
+        let kind = self.entries[a].kind.merge(self.entries[b].kind);
+        self.entries[b].parent = a;
+        self.entries[a].kind = kind;
+        if self.entries[a].rank == self.entries[b].rank {
+            self.entries[a].rank += 1;
+        }
+    }
+
+    fn bind(&mut self, id: InferId, ty: &Type) -> Result<(), ()> {
+        let index = self.root_mut(id.index());
+        if !self.entries[index].kind.accepts(ty) || self.occurs(index, ty) {
+            return Err(());
+        }
+        self.entries[index].binding = Some(ty.clone());
+        Ok(())
+    }
+
+    fn occurs(&self, index: usize, ty: &Type) -> bool {
+        match self.shallow(ty) {
+            Type::Infer(id) => self.root(id.index()) == index,
+            Type::Array(elem) | Type::Pointer(elem) => self.occurs(index, &elem),
+            Type::Tuple(elems) => elems.iter().any(|ty| self.occurs(index, ty)),
+            Type::Func { return_type, param_types } => {
+                self.occurs(index, &return_type)
+                    || param_types.iter().any(|ty| self.occurs(index, ty))
+            }
+            Type::Struct { type_args, .. } | Type::Oneof { type_args, .. } => {
+                type_args.iter().any(|ty| self.occurs(index, ty))
+            }
+            _ => false,
+        }
+    }
+
+    fn shallow(&self, ty: &Type) -> Type {
+        let Type::Infer(id) = ty else {
+            return ty.clone();
+        };
+        let index = self.root(id.index());
+        let entry = &self.entries[index];
+        match &entry.binding {
+            Some(binding) => self.shallow(binding),
+            None => Type::Infer(InferId::new(index, entry.kind)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::TypeId;
+
+    fn prim(name: &str) -> Type {
+        Type::Primitive(name.to_string())
+    }
+
+    fn id(name: &str) -> TypeId {
+        TypeId { module: "main".to_string(), name: name.to_string() }
+    }
+
+    #[test]
+    fn bindings_follow_merged_variables_in_both_directions() {
+        let mut table = InferTable::default();
+        let a = table.fresh(InferKind::General);
+        let b = table.fresh(InferKind::General);
+        let c = table.fresh(InferKind::General);
+        table.unify(&a, &b).unwrap();
+        table.unify(&c, &b).unwrap();
+        table.unify(&a, &a).unwrap();
+        assert!(!table.is_bound(&c));
+        table.unify(&prim("string"), &b).unwrap();
+        assert!(table.resolve(&a).equals(&prim("string")));
+        assert!(table.resolve(&c).equals(&prim("string")));
+        assert!(table.is_bound(&c));
+        let conflict = table.unify(&c, &prim("bool")).unwrap_err();
+        assert!(conflict.left.equals(&prim("string")));
+        assert!(conflict.right.equals(&prim("bool")));
+    }
+
+    #[test]
+    fn literal_classes_constrain_concrete_bindings() {
+        let mut table = InferTable::default();
+        let integer = table.fresh(InferKind::IntLiteral);
+        table.unify(&integer, &prim("i64")).unwrap();
+        let integer_as_float = table.fresh(InferKind::IntLiteral);
+        table.unify(&integer_as_float, &prim("f64")).unwrap();
+        let float = table.fresh(InferKind::FloatLiteral);
+        assert!(table.unify(&float, &prim("i32")).is_err());
+        table.unify(&float, &prim("f32")).unwrap();
+        let non_numeric = table.fresh(InferKind::IntLiteral);
+        assert!(table.unify(&non_numeric, &prim("string")).is_err());
+        assert!(!table.is_bound(&non_numeric));
+    }
+
+    #[test]
+    fn merged_literal_classes_default_once_at_their_representative() {
+        let mut table = InferTable::default();
+        let general = table.fresh(InferKind::General);
+        let integer = table.fresh(InferKind::IntLiteral);
+        let float = table.fresh(InferKind::FloatLiteral);
+        assert_eq!(general.to_string(), "_");
+        assert_eq!(integer.to_string(), "{integer}");
+        assert_eq!(float.to_string(), "{float}");
+        table.unify(&general, &integer).unwrap();
+        assert_eq!(table.resolve(&general).to_string(), "{integer}");
+        table.unify(&float, &integer).unwrap();
+        assert_eq!(table.resolve(&integer).to_string(), "{float}");
+        assert!(table.unify(&general, &prim("u32")).is_err());
+        let unbound = table.fresh(InferKind::General);
+        let default_int = table.fresh(InferKind::IntLiteral);
+        let bound_int = table.fresh(InferKind::IntLiteral);
+        table.unify(&bound_int, &prim("u8")).unwrap();
+        table.default_literals();
+        table.default_literals();
+        assert!(table.resolve(&general).equals(&prim(DEFAULT_FLOAT)));
+        assert!(table.resolve(&integer).equals(&prim(DEFAULT_FLOAT)));
+        assert!(table.resolve(&float).equals(&prim(DEFAULT_FLOAT)));
+        assert!(table.resolve(&default_int).equals(&prim(DEFAULT_INT)));
+        assert!(table.resolve(&bound_int).equals(&prim("u8")));
+        assert!(!table.is_bound(&unbound));
+    }
+
+    #[test]
+    fn occurs_check_rejects_direct_and_indirect_recursive_bindings() {
+        let mut table = InferTable::default();
+        let a = table.fresh(InferKind::General);
+        let b = table.fresh(InferKind::General);
+        assert!(table.unify(&a, &Type::Array(Box::new(a.clone()))).is_err());
+        assert!(!table.is_bound(&a));
+        table.unify(&b, &Type::Pointer(Box::new(a.clone()))).unwrap();
+        assert!(table.is_bound(&b));
+        assert!(table.unify(&a, &b).is_err());
+        table.unify(&a, &prim("i32")).unwrap();
+        assert!(table.resolve(&b).equals(&Type::Pointer(Box::new(prim("i32")))));
+    }
+
+    #[test]
+    fn nil_fits_pointers_without_determining_their_elements() {
+        let mut table = InferTable::default();
+        let elem = table.fresh(InferKind::General);
+        let pointer = Type::Pointer(Box::new(elem.clone()));
+        table.unify(&Type::Nil, &pointer).unwrap();
+        table.unify(&pointer, &Type::Nil).unwrap();
+        table.unify(&Type::Nil, &Type::Nil).unwrap();
+        assert!(!table.is_bound(&elem));
+        assert!(table.unify(&Type::Nil, &prim("i32")).is_err());
+    }
+
+    #[test]
+    fn unification_and_resolution_descend_through_composite_types() {
+        let mut table = InferTable::default();
+        let elem = table.fresh(InferKind::General);
+        let shape = |elem: Type| Type::Func {
+            param_types: vec![Type::Tuple(vec![
+                Type::Array(Box::new(Type::Pointer(Box::new(elem.clone())))),
+                Type::TypeParam("T".to_string()),
+            ])],
+            return_type: Box::new(Type::Oneof {
+                id: id("Maybe"),
+                type_args: vec![Type::Struct { id: id("Box"), type_args: vec![elem] }],
+            }),
+        };
+        let template = shape(elem.clone());
+        let concrete = shape(prim("f64"));
+        assert!(table.is_bound(&template));
+        table.unify(&template, &concrete).unwrap();
+        assert!(table.resolve(&template).equals(&concrete));
+        assert!(table.resolve(&elem).equals(&prim("f64")));
+        let recursive = table.fresh(InferKind::General);
+        assert!(table.unify(&recursive, &shape(recursive.clone())).is_err());
+    }
+
+    #[test]
+    fn structural_matching_preserves_arity_nominal_identity_and_rigid_parameters() {
+        let mut table = InferTable::default();
+        let tuple = Type::Tuple(vec![prim("i32")]);
+        assert!(table.unify(&tuple, &Type::Tuple(vec![])).is_err());
+        let function = |params| Type::Func {
+            return_type: Box::new(Type::Unit),
+            param_types: params,
+        };
+        assert!(table.unify(&function(vec![]), &function(vec![prim("i32")])).is_err());
+        let boxed = Type::Struct { id: id("Box"), type_args: vec![prim("i32")] };
+        let other_module = Type::Struct {
+            id: TypeId { module: "other".to_string(), name: "Box".to_string() },
+            type_args: vec![prim("i32")],
+        };
+        let sum = Type::Oneof { id: id("Box"), type_args: vec![prim("i32")] };
+        let template = Type::Struct { id: id("Box"), type_args: vec![] };
+        assert!(table.unify(&boxed, &other_module).is_err());
+        assert!(table.unify(&boxed, &sum).is_err());
+        assert!(table.unify(&boxed, &template).is_err());
+        let parameter = Type::TypeParam("T".to_string());
+        table.unify(&parameter, &parameter).unwrap();
+        assert!(table.unify(&parameter, &prim("i32")).is_err());
+        let inferred = table.fresh(InferKind::General);
+        table.unify(&inferred, &parameter).unwrap();
+        assert!(table.resolve(&inferred).equals(&parameter));
+    }
+}

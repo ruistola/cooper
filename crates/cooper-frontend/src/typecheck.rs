@@ -71,6 +71,7 @@ fn has_inference_var(ty: &Type) -> bool {
         Type::Struct { type_args, .. } | Type::Oneof { type_args, .. } => {
             type_args.iter().any(has_inference_var)
         }
+        Type::Infer(_) => true,
         Type::Unknown | Type::Unit | Type::Primitive(_) | Type::Nil | Type::Module(_) => false,
     }
 }

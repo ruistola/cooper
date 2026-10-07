@@ -13,6 +13,11 @@
 pub mod ast;
 mod builtins;
 pub mod diag;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the checker does not generate inference variables")
+)]
+mod infer;
 pub mod lexer;
 pub mod modules;
 pub mod parser;

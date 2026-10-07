@@ -712,6 +712,9 @@ impl Lower<'_> {
             .get(&expr.span)
             .cloned()
             .ok_or(LowerError::MissingType(expr.span))?;
+        if matches!(ty, Type::Infer(_)) {
+            unreachable!("inference variables are resolved before lowering");
+        }
         // A reference to a function or method names its declaration; a module prefix
         // carries no runtime value and drops away.
         if let Some(reference) = self.refs.get(&expr.span) {

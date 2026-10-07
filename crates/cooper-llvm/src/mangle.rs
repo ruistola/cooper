@@ -117,8 +117,8 @@ fn ty(out: &mut String, t: &Type) {
             out.push('G');
             ident(out, name);
         }
-        // Neither names a value a function instance can be generic over.
-        Type::Unknown | Type::Nil | Type::Module(_) => {
+        // None of these names a value a function instance can be generic over.
+        Type::Unknown | Type::Nil | Type::Module(_) | Type::Infer(_) => {
             unreachable!("a type argument is a concrete value type, not {t:?}")
         }
     }

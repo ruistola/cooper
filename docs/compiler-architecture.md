@@ -29,7 +29,10 @@ The compiler is a Rust Cargo workspace.
   stripped from the interface a module exports.
 * **lexer.rs** — Tokenization with [`logos`].
 * **parser.rs** — Hand-written recursive descent with Pratt expression parsing. It recovers at
-  statement boundaries to report many errors per run.
+  statement boundaries to report many errors per run. The token cursor, recovery, and
+  semicolon inference live in `parser.rs`; `parser/` extends it by syntactic category:
+  `exprs.rs`, `stmts.rs`, `patterns.rs` (with `match`), and `decls.rs` (declarations, `use`
+  blocks, and type expressions).
 * **ast.rs** — Every node is a `{ kind, span }` pair with a closed `*Kind` enum, so every
   `match` is exhaustiveness-checked.
 * **types.rs** — The `Type` enum, nominal identities, equality, substitution, and the

@@ -10,7 +10,9 @@ The compiler is a Rust Cargo workspace.
 * **cooper-ir** — the typed lowering IR and monomorphization: the seam between the frontend
   and a backend.
 * **cooper-llvm** — the backend: emits a monomorphized program as textual LLVM IR, and holds
-  the C runtime (`runtime/cooper_rt.c`) every program links against.
+  the C runtime (`runtime/cooper_rt.c`) every program links against. `layout.rs` maps types
+  to LLVM layouts, `mangle.rs` names symbols, and `function.rs` emits one function body, with
+  `function/` extending it by responsibility (control flow, operators, calls, arrays).
 * **cooper-cli** (binary `cooper`) — the host driver: the filesystem loader, the build
   pipeline, and the `check`, `build`, and `run` commands. All filesystem, process, and `toml`
   use lives here.

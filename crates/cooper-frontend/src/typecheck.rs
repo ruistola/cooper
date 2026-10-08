@@ -13,8 +13,8 @@ use crate::diag::{Diagnostic, Span};
 use crate::infer::{InferKind, InferTable};
 use crate::resolve::{self, Callable, Globals, Signature};
 use crate::types::{
-    display_pair, incomparable_part, integer_bits, is_float_name, is_integer, is_integer_name,
-    is_numeric, is_numeric_name, is_primitive, is_unit, InferId, Type, TypeDefs, TypeId, SIGNED_INTS,
+    display_pair, incomparable_part, integer_bits, is_integer, is_integer_name,
+    is_numeric, is_numeric_name, is_primitive, is_unit, InferId, Type, TypeId, SIGNED_INTS,
 };
 
 /// The result of type checking one file: its diagnostics, the type attributed to
@@ -38,9 +38,7 @@ pub struct ItemRef {
     pub type_args: Vec<Type>,
 }
 
-/// A generic function or method reference whose type arguments are not yet known,
-/// awaiting the call (or expected function type) that infers them.
-#[derive(Clone)]
+/// A function or method reference awaiting the body's resolved type arguments.
 struct PendingRef {
     span: Span,
     /// How diagnostics name the declaration (`function id`, `method map`).
@@ -146,21 +144,14 @@ struct TypeChecker<'g> {
     current_return: Option<Type>,
     /// The type parameters in scope for the current function's local annotations.
     type_params: HashSet<String>,
-    /// The type an expression is being checked against when known from immediate
-    /// context (an annotated initializer or a `return` value). It supplies the type
-    /// arguments a generic variant construction cannot infer from its payload
-    /// alone. It is a head-only hint: consumed before checking sub-expressions.
+    /// A head-only subject hint for bare variants, supplied by declarations,
+    /// returns, and call parameters. Other inference uses equality constraints.
     expected: Option<Type>,
     /// How many loop bodies enclose the statement being checked, so `break` and
     /// `continue` outside any loop can be rejected.
     loop_depth: u32,
     /// Every function and method reference, keyed by span: the lowering handoff.
     refs: HashMap<Span, ItemRef>,
-    /// Whether the expression being checked is a call's callee. Like `expected`, a
-    /// head-only hint: a generic callee defers its type arguments to the call.
-    callee: bool,
-    /// The generic callee just referenced, for the enclosing call to solve.
-    pending: Option<PendingRef>,
     /// The variables and bindings used to instantiate generic references.
     infer: InferTable,
     body: BodyConstraints,
@@ -179,8 +170,6 @@ impl<'g> TypeChecker<'g> {
             expected: None,
             loop_depth: 0,
             refs: HashMap::new(),
-            callee: false,
-            pending: None,
             infer: InferTable::default(),
             body: BodyConstraints::default(),
         }
@@ -312,7 +301,7 @@ impl<'g> TypeChecker<'g> {
         let errors = self.diags.len();
         match &obligation.kind {
             ObligationKind::Field { name, result, target_span } => {
-                if let Some(actual) = self.resolve_field(subject, name, obligation.span, *target_span, false, None) {
+                if let Some(actual) = self.resolve_field(subject, name, obligation.span, *target_span) {
                     if self.check_deferred_call(obligation.span, &actual)
                         && self.infer.unify(result, &actual).is_err()
                     {
@@ -561,7 +550,6 @@ impl<'g> TypeChecker<'g> {
         let elems: Option<Vec<Type>> = match &iterable.kind {
             ExprKind::Range { start, end, .. } => {
                 let start_type = self.check_expr(start);
-                self.expected = start_type.clone();
                 let end_type = self.check_expr(end);
                 let elem = match (start_type, end_type) {
                     (Some(s), Some(e)) => {
@@ -1070,9 +1058,6 @@ impl<'g> TypeChecker<'g> {
     fn check_expr(&mut self, expr: &Expr) -> Option<Type> {
         if let Some(ty) = self.types.get(&expr.span).cloned() {
             self.expected = None;
-            if std::mem::take(&mut self.callee) {
-                self.pending = self.body.references.get(&expr.span).cloned();
-            }
             return Some(self.infer.resolve(&ty));
         }
         let ty = self.check_expr_kind(expr).map(|ty| self.infer.resolve(&ty));
@@ -1084,13 +1069,11 @@ impl<'g> TypeChecker<'g> {
     }
 
     fn check_expr_kind(&mut self, expr: &Expr) -> Option<Type> {
-        // expectedType is a head-only hint: capture it for this expression and
-        // clear it so it never leaks into sub-expressions. Only the dispatches that
-        // can act on it restore it before recursing.
+        // Bare variants consume a head-only subject hint. Other expressions get
+        // their types from equality constraints, not expected-type threading.
         let expected = self.expected.take();
-        let callee = std::mem::take(&mut self.callee);
         match &expr.kind {
-            ExprKind::Number(text) => Some(self.number_type(text, expr.span, expected, false)),
+            ExprKind::Number(text) => Some(self.number_type(text, expr.span, false)),
             ExprKind::Str(text) => {
                 if let Err(escape) = decode_string_literal(text) {
                     self.err(expr.span, format!("unknown escape sequence `{escape}` in string literal"));
@@ -1107,31 +1090,25 @@ impl<'g> TypeChecker<'g> {
                 }
                 Some(Type::Tuple(elem_types))
             }
-            ExprKind::Array(elems) => self.check_array_literal(elems, expr.span, expected),
+            ExprKind::Array(elems) => self.check_array_literal(elems),
             ExprKind::Ident(name) => {
                 // Restore the hint so a bare payload-free variant can see it, but
                 // clear it afterwards so an ordinary identifier never lets it leak.
                 self.expected = expected;
-                let t = self.check_ident(name, expr.span, callee);
+                let t = self.check_ident(name, expr.span);
                 self.expected = None;
                 t
             }
             ExprKind::Binary { op, lhs, rhs } => {
-                self.check_binary(*op, lhs, rhs, expr.span, expected)
+                self.check_binary(*op, lhs, rhs, expr.span)
             }
             ExprKind::Range { .. } => {
                 self.err(expr.span, "a range may only appear as a for-loop iterable");
                 None
             }
-            ExprKind::Unary { op, operand } => {
-                // A sign carried over a numeric literal is transparent to contextual
-                // typing, so restore the hint for `-1` to adopt an expected width.
-                self.expected = expected;
-                self.check_unary(*op, operand, expr.span)
-            }
+            ExprKind::Unary { op, operand } => self.check_unary(*op, operand, expr.span),
             ExprKind::Group(inner) => {
                 self.expected = expected;
-                self.callee = callee;
                 self.check_expr(inner)
             }
             ExprKind::Call { callee, args } => {
@@ -1141,10 +1118,7 @@ impl<'g> TypeChecker<'g> {
             ExprKind::StructLiteral { target, members } => {
                 self.check_struct_literal(target, members)
             }
-            ExprKind::Field { target, name } => {
-                self.expected = expected;
-                self.check_field(target, name, expr.span, callee)
-            }
+            ExprKind::Field { target, name } => self.check_field(target, name, expr.span),
             ExprKind::Index { array, index } => self.check_index(array, index),
             ExprKind::Slice {
                 array, start, end, ..
@@ -1165,7 +1139,7 @@ impl<'g> TypeChecker<'g> {
         }
     }
 
-    fn check_ident(&mut self, name: &str, span: Span, callee: bool) -> Option<Type> {
+    fn check_ident(&mut self, name: &str, span: Span) -> Option<Type> {
         if let Some(t) = self.lookup_var(name) {
             return Some(t.clone());
         }
@@ -1177,8 +1151,7 @@ impl<'g> TypeChecker<'g> {
         }
         if let Some(sig) = self.globals.lookup_func(name) {
             let sig = sig.clone();
-            let expected = self.expected.clone();
-            return self.reference(span, &sig, &format!("function {name}"), None, callee, expected);
+            return self.reference(span, &sig, &format!("function {name}"), None);
         }
         // A bare name that begins some `use`-bound module's spelling is a module
         // reference, navigated further by qualified field access.
@@ -1186,42 +1159,13 @@ impl<'g> TypeChecker<'g> {
             return Some(Type::Module(vec![name.to_string()]));
         }
         // A bare variant takes its subject from context or from a later use.
-        if let Some(oneof) = self.expected_variant_oneof(name) {
-            let expected = self.expected.take();
-            let subject = self.variant_subject(&oneof, expected.as_ref());
-            return Some(self.defer_variant(subject, name, None, true, span));
-        }
-        if self.any_oneof_with_variant(name).is_some() {
+        if self.is_bare_variant(name) {
             let expected = self.expected.take();
             let subject = self.bare_variant_subject(expected);
             return Some(self.defer_variant(subject, name, None, true, span));
         }
         self.err(span, format!("undefined variable: {name}"));
         None
-    }
-
-    /// The generic template of the currently expected sum type, but only when that
-    /// type names `variant` among its variants. This is the hook that lets a bare
-    /// variant resolve against context; `self.expected` is left intact for the
-    /// caller to consume when seeding type arguments.
-    fn expected_variant_oneof(&self, variant: &str) -> Option<Type> {
-        let Some(Type::Oneof { id, .. }) = &self.expected else {
-            return None;
-        };
-        let template = Type::Oneof {
-            id: id.clone(),
-            type_args: Vec::new(),
-        };
-        self.globals.defs.payload(&template, variant).is_some().then_some(template)
-    }
-
-    /// The name of any declared sum type carrying `variant`, used only to phrase a
-    /// targeted error when a bare variant appears with no expected type to fix it.
-    fn any_oneof_with_variant(&self, variant: &str) -> Option<String> {
-        self.globals.oneofs.iter().find_map(|(name, id)| {
-            let def = self.globals.defs.oneofs.get(id)?;
-            def.variants.contains_key(variant).then(|| name.clone())
-        })
     }
 
     /// Whether `segs` names a `use`-bound module or the leading segments of one, so
@@ -1240,7 +1184,6 @@ impl<'g> TypeChecker<'g> {
         prefix: &[String],
         field: &str,
         span: Span,
-        callee: bool,
     ) -> Option<Type> {
         let mut candidate = prefix.to_vec();
         candidate.push(field.to_string());
@@ -1253,9 +1196,8 @@ impl<'g> TypeChecker<'g> {
             }
             if let Some(sig) = interface.lookup_func(field) {
                 let sig = sig.clone();
-                let expected = self.expected.take();
                 let label = format!("function {}.{field}", prefix.join("."));
-                return self.reference(span, &sig, &label, None, callee, expected);
+                return self.reference(span, &sig, &label, None);
             }
             self.err(
                 span,
@@ -1276,7 +1218,6 @@ impl<'g> TypeChecker<'g> {
         lhs: &Expr,
         rhs: &Expr,
         span: Span,
-        expected: Option<Type>,
     ) -> Option<Type> {
         let boolean = Type::Primitive("bool".to_string());
         if matches!(op, BinaryOp::And | BinaryOp::Or) {
@@ -1291,7 +1232,8 @@ impl<'g> TypeChecker<'g> {
             self.err(span, format!("invalid operands for {}: {left} and {right}", op.symbol()));
             return None;
         }
-        let (left, right) = self.check_numeric_operands(lhs, rhs, expected)?;
+        let left = self.check_expr(lhs)?;
+        let right = self.check_expr(rhs)?;
         if self.infer.unify(&left, &right).is_err() {
             let (left, right) = self.shown_pair(&left, &right);
             let message = if matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
@@ -1314,50 +1256,12 @@ impl<'g> TypeChecker<'g> {
         }
     }
 
-    /// Check an array literal, whose elements must all share one type. An expected
-    /// `T[]` fixes the element type and guides each element (so `[1, 2]` against
-    /// `u8[]` types its literals `u8`). Without one, the element type comes from the
-    /// first element that is neither a bare numeric literal nor `nil` — `[1, x]` with
-    /// `x: i64` is `i64[]`, and `[nil, p]` takes `p`'s pointer type. An all-literal
-    /// list takes its first float literal, so `[1, 2.5]` is a float array, and
-    /// otherwise its first element. An empty literal gets a fresh element variable
-    /// that can be constrained by any use in the body.
-    fn check_array_literal(
-        &mut self,
-        elems: &[Expr],
-        span: Span,
-        expected: Option<Type>,
-    ) -> Option<Type> {
-        if elems.is_empty() {
-            let ty = Type::Array(Box::new(self.infer.fresh(InferKind::General)));
-            if let Some(expected @ Type::Array(_)) = &expected {
-                let _ = self.infer.unify(&ty, expected);
-            }
-            return Some(ty);
-        }
-        let (elem_type, anchor) = match expected {
-            Some(Type::Array(elem)) => (*elem, None),
-            _ => {
-                let anchor = elems.iter()
-                    .position(|e| !is_numeric_literal(e) && !matches!(e.kind, ExprKind::Nil))
-                    .or_else(|| elems.iter().position(is_float_literal))
-                    .unwrap_or(0);
-                let elem_type = self.check_expr(&elems[anchor])?;
-                if matches!(elem_type, Type::Nil) {
-                    self.err(
-                        span,
-                        "cannot infer the element type of an array literal of only nil; annotate the binding",
-                    );
-                    return None;
-                }
-                (elem_type, Some(anchor))
-            }
-        };
-        for (i, elem) in elems.iter().enumerate() {
-            if Some(i) == anchor {
-                continue;
-            }
-            let Some(actual) = self.check_expr_expecting(elem, Some(elem_type.clone())) else {
+    /// Every array element constrains one shared variable, including elements
+    /// whose own types are supplied by later uses or deferred obligations.
+    fn check_array_literal(&mut self, elems: &[Expr]) -> Option<Type> {
+        let elem_type = self.infer.fresh(InferKind::General);
+        for elem in elems {
+            let Some(actual) = self.check_expr(elem) else {
                 continue;
             };
             if self.infer.unify(&elem_type, &actual).is_err() {
@@ -1371,67 +1275,6 @@ impl<'g> TypeChecker<'g> {
         Some(Type::Array(Box::new(elem_type)))
     }
 
-    /// Check the two operands of a binary operator so type information flows from
-    /// the better-known operand to the less-known one. An operand that needs context —
-    /// a bare numeric literal, a bare variant, or a payload-free variant of a generic
-    /// sum type — is checked second, against its partner's type: `x + 1` types `1` at
-    /// `x`'s width, and `None == m` takes `m`'s sum type. Otherwise the left operand is
-    /// checked first and guides the right. The enclosing `expected` hint guides the
-    /// operand checked first.
-    fn check_numeric_operands(
-        &mut self,
-        lhs: &Expr,
-        rhs: &Expr,
-        expected: Option<Type>,
-    ) -> Option<(Type, Type)> {
-        let right_first = self.needs_context(lhs) && !self.needs_context(rhs);
-        let (first, second) = if right_first { (rhs, lhs) } else { (lhs, rhs) };
-        let first_type = self.check_expr_expecting(first, expected.clone())?;
-        // A literal takes its partner's width only from a number; for anything else it
-        // keeps the enclosing hint (and is then reported against its partner).
-        let hint = if is_numeric_literal(second) && !is_numeric(&first_type) {
-            expected
-        } else {
-            Some(first_type.clone())
-        };
-        let second_type = self.check_expr_expecting(second, hint)?;
-        Some(if right_first {
-            (second_type, first_type)
-        } else {
-            (first_type, second_type)
-        })
-    }
-
-    /// Whether `expr` cannot be typed without an expected type: a bare numeric literal,
-    /// a bare variant (named or called), or a payload-free variant of a generic sum type.
-    fn needs_context(&self, expr: &Expr) -> bool {
-        match &expr.kind {
-            _ if is_numeric_literal(expr) => true,
-            ExprKind::Group(inner) => self.needs_context(inner),
-            ExprKind::Ident(name) => self.is_bare_variant(name),
-            ExprKind::Call { callee, .. } => {
-                matches!(&callee.kind, ExprKind::Ident(name) if self.is_bare_variant(name))
-            }
-            ExprKind::Field { target, name } => {
-                let ExprKind::Ident(type_name) = &target.kind else {
-                    return false;
-                };
-                if self.lookup_var(type_name).is_some() {
-                    return false;
-                }
-                self.globals.lookup_oneof(type_name).is_some_and(|oneof| {
-                    !self.globals.defs.type_params(&oneof).is_empty()
-                        && self
-                            .globals
-                            .defs
-                            .payload(&oneof, name)
-                            .is_some_and(|payload| payload.is_empty())
-                })
-            }
-            _ => false,
-        }
-    }
-
     /// Whether `name` can only be a variant of some sum type: no variable, function,
     /// or type of that name is in scope, but a sum type has such a variant.
     fn is_bare_variant(&self, name: &str) -> bool {
@@ -1439,7 +1282,7 @@ impl<'g> TypeChecker<'g> {
             && self.globals.lookup_func(name).is_none()
             && self.globals.lookup_struct(name).is_none()
             && self.globals.lookup_oneof(name).is_none()
-            && self.any_oneof_with_variant(name).is_some()
+            && self.globals.defs.oneofs.values().any(|def| def.variants.contains_key(name))
     }
 
     fn check_expr_expecting(&mut self, expr: &Expr, expected: Option<Type>) -> Option<Type> {
@@ -1449,7 +1292,7 @@ impl<'g> TypeChecker<'g> {
 
     /// A numeric literal gets a class variable; its range is checked at body completion.
     /// A leading sign is recorded with the magnitude for signed-minimum checks.
-    fn number_type(&mut self, text: &str, span: Span, expected: Option<Type>, negated: bool) -> Type {
+    fn number_type(&mut self, text: &str, span: Span, negated: bool) -> Type {
         let ty = if let Some(literal) = self.body.literals.iter().find(|literal| literal.span == span) {
             literal.ty.clone()
         } else {
@@ -1458,10 +1301,6 @@ impl<'g> TypeChecker<'g> {
             self.body.literals.push(Literal { ty: ty.clone(), span, text: text.to_string(), negated });
             ty
         };
-        let expected = expected.as_ref().map(|ty| self.infer.resolve(ty));
-        if let Some(hint) = number_literal_type(text, expected.as_ref()) {
-            let _ = self.infer.unify(&ty, &hint);
-        }
         ty
     }
 
@@ -1503,8 +1342,7 @@ impl<'g> TypeChecker<'g> {
         // before the operand is checked on its own so the bound is applied once.
         if matches!(op, UnaryOp::Neg | UnaryOp::Pos) {
             if let Some(text) = bare_number_text(operand) {
-                let expected = self.expected.take();
-                let ty = self.number_type(text, span, expected, op == UnaryOp::Neg);
+                let ty = self.number_type(text, span, op == UnaryOp::Neg);
                 // The literal under the sign is never checked on its own, so it takes
                 // the signed literal's type here (through any grouping), for lowering.
                 let mut inner = operand;
@@ -1538,29 +1376,18 @@ impl<'g> TypeChecker<'g> {
     }
 
     fn check_call(&mut self, callee: &Expr, args: &[Expr], span: Span) -> Option<Type> {
+        let expected = self.expected.take();
         // A call whose callee is a variant access (`Maybe.Some(5)`) is sum-type
         // construction, not an ordinary call: its type arguments are inferred by
         // unifying the payload slots against the arguments.
         if let ExprKind::Field { target, name } = &callee.kind {
-            let expected = self.expected.take();
             if let Some(oneof @ Type::Oneof { .. }) = self.check_expr(target) {
-                self.expected = expected;
                 return self.check_variant_construction(&oneof, name, args, callee.span);
             }
         }
         // A bare constructor records its payload now and resolves its sum type later.
         if let ExprKind::Ident(name) = &callee.kind {
-            if let Some(oneof) = self.expected_variant_oneof(name) {
-                let expected = self.expected.take();
-                let subject = self.variant_subject(&oneof, expected.as_ref());
-                let payload = self.variant_arguments(args)?;
-                return Some(self.defer_variant(subject, name, Some(payload), true, callee.span));
-            }
-            if self.lookup_var(name).is_none()
-                && self.globals.lookup_func(name).is_none()
-                && self.any_oneof_with_variant(name).is_some()
-            {
-                let expected = self.expected.take();
+            if self.is_bare_variant(name) {
                 let subject = self.bare_variant_subject(expected);
                 let payload = self.variant_arguments(args)?;
                 return Some(self.defer_variant(subject, name, Some(payload), true, callee.span));
@@ -1574,10 +1401,8 @@ impl<'g> TypeChecker<'g> {
                 return self.check_conversion(name, args, span);
             }
         }
-        let expected = self.expected.take();
-        self.callee = true;
+        self.expected = None;
         let callee_type = self.check_expr(callee)?;
-        let pending = self.pending.take();
         let deferred = matches!(callee_type, Type::Infer(_));
         let callee_type = if deferred {
             let signature = Type::Func {
@@ -1612,14 +1437,11 @@ impl<'g> TypeChecker<'g> {
             );
             return None;
         }
-        if let Some(pending) = pending {
-            return self.check_generic_call(pending, callee.span, args, param_types, return_type, expected);
-        }
         for (i, (arg, param)) in args.iter().zip(param_types).enumerate() {
             self.expected = Some(param.clone());
             let arg_type = self.check_expr(arg)?;
-            if self.infer.unify(param, &arg_type).is_err() {
-                let (param_shown, arg_type_shown) = self.shown_pair(param, &arg_type);
+            if let Err(conflict) = self.infer.unify(param, &arg_type) {
+                let (param_shown, arg_type_shown) = self.shown_pair(&conflict.left, &conflict.right);
                 self.err(
                     arg.span,
                     format!("argument {} type mismatch: expected {param_shown}, found {arg_type_shown}", i + 1),
@@ -1643,7 +1465,7 @@ impl<'g> TypeChecker<'g> {
     /// Instantiate a reference at `span` to the function or method `sig`, with one
     /// fresh variable per binder. Matching a method's receiver against the concrete
     /// `receiver` fixes its receiver-pattern variables.
-    /// The enclosing call or expected function type constrains those variables.
+    /// Uses of the reference constrain those variables by equality.
     /// The body's finalization records the resolved reference. Returns its function
     /// type, written in terms of any variables still unsolved.
     fn reference(
@@ -1652,8 +1474,6 @@ impl<'g> TypeChecker<'g> {
         sig: &Signature,
         label: &str,
         receiver: Option<&Type>,
-        callee: bool,
-        expected: Option<Type>,
     ) -> Option<Type> {
         let type_args: Vec<_> = sig.type_params.iter()
             .map(|param| (param.clone(), self.infer.fresh(InferKind::General)))
@@ -1669,15 +1489,8 @@ impl<'g> TypeChecker<'g> {
             item: sig.item.clone(),
             type_args,
         };
-        self.body.references.insert(span, pending.clone());
-        if callee && pending.type_args.iter().any(|(_, arg)| !self.infer.is_resolved(arg)) {
-            self.pending = Some(pending);
-            return Some(ty);
-        }
-        if let Some(expected @ Type::Func { .. }) = &expected {
-            let _ = self.infer.unify(&ty, expected);
-        }
-        Some(self.infer.resolve(&ty))
+        self.body.references.insert(span, pending);
+        Some(ty)
     }
 
     /// Record `pending` with every type argument resolved, or report the first
@@ -1718,69 +1531,6 @@ impl<'g> TypeChecker<'g> {
                 type_args,
             },
         );
-    }
-
-    /// Check a call to a generic callee, solving its inference variables: first from
-    /// the expected result type, when that fits, then by unifying each parameter with
-    /// its argument. An argument naming a generic function is checked last, so the
-    /// other arguments can fix the function type it is expected to take; a parameter
-    /// type still holding unsolved variables guides no argument. The callee's
-    /// recorded type is replaced by its solved instantiation.
-    fn check_generic_call(
-        &mut self,
-        pending: PendingRef,
-        callee_span: Span,
-        args: &[Expr],
-        param_types: &[Type],
-        return_type: &Type,
-        expected: Option<Type>,
-    ) -> Option<Type> {
-        if let Some(expected) = &expected {
-            // Only a compatible expected result contributes inference bindings.
-            let mut trial = self.infer.clone();
-            if trial.unify(return_type, expected).is_ok() {
-                self.infer = trial;
-            }
-        }
-        let (deferred, first): (Vec<usize>, Vec<usize>) =
-            (0..args.len()).partition(|&i| self.is_generic_function_ref(&args[i]));
-        for i in first.into_iter().chain(deferred) {
-            // A parameter still containing an unbound variable gives no usable hint.
-            let hint = self.infer.resolve(&param_types[i]);
-            let usable = self.infer.is_resolved(&hint).then_some(hint);
-            let arg_type = self.check_expr_expecting(&args[i], usable)?;
-            if let Err(conflict) = self.infer.unify(&param_types[i], &arg_type) {
-                let (hint_shown, arg_shown) = self.shown_pair(&conflict.left, &conflict.right);
-                self.err(
-                    args[i].span,
-                    format!("argument {} type mismatch: expected {hint_shown}, found {arg_shown}", i + 1),
-                );
-                return None;
-            }
-        }
-        let callee_type = self.infer.resolve(&Type::Func {
-            return_type: Box::new(return_type.clone()),
-            param_types: param_types.to_vec(),
-        });
-        self.types.insert(pending.span, callee_type.clone());
-        self.types.insert(callee_span, callee_type);
-        Some(self.infer.resolve(return_type))
-    }
-
-    /// Whether `expr` is a bare reference to a generic function, which takes its type
-    /// arguments from the function type its context expects.
-    fn is_generic_function_ref(&self, expr: &Expr) -> bool {
-        match &expr.kind {
-            ExprKind::Ident(name) => {
-                self.lookup_var(name).is_none()
-                    && self
-                        .globals
-                        .lookup_func(name)
-                        .is_some_and(|sig| !sig.type_params.is_empty())
-            }
-            ExprKind::Group(inner) => self.is_generic_function_ref(inner),
-            _ => false,
-        }
     }
 
     /// Type check an explicit conversion `T(value)`: to a numeric type from any numeric
@@ -1847,7 +1597,7 @@ impl<'g> TypeChecker<'g> {
         }
     }
 
-    fn variant_subject(&mut self, oneof: &Type, expected: Option<&Type>) -> Type {
+    fn variant_subject(&mut self, oneof: &Type) -> Type {
         let Type::Oneof { id, type_args } = oneof else {
             unreachable!("a qualified variant has a sum type");
         };
@@ -1855,8 +1605,7 @@ impl<'g> TypeChecker<'g> {
             return oneof.clone();
         }
         let params = self.globals.defs.type_params(oneof).to_vec();
-        let mut subst = self.fresh_subst(&params);
-        seed_subst_from_expected(oneof, expected, &self.globals.defs, &mut subst);
+        let subst = self.fresh_subst(&params);
         Type::Oneof {
             id: id.clone(),
             type_args: params.iter().map(|param| subst[param].clone()).collect(),
@@ -1897,8 +1646,7 @@ impl<'g> TypeChecker<'g> {
     /// complete value of the sum type; a variant with a payload yields its
     /// constructor as a function type.
     fn check_variant_access(&mut self, oneof: &Type, variant: &str, span: Span) -> Option<Type> {
-        let expected = self.expected.take();
-        let subject = self.variant_subject(oneof, expected.as_ref());
+        let subject = self.variant_subject(oneof);
         Some(self.defer_variant(subject, variant, None, false, span))
     }
 
@@ -1911,8 +1659,7 @@ impl<'g> TypeChecker<'g> {
         args: &[Expr],
         span: Span,
     ) -> Option<Type> {
-        let expected = self.expected.take();
-        let subject = self.variant_subject(oneof, expected.as_ref());
+        let subject = self.variant_subject(oneof);
         let payload = self.variant_arguments(args)?;
         Some(self.defer_variant(subject, variant, Some(payload), false, span))
     }
@@ -2005,8 +1752,7 @@ impl<'g> TypeChecker<'g> {
         })
     }
 
-    fn check_field(&mut self, target: &Expr, field: &str, span: Span, callee: bool) -> Option<Type> {
-        let expected = self.expected.take();
+    fn check_field(&mut self, target: &Expr, field: &str, span: Span) -> Option<Type> {
         let target_type = self.check_expr(target)?;
         let effective = match &target_type {
             Type::Pointer(elem) => elem.as_ref(),
@@ -2021,23 +1767,21 @@ impl<'g> TypeChecker<'g> {
             });
             return Some(result);
         }
-        self.resolve_field(target_type, field, span, target.span, callee, expected)
+        self.resolve_field(target_type, field, span, target.span)
     }
 
     fn resolve_field(
         &mut self, mut target_type: Type, field: &str, span: Span,
-        target_span: Span, callee: bool, expected: Option<Type>,
+        target_span: Span,
     ) -> Option<Type> {
         // A member access whose base is a module reference selects an exported item
         // (or a deeper module), distinct from struct-field and variant access.
         if let Type::Module(prefix) = &target_type {
             let prefix = prefix.clone();
-            self.expected = expected;
-            return self.check_module_access(&prefix, field, span, callee);
+            return self.check_module_access(&prefix, field, span);
         }
         // A member access whose base is a sum type names a variant constructor.
         if matches!(target_type, Type::Oneof { .. }) {
-            self.expected = expected;
             return self.check_variant_access(&target_type, field, span);
         }
         // Auto-deref: `p.field` works transparently through a pointer-to-struct.
@@ -2071,14 +1815,14 @@ impl<'g> TypeChecker<'g> {
         if let Some(sig) = self.globals.lookup_method(id, field) {
             let sig = sig.clone();
             let label = format!("method {field}");
-            return self.reference(span, &sig, &label, Some(&target_type), callee, expected);
+            return self.reference(span, &sig, &label, Some(&target_type));
         }
         self.err(span, format!("{field} is not a member of struct {name}"));
         None
     }
 
     /// Index syntax is a built-in-array privilege: `a[i]` reads and `a[i] = v` writes an
-    /// array element at a `u64` index. User-defined collections are not indexable and
+    /// array element at an integer index. User-defined collections are not indexable and
     /// expose ordinary methods (`at`, `set`, …) instead; array method-call forms
     /// (`xs.length()`, `xs.push(v)`) go through the builtins registry via `check_field`.
     fn check_index(&mut self, array: &Expr, index: &Expr) -> Option<Type> {
@@ -2095,9 +1839,8 @@ impl<'g> TypeChecker<'g> {
         Some(element)
     }
 
-    /// Check an index or slice bound: any integer type, a bare literal taking `i64`.
+    /// Index and slice bounds require an integer type; literal widths follow their uses.
     fn check_index_value(&mut self, index: &Expr) -> Option<Type> {
-        self.expected = Some(crate::builtins::index_type());
         let index_type = self.check_expr(index)?;
         self.predicate(PredicateKind::Integer, index_type.clone(), index.span, PredicateSite::Index);
         Some(index_type)
@@ -2169,8 +1912,8 @@ impl<'g> TypeChecker<'g> {
             return self.check_index_assign(op, array, index, value, target.span);
         }
         let target_type = self.check_expr(target)?;
-        // The target's type guides the value, so `x = 1` and `x += 1` type the literal
-        // at `x`'s width (and range-check it there).
+        // The hint supplies a bare variant's subject; assignment equality constrains
+        // the value's type, including literal variables.
         self.expected = Some(target_type.clone());
         let value_type = self.check_expr(value)?;
         self.check_assign_op(op, &target_type, &value_type, target.span);
@@ -2178,7 +1921,7 @@ impl<'g> TypeChecker<'g> {
     }
 
     /// Check an index assignment `a[i] <op>= v`: the receiver must be a built-in array,
-    /// the index is a `u64`, and any compound operator relates the element and the value.
+    /// the index is an integer, and a compound operator relates the element and value.
     fn check_index_assign(
         &mut self,
         op: AssignOp,
@@ -2390,26 +2133,6 @@ fn is_signed_int(name: &str) -> bool {
     SIGNED_INTS.contains(&name)
 }
 
-/// The type of a numeric literal. A literal's lexical form fixes its class — a `.`
-/// or exponent (outside a hex/binary prefix) makes it floating-point — and an
-/// `expected` type of the matching class fixes its width: an integer literal adopts
-/// any expected numeric type (so `f32 = 5` holds), a float literal only an expected
-/// float type. Without a usable hint, the variable stays unbound.
-fn number_literal_type(text: &str, expected: Option<&Type>) -> Option<Type> {
-    let is_float = literal_is_float(text);
-    if let Some(Type::Primitive(name)) = expected {
-        let adopts = if is_float {
-            is_float_name(name)
-        } else {
-            is_numeric_name(name)
-        };
-        if adopts {
-            return Some(Type::Primitive(name.clone()));
-        }
-    }
-    None
-}
-
 /// Whether a numeric literal is floating-point. Hexadecimal and binary literals are
 /// always integers; a decimal literal is floating-point when it carries a fractional
 /// point or a decimal exponent.
@@ -2419,21 +2142,6 @@ fn literal_is_float(text: &str) -> bool {
         return false;
     }
     lower.contains('.') || lower.contains('e')
-}
-
-/// Whether `expr` is a bare numeric literal, seen through a grouping or a leading
-/// sign — the shapes whose width may be borrowed from the opposite operand of a
-/// binary operator.
-fn is_numeric_literal(expr: &Expr) -> bool {
-    match &expr.kind {
-        ExprKind::Number(_) => true,
-        ExprKind::Group(inner) => is_numeric_literal(inner),
-        ExprKind::Unary {
-            op: UnaryOp::Neg | UnaryOp::Pos,
-            operand,
-        } => is_numeric_literal(operand),
-        _ => false,
-    }
 }
 
 /// The bare integer magnitude of a numeric literal, ignoring digit separators and
@@ -2504,20 +2212,6 @@ pub fn decode_number_literal(text: &str) -> Option<LiteralValue> {
     }
 }
 
-/// Whether `expr` is a floating-point numeric literal, seeing through grouping and a
-/// leading sign.
-fn is_float_literal(expr: &Expr) -> bool {
-    match &expr.kind {
-        ExprKind::Number(text) => literal_is_float(text),
-        ExprKind::Group(inner) => is_float_literal(inner),
-        ExprKind::Unary {
-            op: UnaryOp::Neg | UnaryOp::Pos,
-            operand,
-        } => is_float_literal(operand),
-        _ => false,
-    }
-}
-
 /// The literal text of a bare numeric literal seen through groupings, or `None` for
 /// any other expression — the shape a leading sign folds into for range checking.
 fn bare_number_text(expr: &Expr) -> Option<&str> {
@@ -2526,28 +2220,4 @@ fn bare_number_text(expr: &Expr) -> Option<&str> {
         ExprKind::Group(inner) => bare_number_text(inner),
         _ => None,
     }
-}
-
-/// Fill `subst` with type arguments taken from an expected sum-type instantiation,
-/// letting a generic variant construction obtain the arguments its payload cannot
-/// determine. Returns true when `expected` is a matching instantiation of the same
-/// generic sum type carrying concrete type arguments.
-fn seed_subst_from_expected(
-    oneof: &Type,
-    expected: Option<&Type>,
-    defs: &TypeDefs,
-    subst: &mut HashMap<String, Type>,
-) -> bool {
-    let (Type::Oneof { id, .. }, Some(Type::Oneof { id: exp_id, type_args })) = (oneof, expected)
-    else {
-        return false;
-    };
-    let type_params = defs.type_params(oneof);
-    if id != exp_id || type_args.len() != type_params.len() {
-        return false;
-    }
-    for (param, arg) in type_params.iter().zip(type_args) {
-        subst.insert(param.clone(), arg.clone());
-    }
-    true
 }

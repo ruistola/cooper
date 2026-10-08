@@ -250,11 +250,11 @@ impl Parser {
     fn parse_index(&mut self, array: Expr) -> PResult<ExprKind> {
         self.expect(OpenBracket)?;
         let is_range = |kind| matches!(kind, DotDot | DotDotEquals);
-        // A bound stops short of `..`, which binds at 3.
+        // A bound stops short of `..`.
         let start = if is_range(self.peek().kind) {
             None
         } else {
-            Some(self.parse_expr(3)?)
+            Some(self.parse_expr(RANGE_BP)?)
         };
         if !is_range(self.peek().kind) {
             let index = start.expect("an index without `..` has an expression");
@@ -272,7 +272,7 @@ impl Parser {
             }
             None
         } else {
-            Some(Box::new(self.parse_expr(3)?))
+            Some(Box::new(self.parse_expr(RANGE_BP)?))
         };
         self.expect(CloseBracket)?;
         Ok(ExprKind::Slice {
@@ -313,29 +313,47 @@ impl Parser {
     }
 }
 
-/// Right binding power of a prefix operator.
+// Binding powers, loosest to tightest. Levels sit two apart so that the right power of a
+// left-associative operator (its left power plus one) stays below the next level's.
+const ASSIGN_BP: i32 = 2;
+const RANGE_BP: i32 = 4;
+const OR_BP: i32 = 6;
+const AND_BP: i32 = 10;
+const EQUALITY_BP: i32 = 12;
+const COMPARISON_BP: i32 = 14;
+const ADDITIVE_BP: i32 = 16;
+const MULTIPLICATIVE_BP: i32 = 18;
+const STRUCT_LITERAL_BP: i32 = 20;
+const CALL_BP: i32 = 22;
+const MEMBER_BP: i32 = 24;
+
+/// Right binding power of a prefix operator. Its operand is a postfix chain, so `-a * b`
+/// is `(-a) * b` while `-a.b` is `-(a.b)`.
 fn prefix_bp(kind: TokenKind) -> i32 {
     match kind {
-        Plus | Dash | Not => 10,
-        Ampersand => 12,
+        Plus | Dash | Not | Ampersand => MULTIPLICATIVE_BP,
         _ => 0,
     }
 }
 
 /// `(left, right)` binding power of a token in infix/postfix position. A zero left
-/// binding power terminates the expression.
+/// binding power terminates the expression. Binary operators group left to right, which
+/// puts the right power one above the left; assignment groups right to left.
 fn tail_bp(kind: TokenKind) -> (i32, i32) {
     match kind {
-        Equals | PlusEquals | DashEquals | StarEquals | SlashEquals | ColonEquals => (1, 2),
-        DotDot | DotDotEquals => (3, 4),
-        Or | And => (4, 3),
-        DoubleEquals | NotEquals => (5, 6),
-        Less | LessEquals | Greater | GreaterEquals => (8, 7),
-        Plus | Dash => (10, 9),
-        Star | Slash | Percent => (12, 11),
-        OpenCurly => (13, 0),
-        OpenParen | OpenBracket => (14, 0),
-        Dot | Chevron => (16, 15),
+        Equals | PlusEquals | DashEquals | StarEquals | SlashEquals | ColonEquals => {
+            (ASSIGN_BP, ASSIGN_BP - 1)
+        }
+        DotDot | DotDotEquals => (RANGE_BP, RANGE_BP + 1),
+        Or => (OR_BP, OR_BP + 1),
+        And => (AND_BP, AND_BP + 1),
+        DoubleEquals | NotEquals => (EQUALITY_BP, EQUALITY_BP + 1),
+        Less | LessEquals | Greater | GreaterEquals => (COMPARISON_BP, COMPARISON_BP + 1),
+        Plus | Dash => (ADDITIVE_BP, ADDITIVE_BP + 1),
+        Star | Slash | Percent => (MULTIPLICATIVE_BP, MULTIPLICATIVE_BP + 1),
+        OpenCurly => (STRUCT_LITERAL_BP, 0),
+        OpenParen | OpenBracket => (CALL_BP, 0),
+        Dot | Chevron => (MEMBER_BP, MEMBER_BP - 1),
         _ => (0, 0),
     }
 }

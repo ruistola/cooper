@@ -157,8 +157,17 @@ connectives are `and`, `or`, and `xor`. Each is logical on `bool` operands and b
 integer operands. Mixed operands are a type error. On `bool`, `and` and `or` short-circuit.
 Shifts are `<<` and `>>`.
 
+`and` binds tighter than `xor`, which binds tighter than `or`, and all three bind looser than
+comparison. Every binary operator groups left to right. This is the order boolean connectives
+take in mainstream languages and the order bitwise operators take in C, Java, Rust, and
+Python, so one keyword holds one position whatever its operands. Sitting below comparison
+lets a condition read naturally (`x != nil and x.count > 10`). It differs from Rust, Python,
+and Go, where bitwise operators bind tighter than comparison, so `mask and 0xFF == 0` groups
+as `mask and (0xFF == 0)`: an integer `and` a `bool`, which is a type error rather than the
+silent misparse C allows. Write `(mask and 0xFF) == 0`.
+
 ```
-if !ready and pending or !blocked then start()
+if !ready and pending or !blocked then start()   # (!ready and pending) or !blocked
 ```
 
 ## Chained comparison

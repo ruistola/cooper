@@ -201,17 +201,18 @@ From loosest to tightest binding:
 |---|---|
 | 1 | `=` `+=` `-=` `*=` `/=` and `:=` (right-associative) |
 | 2 | `..` `..=` (valid only as a `for` iterable or a slice bound) |
-| 3 | `and` `or` (one shared level) |
-| 4 | `==` `!=` |
-| 5 | `<` `<=` `>` `>=` |
-| 6 | `+` `-` |
-| 7 | `*` `/` `%` |
-| 8 | prefix `-` `+` `!` `&` |
-| 9 | postfix call `f(…)`, index `a[i]`, struct literal `T{…}`, field `.x`, dereference `^` |
+| 3 | `or` |
+| 4 | `and` |
+| 5 | `==` `!=` |
+| 6 | `<` `<=` `>` `>=` |
+| 7 | `+` `-` |
+| 8 | `*` `/` `%` |
+| 9 | prefix `-` `+` `!` `&` |
+| 10 | postfix call `f(…)`, index `a[i]`, struct literal `T{…}`, field `.x`, dereference `^` |
 
-The parser currently groups `+ - * / %`, the ordering comparisons, and `and`/`or` to the
-right, so `10 - 3 - 2` is `10 - (3 - 2)` and `f and f or t` is `f and (f or t)`. Parenthesise
-chains of `-`, `/`, and `%`, and any mix of `and` with `or`.
+Binary operators group left to right, so `10 - 3 - 2` is `5`, and assignment groups right to
+left. `and` and `or` short-circuit, and comparisons bind tighter than both, so
+`x != nil and x.count > 10` needs no parentheses ([why](./syntax-fundamentals.md#logical-and-bitwise-operators)).
 
 ## Types
 

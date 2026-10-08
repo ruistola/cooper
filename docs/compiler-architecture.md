@@ -56,6 +56,12 @@ The compiler is a Rust Cargo workspace.
      ranges. It resolves the per-file `span → Type` and `span → ItemRef` tables, including
      callable type arguments. Unbound variables are diagnosed, and lowering never sees
      `Type::Infer`.
+
+     The checker's state, statements, and core expressions live in `typecheck.rs`; submodules
+     in `typecheck/` extend it by responsibility: `solve.rs` (obligations, predicates,
+     `finish_body`), `patterns.rs` (`match` and exhaustiveness), `literals.rs` (numeric
+     literals and their decoding), `calls.rs` (calls, references, variants), and `access.rs`
+     (struct construction, members, elements, assignment).
   3. **semantic.rs** — Control-flow checks: every path returns a value where the function
      needs one, and no code follows a `return`.
 

@@ -122,7 +122,7 @@ fn an_array_literal_must_be_homogeneous() {
 #[test]
 fn an_empty_array_literal_needs_an_annotation() {
     ok("func f() {\n  let xs: f64[] = []\n}");
-    err("func f() {\n  let xs = []\n}", "cannot infer the element type of an empty array literal");
+    err("func f() {\n  let xs = []\n}", "cannot infer the type of this value; add a type annotation");
 }
 
 #[test]

@@ -66,7 +66,6 @@ enum PredicateSite {
     Conversion(String),
     Index,
     Range,
-    Match,
     IntegerPattern { negative: bool, magnitude: String },
 }
 
@@ -84,11 +83,32 @@ struct Literal {
     negated: bool,
 }
 
+enum ObligationKind {
+    Field { name: String, result: Type, target_span: Span },
+    Variant { name: String, result: Type, payload: Option<Vec<(Type, Span)>>, bare: bool },
+    Pattern { pattern: Pattern, binders: HashMap<String, Type> },
+    Exhaustive(Coverage),
+}
+
+struct Obligation {
+    subject: Type,
+    span: Span,
+    kind: ObligationKind,
+}
+
+struct DeferredCall {
+    span: Span,
+    args: Vec<(Type, Span)>,
+}
+
 #[derive(Default)]
 struct BodyConstraints {
     predicates: Vec<Predicate>,
     literals: Vec<Literal>,
     references: HashMap<Span, PendingRef>,
+    obligations: Vec<Obligation>,
+    calls: HashMap<Span, DeferredCall>,
+    reported: HashSet<InferId>,
     spans: Vec<Span>,
 }
 
@@ -193,18 +213,174 @@ impl<'g> TypeChecker<'g> {
             .collect()
     }
 
+    fn infer_binding(&mut self, ty: &Type) -> Type {
+        let bound = self.infer.fresh(InferKind::General);
+        self.infer.unify(&bound, ty).expect("a fresh binding fits its initializer");
+        bound
+    }
+
     fn array_element(&mut self, ty: &Type) -> Option<Type> {
         let elem = self.infer.fresh(InferKind::General);
         self.infer.unify(ty, &Type::Array(Box::new(elem.clone()))).ok()?;
         Some(elem)
     }
 
+    fn mark_obligation(&mut self, obligation: &Obligation) {
+        let mut ids = Vec::new();
+        self.infer.unbound_ids(&obligation.subject, &mut ids);
+        match &obligation.kind {
+            ObligationKind::Field { result, .. } => self.infer.unbound_ids(result, &mut ids),
+            ObligationKind::Variant { result, payload, .. } => {
+                self.infer.unbound_ids(result, &mut ids);
+                if let Some(payload) = payload {
+                    for (ty, _) in payload {
+                        self.infer.unbound_ids(ty, &mut ids);
+                    }
+                }
+            }
+            ObligationKind::Pattern { binders, .. } => {
+                for ty in binders.values() {
+                    self.infer.unbound_ids(ty, &mut ids);
+                }
+            }
+            ObligationKind::Exhaustive(_) => {}
+        }
+        self.body.reported.extend(ids);
+    }
+
+    fn report_obligation(&mut self, obligation: &Obligation) {
+        let message = match &obligation.kind {
+            ObligationKind::Variant { name, bare: true, .. } => format!(
+                "cannot infer sum type for bare variant {name}; qualify it as Type.{name} or add a type annotation"
+            ),
+            _ => "cannot infer the type of this value; add a type annotation".to_string(),
+        };
+        self.err(obligation.span, message);
+        self.mark_obligation(obligation);
+    }
+
+    fn check_deferred_call(&mut self, span: Span, actual: &Type) -> bool {
+        let Some(call) = self.body.calls.get(&span) else { return true };
+        let call_span = call.span;
+        let args = call.args.clone();
+        let actual = self.infer.resolve(actual);
+        let Type::Func { param_types, .. } = &actual else {
+            let shown = self.shown_type(&actual);
+            if self.infer.is_bound(&shown) {
+                self.err(call_span, format!("cannot call non-function value of type {shown}"));
+                return false;
+            }
+            return true;
+        };
+        if args.len() != param_types.len() {
+            self.err(call_span, format!(
+                "wrong number of arguments, expected {}, found {}", param_types.len(), args.len()
+            ));
+            return false;
+        }
+        for (i, ((arg, arg_span), param)) in args.iter().zip(param_types).enumerate() {
+            if self.infer.unify(param, arg).is_err() {
+                let (expected, found) = self.shown_pair(param, arg);
+                self.err(*arg_span, format!("argument {} type mismatch: expected {expected}, found {found}", i + 1));
+                return false;
+            }
+        }
+        true
+    }
+
+    fn try_obligation(&mut self, obligation: &Obligation) -> bool {
+        if let ObligationKind::Variant { result, payload: None, .. } = &obligation.kind {
+            if !self.infer.is_bound(&obligation.subject) {
+                let expected = match self.infer.resolve(result) {
+                    sum @ Type::Oneof { .. } => Some(sum),
+                    Type::Func { return_type, .. } => Some(*return_type),
+                    _ => None,
+                };
+                if let Some(expected) = expected {
+                    let _ = self.infer.unify(&obligation.subject, &expected);
+                }
+            }
+        }
+        let subject = self.infer.resolve(&obligation.subject);
+        let effective = match &subject {
+            Type::Pointer(elem) if matches!(obligation.kind, ObligationKind::Field { .. }) => elem.as_ref(),
+            _ => &subject,
+        };
+        if !self.infer.is_bound(effective) {
+            return false;
+        }
+        let errors = self.diags.len();
+        match &obligation.kind {
+            ObligationKind::Field { name, result, target_span } => {
+                if let Some(actual) = self.resolve_field(subject, name, obligation.span, *target_span, false, None) {
+                    if self.check_deferred_call(obligation.span, &actual)
+                        && self.infer.unify(result, &actual).is_err()
+                    {
+                        let (expected, found) = self.shown_pair(result, &actual);
+                        self.err(obligation.span, format!("member type mismatch: expected {expected}, found {found}"));
+                    }
+                }
+            }
+            ObligationKind::Variant { name, result, payload, bare } => {
+                self.solve_variant(&subject, name, result, payload.as_deref(), *bare, obligation.span);
+            }
+            ObligationKind::Pattern { pattern, binders } => {
+                self.scopes.push(HashMap::new());
+                self.check_pattern(pattern, &subject);
+                let actual = self.scopes.pop().expect("a pattern has a binding scope");
+                let mut names: Vec<_> = binders.keys().collect();
+                names.sort();
+                for name in names {
+                    let inferred = &binders[name];
+                    if let Some(ty) = actual.get(name) {
+                        if self.infer.unify(inferred, ty).is_err() {
+                            let (expected, found) = self.shown_pair(inferred, ty);
+                            self.err(pattern.span, format!("pattern binding {name} type mismatch: expected {expected}, found {found}"));
+                        }
+                    }
+                }
+            }
+            ObligationKind::Exhaustive(coverage) => {
+                if self.match_type(subject.clone(), obligation.span).is_some() {
+                    self.check_match_exhaustiveness(&subject, coverage, obligation.span);
+                }
+            }
+        }
+        if self.diags.len() != errors {
+            self.mark_obligation(obligation);
+        }
+        true
+    }
+
+    fn solve_obligations(&mut self) {
+        loop {
+            let pending = std::mem::take(&mut self.body.obligations);
+            let mut progress = false;
+            for obligation in pending {
+                if self.try_obligation(&obligation) {
+                    progress = true;
+                } else {
+                    self.body.obligations.push(obligation);
+                }
+            }
+            if !progress {
+                break;
+            }
+        }
+    }
+
     /// Complete the current body's constraints before its types reach lowering.
     fn finish_body(&mut self) {
-        let mut body = std::mem::take(&mut self.body);
-        for literal in &body.literals {
+        self.solve_obligations();
+        for literal in &self.body.literals {
             self.infer.default_literal(&literal.ty);
         }
+        self.solve_obligations();
+        let pending = std::mem::take(&mut self.body.obligations);
+        for obligation in pending {
+            self.report_obligation(&obligation);
+        }
+        let mut body = std::mem::take(&mut self.body);
         for predicate in body.predicates {
             self.check_predicate(predicate);
         }
@@ -218,6 +394,11 @@ impl<'g> TypeChecker<'g> {
             }
         }
         let mut reported = HashSet::new();
+        for id in body.reported {
+            let mut ids = Vec::new();
+            self.infer.unbound_ids(&Type::Infer(id), &mut ids);
+            reported.extend(ids);
+        }
         let mut references: Vec<_> = body.references.into_values().collect();
         references.sort_by_key(|reference| reference.span.start);
         for reference in references {
@@ -282,9 +463,6 @@ impl<'g> TypeChecker<'g> {
                     }
                     PredicateSite::Index => format!("index must be an integer, found {ty}"),
                     PredicateSite::Range => format!("range bounds must be an integer type, found {ty}"),
-                    PredicateSite::Match => format!(
-                        "cannot match on value of type {ty}; match supports sum types, structs, tuples, bool, and integers"
-                    ),
                     PredicateSite::IntegerPattern { .. } => {
                         format!("integer pattern cannot match a value of type {ty}")
                     }
@@ -474,7 +652,7 @@ impl<'g> TypeChecker<'g> {
                 declared.clone()
             }
             (Some(declared), None) => declared.clone(),
-            (None, Some(value)) => value.clone(),
+            (None, Some(value)) => self.infer_binding(value),
             (None, None) => Type::Unknown,
         };
         self.define_var(name, bound);
@@ -595,8 +773,11 @@ impl<'g> TypeChecker<'g> {
     /// checked against.
     fn match_scrutinee(&mut self, scrutinee: &Expr) -> Option<Type> {
         let ty = self.check_expr(scrutinee)?;
-        if !self.infer.is_bound(&ty) && is_integer(&self.shown_type(&ty)) {
-            self.predicate(PredicateKind::Integer, ty.clone(), scrutinee.span, PredicateSite::Match);
+        self.match_type(ty, scrutinee.span)
+    }
+
+    fn match_type(&mut self, ty: Type, span: Span) -> Option<Type> {
+        if !self.infer.is_bound(&ty) {
             return Some(ty);
         }
         match &ty {
@@ -604,7 +785,7 @@ impl<'g> TypeChecker<'g> {
             Type::Primitive(n) if n == "bool" || is_integer_name(n) => Some(ty),
             _ => {
                 self.err(
-                    scrutinee.span,
+                    span,
                     format!(
                         "cannot match on value of type {ty}; match supports sum types, structs, tuples, bool, and integers"
                     ),
@@ -619,10 +800,28 @@ impl<'g> TypeChecker<'g> {
     /// struct patterns so a sub-pattern is checked against its component's type.
     fn check_pattern(&mut self, pattern: &Pattern, ty: &Type) {
         let resolved = self.infer.resolve(ty);
+        if !self.infer.is_bound(&resolved) {
+            let mut binders = HashMap::new();
+            self.fresh_pattern_binders(pattern, &mut binders);
+            if let PatternKind::Binding(name) = &pattern.kind {
+                if let Some(binder) = binders.get(name) {
+                    let _ = self.infer.unify(binder, &resolved);
+                }
+            }
+            self.body.obligations.push(Obligation {
+                subject: resolved,
+                span: pattern.span,
+                kind: ObligationKind::Pattern { pattern: pattern.clone(), binders },
+            });
+            return;
+        }
         let ty = &resolved;
         match &pattern.kind {
             PatternKind::Wildcard => {}
-            PatternKind::Binding(name) => self.define_var(name, ty.clone()),
+            PatternKind::Binding(name) => {
+                let bound = self.infer_binding(ty);
+                self.define_var(name, bound);
+            }
             PatternKind::Bool(_) => {
                 if self.infer.unify(ty, &Type::Primitive("bool".to_string())).is_err() {
                     let shown = self.shown_type(ty);
@@ -659,6 +858,33 @@ impl<'g> TypeChecker<'g> {
                 variant,
                 binders,
             } => self.check_variant_pattern(type_name, variant, binders, ty, pattern.span),
+        }
+    }
+
+    fn fresh_pattern_binders(&mut self, pattern: &Pattern, out: &mut HashMap<String, Type>) {
+        let names: &[String] = match &pattern.kind {
+            PatternKind::Binding(name) => std::slice::from_ref(name),
+            PatternKind::Variant { binders, .. } => binders,
+            PatternKind::Tuple(elems) => {
+                for elem in elems {
+                    self.fresh_pattern_binders(elem, out);
+                }
+                return;
+            }
+            PatternKind::Struct { fields, .. } => {
+                for field in fields {
+                    self.fresh_pattern_binders(&field.pattern, out);
+                }
+                return;
+            }
+            _ => return,
+        };
+        for name in names {
+            if name != "_" {
+                let ty = out.entry(name.clone())
+                    .or_insert_with(|| self.infer.fresh(InferKind::General)).clone();
+                self.define_var(name, ty);
+            }
         }
     }
 
@@ -781,6 +1007,16 @@ impl<'g> TypeChecker<'g> {
     }
 
     fn check_match_exhaustiveness(&mut self, ty: &Type, coverage: &Coverage, span: Span) {
+        let resolved = self.infer.resolve(ty);
+        if !self.infer.is_bound(&resolved) {
+            self.body.obligations.push(Obligation {
+                subject: resolved,
+                span,
+                kind: ObligationKind::Exhaustive(coverage.clone()),
+            });
+            return;
+        }
+        let ty = &resolved;
         if coverage.wildcard {
             return;
         }
@@ -832,6 +1068,13 @@ impl<'g> TypeChecker<'g> {
     // --- expressions ---
 
     fn check_expr(&mut self, expr: &Expr) -> Option<Type> {
+        if let Some(ty) = self.types.get(&expr.span).cloned() {
+            self.expected = None;
+            if std::mem::take(&mut self.callee) {
+                self.pending = self.body.references.get(&expr.span).cloned();
+            }
+            return Some(self.infer.resolve(&ty));
+        }
         let ty = self.check_expr_kind(expr).map(|ty| self.infer.resolve(&ty));
         if let Some(ty) = &ty {
             self.body.spans.push(expr.span);
@@ -911,8 +1154,9 @@ impl<'g> TypeChecker<'g> {
             ExprKind::Assign { op, target, value } => self.check_assign(*op, target, value),
             ExprKind::Let { name, value } => {
                 let value_type = self.check_expr(value)?;
-                self.define_var(name, value_type.clone());
-                Some(value_type)
+                let bound = self.infer_binding(&value_type);
+                self.define_var(name, bound.clone());
+                Some(bound)
             }
             ExprKind::LetTuple { names, ty, value } => self.check_let_tuple(names, ty, value),
             ExprKind::Match { scrutinee, arms } => self.check_match_expr(scrutinee, arms),
@@ -941,19 +1185,16 @@ impl<'g> TypeChecker<'g> {
         if self.module_is_prefix(std::slice::from_ref(&name.to_string())) {
             return Some(Type::Module(vec![name.to_string()]));
         }
-        // A bare name may be a variant of the expected sum type (`None` where a
-        // `Maybe` is wanted). `check_variant_access` consumes `self.expected`.
+        // A bare variant takes its subject from context or from a later use.
         if let Some(oneof) = self.expected_variant_oneof(name) {
-            return self.check_variant_access(&oneof, name, span);
+            let expected = self.expected.take();
+            let subject = self.variant_subject(&oneof, expected.as_ref());
+            return Some(self.defer_variant(subject, name, None, true, span));
         }
         if self.any_oneof_with_variant(name).is_some() {
-            self.err(
-                span,
-                format!(
-                    "cannot infer sum type for bare variant {name}; qualify it as Type.{name} or add a type annotation"
-                ),
-            );
-            return None;
+            let expected = self.expected.take();
+            let subject = self.bare_variant_subject(expected);
+            return Some(self.defer_variant(subject, name, None, true, span));
         }
         self.err(span, format!("undefined variable: {name}"));
         None
@@ -1079,29 +1320,28 @@ impl<'g> TypeChecker<'g> {
     /// first element that is neither a bare numeric literal nor `nil` — `[1, x]` with
     /// `x: i64` is `i64[]`, and `[nil, p]` takes `p`'s pointer type. An all-literal
     /// list takes its first float literal, so `[1, 2.5]` is a float array, and
-    /// otherwise its first element. An empty literal has nothing to infer from and needs an
-    /// expected type.
+    /// otherwise its first element. An empty literal gets a fresh element variable
+    /// that can be constrained by any use in the body.
     fn check_array_literal(
         &mut self,
         elems: &[Expr],
         span: Span,
         expected: Option<Type>,
     ) -> Option<Type> {
+        if elems.is_empty() {
+            let ty = Type::Array(Box::new(self.infer.fresh(InferKind::General)));
+            if let Some(expected @ Type::Array(_)) = &expected {
+                let _ = self.infer.unify(&ty, expected);
+            }
+            return Some(ty);
+        }
         let (elem_type, anchor) = match expected {
             Some(Type::Array(elem)) => (*elem, None),
             _ => {
-                let Some(anchor) = elems
-                    .iter()
+                let anchor = elems.iter()
                     .position(|e| !is_numeric_literal(e) && !matches!(e.kind, ExprKind::Nil))
                     .or_else(|| elems.iter().position(is_float_literal))
-                    .or(if elems.is_empty() { None } else { Some(0) })
-                else {
-                    self.err(
-                        span,
-                        "cannot infer the element type of an empty array literal; annotate the binding",
-                    );
-                    return None;
-                };
+                    .unwrap_or(0);
                 let elem_type = self.check_expr(&elems[anchor])?;
                 if matches!(elem_type, Type::Nil) {
                     self.err(
@@ -1308,24 +1548,22 @@ impl<'g> TypeChecker<'g> {
                 return self.check_variant_construction(&oneof, name, args, callee.span);
             }
         }
-        // A bare callee (`Ok(5)`) is variant construction when the expected type is a
-        // sum type owning that variant; otherwise, if it merely matches some variant,
-        // there is no context to pick a type and that is a hard error.
+        // A bare constructor records its payload now and resolves its sum type later.
         if let ExprKind::Ident(name) = &callee.kind {
             if let Some(oneof) = self.expected_variant_oneof(name) {
-                return self.check_variant_construction(&oneof, name, args, callee.span);
+                let expected = self.expected.take();
+                let subject = self.variant_subject(&oneof, expected.as_ref());
+                let payload = self.variant_arguments(args)?;
+                return Some(self.defer_variant(subject, name, Some(payload), true, callee.span));
             }
             if self.lookup_var(name).is_none()
                 && self.globals.lookup_func(name).is_none()
                 && self.any_oneof_with_variant(name).is_some()
             {
-                self.err(
-                    callee.span,
-                    format!(
-                        "cannot infer sum type for bare variant {name}; qualify it as Type.{name} or add a type annotation"
-                    ),
-                );
-                return None;
+                let expected = self.expected.take();
+                let subject = self.bare_variant_subject(expected);
+                let payload = self.variant_arguments(args)?;
+                return Some(self.defer_variant(subject, name, Some(payload), true, callee.span));
             }
         }
         // A call whose callee names a numeric type (`i64(x)`, `f32(n)`) is an explicit
@@ -1340,7 +1578,8 @@ impl<'g> TypeChecker<'g> {
         self.callee = true;
         let callee_type = self.check_expr(callee)?;
         let pending = self.pending.take();
-        let callee_type = if matches!(callee_type, Type::Infer(_)) {
+        let deferred = matches!(callee_type, Type::Infer(_));
+        let callee_type = if deferred {
             let signature = Type::Func {
                 return_type: Box::new(self.infer.fresh(InferKind::General)),
                 param_types: args.iter().map(|_| self.infer.fresh(InferKind::General)).collect(),
@@ -1387,6 +1626,16 @@ impl<'g> TypeChecker<'g> {
                 );
                 return None;
             }
+        }
+        if deferred {
+            let checked = args.iter().map(|arg| {
+                (self.types.get(&arg.span).expect("a call argument is typed").clone(), arg.span)
+            }).collect();
+            let mut head = callee;
+            while let ExprKind::Group(inner) = &head.kind {
+                head = inner;
+            }
+            self.body.calls.insert(head.span, DeferredCall { span, args: checked });
         }
         Some((**return_type).clone())
     }
@@ -1551,42 +1800,106 @@ impl<'g> TypeChecker<'g> {
         Some(Type::Primitive(name.to_string()))
     }
 
+    fn solve_variant(
+        &mut self, subject: &Type, name: &str, result: &Type,
+        payload: Option<&[(Type, Span)]>, bare: bool, span: Span,
+    ) {
+        let slots = self.globals.defs.payload(subject, name);
+        let Type::Oneof { id, .. } = subject else {
+            self.err(span, format!("cannot infer sum type for bare variant {name}; qualify it as Type.{name} or add a type annotation"));
+            return;
+        };
+        let Some(slots) = slots else {
+            let message = if bare {
+                format!("cannot infer sum type for bare variant {name}; qualify it as Type.{name} or add a type annotation")
+            } else {
+                format!("{name} is not a variant of sum type {}", id.name)
+            };
+            self.err(span, message);
+            return;
+        };
+        let actual = if let Some(args) = payload {
+            if args.len() != slots.len() {
+                self.err(span, format!("variant {}.{name} expects {} argument(s), got {}", id.name, slots.len(), args.len()));
+                return;
+            }
+            for (i, ((arg, arg_span), slot)) in args.iter().zip(&slots).enumerate() {
+                if self.infer.unify(slot, arg).is_err() {
+                    let (expected, found) = self.shown_pair(slot, arg);
+                    self.err(*arg_span, format!(
+                        "argument {} to variant {}.{name} type mismatch: expected {expected}, found {found}", i + 1, id.name
+                    ));
+                    return;
+                }
+            }
+            subject.clone()
+        } else if slots.is_empty() {
+            subject.clone()
+        } else {
+            Type::Func { return_type: Box::new(subject.clone()), param_types: slots }
+        };
+        if payload.is_none() && !self.check_deferred_call(span, &actual) {
+            return;
+        }
+        if self.infer.unify(result, &actual).is_err() {
+            let (expected, found) = self.shown_pair(result, &actual);
+            self.err(span, format!("variant type mismatch: expected {expected}, found {found}"));
+        }
+    }
+
+    fn variant_subject(&mut self, oneof: &Type, expected: Option<&Type>) -> Type {
+        let Type::Oneof { id, type_args } = oneof else {
+            unreachable!("a qualified variant has a sum type");
+        };
+        if !type_args.is_empty() {
+            return oneof.clone();
+        }
+        let params = self.globals.defs.type_params(oneof).to_vec();
+        let mut subst = self.fresh_subst(&params);
+        seed_subst_from_expected(oneof, expected, &self.globals.defs, &mut subst);
+        Type::Oneof {
+            id: id.clone(),
+            type_args: params.iter().map(|param| subst[param].clone()).collect(),
+        }
+    }
+
+    fn bare_variant_subject(&mut self, expected: Option<Type>) -> Type {
+        match expected.map(|ty| self.infer.resolve(&ty)) {
+            Some(ty @ (Type::Oneof { .. } | Type::Infer(_))) => ty,
+            Some(Type::Func { return_type, .. }) => *return_type,
+            _ => self.infer.fresh(InferKind::General),
+        }
+    }
+
+    fn defer_variant(
+        &mut self, subject: Type, name: &str, payload: Option<Vec<(Type, Span)>>,
+        bare: bool, span: Span,
+    ) -> Type {
+        let result = if payload.is_some() { subject.clone() } else { self.infer.fresh(InferKind::General) };
+        self.body.obligations.push(Obligation {
+            subject,
+            span,
+            kind: ObligationKind::Variant { name: name.to_string(), result: result.clone(), payload, bare },
+        });
+        result
+    }
+
+    fn variant_arguments(&mut self, args: &[Expr]) -> Option<Vec<(Type, Span)>> {
+        let mut payload = Vec::with_capacity(args.len());
+        for arg in args {
+            self.expected = None;
+            payload.push((self.check_expr(arg)?, arg.span));
+        }
+        Some(payload)
+    }
+
     /// Type check a bare variant access `Oneof.Variant`. A payload-free variant is a
     /// complete value of the sum type; a variant with a payload yields its
     /// constructor as a function type.
     fn check_variant_access(&mut self, oneof: &Type, variant: &str, span: Span) -> Option<Type> {
         let expected = self.expected.take();
-        let Type::Oneof { id, .. } = oneof else {
-            unreachable!("a variant access is on a sum type")
-        };
-        let name = id.name.clone();
-        let type_params = self.globals.defs.type_params(oneof).to_vec();
-        let Some(payload) = self.globals.defs.payload(oneof, variant) else {
-            self.err(span, format!("{variant} is not a variant of sum type {name}"));
-            return None;
-        };
-        if payload.is_empty() {
-            if !type_params.is_empty() {
-                let mut subst = HashMap::new();
-                if !seed_subst_from_expected(oneof, expected.as_ref(), &self.globals.defs, &mut subst) {
-                    self.err(
-                        span,
-                        format!(
-                            "cannot infer type arguments for payload-free variant {name}.{variant}; an explicit annotation is required"
-                        ),
-                    );
-                    return None;
-                }
-                return self.instantiate_oneof(oneof, &subst, span);
-            }
-            return Some(oneof.clone());
-        }
-        let subst = self.fresh_subst(&type_params);
-        let instantiated = self.instantiate_oneof(oneof, &subst, span)?;
-        Some(Type::Func {
-            return_type: Box::new(instantiated),
-            param_types: payload.iter().map(|slot| slot.substitute(&subst)).collect(),
-        })
+        let subject = self.variant_subject(oneof, expected.as_ref());
+        Some(self.defer_variant(subject, variant, None, false, span))
     }
 
     /// Type check a variant construction `Oneof.Variant(args)`, inferring a generic
@@ -1599,75 +1912,9 @@ impl<'g> TypeChecker<'g> {
         span: Span,
     ) -> Option<Type> {
         let expected = self.expected.take();
-        let Type::Oneof { id, .. } = oneof else {
-            unreachable!("a variant construction is on a sum type")
-        };
-        let name = id.name.clone();
-        let type_params = self.globals.defs.type_params(oneof).to_vec();
-        let Some(payload) = self.globals.defs.payload(oneof, variant) else {
-            self.err(span, format!("{variant} is not a variant of sum type {name}"));
-            return None;
-        };
-        if args.len() != payload.len() {
-            self.err(
-                span,
-                format!(
-                    "variant {name}.{variant} expects {} argument(s), got {}",
-                    payload.len(),
-                    args.len()
-                ),
-            );
-            return None;
-        }
-        let mut subst = self.fresh_subst(&type_params);
-        seed_subst_from_expected(oneof, expected.as_ref(), &self.globals.defs, &mut subst);
-        for (i, (arg, slot)) in args.iter().zip(&payload).enumerate() {
-            let slot = slot.substitute(&subst);
-            let arg_type = self.check_expr_expecting(arg, Some(slot.clone()))?;
-            if self.infer.unify(&slot, &arg_type).is_err() {
-                let (slot_shown, arg_shown) = self.shown_pair(&slot, &arg_type);
-                self.err(
-                    arg.span,
-                    format!(
-                        "argument {} to variant {name}.{variant} type mismatch: expected {slot_shown}, found {arg_shown}",
-                        i + 1,
-                    ),
-                );
-                return None;
-            }
-        }
-        if type_params.is_empty() {
-            return Some(oneof.clone());
-        }
-        self.instantiate_oneof(oneof, &subst, span)
-    }
-
-    /// Build a concrete instantiation of a generic sum type from an inferred
-    /// substitution, requiring every type parameter to be determined.
-    fn instantiate_oneof(
-        &mut self,
-        oneof: &Type,
-        subst: &HashMap<String, Type>,
-        span: Span,
-    ) -> Option<Type> {
-        let Type::Oneof { id, .. } = oneof else {
-            unreachable!("only a sum type is instantiated here")
-        };
-        let mut type_args = Vec::new();
-        for param in self.globals.defs.type_params(oneof) {
-            let Some(arg) = subst.get(param) else {
-                self.err(
-                    span,
-                    format!("cannot infer type argument {param} for sum type {}", id.name),
-                );
-                return None;
-            };
-            type_args.push(arg.clone());
-        }
-        Some(Type::Oneof {
-            id: id.clone(),
-            type_args,
-        })
+        let subject = self.variant_subject(oneof, expected.as_ref());
+        let payload = self.variant_arguments(args)?;
+        Some(self.defer_variant(subject, variant, Some(payload), false, span))
     }
 
     fn check_struct_literal(&mut self, target: &Expr, members: &[MemberInit]) -> Option<Type> {
@@ -1760,7 +2007,27 @@ impl<'g> TypeChecker<'g> {
 
     fn check_field(&mut self, target: &Expr, field: &str, span: Span, callee: bool) -> Option<Type> {
         let expected = self.expected.take();
-        let mut target_type = self.check_expr(target)?;
+        let target_type = self.check_expr(target)?;
+        let effective = match &target_type {
+            Type::Pointer(elem) => elem.as_ref(),
+            _ => &target_type,
+        };
+        if !self.infer.is_bound(effective) {
+            let result = self.infer.fresh(InferKind::General);
+            self.body.obligations.push(Obligation {
+                subject: target_type,
+                span,
+                kind: ObligationKind::Field { name: field.to_string(), result: result.clone(), target_span: target.span },
+            });
+            return Some(result);
+        }
+        self.resolve_field(target_type, field, span, target.span, callee, expected)
+    }
+
+    fn resolve_field(
+        &mut self, mut target_type: Type, field: &str, span: Span,
+        target_span: Span, callee: bool, expected: Option<Type>,
+    ) -> Option<Type> {
         // A member access whose base is a module reference selects an exported item
         // (or a deeper module), distinct from struct-field and variant access.
         if let Type::Module(prefix) = &target_type {
@@ -1789,7 +2056,7 @@ impl<'g> TypeChecker<'g> {
         }
         let Type::Struct { id, .. } = &target_type else {
             self.err(
-                target.span,
+                target_span,
                 format!("expression of type {target_type} cannot be used as a struct"),
             );
             return None;
@@ -2017,7 +2284,8 @@ impl<'g> TypeChecker<'g> {
                 }
                 self.define_var(name, declared_elem.clone());
             } else {
-                self.define_var(name, elem_type);
+                let bound = self.infer_binding(&elem_type);
+                self.define_var(name, bound);
             }
         }
         Some(rhs_type)
@@ -2064,7 +2332,7 @@ enum ArmCover {
 }
 
 /// The accumulated coverage across a match's arms, read for exhaustiveness.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Coverage {
     variants: HashSet<String>,
     bools: HashSet<bool>,

@@ -86,14 +86,8 @@ let copy: func(i64): i64 = g             # fixes this reference's T to i64
 ```
 
 Local bindings are monomorphic: `g` has one instantiation, not a separately inferred type
-at each call. Only declared generic functions introduce type parameters; local inference
-does not generalize bindings. A parameter that remains undetermined at body completion
-requires an annotation.
-
-Unbound integer and float literal variables default to `i32` and `f32` after the body's
-constraints are solved. Range checks use the final inferred integer type. Member access and
-match patterns on an unknown type wait until another use determines their subject; inference
-never searches for a struct or sum type merely because it has a matching member or variant.
+at each call. A parameter that remains undetermined at body completion requires an
+annotation. See [Type System](./type-system.md#inference) for the inference model.
 
 Generics are compiled by monomorphization: each distinct instantiation becomes its own
 concrete function.

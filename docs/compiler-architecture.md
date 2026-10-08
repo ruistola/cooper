@@ -48,11 +48,9 @@ The compiler is a Rust Cargo workspace.
      member and variant types, reject types that contain themselves by value, then resolve
      functions, methods, and variables. Declaration order therefore never matters.
   2. **typecheck.rs** — HM(X)-style constraint inference per function body and for module-level
-     statements. Expressions generate eager equality constraints, delayed type predicates
-     (`Numeric`, `Addable`, `Integer`, `Comparable`, `Formattable`), and member, variant, and
-     pattern obligations. Each obligation has one solution once its subject type is known;
-     solving does not search or backtrack. Local bindings are monomorphic; signatures are
-     declared and nothing is generalized.
+     statements; the model is described in [Type System](./type-system.md#inference). Expressions
+     generate constraints (equalities, predicates, and member obligations) that
+     `finish_body` solves at the end of each body.
 
      `finish_body` runs obligations to a fixed point, defaults unbound literals, runs
      obligations again, reports unresolved obligations, and checks predicates and literal

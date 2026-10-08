@@ -46,10 +46,10 @@ let rgb: u8[3]
 let grid: i32[8][8]
 ```
 
-An array literal is a bracketed, comma-separated list. An annotation fixes its element type.
-Otherwise the element type comes from the first element that is not a bare numeric literal or
-`nil`, and an all-literal list takes a float type if any literal is a float. An empty literal
-needs an annotation.
+An array literal is a bracketed, comma-separated list. Its elements share one type, which an
+annotation or any use of the elements or the array fixes, and an all-literal list takes a
+float type if any literal is a float. An empty literal takes its element type from later uses
+(`xs := []`, then `xs = xs.push(1)`); if nothing constrains it, it needs an annotation.
 
 ```
 let xs: i32[] = [0, 1, 2, 4, 8]

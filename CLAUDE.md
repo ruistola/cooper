@@ -17,7 +17,7 @@ Detailed language design notes live in `docs/`:
 * [Memory and the Object Model](docs/memory-and-object-model.md) — inline values, storage, pointers, inert nil, unmanaged memory
 * [Generics](docs/generics.md) — juxtaposition type application, binders, generic methods, inference
 * [Sum Types](docs/sum-types.md) — `oneof`, variant construction, `match` and patterns
-* [Type System](docs/type-system.md) — nominal/structural types, operators, equality and hashing
+* [Type System](docs/type-system.md) — nominal/structural types, HM(X) inference, operators, equality and hashing
 * [Numeric Types](docs/numeric-types.md) — primitive grid, literal inference, same-type arithmetic, conversions
 
 ## Coding guidelines

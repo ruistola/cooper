@@ -15,6 +15,46 @@ There is no subtyping, inheritance, or variance: types are equal or they are not
 cover closed heterogeneity, and function values cover open behavior (see
 [Polymorphism](./polymorphism.md)).
 
+## Inference
+
+Type checking is constraint-based inference in the style of **HM(X)** (Odersky, Sulzmann, and
+Wehr, 1999): Hindley–Milner parameterized by a constraint domain *X*. Checking a function body
+generates constraints over type variables, and a solver then decides them. Classic
+Hindley–Milner is the instance where *X* is equality, solved by unification; other instances
+add subtyping, type classes, or records. Because constraints are collected before they are
+solved, whether a body type-checks does not depend on the order of its statements or operands:
+`x := None` can be fixed by a later `x = Maybe.Some(3)`.
+
+Cooper's domain *X* has three kinds of constraint:
+
+* **Equality** between types, solved eagerly by unification with an occurs check: assignments,
+  returns, arguments, operand pairs, array elements, and instantiations of generics. `nil`
+  unifies with any pointer type.
+* **Predicates** on a type, checked once it is solved: numeric, addable (`+`), integer
+  (indices), comparable (`==`), and formattable (`string(x)`). A numeric literal is a variable
+  of its class that defaults only when nothing constrains it
+  ([Numeric Types](./numeric-types.md)).
+* **Member obligations**: field and method access, variant construction, and `match` patterns
+  on a type not yet known wait until another constraint determines it. Each has one solution,
+  so solving never searches or backtracks, and a bare variant never selects its sum type
+  merely because its name is unique ([Sum Types](./sum-types.md)).
+
+A constraint that nothing determines is an error asking for an annotation, reported where it
+arose. Every top-level signature is declared, so inference runs per function body and never
+crosses a declaration.
+
+### What Cooper leaves out of HM(X)
+
+* **No generalization.** Hindley–Milner generalizes `let` bindings to polymorphic types. Cooper
+  has no local generic functions, so local bindings stay monomorphic and only declarations
+  introduce type parameters ([Generics](./generics.md)).
+* **No user-extensible constraints.** There are no type classes, bounds, or overloading, so *X*
+  is closed: the predicates above are built in, and generic code takes the behavior it needs
+  as function arguments.
+* **No subtyping.** Constraints are equalities, with the single exception of `nil` and
+  pointers.
+* **No inferred signatures.** Parameter and return types of declarations are written out.
+
 ## Operators and overloading
 
 * **Functions are not overloaded.** One name denotes one function.

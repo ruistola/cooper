@@ -18,7 +18,7 @@ fn a_literal_argument_takes_its_width_from_the_expected_result() {
 #[test]
 fn a_type_argument_only_in_the_result_comes_from_the_expected_type() {
     ok(concat!(
-        "oneof Maybe T {\n  Some(T),\n  None,\n}\n",
+        "oneof Maybe T {\n  None,\n  Some(T),\n}\n",
         "func none T (): Maybe T {\n  return None\n}\n",
         "func f() {\n  let m: Maybe i32 = none()\n}",
     ));

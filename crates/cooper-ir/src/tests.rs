@@ -248,7 +248,7 @@ fn generic_variant_binders_lower_with_instantiated_slot_types() {
     // A scrutinee of an instantiated generic sum type binds payload slots at
     // their substituted types, not the sum type's parameters.
     let (decls, globals, checked) = check(
-        "oneof Maybe T { Some(T), None }\n\
+        "oneof Maybe T { None, Some(T) }\n\
          func unwrap(m: Maybe i32): i32 {\n\
          \ta := match m with {\n\
          \t\tMaybe.Some(x) => { x }\n\
@@ -350,7 +350,7 @@ fn lowers_a_tuple_match_into_a_nested_decision_tree() {
 #[test]
 fn lowers_variant_construction_and_payload_free_access() {
     let (decls, globals, checked) = check(
-        "oneof Maybe T { Some(T), None }\n\
+        "oneof Maybe T { None, Some(T) }\n\
          func some(): Maybe i32 { return Maybe.Some(5) }\n\
          func none(): Maybe i32 { return Maybe.None }",
     );

@@ -128,7 +128,7 @@ fn a_type_may_refer_to_one_declared_later() {
 fn a_type_may_refer_to_itself_through_a_pointer_or_an_array() {
     ok(concat!(
         "struct Node {\n  next: Node^,\n  kids: Node[],\n}\n",
-        "oneof List T {\n  Cons(T, (List T)^),\n  Nil,\n}\n",
+        "oneof List T {\n  Nil,\n  Cons(T, (List T)^),\n}\n",
         "func f(n: Node): i32 {\n  return 0\n}",
     ));
 }

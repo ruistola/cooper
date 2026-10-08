@@ -3,14 +3,14 @@
 # types, recursion through a pointer, equality, the zero value, and patterns that
 # switch on variants within tuples.
 oneof Shape {
+    Empty,
     Circle(i32),
     Rect(i32, i32),
-    Empty,
 }
 
 oneof Maybe T {
-    Some(T),
     None,
+    Some(T),
 }
 
 oneof Result T E {
@@ -19,8 +19,8 @@ oneof Result T E {
 }
 
 oneof List {
-    Cons(i32, List^),
     Nil,
+    Cons(i32, List^),
 }
 
 func area(s: Shape): i32 {
@@ -73,7 +73,7 @@ func main(): i32 {
     if divide(1, 0) != Result.Err(false) then return 6
 
     let zero: Shape
-    if zero != Shape.Circle(0) then return 7
+    if zero != Shape.Empty then return 7
 
     both := match (find(list, 8), find(list, 0)) with {
         (Some(a), None) => a
@@ -81,5 +81,11 @@ func main(): i32 {
         _ => -3
     }
     if both != 1 then return 8
+
+    # The zero value is the first variant: a lone payloadless variant is listed first.
+    let nothing: Maybe i32
+    if nothing != Maybe.None then return 9
+    let ok: Result i32 bool
+    if ok != Result.Ok(0) then return 10
     return 0
 }

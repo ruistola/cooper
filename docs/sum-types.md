@@ -50,7 +50,9 @@ let y = Ok(5)       # no other use fixes the sum type: write Result.Ok(5)
 A bare variant with no determining use is an error at body completion. Even a unique
 variant name does not select its owning sum type; inference does not search declarations.
 
-The zero value of a sum type is its first variant with a zero payload.
+The zero value of a sum type is its first variant with a zero payload. By convention, a sum
+type with a single payloadless variant lists it first (`oneof Maybe T { None, Some(T) }`), so
+that variant is the zero value and a zero-initialized value never carries a payload.
 
 A generic sum type's arguments are inferred from payloads and all uses of the constructed
 value. A comparison relates both operand types (`m == None`, `None == m`), independently of
@@ -115,4 +117,7 @@ whose every arm returns counts as returning on all paths.
 ## Planned
 
 * Named-field payloads.
+* A layout that exploits that convention: a payloadless zero-value variant stored as the
+  all-zero pattern, with any other pattern identifying a payload variant, as Rust does for
+  `Option` of a pointer.
 * Nested patterns inside variant payloads, or-patterns (`A | B`), and guards.

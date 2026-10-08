@@ -4,7 +4,7 @@ use crate::{ok, err};
 
 /// A shared sum-type preamble for the bare-variant cases.
 const RESULT: &str = "oneof Result T E {\n  Ok(T),\n  Err(E),\n}\n";
-const MAYBE: &str = "oneof Maybe T {\n  Some(T),\n  None,\n}\n";
+const MAYBE: &str = "oneof Maybe T {\n  None,\n  Some(T),\n}\n";
 
 #[test]
 fn bare_variant_construction_uses_return_context() {

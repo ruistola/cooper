@@ -72,7 +72,7 @@ fn generic_variant_construction_infers_arguments() {
 #[test]
 fn payload_free_variant_needs_annotation_context() {
     ok(concat!(
-        "oneof Maybe T {\n  Some(T),\n  None,\n}\n",
+        "oneof Maybe T {\n  None,\n  Some(T),\n}\n",
         "func f(): Maybe i32 {\n  return Maybe.None\n}"
     ));
 }
@@ -91,7 +91,7 @@ fn non_exhaustive_match_is_reported() {
 #[test]
 fn match_expression_binds_and_unifies_arms() {
     ok(concat!(
-        "oneof Option T {\n  Some(T),\n  None,\n}\n",
+        "oneof Option T {\n  None,\n  Some(T),\n}\n",
         "func unwrap(o: Option i32): i32 {\n",
         "  a := match o with {\n    Option.Some(v) => { v }\n    Option.None => { 0 }\n  }\n",
         "  return a\n}"

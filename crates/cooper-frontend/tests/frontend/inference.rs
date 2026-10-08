@@ -29,14 +29,14 @@ fn an_unresolved_method_reports_the_member_access() {
 
 #[test]
 fn an_unresolved_bare_variant_reports_its_name() {
-    let source = "oneof Maybe T { Some(T), None }\nfunc f() {\n  value := Some(1)\n}";
+    let source = "oneof Maybe T { None, Some(T) }\nfunc f() {\n  value := Some(1)\n}";
     diagnostic_at(source, "Some", "cannot infer sum type for bare variant Some");
 }
 
 #[test]
 fn an_unresolved_match_reports_its_scrutinee() {
     let source = format!(
-        "{ZERO}oneof Maybe T {{ Some(T), None }}\nfunc f() {{\n  value := zero()\n  result := match value with {{\n    Some(n) => n\n    None => 0\n  }}\n}}"
+        "{ZERO}oneof Maybe T {{ None, Some(T) }}\nfunc f() {{\n  value := zero()\n  result := match value with {{\n    Some(n) => n\n    None => 0\n  }}\n}}"
     );
     diagnostic_at(&source, "value", ANNOTATE);
 }

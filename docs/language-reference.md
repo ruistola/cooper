@@ -24,7 +24,7 @@ only reports diagnostics.
 | `*p`, `&mut x`, `Box<T>` | `p^`, `&x`, `T^` (`^` is the pointer sigil in types and values) |
 | `Vec<i32>`, `[]int`, `Option<T>`, `Map<K, V>` | `i32[]`, `Maybe T`, `Map K V` (type application by juxtaposition) |
 | `fn id<T>(x: T) -> T` | `func id T (x: T): T` (binders follow the name; no angle brackets) |
-| `enum Maybe<T> { Some(T), None }` | `oneof Maybe T { Some(T), None }` |
+| `enum Maybe<T> { Some(T), None }` | `oneof Maybe T { None, Some(T) }` (list a lone payloadless variant first) |
 | `Maybe::Some(5)` | `Maybe.Some(5)`, or bare `Some(5)` where inference fixes the sum type |
 | `use std::io;`, `import "fmt"` | `use { std.io }` (a braced block of dotted paths) |
 | `println!("{}", n)`, `fmt.Println(n)` | `std.io.println("n = " + string(n))` (the argument is a `string`) |
@@ -50,14 +50,14 @@ struct Point {
 }
 
 oneof Shape {
+    Empty,
     Circle(i32),
     Rect(i32, i32),
-    Empty,
 }
 
 oneof Maybe T {
-    Some(T),
     None,
+    Some(T),
 }
 
 (p: Point) func sum(): i32 {         # value receiver: operates on a copy
@@ -229,7 +229,8 @@ than all three, so `x != nil and x.count > 10` needs no parentheses
 * Values are stored inline and copied on assignment. Arrays share their elements, and
   pointers share their target. Grow an array with `xs = xs.push(v)`.
 * Every type has a zero value, and `let x: T` alone holds it. Dereferencing `nil` yields zero
-  values and discards writes; it does not fault.
+  values and discards writes; it does not fault. A sum type's zero value is its first variant,
+  so list a lone payloadless variant first.
 * Integer overflow, division by zero, and an out-of-range index stop the program with a
   runtime error (exit status 101).
 * A function body leaves with a value only through `return`. A block evaluates to its trailing

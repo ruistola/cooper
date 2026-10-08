@@ -1,6 +1,6 @@
 # exit: 0
 # Body-wide inference: later uses, generic callbacks, and deferred members/patterns.
-oneof Maybe T { Some(T), None }
+oneof Maybe T { None, Some(T) }
 struct Box T { v: T }
 struct Point { x: i64 }
 

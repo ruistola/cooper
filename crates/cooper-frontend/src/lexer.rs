@@ -146,6 +146,8 @@ pub enum TokenKind {
     While,
     #[token("with")]
     With,
+    #[token("xor")]
+    Xor,
 
     /// Synthetic end-of-input marker appended after tokenization.
     Eof,
@@ -219,6 +221,7 @@ impl std::fmt::Display for TokenKind {
             Match => "'match'",
             While => "'while'",
             With => "'with'",
+            Xor => "'xor'",
             Eof => "end of input",
         };
         f.write_str(name)

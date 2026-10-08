@@ -57,6 +57,16 @@ impl Emitter<'_, '_> {
         if matches!(op, BinaryOp::And | BinaryOp::Or) {
             return self.short_circuit(op, lhs, rhs).map(Some);
         }
+        if op == BinaryOp::Xor {
+            // Exclusive-or depends on both operands, so neither is skipped.
+            let left = self.expr(lhs)?.expect("a logical operand is a bool");
+            let right = self.expr(rhs)?.expect("a logical operand is a bool");
+            let operand = self.assign(&format!("xor i1 {}, {}", left.operand, right.operand));
+            return Ok(Some(Value {
+                ty: "i1".to_string(),
+                operand,
+            }));
+        }
         if op == BinaryOp::Add && is_string(&lhs.ty) {
             let left = self.expr(lhs)?.expect("a string has a value");
             let right = self.expr(rhs)?.expect("a string has a value");

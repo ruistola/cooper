@@ -23,6 +23,7 @@ pub enum BinaryOp {
     Ge,
     And,
     Or,
+    Xor,
 }
 
 impl BinaryOp {
@@ -41,6 +42,7 @@ impl BinaryOp {
             BinaryOp::Ge => ">=",
             BinaryOp::And => "and",
             BinaryOp::Or => "or",
+            BinaryOp::Xor => "xor",
         }
     }
 }

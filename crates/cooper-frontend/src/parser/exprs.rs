@@ -318,6 +318,7 @@ impl Parser {
 const ASSIGN_BP: i32 = 2;
 const RANGE_BP: i32 = 4;
 const OR_BP: i32 = 6;
+const XOR_BP: i32 = 8;
 const AND_BP: i32 = 10;
 const EQUALITY_BP: i32 = 12;
 const COMPARISON_BP: i32 = 14;
@@ -346,6 +347,7 @@ fn tail_bp(kind: TokenKind) -> (i32, i32) {
         }
         DotDot | DotDotEquals => (RANGE_BP, RANGE_BP + 1),
         Or => (OR_BP, OR_BP + 1),
+        Xor => (XOR_BP, XOR_BP + 1),
         And => (AND_BP, AND_BP + 1),
         DoubleEquals | NotEquals => (EQUALITY_BP, EQUALITY_BP + 1),
         Less | LessEquals | Greater | GreaterEquals => (COMPARISON_BP, COMPARISON_BP + 1),
@@ -373,6 +375,7 @@ fn binary_op(kind: TokenKind) -> Option<BinaryOp> {
         GreaterEquals => BinaryOp::Ge,
         And => BinaryOp::And,
         Or => BinaryOp::Or,
+        Xor => BinaryOp::Xor,
         _ => return None,
     })
 }

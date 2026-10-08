@@ -635,7 +635,7 @@ impl<'g> TypeChecker<'g> {
         span: Span,
     ) -> Option<Type> {
         let boolean = Type::Primitive("bool".to_string());
-        if matches!(op, BinaryOp::And | BinaryOp::Or) {
+        if matches!(op, BinaryOp::And | BinaryOp::Or | BinaryOp::Xor) {
             let left = self.check_expr(lhs)?;
             let right = self.check_expr(rhs)?;
             let left_ok = self.infer.unify(&left, &boolean).is_ok();

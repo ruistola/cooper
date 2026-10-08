@@ -124,7 +124,7 @@ kind := match n with {               # integer, bool, tuple, struct, or sum-type
 * Identifiers are `[A-Za-z_][A-Za-z0-9_]*`. Types are PascalCase and everything else is
   camelCase. Casing matters to the compiler only in patterns (below).
 * Reserved words: `and as break continue do else false for func if in let match nil oneof or
-  repeat return struct then true until use while with`.
+  repeat return struct then true until use while with xor`.
 * Numbers: `42`, `1_000`, `0xFF`, `0b1010`, `3.14`, `1e9`, `2.5e-3`. A float needs digits on
   both sides of the point. Strings are `"…"` with the escapes `\n \t \r \0 \\ \" \'`.
 * A newline ends a statement when the token before it can end one and the token after it can
@@ -202,17 +202,19 @@ From loosest to tightest binding:
 | 1 | `=` `+=` `-=` `*=` `/=` and `:=` (right-associative) |
 | 2 | `..` `..=` (valid only as a `for` iterable or a slice bound) |
 | 3 | `or` |
-| 4 | `and` |
-| 5 | `==` `!=` |
-| 6 | `<` `<=` `>` `>=` |
-| 7 | `+` `-` |
-| 8 | `*` `/` `%` |
-| 9 | prefix `-` `+` `!` `&` |
-| 10 | postfix call `f(…)`, index `a[i]`, struct literal `T{…}`, field `.x`, dereference `^` |
+| 4 | `xor` |
+| 5 | `and` |
+| 6 | `==` `!=` |
+| 7 | `<` `<=` `>` `>=` |
+| 8 | `+` `-` |
+| 9 | `*` `/` `%` |
+| 10 | prefix `-` `+` `!` `&` |
+| 11 | postfix call `f(…)`, index `a[i]`, struct literal `T{…}`, field `.x`, dereference `^` |
 
 Binary operators group left to right, so `10 - 3 - 2` is `5`, and assignment groups right to
-left. `and` and `or` short-circuit, and comparisons bind tighter than both, so
-`x != nil and x.count > 10` needs no parentheses ([why](./syntax-fundamentals.md#logical-and-bitwise-operators)).
+left. `and` and `or` short-circuit, `xor` evaluates both operands, and comparisons bind tighter
+than all three, so `x != nil and x.count > 10` needs no parentheses
+([why](./syntax-fundamentals.md#logical-and-bitwise-operators)).
 
 ## Types
 
@@ -243,7 +245,7 @@ left. `and` and `or` short-circuit, and comparisons bind tighter than both, so
 
 These are designed or reserved but rejected today. Do not write them:
 
-* Bitwise `and`, `or`, `xor` on integers (`and` and `or` are logical on `bool`), shifts
+* Bitwise `and`, `or`, `xor` on integers (the three are logical on `bool` today), shifts
   `<<` and `>>`, chained comparison (`a <= x <= b`), and `%=`.
 * Function literals, closures, and nested functions.
 * Module-level variables, static arrays `T[N]`, and `extern func`.

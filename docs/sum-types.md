@@ -77,8 +77,11 @@ match shape with {
 }
 ```
 
-An arm body is a single expression or statement, or a braced block. Arms are separated by
-newlines or semicolons. In statement position the arm values are discarded. In expression
+An arm body is a single expression or statement, or a braced block. Arms are separated like
+statements, by semicolons that a newline supplies under
+[semicolon inference](./syntax-fundamentals.md#semicolon-inference). An arm may therefore
+continue over several lines, end with an explicit `;`, or share a line with another arm.
+Commas do not separate arms. In statement position the arm values are discarded. In expression
 position all arms must share one type, which is the type of the `match`:
 
 ```

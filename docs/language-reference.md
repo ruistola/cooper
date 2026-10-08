@@ -19,7 +19,7 @@ only reports diagnostics.
 | `let mut x = 5;`, `var x = 5` | `x := 5` or `let x: i32 = 5` (bindings are mutable; there is no `mut`) |
 | `if x > 0 { … } else { … }` | `if x > 0 then … else …` (a body is one statement or a `{ … }` block) |
 | `while x < 9 { … }`, `for i in 0..9 { … }` | `while x < 9 do …`, `for i in 0..9 do …` |
-| `match x { A => 1, B => 2 }` | `match x with {`, then one arm per line, `A => 1`; no commas |
+| `match x { A => 1, B => 2 }` | `match x with {`, then arms `A => 1`, separated like statements (a newline or `;`), never by commas |
 | `impl Point { fn len(&self) … }` | `(p: Point) func len(): i32 { … }`, declared outside the struct |
 | `*p`, `&mut x`, `Box<T>` | `p^`, `&x`, `T^` (`^` is the pointer sigil in types and values) |
 | `Vec<i32>`, `[]int`, `Option<T>`, `Map<K, V>` | `i32[]`, `Maybe T`, `Map K V` (type application by juxtaposition) |
@@ -171,7 +171,7 @@ stmt       ::= "let" ident (":" type)? ("=" expr)?
              | "return" expr? | "break" | "continue"
              | expr                                   # a call, an assignment, …
 bindings   ::= ident | "(" ident "," ident ")"
-arm        ::= pattern "=>" body                      # an arm ends at a newline or ";"
+arm        ::= pattern "=>" body                      # arms are separated like statements: a newline or ";", never ","
 
 expr       ::= number | string | "true" | "false" | "nil" | ident | "(" ")"
              | "(" expr ")" | "(" expr ("," expr)+ ")" | "[" expr* "]"

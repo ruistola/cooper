@@ -77,7 +77,8 @@ have identities too (`Callable`: module and name, or receiver type and name).
 `cooper-ir` lowers a checked program from the frontend's tables, so nothing is re-resolved or
 re-inferred. Every node carries its resolved type, and every callee names its declaration.
 Lowering also desugars: `if` to `match`, `match` to a decision tree, and index syntax and array
-methods to intrinsics.
+methods to intrinsics. The IR types live in `ir.rs`, the lowering in `lib.rs`, and the
+compilation of patterns to decision trees in `decision.rs`.
 
 **Monomorphization** (`mono.rs`) is an IR-to-IR pass. Lowering keeps a generic function as a
 template. Starting from the non-generic functions, the pass instantiates each referenced

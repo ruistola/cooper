@@ -6,8 +6,10 @@ compiler is still being built according to known best practices and industry sta
 
 ## Design documentation
 
-Detailed language design notes live in `docs/`:
+Detailed language design notes live in `docs/`. Cooper is not Rust or Go, so read the language
+reference before writing Cooper source:
 
+* [Language Reference](docs/language-reference.md) — syntax cheat sheet, grammar sketch, and what is not implemented yet
 * [Compiler Architecture](docs/compiler-architecture.md) — crates, frontend passes, lowering IR, monomorphization
 * [Modules and Projects](docs/modules-and-projects.md) — project layout, modules, dependencies, `use`
 * [Syntax Fundamentals](docs/syntax-fundamentals.md) — semicolon inference, naming, arrays and views, pointers, tuples, bindings, operators

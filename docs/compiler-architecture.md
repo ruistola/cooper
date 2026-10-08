@@ -32,8 +32,10 @@ The compiler is a Rust Cargo workspace.
   statement boundaries to report many errors per run.
 * **ast.rs** — Every node is a `{ kind, span }` pair with a closed `*Kind` enum, so every
   `match` is exhaustiveness-checked.
-* **types.rs** — The resolved `Type` enum, with equality, substitution, unification, and the
-  `TypeDefs` table.
+* **types.rs** — The `Type` enum, nominal identities, equality, substitution, and the
+  `TypeDefs` table. `Type::Infer` denotes a body-local inference variable.
+* **infer.rs** — Union-find variables and structural unification, with an occurs check,
+  literal classes, deep resolution, and literal defaulting.
 * **builtins.rs** — The fixed method sets of built-in types (array `length`, `get`, `set`,
   `push`).
 * **diag.rs** — Diagnostics, each with the [`Span`] and file it refers to.
@@ -42,10 +44,18 @@ The compiler is a Rust Cargo workspace.
      It runs in phases across all of a module's files: register every type name, resolve
      member and variant types, reject types that contain themselves by value, then resolve
      functions, methods, and variables. Declaration order therefore never matters.
-  2. **typecheck.rs** — Types every expression and infers the type arguments of generic
-     constructions and references. It records two per-file tables: `span → Type` for every
-     expression, and `span → ItemRef` naming the declaration and type arguments of every
-     function or method reference.
+  2. **typecheck.rs** — HM(X)-style constraint inference per function body and for module-level
+     statements. Expressions generate eager equality constraints, delayed type predicates
+     (`Numeric`, `Addable`, `Integer`, `Comparable`, `Formattable`), and member, variant, and
+     pattern obligations. Each obligation has one solution once its subject type is known;
+     solving does not search or backtrack. Local bindings are monomorphic; signatures are
+     declared and nothing is generalized.
+
+     `finish_body` runs obligations to a fixed point, defaults unbound literals, runs
+     obligations again, reports unresolved obligations, and checks predicates and literal
+     ranges. It resolves the per-file `span → Type` and `span → ItemRef` tables, including
+     callable type arguments. Unbound variables are diagnosed, and lowering never sees
+     `Type::Infer`.
   3. **semantic.rs** — Control-flow checks: every path returns a value where the function
      needs one, and no code follows a `return`.
 

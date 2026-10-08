@@ -71,17 +71,29 @@ apply to every instantiation of their type.
 
 ## Instantiation
 
-Type arguments are inferred at every use: a generic struct or sum-type construction from its
-member and payload values, a generic function or method call from its arguments and the
-expected result type, and a method's receiver-pattern parameters from the receiver. A generic
-function used as a value takes its type arguments from the expected function type. When
-inference under-determines a parameter, annotate the binding:
+Each generic construction or callable reference introduces fresh variables for its type
+arguments. Equalities from members, payloads, receivers, call arguments, return types, and
+other uses constrain those variables throughout the function body. Information also flows
+from later statements; arguments and operands need no special checking order.
 
 ```
-x := Some(true)                          # Maybe bool
-let r: Result i32 string = Ok(5)         # Ok fixes T; the annotation fixes E
-let a: i64 = id(3)                       # the expected type fixes T before 3 is checked
+x := Maybe.Some(true)                   # Maybe bool
+let r: Result i32 string = Ok(5)         # the payload fixes T; the annotation fixes E
+wide := id(3)
+let a: i64 = wide                       # fixes id's T and the literal to i64
+g := id
+let copy: func(i64): i64 = g             # fixes this reference's T to i64
 ```
+
+Local bindings are monomorphic: `g` has one instantiation, not a separately inferred type
+at each call. Only declared generic functions introduce type parameters; local inference
+does not generalize bindings. A parameter that remains undetermined at body completion
+requires an annotation.
+
+Unbound integer and float literal variables default to `i32` and `f32` after the body's
+constraints are solved. Range checks use the final inferred integer type. Member access and
+match patterns on an unknown type wait until another use determines their subject; inference
+never searches for a struct or sum type merely because it has a matching member or variant.
 
 Generics are compiled by monomorphization: each distinct instantiation becomes its own
 concrete function.

@@ -11,6 +11,7 @@ mod semantic;
 mod modules;
 mod control_flow;
 mod generics;
+mod inference;
 
 /// Assert `src` produces no diagnostics.
 pub fn ok(src: &str) {

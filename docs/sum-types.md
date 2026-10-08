@@ -35,23 +35,34 @@ Maybe.None
 ```
 
 A payload-free variant is a complete value, and a variant with a payload is completed by a
-call that fills its slots. The qualifier may be dropped wherever an expected type fixes the
-sum type: an annotated `let`, a `return` under a declared return type, a call argument, or a
-`match` arm against its scrutinee. With no expected type, a bare variant is an error.
+call that fills its slots. The qualifier may be dropped when any use determines the sum
+type: an annotation, return type, call parameter, assignment, or comparison. That use may
+appear later in the body.
 
 ```
 let x: Result i32 string = Ok(5)
 func f(): Maybe i32 { return None }
-let y = Ok(5)        # error: write Result.Ok(5)
+m := None
+m = Maybe.Some(3)   # both values are Maybe i32
+let y = Ok(5)       # no other use fixes the sum type: write Result.Ok(5)
 ```
+
+A bare variant with no determining use is an error at body completion. Even a unique
+variant name does not select its owning sum type; inference does not search declarations.
 
 The zero value of a sum type is its first variant with a zero payload.
 
-A generic sum type's arguments are inferred from the payload arguments and the expected type.
-In a comparison, a typed operand supplies the expected type of a variant on either side
-(`m == None`, `None == m`).
-A construction that leaves a parameter undetermined is an error
-(`m := Maybe.None` cannot infer `T`).
+A generic sum type's arguments are inferred from payloads and all uses of the constructed
+value. A comparison relates both operand types (`m == None`, `None == m`), independently of
+operand order. A qualified payload-free variant can also be constrained later:
+
+```
+m := Maybe.None
+m = Maybe.Some(3)   # determines T as i32
+```
+
+A type argument still undetermined after solving requires an annotation. `m := Maybe.None`
+with no determining use cannot infer `T`.
 
 ## `match`
 
@@ -77,7 +88,9 @@ kind := match shape with {
 }
 ```
 
-The scrutinee may be a sum type, struct, tuple, `bool`, or integer. Patterns:
+The scrutinee may be a sum type, struct, tuple, `bool`, or integer. If its type is unknown,
+arm binders get fresh variables immediately; pattern validation and exhaustiveness wait
+until another use determines the scrutinee type. Patterns:
 
 | Pattern | Matches |
 |---|---|

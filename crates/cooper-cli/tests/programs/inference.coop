@@ -1,0 +1,47 @@
+# exit: 0
+# Body-wide inference: later uses, generic callbacks, and deferred members/patterns.
+oneof Maybe T { Some(T), None }
+struct Box T { v: T }
+struct Point { x: i64 }
+
+func id T (x: T): T { return x }
+func apply T (f: func(T): T, x: T): T { return f(x) }
+func wrap T (x: T): Box T { return Box{v: x} }
+(b: Box T) func map U (f: func(T): U): Box U { return Box{v: f(b.v)} }
+func zero T (): T {
+    let value: T
+    return value
+}
+
+func main(): i32 {
+    m := None
+    m = Maybe.Some(3)
+    value := match m with {
+        Some(x) => x
+        None => 0
+    }
+    if value != 3 then return 1
+
+    xs := []
+    xs = xs.push(1)
+    xs = xs.push(2)
+    if xs[1] != 2 then return 2
+    if apply(id, 2) != 2 then return 3
+    b := Box{v: 4}
+    mapped := b.map(wrap)
+    if mapped.v.v != 4 then return 4
+
+    point := zero()
+    before := point.x
+    point = Point{x: 9}
+    if before != 0 or point.x != 9 then return 5
+
+    delayed := None
+    before_variant := match delayed with {
+        Some(x) => x
+        None => 0
+    }
+    delayed = Maybe.Some(7)
+    if before_variant != 0 then return 6
+    return 0
+}

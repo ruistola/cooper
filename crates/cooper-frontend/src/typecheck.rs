@@ -171,6 +171,8 @@ struct TypeChecker<'g> {
     diags: Vec<Diagnostic>,
     /// Every expression's attributed type, keyed by span: the lowering handoff.
     types: HashMap<Span, Type>,
+    /// Expressions that failed to check, so a second check reports nothing again.
+    failed: HashSet<Span>,
     /// Block-scoped variable bindings, innermost scope last.
     scopes: Vec<HashMap<String, Type>>,
     /// The return type of the function whose body is being checked, if any.
@@ -201,6 +203,7 @@ impl<'g> TypeChecker<'g> {
             modules,
             diags: Vec::new(),
             types: HashMap::new(),
+            failed: HashSet::new(),
             scopes: Vec::new(),
             current_return: None,
             type_params: HashSet::new(),
@@ -583,10 +586,19 @@ impl<'g> TypeChecker<'g> {
             self.expected = None;
             return Some(self.infer.resolve(&ty));
         }
+        if self.failed.contains(&expr.span) {
+            self.expected = None;
+            return None;
+        }
         let ty = self.check_expr_kind(expr).map(|ty| self.infer.resolve(&ty));
-        if let Some(ty) = &ty {
-            self.body.spans.push(expr.span);
-            self.types.insert(expr.span, ty.clone());
+        match &ty {
+            Some(ty) => {
+                self.body.spans.push(expr.span);
+                self.types.insert(expr.span, ty.clone());
+            }
+            None => {
+                self.failed.insert(expr.span);
+            }
         }
         ty
     }

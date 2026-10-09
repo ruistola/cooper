@@ -1,0 +1,46 @@
+# exit: 0
+# stdout: X is 5, doubled 10, p = Point{x: 1, y: 2}
+# stdout: hi bob, literal {x} and } alone, inside ["Q"], bare Q
+# stdout: 2 + 3 = 5
+# stdout: total 6 of 10
+# stdout: [ff] [FF] [11111111] [377] [000000ff] [ff]
+# stdout: [3.14] [   3.142] [3.1  |] [00003.14]
+# stdout: [  255] [255  ] [ 255 ] [**255**] [-00042] [ab   ] [   ab]
+# stdout: [   7] [1000] [2.2]
+# stdout: order 1 3 2 4
+# String interpolation: inline holes with any expression (nested strings and braces
+# included), `\{` escapes, positional `{}` holes filled by `format`/`println`
+# arguments, format specs (radix, precision, width, alignment, fill, zero padding), and
+# evaluation order: the template's holes first, then the arguments, each once.
+use { std.io as io, std.fmt.format }
+
+struct Point { x: i32, y: i32 }
+
+func greet(name: string): string { return "hi {name}" }
+
+func trace(log: i32[]^, v: i32): i32 {
+    log^ = log^.push(v)
+    return v
+}
+
+func main() {
+    x := 5
+    io.println("X is {x}, doubled {x * 2}, p = {Point{x: 1, y: 2}}")
+    name := "Q"
+    io.println("{greet("bob")}, literal \{x} and } alone, inside {[name]}, bare {name}")
+    io.println("{} + {} = {}", 2, 3, 2 + 3)
+    limit := 10
+    io.println(format("total {} of {limit}", 1 + 2 + 3))
+
+    n := 255
+    let neg: i8 = -1
+    io.println("[{n:x}] [{n:X}] [{n:b}] [{n:o}] [{n:08x}] [{neg:x}]")
+    f := 3.14159
+    io.println("[{f:.2}] [{f:8.3}] [{f:<5.1}|] [{f:08.2}]")
+    io.println("[{n:5}] [{n:<5}] [{n:^5}] [{n:*^7}] [{-42:06}] [{"ab":5}] [{"ab":>5}]")
+    io.println("[{:>4}] [{:x}] [{:.1}]", 7, 4096, 2.25)
+
+    let log: i32[] = []
+    format("{trace(&log, 1)} {} {trace(&log, 3)} {}", trace(&log, 2), trace(&log, 4))
+    io.println("order {log[0]} {log[1]} {log[2]} {log[3]}")
+}

@@ -1,0 +1,82 @@
+# exit: 0
+# Function literals and nested functions: capture by reference shared with the
+# enclosing body, closures outliving their frame, recursion, a fresh loop variable per
+# pass, captures inside generic functions, transitive capture, inferred literal
+# parameter and return types, and inference across a literal's boundary. Each check
+# returns its own status on failure.
+func makeCounter(): (func(): i32, func(): i32) {
+    count := 0
+    inc := func(): i32 {
+        count += 1
+        return count
+    }
+    return (inc, func(): i32 { return count })
+}
+
+func counterFrom(start: i32): func(): i32 {
+    return func(): i32 {
+        start += 1
+        return start
+    }
+}
+
+func map T U (xs: T[], f: func(T): U): U[] {
+    let out: U[] = []
+    for x in xs do out = out.push(f(x))
+    return out
+}
+
+func twice T (x: T, f: func(T): T): T {
+    g := func(y: T): T { return f(f(y)) }
+    return g(x)
+}
+
+func main(): i32 {
+    total := 0
+    add := func(v: i32) { total += v }
+    add(5)
+    total = 100
+    add(1)
+    if total != 101 then return 1
+
+    (inc, get) := makeCounter()
+    inc()
+    inc()
+    if get() != 2 then return 2
+    c := counterFrom(10)
+    c()
+    if c() != 12 or counterFrom(10)() != 11 then return 3
+
+    func fact(n: i32): i32 {
+        if n <= 1 then return 1
+        return n * fact(n - 1)
+    }
+    if fact(5) != 120 then return 4
+
+    let fs: (func(): i32)[] = []
+    for i in 0..3 do fs = fs.push(func(): i32 { return i })
+    if fs[0]() != 0 or fs[2]() != 2 then return 5
+    shared := 0
+    let gs: (func(): i32)[] = []
+    for i in 0..2 do gs = gs.push(func(): i32 { return shared })
+    shared = 7
+    if gs[0]() + gs[1]() != 14 then return 6
+
+    tens := map([1, 2, 3], func(x) { return x * 10 })
+    if tens[2] != 30 then return 7
+    if twice(3, func(x: i32): i32 { return x + 1 }) != 5 then return 8
+
+    base := 1
+    outer := func(): func(): i32 {
+        return func(): i32 { base += 1; return base }
+    }
+    inner := outer()
+    inner()
+    if base != 2 then return 9
+
+    xs := []
+    size := func(): i64 { return xs.length() }
+    xs = xs.push(u8(1))
+    if size() != 1 then return 10
+    return 0
+}

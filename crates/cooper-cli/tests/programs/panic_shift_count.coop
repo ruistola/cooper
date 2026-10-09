@@ -1,0 +1,8 @@
+# exit: 101
+# stderr: panic: shift count out of range at
+# stderr: panic_shift_count.coop:7:12
+# A shift by at least the width of the shifted value's type stops the program.
+func main(): i32 {
+    n := 32
+    return 1 << n
+}

@@ -1,0 +1,52 @@
+# exit: 0
+# stdout: Point{x: 1, y: 2.5}
+# stdout: ["a, b", "c\"d\n"] (1, "a", true, ()) [[1], [2, 3]] []
+# stdout: Rect(Point{x: 0, y: 0}, Point{x: 3, y: 4}) Dot [Some(1), None]
+# stdout: plain <func> nil
+# stdout: Node{value: 2, next: &Node{value: 1, next: nil}}
+# stdout: #1=&Node{value: 1, next: &Node{value: 2, next: #1}}
+# stdout: Pair{left: #1=&Node{value: 7, next: nil}, right: #1}
+# stdout: stops at depth 64
+# `string(x)` formats any value in the shape of its literal, quoting strings inside
+# other values, also through a generic function. A pointer shows its target; a target
+# reached more than once is labelled and referred to by label, and nesting stops at 64
+# pointers with `...`.
+use { std.io as io }
+
+struct Point { x: i32, y: f64 }
+oneof Shape { Dot, Circle(f64), Rect(Point, Point) }
+oneof Maybe T { None, Some(T) }
+struct Node { value: i32, next: Node^ }
+struct Pair { left: Node^, right: Node^ }
+
+func show T (x: T): string { return string(x) }
+
+func main() {
+    io.println(string(Point{x: 1, y: 2.5}))
+    let empty: i32[] = []
+    io.println(string(["a, b", "c\"d\n"]) + " " + string((1, "a", true, ())) + " " + string([[1], [2, 3]]) + " " + string(empty))
+    io.println(string(Shape.Rect(Point{x: 0, y: 0.0}, Point{x: 3, y: 4.0})) + " " + string(Shape.Dot) + " " + show([Maybe.Some(1), Maybe.None]))
+    let p: Point^
+    io.println(string("plain") + " " + string(func() {}) + " " + string(p))
+
+    a := Node{value: 1, next: nil}
+    b := Node{value: 2, next: &a}
+    io.println(string(b))
+    a.next = &b
+    io.println(string(&a))
+    shared := Node{value: 7, next: nil}
+    io.println(string(Pair{left: &shared, right: &shared}))
+
+    let head: Node^
+    for i in 0..100 do {
+        n := Node{value: i, next: head}
+        head = &n
+    }
+    expected := ""
+    closing := ""
+    for level in 0..64 do {
+        expected = expected + "&Node\{value: {99 - level}, next: "
+        closing = closing + "}"
+    }
+    if string(head) == expected + "..." + closing then io.println("stops at depth 64")
+}

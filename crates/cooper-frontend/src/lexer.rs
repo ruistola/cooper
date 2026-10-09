@@ -16,7 +16,8 @@ pub enum TokenKind {
     // Literals
     #[regex(r"0[xX][0-9a-fA-F](_?[0-9a-fA-F])*|0[bB][01](_?[01])*|[0-9](_?[0-9])*\.[0-9](_?[0-9])*([eE][+-]?[0-9](_?[0-9])*)?|[0-9](_?[0-9])*([eE][+-]?[0-9](_?[0-9])*)?")]
     Number,
-    #[regex(r#""([^"\\]|\\.)*""#)]
+    /// A string literal, holes included: `"X is {x}"` (see [`scan_string`]).
+    #[token("\"", scan_string)]
     Str,
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*")]
     Identifier,
@@ -237,6 +238,55 @@ impl std::fmt::Display for TokenKind {
     }
 }
 
+/// Scan the rest of a string literal whose opening quote `lex` has matched, through its
+/// closing quote. A `\` escapes the next character. A `{` opens a hole holding an
+/// expression, which may contain braces and string literals of its own, up to the
+/// matching `}`. An unterminated literal or hole is an error.
+fn scan_string(lex: &mut logos::Lexer<TokenKind>) -> bool {
+    match string_end(lex.remainder().as_bytes()) {
+        Some(len) => {
+            lex.bump(len);
+            true
+        }
+        None => false,
+    }
+}
+
+/// The length of the literal body starting at `rest[0]`, closing quote included.
+fn string_end(rest: &[u8]) -> Option<usize> {
+    let mut i = 0;
+    loop {
+        match rest.get(i)? {
+            b'\\' => i += 2,
+            b'"' => return Some(i + 1),
+            b'{' => i += 1 + hole_end(&rest[i + 1..])?,
+            _ => i += 1,
+        }
+    }
+}
+
+/// The length of a hole's source starting at `rest[0]`, closing brace included.
+pub(crate) fn hole_end(rest: &[u8]) -> Option<usize> {
+    let mut depth = 0;
+    let mut i = 0;
+    loop {
+        match rest.get(i)? {
+            b'"' => i += 1 + string_end(&rest[i + 1..])?,
+            b'{' => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' if depth == 0 => return Some(i + 1),
+            b'}' => {
+                depth -= 1;
+                i += 1;
+            }
+            b'\n' | b'\r' => return None,
+            _ => i += 1,
+        }
+    }
+}
+
 /// A lexed token: its kind, the exact source slice it spans, and that span.
 #[derive(Debug, Clone)]
 pub struct Token {
@@ -260,7 +310,10 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, Diagnostic> {
     let mut lex = TokenKind::lexer(src);
     while let Some(result) = lex.next() {
         let span: Span = lex.span().into();
-        let kind = result.map_err(|_| Diagnostic::error(span, "unexpected character"))?;
+        let kind = result.map_err(|_| {
+            let message = if lex.slice().starts_with('"') { "unterminated string literal" } else { "unexpected character" };
+            Diagnostic::error(span, message)
+        })?;
         // Collapse consecutive end-of-line tokens into a single one.
         if kind == TokenKind::Eol && matches!(tokens.last(), Some(t) if t.kind == TokenKind::Eol) {
             continue;

@@ -29,7 +29,7 @@ mod literals;
 mod patterns;
 mod solve;
 
-pub use literals::{decode_number_literal, decode_string_literal, LiteralValue};
+pub use literals::{decode_escapes, decode_number_literal, decode_string_literal, LiteralValue};
 use literals::{bare_number_text, is_signed_int, literal_is_float};
 use patterns::Coverage;
 
@@ -646,6 +646,29 @@ impl<'g> TypeChecker<'g> {
                     self.err(expr.span, format!("unknown escape sequence `{escape}` in string literal"));
                 }
                 Some(Type::Primitive("string".to_string()))
+            }
+            ExprKind::Interpolated(parts) => {
+                let mut ok = true;
+                for part in parts {
+                    match part {
+                        StrPart::Text(text) => {
+                            if let Err(escape) = decode_escapes(text) {
+                                self.err(expr.span, format!("unknown escape sequence `{escape}` in string literal"));
+                            }
+                        }
+                        // A hole formats its value as `string(x)` does.
+                        StrPart::Hole(hole) => match self.check_expr(hole) {
+                            Some(ty) => self.predicate(
+                                PredicateKind::Formattable,
+                                ty,
+                                hole.span,
+                                PredicateSite::Conversion("string".to_string()),
+                            ),
+                            None => ok = false,
+                        },
+                    }
+                }
+                ok.then(|| Type::Primitive("string".to_string()))
             }
             ExprKind::Bool(_) => Some(Type::Primitive("bool".to_string())),
             ExprKind::Nil => Some(Type::Nil),

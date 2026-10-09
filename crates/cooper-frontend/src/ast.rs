@@ -140,6 +140,15 @@ pub struct TypedIdent {
     pub span: Span,
 }
 
+/// A piece of an interpolated string literal.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StrPart {
+    /// Literal text as written, escapes undecoded.
+    Text(String),
+    /// A hole: an expression formatted as `string(x)` formats it.
+    Hole(Expr),
+}
+
 /// A function literal's parameter, whose type may be left to inference.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiteralParam {
@@ -249,7 +258,11 @@ pub enum ExprKind {
     /// An array literal `[a, b, c]`: a homogeneous, bracketed element list.
     Array(Vec<Expr>),
     Bool(bool),
+    /// A string literal without holes, as written (quotes and escapes included).
     Str(String),
+    /// A string literal with holes, `"X is {x}"`: its text and formatted expressions in
+    /// order.
+    Interpolated(Vec<StrPart>),
     Ident(String),
     /// A numeric literal, kept as its source text pending literal typing.
     Number(String),

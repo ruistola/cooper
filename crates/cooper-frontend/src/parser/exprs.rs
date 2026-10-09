@@ -26,7 +26,7 @@ impl Parser {
         let start = token.span;
         let kind = match token.kind {
             Number => ExprKind::Number(token.text),
-            Str => ExprKind::Str(token.text),
+            Str => self.string_literal(&token)?,
             Identifier => ExprKind::Ident(token.text),
             True | False => ExprKind::Bool(token.kind == True),
             Plus | Dash | Not => {
@@ -71,6 +71,74 @@ impl Parser {
             kind,
             span: start.to(self.prev_token().span),
         })
+    }
+
+    /// A string literal: plain, or interpolated when it has holes. Each hole's source
+    /// is parsed as an expression on its own, with spans placing it in the file.
+    fn string_literal(&mut self, token: &Token) -> PResult<ExprKind> {
+        let text = &token.text;
+        let inner = &text[1..text.len() - 1];
+        let base = token.span.start + 1;
+        let mut parts = Vec::new();
+        let mut segment = 0;
+        let bytes = inner.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\\' => i += 2,
+                b'{' => {
+                    let len = crate::lexer::hole_end(&bytes[i + 1..]).expect("the lexer closed every hole");
+                    parts.push(StrPart::Text(inner[segment..i].to_string()));
+                    let start = base + i + 1;
+                    let source = &inner[i + 1..i + len];
+                    parts.push(StrPart::Hole(self.hole(source, start)?));
+                    i += 1 + len;
+                    segment = i;
+                }
+                _ => i += 1,
+            }
+        }
+        if parts.is_empty() {
+            return Ok(ExprKind::Str(text.clone()));
+        }
+        parts.push(StrPart::Text(inner[segment..].to_string()));
+        Ok(ExprKind::Interpolated(parts))
+    }
+
+    /// Parse the source of a hole, which begins at byte `start` of the file.
+    fn hole(&mut self, source: &str, start: usize) -> PResult<Expr> {
+        let span = Span::new(start, start + source.len());
+        if source.trim().is_empty() {
+            return Err(self.error(span, "a hole in a string needs an expression"));
+        }
+        let mut tokens = match crate::lexer::tokenize(source) {
+            Ok(tokens) => tokens,
+            Err(mut diag) => {
+                diag.span = Span::new(diag.span.start + start, diag.span.end + start);
+                self.errors.push(diag);
+                return Err(Recover);
+            }
+        };
+        for token in &mut tokens {
+            token.span = Span::new(token.span.start + start, token.span.end + start);
+        }
+        let mut parser = Parser::new(tokens);
+        // A hole is an expression wherever it sits, so newlines carry no meaning.
+        parser.header_depth = 1;
+        let result = parser.parse_expr(0);
+        if result.is_ok() && parser.peek().kind != Eof {
+            let extra = parser.peek();
+            parser.error(extra.span, format!("unexpected {} in a hole", extra.kind));
+        }
+        let failed = !parser.errors.is_empty();
+        for diag in &mut parser.errors {
+            diag.message = diag.message.replace("end of input", "the end of the hole");
+        }
+        self.errors.append(&mut parser.errors);
+        match result {
+            Ok(expr) if !failed => Ok(expr),
+            _ => Err(Recover),
+        }
     }
 
     /// `()` unit, `(e)` group, or `(e, e, ...)` tuple, disambiguated by contents.

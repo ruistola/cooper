@@ -26,7 +26,7 @@ pub use mono::{monomorphize, MonoError};
 use decision::{bool_patterns, compile_match};
 
 use cooper_frontend::ast::{
-    AssignOp, BinaryOp, Block, Expr, ExprKind, FuncDecl, Pattern, PatternKind, Stmt, StmtKind,
+    AssignOp, BinaryOp, Block, Expr, ExprKind, FuncDecl, Pattern, PatternKind, Stmt, StmtKind, StrPart,
     TypeExpr, TypedIdent, UnaryOp,
 };
 use cooper_frontend::diag::Span;
@@ -34,7 +34,7 @@ use cooper_frontend::resolve::{
     receiver_pattern_params, resolve_type, underlying_struct_name, Callable, Globals, Signature,
 };
 use cooper_frontend::typecheck::{
-    decode_number_literal, decode_string_literal, ItemRef, LiteralValue, Typed,
+    decode_escapes, decode_number_literal, decode_string_literal, ItemRef, LiteralValue, Typed,
 };
 use cooper_frontend::{stdlib, CheckedProject};
 use cooper_frontend::types::{is_numeric_name, Type, TypeDefs, INDEX_INT};
@@ -677,6 +677,7 @@ impl Lower<'_> {
             ExprKind::Str(text) => IrExprKind::Str(
                 decode_string_literal(text).map_err(|_| LowerError::MalformedLiteral(expr.span))?,
             ),
+            ExprKind::Interpolated(parts) => return self.interpolated(parts, &ty, expr.span),
             ExprKind::Nil => IrExprKind::Nil,
             ExprKind::Unit => IrExprKind::Unit,
             ExprKind::Ident(name) => {
@@ -827,6 +828,35 @@ impl Lower<'_> {
             ty,
             span: expr.span,
         })
+    }
+
+    /// An interpolated string: its text and each hole's `string(x)`, concatenated in
+    /// order.
+    fn interpolated(&self, parts: &[StrPart], string: &Type, span: Span) -> Result<IrExpr, LowerError> {
+        let node = |kind| IrExpr {
+            kind,
+            ty: string.clone(),
+            span,
+        };
+        let mut out: Option<IrExpr> = None;
+        for part in parts {
+            let piece = match part {
+                StrPart::Text(text) if text.is_empty() => continue,
+                StrPart::Text(text) => {
+                    node(IrExprKind::Str(decode_escapes(text).map_err(|_| LowerError::MalformedLiteral(span))?))
+                }
+                StrPart::Hole(hole) => node(IrExprKind::Convert(Box::new(self.expr(hole)?))),
+            };
+            out = Some(match out {
+                None => piece,
+                Some(left) => node(IrExprKind::Binary {
+                    op: BinaryOp::Add,
+                    lhs: Box::new(left),
+                    rhs: Box::new(piece),
+                }),
+            });
+        }
+        Ok(out.unwrap_or_else(|| node(IrExprKind::Str(String::new()))))
     }
 
     fn value_block(&self, block: &Block) -> Result<IrExprKind, LowerError> {

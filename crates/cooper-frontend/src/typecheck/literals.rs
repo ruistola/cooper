@@ -98,6 +98,12 @@ pub fn decode_string_literal(text: &str) -> Result<String, String> {
         .strip_prefix('"')
         .and_then(|t| t.strip_suffix('"'))
         .unwrap_or(text);
+    decode_escapes(inner)
+}
+
+/// Decode the escapes in a piece of string literal text, between its quotes and holes.
+/// On failure, the unknown escape as written.
+pub fn decode_escapes(inner: &str) -> Result<String, String> {
     let mut out = String::with_capacity(inner.len());
     let mut chars = inner.chars();
     while let Some(c) = chars.next() {
@@ -111,7 +117,7 @@ pub fn decode_string_literal(text: &str) -> Result<String, String> {
             't' => '\t',
             'r' => '\r',
             '0' => '\0',
-            '\\' | '"' | '\'' => escaped,
+            '\\' | '"' | '\'' | '{' => escaped,
             other => return Err(format!("\\{other}")),
         });
     }

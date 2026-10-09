@@ -4,7 +4,24 @@
 
 Sources and strings are UTF-8. The lexer currently accepts an ASCII subset. A type for a
 single code point or grapheme is still to be decided. A string literal is double-quoted and
-accepts the escapes `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, and `\'`.
+accepts the escapes `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\'`, and `\{`.
+
+## String interpolation
+
+Every string literal interpolates: a `{…}` inside it holds an expression, whose value is
+formatted as `string(x)` formats it ([Type System](./type-system.md#formatting)) and spliced
+in. `\{` writes a brace, and a `}` alone is literal.
+
+```
+x := 5
+println("X is {x}, doubled {x * 2}")       # X is 5, doubled 10
+println("p = {Point{x: 1, y: 2}}")         # p = Point{x: 1, y: 2}
+println("{greet("bob")} \{literal}")       # a hole may hold strings and braces
+```
+
+A hole is any single expression, written on one line. A string inside a value is quoted as
+`string(x)` quotes it (`"{[name]}"` gives `["Q"]`), while a string in a hole on its own is
+spliced as is.
 
 ## Semicolon inference
 

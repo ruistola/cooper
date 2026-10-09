@@ -5,7 +5,7 @@
 //! unreachable by a preceding return. It relies on the type checker having already
 //! rejected non-exhaustive matches, so a match returns exactly when all its arms do.
 
-use crate::ast::{Expr, ExprKind, FuncDecl, Stmt, StmtKind, TypeExpr, TypeExprKind};
+use crate::ast::{Expr, ExprKind, FuncDecl, Stmt, StmtKind, StrPart, TypeExpr, TypeExprKind};
 use crate::diag::{Diagnostic, Span};
 use crate::resolve::{self, Globals};
 use crate::types::{is_unit, Type};
@@ -191,6 +191,11 @@ impl SemanticAnalyzer<'_> {
                 return_type, body, ..
             } => self.analyze_literal(return_type, true, body, expr.span, "function literal"),
             ExprKind::Chain { operands, .. } => operands.iter().for_each(|e| self.analyze_expr(e)),
+            ExprKind::Interpolated(parts) => parts.iter().for_each(|part| {
+                if let StrPart::Hole(hole) = part {
+                    self.analyze_expr(hole);
+                }
+            }),
             ExprKind::Block(block) => {
                 for stmt in &block.statements {
                     self.analyze_stmt(stmt);

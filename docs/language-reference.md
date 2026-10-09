@@ -27,7 +27,7 @@ only reports diagnostics.
 | `enum Maybe<T> { Some(T), None }` | `oneof Maybe T { None, Some(T) }` (list a lone payloadless variant first) |
 | `Maybe::Some(5)` | `Maybe.Some(5)`, or bare `Some(5)` where inference fixes the sum type |
 | `use std::io;`, `import "fmt"` | `use { std.io }` (a braced block of dotted paths) |
-| `println!("{}", n)`, `fmt.Println(n)` | `std.io.println("n = " + string(n))` (the argument is a `string`) |
+| `println!("{}", n)`, `fmt.Println(n)` | `io.println("n = {n}")` (every string literal interpolates) |
 | `x as i64`, `int64(x)` | `i64(x)` (a conversion is a call on the target type) |
 | `a && b`, `a \|\| b` | `a and b`, `a or b` (`!a` is prefix not) |
 | `i++`, `i--` | `i += 1`, `i -= 1` |
@@ -128,7 +128,8 @@ kind := match n with {               # integer, bool, tuple, struct, or sum-type
 * Reserved words: `and as break continue do else extern false for func if in let match nil oneof or
   repeat return struct then true until use while with xor`.
 * Numbers: `42`, `1_000`, `0xFF`, `0b1010`, `3.14`, `1e9`, `2.5e-3`. A float needs digits on
-  both sides of the point. Strings are `"…"` with the escapes `\n \t \r \0 \\ \" \'`.
+  both sides of the point. Strings are `"…"` with the escapes `\n \t \r \0 \\ \" \' \{`, and interpolate:
+  `"X is {x}"` formats any expression in braces.
 * A newline ends a statement when the token before it can end one and the token after it can
   begin one; `;` also separates. Newlines are ignored inside `()` and `[]`, inside `if`, loop,
   and `match` headers, and before a closing `}`. A line starting with `-`, `+`, or `!` begins
@@ -254,7 +255,8 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
   are shared with the enclosing body, not copied. Each execution of a binding, including
   each pass's loop variable, is a fresh variable, so a closure made in a loop keeps its own.
 * Output goes through `std.io` (`print` and `println`, each taking a `string`), and
-  `string(x)` formats any value: `Point{x: 1, y: 2}`, `[1, 2]`, `Some("a")`. C functions
+  `string(x)` formats any value: `Point{x: 1, y: 2}`, `[1, 2]`, `Some("a")`. Every string
+  literal interpolates the same formatting: `println("p is {p}")`. C functions
   are declared `extern func`, and strings convert to and from C with `CString(s)` and
   `string(c)` ([C Interop](./c-interop.md)).
 

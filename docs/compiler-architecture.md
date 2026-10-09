@@ -147,7 +147,9 @@ The conversions `CString(s)` and `string(c)` lower to the intrinsics `ToCString`
 is recognized however the type is spelled. Used as a value, such a function lowers to a lifted function that calls the
 intrinsic, like a function literal capturing nothing.
 
-`string(x)` lowers to a conversion. After monomorphization, `format.rs` expands every
+`string(x)` lowers to a conversion, and so does each hole of an interpolated string, which
+the lexer scans whole (holes may hold strings and braces), the parser parses hole by hole
+with spans inside the literal, and lowering joins with its text by concatenation. After monomorphization, `format.rs` expands every
 conversion to `string` of a value other than a number or `bool` (which the backend formats
 through the runtime): a `string` is itself, a `CString` is copied, and anything else calls a
 generated formatter, one IR function per type (`Callable::Formatter`), built from field

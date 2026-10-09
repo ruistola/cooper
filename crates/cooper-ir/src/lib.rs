@@ -311,7 +311,8 @@ impl Lower<'_> {
     /// A nested function: its variable, bound first (to an unassigned function value)
     /// so the closure stored into it can capture it and recurse.
     fn nested_func(&self, func: &FuncDecl) -> Result<[IrStmt; 2], LowerError> {
-        let closure = self.closure(&func.params, &func.return_type, &func.body, func.span)?;
+        let params: Vec<_> = func.params.iter().map(|p| (p.name.as_str(), p.span)).collect();
+        let closure = self.closure(&params, &func.body, func.span)?;
         let ty = closure.ty.clone();
         let var = |kind| IrExpr {
             kind,
@@ -340,25 +341,29 @@ impl Lower<'_> {
     }
 
     /// Lift a function literal or nested function out as a function of its own,
-    /// returning the closure that creates its function value.
-    fn closure(
-        &self,
-        params: &[TypedIdent],
-        return_type: &Option<TypeExpr>,
-        body: &[Stmt],
-        span: Span,
-    ) -> Result<IrExpr, LowerError> {
+    /// returning the closure that creates its function value. Its signature is the
+    /// function type the checker gave it, inferred parts included.
+    fn closure(&self, params: &[(&str, Span)], body: &[Stmt], span: Span) -> Result<IrExpr, LowerError> {
         let Some(lifting) = &self.lifting else {
             return unsupported(span, "a function literal outside a function");
         };
         // Numbered before the body, so literals nested in it number after this one.
         let index = lifting.next.get();
         lifting.next.set(index + 1);
-        let params: Vec<Param> = params.iter().map(|p| self.param(p)).collect::<Result<_, _>>()?;
-        let return_type = match return_type {
-            Some(ty) => self.resolve(ty)?,
-            None => Type::Unit,
+        let ty = self.types.get(&span).cloned().ok_or(LowerError::MissingType(span))?;
+        let Type::Func { return_type, param_types } = &ty else {
+            unreachable!("a function literal has a function type");
         };
+        let params = params
+            .iter()
+            .zip(param_types)
+            .map(|(&(name, span), ty)| Param {
+                name: name.to_string(),
+                ty: ty.clone(),
+                span,
+            })
+            .collect();
+        let return_type = (**return_type).clone();
         let captured = self.captures.get(&span).ok_or(LowerError::MissingType(span))?;
         let env = captured
             .iter()
@@ -368,10 +373,6 @@ impl Lower<'_> {
                 span,
             })
             .collect();
-        let ty = Type::Func {
-            return_type: Box::new(return_type.clone()),
-            param_types: params.iter().map(|p| p.ty.clone()).collect(),
-        };
         let body = self.block(body)?;
         self.lift_at(index, params, return_type, body, env, ty, span)
     }
@@ -571,11 +572,10 @@ impl Lower<'_> {
     fn expr(&self, expr: &Expr) -> Result<IrExpr, LowerError> {
         match &expr.kind {
             ExprKind::Group(inner) => return self.expr(inner),
-            ExprKind::Func {
-                params,
-                return_type,
-                body,
-            } => return self.closure(params, return_type, body, expr.span),
+            ExprKind::Func { params, body, .. } => {
+                let params: Vec<_> = params.iter().map(|p| (p.name.as_str(), p.span)).collect();
+                return self.closure(&params, body, expr.span);
+            }
             _ => {}
         }
         let ty = self

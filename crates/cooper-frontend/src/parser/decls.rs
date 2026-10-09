@@ -144,7 +144,15 @@ impl Parser {
         while self.peek().kind == Identifier {
             type_params.push(self.expect(Identifier)?.text);
         }
-        let (params, return_type, body) = self.parse_func_rest()?;
+        let (params, return_type, body) = self.parse_func_rest(true)?;
+        let params = params
+            .into_iter()
+            .map(|p| TypedIdent {
+                name: p.name,
+                ty: p.ty.expect("a declaration's parameter types are required"),
+                span: p.span,
+            })
+            .collect();
         Ok(FuncDecl {
             receiver,
             name,
@@ -157,16 +165,23 @@ impl Parser {
     }
 
     /// The part of a function declaration or literal after its name and binders:
-    /// `(params) (: type)? { body }`.
-    pub(super) fn parse_func_rest(&mut self) -> PResult<(Vec<TypedIdent>, Option<TypeExpr>, Vec<Stmt>)> {
+    /// `(params) (: type)? { body }`. A literal's parameter types are optional.
+    pub(super) fn parse_func_rest(
+        &mut self,
+        typed: bool,
+    ) -> PResult<(Vec<LiteralParam>, Option<TypeExpr>, Vec<Stmt>)> {
         self.expect(OpenParen)?;
         let mut params = Vec::new();
         while self.peek().kind != CloseParen {
             let pstart = self.peek().span;
             let param_name = self.expect(Identifier)?.text;
-            self.expect(Colon)?;
-            let param_type = self.parse_type_expr()?;
-            params.push(TypedIdent {
+            let param_type = if typed || self.peek().kind == Colon {
+                self.expect(Colon)?;
+                Some(self.parse_type_expr()?)
+            } else {
+                None
+            };
+            params.push(LiteralParam {
                 name: param_name,
                 ty: param_type,
                 span: pstart.to(self.prev_token().span),

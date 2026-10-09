@@ -112,6 +112,7 @@ p := &a                              # `p^ += 1` writes through it; `p.field` de
 let box: Box i32 = Box{v: 7}         # struct literal; generic types apply by juxtaposition
 let f: func(i32): i32 = inc          # function type; a bound method is a value too
 add := func(x: i32): i32 { return x + k }   # a function literal, capturing `k` by reference
+tens := map(xs, func(x) { return x * 10 })   # a literal's types may be left to inference
 kind := match n with {               # integer, bool, tuple, struct, or sum-type scrutinee
     5 => 1
     _ => 0
@@ -186,7 +187,7 @@ expr       ::= number | string | "true" | "false" | "nil" | ident | "(" ")"
              | "if" expr "then" expr "else" expr
              | "match" expr "with" "{" (pattern "=>" expr)* "}"
              | "{" stmt* expr "}"                     # a value block
-             | "func" "(" param* ")" (":" type)? block   # function literal
+             | "func" "(" (ident (":" type)?)* ")" (":" type)? block   # literal; types may be inferred
 
 pattern    ::= "_" | ident | "true" | "false" | "-"? number
              | (ident ".")? ident ("(" (ident | "_")* ")")?   # variant: `Some(x)`, `None`
@@ -254,7 +255,7 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
 
 These are designed or reserved but rejected today. Do not write them:
 
-* Generic nested functions, and parameter types inferred for function literals.
+* Generic nested functions.
 * Module-level variables, static arrays `T[N]`, and `extern func`.
 * Methods across sum-type variants.
 * Named-field variant payloads, nested patterns inside variant payloads, or-patterns, guards.

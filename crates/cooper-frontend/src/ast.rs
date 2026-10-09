@@ -140,6 +140,14 @@ pub struct TypedIdent {
     pub span: Span,
 }
 
+/// A function literal's parameter, whose type may be left to inference.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiteralParam {
+    pub name: String,
+    pub ty: Option<TypeExpr>,
+    pub span: Span,
+}
+
 /// One variant of a sum type: a name and its positional payload slot types.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VariantDef {
@@ -284,9 +292,11 @@ pub enum ExprKind {
     },
     Block(Block),
     /// A function literal `func(x: i32): i32 { … }`, capturing by reference the
-    /// variables of enclosing function bodies it names.
+    /// variables of enclosing function bodies it names. An omitted parameter type is
+    /// inferred, and an omitted return type is inferred from the `return` values (unit
+    /// when there are none).
     Func {
-        params: Vec<TypedIdent>,
+        params: Vec<LiteralParam>,
         return_type: Option<TypeExpr>,
         body: Vec<Stmt>,
     },

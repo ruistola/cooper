@@ -18,16 +18,24 @@ even though other blocks evaluate to their trailing expression.
 
 ## Function literals and nested functions
 
-A function literal is an expression whose value is a function. Its parameter types are
-annotated, and its return type follows the parameter list as in a declaration:
+A function literal is an expression whose value is a function. Its parameters and return
+type are written as in a declaration, but either may be left out for inference to supply.
+An omitted parameter type is inferred from the literal's uses, and an omitted return type
+from its `return` values, or is unit when it returns none:
 
 ```
 double := func(x: i32): i32 { return x * 2 }
 process(func(b: u8[]): (i32, Error) { … })
+tens := map(xs, func(x) { return x * 10 })   # x and the result take xs's element type
 ```
 
+A literal's types are inferred with the rest of the enclosing body, so the use that fixes
+them may come before or after it: in `sq := func(v) { return v * v }`, a later `sq(w)` with
+`w: u8` makes `v` a `u8`. A type nothing determines is an error asking for an annotation.
+
 A function declared inside a body is a nested function: a variable holding a function
-value, in scope from its declaration on and within its own body, so it may call itself.
+value, in scope from its declaration on and within its own body, so it may call itself. Its
+signature is written out in full, like any declaration's.
 Two nested functions cannot call each other, and a nested function cannot be generic yet.
 
 ```

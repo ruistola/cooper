@@ -55,6 +55,8 @@ struct Closure {
     /// captured.
     base: usize,
     captures: Vec<(String, Type)>,
+    /// Whether a `return` in the body carries a value.
+    returns_value: bool,
 }
 
 /// A reference to a function or method declaration, instantiated: the declaration's
@@ -497,16 +499,20 @@ impl<'g> TypeChecker<'g> {
             self.err(func.span, "a nested function cannot be generic yet");
             return;
         }
-        self.check_closure(&func.params, &func.return_type, &func.body, func.span, Some(&func.name));
+        let params: Vec<_> = func.params.iter().map(|p| (p.name.as_str(), Some(&p.ty), p.span)).collect();
+        self.check_closure(&params, &func.return_type, &func.body, func.span, Some(&func.name));
     }
 
-    /// Check a function literal or nested function against its annotated signature,
-    /// returning its function type. The body shares the enclosing body's inference,
-    /// so a captured variable's type may be fixed by a use on either side. `return`
-    /// leaves the literal, and a loop around the literal is not one `break` can leave.
+    /// Check a function literal or nested function, returning its function type. A
+    /// literal's omitted parameter type is an inference variable, and its omitted
+    /// return type one that its `return` values fix, or unit when it has none; a nested
+    /// function (`name`) is annotated like any declaration. The body shares the
+    /// enclosing body's inference, so a captured variable's type may be fixed by a use
+    /// on either side. `return` leaves the literal, and a loop around the literal is
+    /// not one `break` can leave.
     fn check_closure(
         &mut self,
-        params: &[TypedIdent],
+        params: &[(&str, Option<&TypeExpr>, Span)],
         return_type: &Option<TypeExpr>,
         body: &[Stmt],
         span: Span,
@@ -514,14 +520,24 @@ impl<'g> TypeChecker<'g> {
     ) -> Option<Type> {
         let mut bound = HashMap::new();
         let mut param_types = Vec::with_capacity(params.len());
-        for param in params {
-            let declared = self.resolve_local_type(&param.ty)?;
-            let ty = self.infer_binding(&declared);
-            bound.insert(param.name.clone(), ty.clone());
+        for &(param, annotation, param_span) in params {
+            let ty = match annotation {
+                Some(annotation) => {
+                    let declared = self.resolve_local_type(annotation)?;
+                    self.infer_binding(&declared)
+                }
+                None => self.infer.fresh(InferKind::General),
+            };
+            // Lowering reads every parameter's type here, annotated or inferred.
+            self.body.spans.push(param_span);
+            self.types.insert(param_span, ty.clone());
+            bound.insert(param.to_string(), ty.clone());
             param_types.push(ty);
         }
+        let inferred_return = return_type.is_none() && name.is_none();
         let ret = match return_type {
             Some(ty) => self.resolve_local_type(ty)?,
+            None if inferred_return => self.infer.fresh(InferKind::General),
             None => Type::Unit,
         };
         let func_type = Type::Func {
@@ -530,14 +546,17 @@ impl<'g> TypeChecker<'g> {
         };
         if let Some(name) = name {
             self.define_var(name, func_type.clone());
+            self.body.spans.push(span);
+            self.types.insert(span, func_type.clone());
         }
         self.closures.push(Closure {
             span,
             base: self.scopes.len(),
             captures: Vec::new(),
+            returns_value: false,
         });
         self.scopes.push(bound);
-        let saved_return = self.current_return.replace(ret);
+        let saved_return = self.current_return.replace(ret.clone());
         let saved_loops = std::mem::replace(&mut self.loop_depth, 0);
         for stmt in body {
             self.check_stmt(stmt);
@@ -546,6 +565,9 @@ impl<'g> TypeChecker<'g> {
         self.current_return = saved_return;
         self.scopes.pop();
         let closure = self.closures.pop().expect("pushed above");
+        if inferred_return && !closure.returns_value {
+            self.infer.unify(&ret, &Type::Unit).expect("a fresh variable unifies");
+        }
         self.captures.insert(closure.span, closure.captures);
         Some(func_type)
     }
@@ -555,13 +577,17 @@ impl<'g> TypeChecker<'g> {
             self.err(span, "return statement outside of function");
             return;
         };
-        let is_unit_return = is_unit(&return_type);
         let Some(expr) = expr else {
-            if !is_unit_return {
-                self.err(span, format!("expected function to return {return_type}"));
+            if self.infer.unify(&return_type, &Type::Unit).is_err() {
+                let shown = self.shown_type(&return_type);
+                self.err(span, format!("expected function to return {shown}"));
             }
             return;
         };
+        if let Some(closure) = self.closures.last_mut() {
+            closure.returns_value = true;
+        }
+        let is_unit_return = is_unit(&self.infer.resolve(&return_type));
         self.expected = Some(return_type.clone());
         let Some(expr_type) = self.check_expr(expr) else {
             return;
@@ -676,7 +702,10 @@ impl<'g> TypeChecker<'g> {
                 params,
                 return_type,
                 body,
-            } => self.check_closure(params, return_type, body, expr.span, None),
+            } => {
+                let params: Vec<_> = params.iter().map(|p| (p.name.as_str(), p.ty.as_ref(), p.span)).collect();
+                self.check_closure(&params, return_type, body, expr.span, None)
+            }
         }
     }
 

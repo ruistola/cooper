@@ -4,6 +4,12 @@ use super::*;
 
 impl Parser {
     pub(super) fn parse_expr(&mut self, min_bp: i32) -> PResult<Expr> {
+        // A closer where an expression should start is left for the construct it
+        // closes, so a missing operand does not swallow its enclosing block's brace.
+        let next = self.peek();
+        if matches!(next.kind, CloseCurly | CloseParen | CloseBracket | Semicolon | Eof) {
+            return Err(self.error(next.span, format!("expected an expression, found {}", next.kind)));
+        }
         let token = self.advance();
         let mut left = self.parse_head_expr(token)?;
         loop {
@@ -45,7 +51,7 @@ impl Parser {
             If => self.parse_if_expr()?,
             Match => self.parse_match_expr()?,
             Func => {
-                let (params, return_type, body) = self.parse_func_rest()?;
+                let (params, return_type, body) = self.parse_func_rest(false)?;
                 ExprKind::Func {
                     params,
                     return_type,

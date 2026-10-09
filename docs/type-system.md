@@ -57,6 +57,7 @@ uses inside and outside it alike.
 * **No subtyping.** Constraints are equalities, with the single exception of `nil` and
   pointers.
 * **No inferred signatures.** Parameter and return types of declarations are written out.
+  Only a function literal, which declares nothing, may leave them to inference.
 
 ## Operators and overloading
 

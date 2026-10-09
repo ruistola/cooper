@@ -263,18 +263,30 @@ impl Parser {
     }
 
     /// Skip tokens until the next plausible statement boundary so parsing can
-    /// resume after an error.
+    /// resume after an error. A braced block the failed statement opened is skipped
+    /// whole, so its closing brace is not taken for the enclosing block's.
     fn synchronize(&mut self) {
+        let mut depth = 0usize;
         loop {
             match self.peek().kind {
-                Eof | CloseCurly => return,
-                Semicolon => {
+                Eof => return,
+                CloseCurly if depth == 0 => return,
+                Semicolon if depth == 0 => {
                     self.advance();
                     return;
                 }
                 For | Func | If | Let | Match | Return | Struct | Oneof | Use | While | Until
-                | Do | Repeat | Break | Continue => return,
-                _ => {
+                | Do | Repeat | Break | Continue
+                    if depth == 0 =>
+                {
+                    return
+                }
+                kind => {
+                    match kind {
+                        OpenCurly => depth += 1,
+                        CloseCurly => depth -= 1,
+                        _ => {}
+                    }
                     self.advance();
                 }
             }

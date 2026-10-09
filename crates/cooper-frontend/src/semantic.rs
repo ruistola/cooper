@@ -16,6 +16,7 @@ pub fn analyze(module: &[Stmt], globals: &Globals) -> Vec<Diagnostic> {
         globals,
         diags: Vec::new(),
         depth: 0,
+        valued_returns: Vec::new(),
     };
     analyzer.analyze_block(module);
     analyzer.diags
@@ -27,6 +28,9 @@ struct SemanticAnalyzer<'g> {
     /// How many function bodies enclose the statement being analyzed: a function
     /// declared inside one is nested, with no entry in the globals.
     depth: u32,
+    /// For each function literal being analyzed, innermost last, whether a `return`
+    /// in its body carries a value.
+    valued_returns: Vec<bool>,
 }
 
 impl SemanticAnalyzer<'_> {
@@ -47,7 +51,8 @@ impl SemanticAnalyzer<'_> {
             }
             StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } => {}
             StmtKind::FuncDecl(func) if self.depth > 0 => {
-                self.analyze_literal(&func.return_type, &func.body, func.span, &format!("function '{}'", func.name))
+                let label = format!("function '{}'", func.name);
+                self.analyze_literal(&func.return_type, false, &func.body, func.span, &label)
             }
             StmtKind::FuncDecl(func) => self.analyze_func_decl(func),
             StmtKind::If { cond, then, els } => {
@@ -74,6 +79,9 @@ impl SemanticAnalyzer<'_> {
             StmtKind::Break | StmtKind::Continue => {}
             StmtKind::Return(expr) => {
                 if let Some(expr) = expr {
+                    if let Some(valued) = self.valued_returns.last_mut() {
+                        *valued = true;
+                    }
                     self.analyze_expr(expr);
                 }
             }
@@ -82,12 +90,18 @@ impl SemanticAnalyzer<'_> {
     }
 
     /// A function literal or nested function: its body must return on every path
-    /// unless its declared return type is absent or unit.
-    fn analyze_literal(&mut self, return_type: &Option<TypeExpr>, body: &[Stmt], span: Span, label: &str) {
+    /// when it returns a value: when its declared return type is not unit, or, with
+    /// the return type `inferred`, when any of its `return`s carries a value.
+    fn analyze_literal(&mut self, return_type: &Option<TypeExpr>, inferred: bool, body: &[Stmt], span: Span, label: &str) {
         self.depth += 1;
+        self.valued_returns.push(false);
         self.analyze_block(body);
+        let any_valued = self.valued_returns.pop().expect("pushed above");
         self.depth -= 1;
-        let returns_value = return_type.as_ref().is_some_and(|ty| !matches!(ty.kind, TypeExprKind::Unit));
+        let returns_value = match return_type {
+            Some(ty) => !matches!(ty.kind, TypeExprKind::Unit),
+            None => inferred && any_valued,
+        };
         if returns_value && !block_returns(body) {
             self.err(span, format!("{label} does not return a value in all code paths"));
         }
@@ -175,7 +189,7 @@ impl SemanticAnalyzer<'_> {
             }
             ExprKind::Func {
                 return_type, body, ..
-            } => self.analyze_literal(return_type, body, expr.span, "function literal"),
+            } => self.analyze_literal(return_type, true, body, expr.span, "function literal"),
             ExprKind::Chain { operands, .. } => operands.iter().for_each(|e| self.analyze_expr(e)),
             ExprKind::Block(block) => {
                 for stmt in &block.statements {

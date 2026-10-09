@@ -54,6 +54,8 @@ pub enum LowerError {
     MalformedLiteral(Span),
     /// A syntactic form not yet handled by lowering.
     Unsupported { span: Span, what: &'static str },
+    /// An `extern func` whose C symbol another declaration gives a different signature.
+    ConflictingExtern { span: Span, name: String },
 }
 
 impl LowerError {
@@ -63,7 +65,8 @@ impl LowerError {
             LowerError::MissingType(span)
             | LowerError::UnresolvedType(span)
             | LowerError::MalformedLiteral(span)
-            | LowerError::Unsupported { span, .. } => *span,
+            | LowerError::Unsupported { span, .. }
+            | LowerError::ConflictingExtern { span, .. } => *span,
         }
     }
 }
@@ -75,6 +78,9 @@ impl fmt::Display for LowerError {
             LowerError::UnresolvedType(_) => write!(f, "internal error: type did not resolve"),
             LowerError::MalformedLiteral(_) => write!(f, "internal error: literal did not decode"),
             LowerError::Unsupported { what, .. } => write!(f, "{what} is not supported yet"),
+            LowerError::ConflictingExtern { name, .. } => {
+                write!(f, "extern function `{name}` is declared elsewhere with a different signature")
+            }
         }
     }
 }
@@ -90,6 +96,8 @@ pub type TypeTable = HashMap<Span, Type>;
 #[derive(Debug, Clone)]
 pub struct Program {
     pub functions: Vec<Function>,
+    /// The C functions the program declares, once per symbol.
+    pub externs: Vec<Extern>,
     pub defs: TypeDefs,
 }
 
@@ -126,19 +134,52 @@ impl std::error::Error for ProgramError {}
 /// backend consumes.
 pub fn lower_program(project: &CheckedProject) -> Result<Program, ProgramError> {
     let mut functions = Vec::new();
+    let mut externs: Vec<Extern> = Vec::new();
     for file in &project.files {
-        let lowered = lower_module(&file.name, &file.decls, &file.globals, &file.typed).map_err(|error| {
-            ProgramError::Lower {
-                file: file.name.clone(),
-                error,
+        let error = |error| ProgramError::Lower {
+            file: file.name.clone(),
+            error,
+        };
+        functions.extend(lower_module(&file.name, &file.decls, &file.globals, &file.typed).map_err(error)?);
+        for (declared, span) in file_externs(&file.decls, &file.globals) {
+            match externs.iter().find(|e| e.name == declared.name) {
+                Some(existing) if !existing.same_signature(&declared) => {
+                    return Err(error(LowerError::ConflictingExtern {
+                        span,
+                        name: declared.name,
+                    }))
+                }
+                Some(_) => {}
+                None => externs.push(declared),
             }
-        })?;
-        functions.extend(lowered);
+        }
     }
     Ok(Program {
         functions: monomorphize(&functions).map_err(ProgramError::Mono)?,
+        externs,
         defs: project.defs.clone(),
     })
+}
+
+/// The C functions a file's top-level declarations declare, with their signatures.
+fn file_externs(decls: &[Stmt], globals: &Globals) -> Vec<(Extern, Span)> {
+    decls
+        .iter()
+        .filter_map(|decl| {
+            let StmtKind::ExternFunc { name, .. } = &decl.kind else {
+                return None;
+            };
+            let Type::Func { return_type, param_types } = &globals.lookup_func(name)?.ty else {
+                return None;
+            };
+            let declared = Extern {
+                name: name.clone(),
+                params: param_types.clone(),
+                return_type: (**return_type).clone(),
+            };
+            Some((declared, decl.span))
+        })
+        .collect()
 }
 
 /// Lower the type-checked top-level declarations of the source file `file` into typed
@@ -157,7 +198,7 @@ pub fn lower_module(
             StmtKind::FuncDecl(func) => {
                 functions.extend(lower_function(file, func, globals, checked)?);
             }
-            StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } => {}
+            StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } | StmtKind::ExternFunc { .. } => {}
             StmtKind::VarDecl { .. } => {
                 return Err(LowerError::Unsupported {
                     span: decl.span,
@@ -562,6 +603,7 @@ impl Lower<'_> {
             StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } => {
                 return unsupported_stmt(stmt.span, "local type declaration");
             }
+            StmtKind::ExternFunc { .. } => unreachable!("the checker rejects a local extern"),
         };
         Ok(IrStmt {
             kind,
@@ -590,7 +632,22 @@ impl Lower<'_> {
         // carries no runtime value and drops away.
         if let Some(reference) = self.refs.get(&expr.span) {
             if let Some(op) = standard_intrinsic(&reference.item) {
-                return self.standard_value(op, ty, expr.span);
+                return self.wrapper(ty, expr.span, |args| IrExprKind::Intrinsic { op, args });
+            }
+            if matches!(reference.item, Callable::Extern { .. }) {
+                let item = reference.item.clone();
+                let callee_ty = ty.clone();
+                return self.wrapper(ty, expr.span, |args| IrExprKind::Call {
+                    callee: Box::new(IrExpr {
+                        kind: IrExprKind::FuncRef {
+                            item,
+                            type_args: Vec::new(),
+                        },
+                        ty: callee_ty,
+                        span: expr.span,
+                    }),
+                    args,
+                });
             }
             let item = reference.item.clone();
             let type_args = reference.type_args.clone();
@@ -930,6 +987,23 @@ impl Lower<'_> {
         if let Some(intrinsic) = self.array_method(callee, args)? {
             return Ok(intrinsic);
         }
+        // A C function is called directly, not through a function value.
+        if let Some(reference) = self.refs.get(&strip_group(callee).span) {
+            if matches!(reference.item, Callable::Extern { .. }) {
+                let callee = IrExpr {
+                    kind: IrExprKind::FuncRef {
+                        item: reference.item.clone(),
+                        type_args: Vec::new(),
+                    },
+                    ty: self.types.get(&callee.span).cloned().ok_or(LowerError::MissingType(callee.span))?,
+                    span: callee.span,
+                };
+                return Ok(IrExprKind::Call {
+                    callee: Box::new(callee),
+                    args: self.each(args)?,
+                });
+            }
+        }
         Ok(IrExprKind::Call {
             callee: Box::new(self.expr(callee)?),
             args: self.each(args)?,
@@ -942,10 +1016,16 @@ impl Lower<'_> {
         standard_intrinsic(&self.refs.get(&strip_group(callee).span)?.item)
     }
 
-    /// A standard library function used as a value, of function type `ty`: a closure
-    /// of a lifted function that calls the intrinsic with its parameters, as if the
-    /// program had written `func(s: string) { io.println(s) }`.
-    fn standard_value(&self, op: Intrinsic, ty: Type, span: Span) -> Result<IrExpr, LowerError> {
+    /// A function the backend only calls directly (a standard library function or a C
+    /// function) used as a value of function type `ty`: a closure of a lifted function
+    /// passing its parameters to the call `call` builds, as if the program had written
+    /// `func(s: string) { io.println(s) }`.
+    fn wrapper(
+        &self,
+        ty: Type,
+        span: Span,
+        call: impl FnOnce(Vec<IrExpr>) -> IrExprKind,
+    ) -> Result<IrExpr, LowerError> {
         let Type::Func { return_type, param_types } = &ty else {
             unreachable!("a function reference has a function type");
         };
@@ -959,18 +1039,16 @@ impl Lower<'_> {
                 span,
             })
             .collect();
+        let args = params
+            .iter()
+            .map(|p| IrExpr {
+                kind: IrExprKind::Var(p.name.clone()),
+                ty: p.ty.clone(),
+                span,
+            })
+            .collect();
         let call = IrExpr {
-            kind: IrExprKind::Intrinsic {
-                op,
-                args: params
-                    .iter()
-                    .map(|p| IrExpr {
-                        kind: IrExprKind::Var(p.name.clone()),
-                        ty: p.ty.clone(),
-                        span,
-                    })
-                    .collect(),
-            },
+            kind: call(args),
             ty: (**return_type).clone(),
             span,
         };

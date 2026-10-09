@@ -48,9 +48,24 @@ impl std::error::Error for LoadError {}
 
 /// Load the project rooted at `root`, reading its manifest and every module's source.
 pub fn load_project(root: &Path) -> Result<Project, LoadError> {
+    load_with_native(root).map(|(project, _)| project)
+}
+
+/// The C code a program links with, from its manifest's `[c]` table: libraries
+/// (`libraries = ["m"]`, linked as `-lm`) and C source files (`sources`, relative to
+/// the project root), compiled into the program.
+#[derive(Debug, Clone, Default)]
+pub struct Native {
+    pub libraries: Vec<String>,
+    pub sources: Vec<PathBuf>,
+}
+
+/// Load the project rooted at `root` and the C code its manifest names.
+fn load_with_native(root: &Path) -> Result<(Project, Native), LoadError> {
     let manifest_path = root.join(MANIFEST);
     let manifest = read(&manifest_path)?;
-    let (name, module_root) = parse_manifest(&manifest_path, &manifest)?;
+    let (name, module_root, mut native) = parse_manifest(&manifest_path, &manifest)?;
+    native.sources = native.sources.iter().map(|source| root.join(source)).collect();
 
     let module_root_dir = match module_root {
         Some(rel) => root.join(rel),
@@ -65,12 +80,14 @@ pub fn load_project(root: &Path) -> Result<Project, LoadError> {
 
     let mut modules = Vec::new();
     collect_modules(&module_root_dir, &[], &mut modules)?;
-    Ok(Project::new(name, kind, modules))
+    Ok((Project::new(name, kind, modules), native))
 }
 
-/// A project loaded from the command line, and the directory its build outputs go to.
+/// A project loaded from the command line, the C code it links with, and the directory
+/// its build outputs go to.
 pub struct Loaded {
     pub project: Project,
+    pub native: Native,
     pub build_dir: PathBuf,
 }
 
@@ -79,8 +96,10 @@ pub struct Loaded {
 /// `build/` directory beside it.
 pub fn load(path: &Path) -> Result<Loaded, LoadError> {
     if path.is_dir() {
+        let (project, native) = load_with_native(path)?;
         return Ok(Loaded {
-            project: load_project(path)?,
+            project,
+            native,
             build_dir: path.join(BUILD_DIR),
         });
     }
@@ -92,12 +111,13 @@ pub fn load(path: &Path) -> Result<Loaded, LoadError> {
     let module = Module::new("main", vec![SourceFile::new(path.to_string_lossy(), source)]);
     Ok(Loaded {
         project: Project::new(name, ProjectKind::Program, vec![module]),
+        native: Native::default(),
         build_dir: path.parent().unwrap_or(Path::new(".")).join(BUILD_DIR),
     })
 }
 
-/// The manifest's `name` (required) and optional `module_root`.
-fn parse_manifest(path: &Path, source: &str) -> Result<(String, Option<String>), LoadError> {
+/// The manifest's `name` (required), optional `module_root`, and optional `[c]` table.
+fn parse_manifest(path: &Path, source: &str) -> Result<(String, Option<String>, Native), LoadError> {
     let table: toml::Table = source.parse().map_err(|e: toml::de::Error| LoadError::Manifest {
         path: path.to_path_buf(),
         message: e.message().to_string(),
@@ -121,7 +141,28 @@ fn parse_manifest(path: &Path, source: &str) -> Result<(String, Option<String>),
         ),
         None => None,
     };
-    Ok((name, module_root))
+    let mut native = Native::default();
+    if let Some(c) = table.get("c") {
+        let c = c.as_table().ok_or_else(|| manifest_err("`c` must be a table"))?;
+        let strings = |key: &str| -> Result<Vec<String>, LoadError> {
+            let Some(value) = c.get(key) else {
+                return Ok(Vec::new());
+            };
+            let error = || manifest_err(&format!("`c.{key}` must be an array of strings"));
+            value
+                .as_array()
+                .ok_or_else(error)?
+                .iter()
+                .map(|item| item.as_str().map(str::to_string).ok_or_else(error))
+                .collect()
+        };
+        native.libraries = strings("libraries")?;
+        native.sources = strings("sources")?.into_iter().map(PathBuf::from).collect();
+        if let Some(key) = c.keys().find(|key| !["libraries", "sources"].contains(&key.as_str())) {
+            return Err(manifest_err(&format!("unknown key `c.{key}`")));
+        }
+    }
+    Ok((name, module_root, native))
 }
 
 /// Walk `dir`, whose module-path segments so far are `segments`, appending a module

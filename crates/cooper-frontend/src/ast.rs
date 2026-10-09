@@ -402,6 +402,13 @@ pub enum StmtKind {
         init: Option<Expr>,
     },
     FuncDecl(FuncDecl),
+    /// `extern func name(params): R`, a module-level declaration of a C function with
+    /// no body, linked under the symbol `name`.
+    ExternFunc {
+        name: String,
+        params: Vec<TypedIdent>,
+        return_type: Option<TypeExpr>,
+    },
     StructDecl {
         name: String,
         type_params: Vec<String>,

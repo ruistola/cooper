@@ -35,7 +35,7 @@ fn check_program(path: &Path, build_root: &Path) -> Result<(), String> {
     let expected = expected_exit(&source, path);
     let loaded = cooper_cli::load(path).map_err(|e| e.to_string())?;
     let stem = path.file_stem().expect("a program file has a name");
-    let executable = cooper_cli::build(&loaded.project, &build_root.join(stem))
+    let executable = cooper_cli::build(&loaded.project, &loaded.native, &build_root.join(stem))
         .map_err(|e| match e {
             cooper_cli::BuildError::Diagnostics(diags) => format!(
                 "diagnostics: {:?}",

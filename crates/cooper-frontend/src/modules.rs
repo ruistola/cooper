@@ -419,7 +419,8 @@ fn declared_names(files: &[ParsedFile]) -> HashSet<String> {
             match &stmt.kind {
                 StmtKind::StructDecl { name, .. }
                 | StmtKind::OneofDecl { name, .. }
-                | StmtKind::VarDecl { name, .. } => {
+                | StmtKind::VarDecl { name, .. }
+                | StmtKind::ExternFunc { name, .. } => {
                     names.insert(name.clone());
                 }
                 StmtKind::FuncDecl(func) if func.receiver.is_none() => {

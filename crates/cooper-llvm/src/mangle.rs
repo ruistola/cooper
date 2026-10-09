@@ -25,7 +25,8 @@
 //!
 //! `main.add` mangles to `_CFN4mainE3add`; `Box.get` in module `util` at `i32` to
 //! `_CMN4utilE3Box3getIp3i32E`; the first function literal in `main.main` to
-//! `_CLFN4mainE4main0_`. A lifted literal takes its declaration's type arguments, so
+//! `_CLFN4mainE4main0_`. An `extern` C function is the exception: its symbol is its bare
+//! name, unmangled. A lifted literal takes its declaration's type arguments, so
 //! they follow the whole item. Literals are private to their LLVM module, so these
 //! symbols never meet a C linker.
 
@@ -36,6 +37,10 @@ use cooper_frontend::types::Type;
 
 /// The symbol of the instance of `item` at `type_args`.
 pub fn symbol(item: &Callable, type_args: &[Type]) -> String {
+    // A C function keeps its own name, which is what the C linker resolves.
+    if let Callable::Extern { name } = item {
+        return name.clone();
+    }
     let mut out = String::from("_C");
     self::item(&mut out, item);
     args(&mut out, type_args);
@@ -60,6 +65,7 @@ fn item(out: &mut String, item: &Callable) {
             self::item(out, parent);
             write!(out, "{index}_").expect("writing to a String cannot fail");
         }
+        Callable::Extern { .. } => unreachable!("an extern symbol is its bare name"),
     }
 }
 

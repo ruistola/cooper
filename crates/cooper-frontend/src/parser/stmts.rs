@@ -23,6 +23,8 @@ impl Parser {
                     span,
                 })
             }
+            // Parsed anywhere so the checker can say an extern belongs at module level.
+            Extern => self.parse_extern_func(),
             If => self.parse_if_stmt(),
             While => self.parse_pre_test_loop(),
             Until => self.parse_pre_test_loop(),

@@ -22,7 +22,7 @@ use cooper_frontend::diag::{line_col, Span};
 use cooper_frontend::resolve::Callable;
 use cooper_frontend::types::{Type, TypeDefs};
 use cooper_frontend::Project;
-use cooper_ir::{Function, Program};
+use cooper_ir::{Extern, Function, Program};
 
 /// The C runtime every program links against: the process entry point and the
 /// operations the IR's intrinsics lower to.
@@ -92,6 +92,14 @@ pub fn emit(program: &Program, triple: &str, project: &Project) -> Result<String
         thunks: BTreeMap::new(),
         nil_size: 0,
     };
+    for declared in &program.externs {
+        let declaration = module.extern_declaration(declared).map_err(|what| CodegenError::Unsupported {
+            what,
+            file: String::new(),
+            span: Span::new(0, 0),
+        })?;
+        module.declare(&declaration);
+    }
     let mut functions = String::new();
     for function in &program.functions {
         functions.push('\n');
@@ -156,6 +164,55 @@ struct Module<'p> {
 }
 
 impl Module<'_> {
+    /// The LLVM declaration of the C function `declared`, its types as C passes them.
+    fn extern_declaration(&mut self, declared: &Extern) -> Result<String, String> {
+        let ret = match &declared.return_type {
+            Type::Unit => "void".to_string(),
+            ty => self.c_return(ty)?,
+        };
+        let params = declared
+            .params
+            .iter()
+            .map(|ty| self.c_param(ty))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(format!("declare {ret} @{}({})", declared.name, params.join(", ")))
+    }
+
+    /// The C counterpart a value of type `ty` crosses to C as: itself, or for a struct
+    /// of one member, that member's counterpart.
+    fn c_scalar(&self, ty: &Type) -> Type {
+        match self.defs.struct_members(ty).as_deref() {
+            Some([(_, member)]) => self.c_scalar(member),
+            _ => ty.clone(),
+        }
+    }
+
+    /// The LLVM type of `ty` as a C parameter, with its ABI attribute (`i8 signext`).
+    fn c_param(&mut self, ty: &Type) -> Result<String, String> {
+        let (llvm, extension) = self.c_type(ty)?;
+        Ok(format!("{llvm}{}", extension.map(|e| format!(" {e}")).unwrap_or_default()))
+    }
+
+    /// The LLVM type of `ty` as a C return value, after its ABI attribute (`signext i8`).
+    fn c_return(&mut self, ty: &Type) -> Result<String, String> {
+        let (llvm, extension) = self.c_type(ty)?;
+        Ok(format!("{}{llvm}", extension.map(|e| format!("{e} ")).unwrap_or_default()))
+    }
+
+    /// The LLVM type of `ty` as C passes it, and the extension attribute it needs: C
+    /// widens a small integer or `bool`, so its signedness is spelled out.
+    fn c_type(&mut self, ty: &Type) -> Result<(String, Option<&'static str>), String> {
+        let scalar = self.c_scalar(ty);
+        let llvm = self.llvm_type(&scalar)?.ok_or_else(|| format!("passing {ty} to C"))?;
+        let extension = match layout::Scalar::of(&scalar) {
+            Some(layout::Scalar::Bool) => Some("zeroext"),
+            Some(layout::Scalar::Int { bits: 8 | 16, signed: true }) => Some("signext"),
+            Some(layout::Scalar::Int { bits: 8 | 16, signed: false }) => Some("zeroext"),
+            _ => None,
+        };
+        Ok((llvm, extension))
+    }
+
     /// Declare an external function (an LLVM intrinsic or a runtime function).
     fn declare(&mut self, declaration: &str) {
         self.declarations.insert(declaration.to_string());

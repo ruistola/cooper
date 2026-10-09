@@ -55,7 +55,7 @@ fn check(project: &Project) -> ExitCode {
 
 /// Build the loaded program, reporting any failure, and return its executable.
 fn build(loaded: &Loaded) -> Option<std::path::PathBuf> {
-    match cooper_cli::build(&loaded.project, &loaded.build_dir) {
+    match cooper_cli::build(&loaded.project, &loaded.native, &loaded.build_dir) {
         Ok(executable) => Some(executable),
         Err(BuildError::Diagnostics(diagnostics)) => {
             report(&loaded.project, &diagnostics);

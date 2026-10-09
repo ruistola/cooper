@@ -307,6 +307,11 @@ impl<'g> TypeChecker<'g> {
             StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } => {}
             StmtKind::FuncDecl(func) if self.current_return.is_some() => self.check_nested_func(func),
             StmtKind::FuncDecl(func) => self.check_func_decl(func),
+            StmtKind::ExternFunc { .. } => {
+                if self.current_return.is_some() {
+                    self.err(stmt.span, "an extern function must be declared at module level");
+                }
+            }
             StmtKind::If { cond, then, els } => {
                 let cond_type = self.check_expr(cond);
                 if !cond_type.is_some_and(|ty| self.infer.unify(&ty, &Type::Primitive("bool".to_string())).is_ok()) {

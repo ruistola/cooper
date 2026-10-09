@@ -150,7 +150,14 @@ prints `panic: <error> at <file>:<line>:<column>` to standard error and exits wi
 
 Function symbols are mangled from the declaration's identity and type arguments in a
 length-prefixed scheme (see `cooper-llvm/src/mangle.rs`), so instances and same-named
-functions from different modules never collide. Constructs the backend does not handle yet
+functions from different modules never collide.
+
+An `extern func` resolves to `Callable::Extern`, whose symbol is the bare C name. Lowering
+collects the program's externs into `Program::externs`, once per symbol, and a call to one
+stays a direct call; used as a value, it lowers to a lifted wrapper like a standard library
+function. The backend declares each with the C ABI's extension attributes (`signext`,
+`zeroext`) on small integers and `bool`, and passes a one-member struct as its member. The
+CLI links the C sources and libraries of the manifest's `[c]` table. Constructs the backend does not handle yet
 are reported, never miscompiled.
 
 Golden programs in `cooper-cli/tests/programs/` are built and run by `cargo test`, each

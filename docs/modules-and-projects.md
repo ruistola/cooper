@@ -31,6 +31,9 @@ dependencies.
 http = "github.com/fast/http@v2.1.0"
 ```
 
+C libraries and C source files a program links with are named in a `[c]` table (see
+[C Interop](./c-interop.md#linking)).
+
 ## `use`
 
 A file declares the modules it uses in a `use` block at its top. Entries are comma-separated,

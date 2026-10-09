@@ -34,6 +34,9 @@ pub enum Callable {
     /// top-level declaration `parent`: the `index`th in its body, in source order.
     /// No name resolves to one.
     Closure { parent: Box<Callable>, index: u32 },
+    /// A C function declared `extern`: the C symbol `name`, one function however many
+    /// modules declare it.
+    Extern { name: String },
 }
 
 /// A resolved function or method signature. `type_params` lists every binder in
@@ -183,6 +186,11 @@ pub fn resolve_signatures(globals: &mut Globals, decls: &[Stmt], diags: &mut Vec
     for stmt in decls {
         match &stmt.kind {
             StmtKind::FuncDecl(func) => resolve_func_decl(globals, diags, func),
+            StmtKind::ExternFunc {
+                name,
+                params,
+                return_type,
+            } => resolve_extern_func(globals, diags, name, params, return_type, stmt.span),
             StmtKind::VarDecl { name, .. } => resolve_var_decl(globals, diags, name, stmt.span),
             _ => {}
         }
@@ -491,6 +499,74 @@ fn resolve_var_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, name: &s
         return;
     }
     globals.vars.insert(name.to_string());
+}
+
+/// Resolve an `extern func`, whose parameter and return types must have a C
+/// counterpart (see [`c_compatible`]).
+fn resolve_extern_func(
+    globals: &mut Globals,
+    diags: &mut Vec<Diagnostic>,
+    name: &str,
+    params: &[TypedIdent],
+    return_type: &Option<TypeExpr>,
+    span: Span,
+) {
+    let binders = HashSet::new();
+    let c_type = |ty: &TypeExpr, globals: &Globals, diags: &mut Vec<Diagnostic>| {
+        let resolved = resolve_type(ty, &binders, globals, diags)?;
+        if c_compatible(&resolved, &globals.defs) {
+            return Some(resolved);
+        }
+        diags.push(
+            Diagnostic::error(ty.span, format!("type {resolved} cannot cross to C"))
+                .with_note("C functions take and return integers, floats, bool, pointers, and structs of one such member"),
+        );
+        None
+    };
+    let mut param_types = Vec::with_capacity(params.len());
+    for param in params {
+        param_types.push(c_type(&param.ty, globals, diags));
+    }
+    let return_type = match return_type {
+        Some(ty) if matches!(ty.kind, TypeExprKind::Unit) => Some(Type::Unit),
+        Some(ty) => c_type(ty, globals, diags),
+        None => Some(Type::Unit),
+    };
+    let (Some(param_types), Some(return_type)) = (param_types.into_iter().collect::<Option<Vec<_>>>(), return_type)
+    else {
+        return;
+    };
+    if globals.funcs.contains_key(name) || globals.vars.contains(name) || globals.type_name_taken(name) {
+        diags.push(Diagnostic::error(span, format!("redeclared function {name} in the same scope")));
+        return;
+    }
+    globals.funcs.insert(
+        name.to_string(),
+        Signature {
+            item: Callable::Extern { name: name.to_string() },
+            type_params: Vec::new(),
+            receiver: None,
+            ty: Type::Func {
+                return_type: Box::new(return_type),
+                param_types,
+            },
+        },
+    );
+}
+
+/// Whether a value of type `ty` has a C counterpart it is passed as: an integer, a
+/// float, `bool`, a pointer, or a struct of exactly one such member, which every
+/// supported C ABI passes as that member.
+fn c_compatible(ty: &Type, defs: &TypeDefs) -> bool {
+    match ty {
+        Type::Primitive(name) => name != "string",
+        Type::Pointer(_) => true,
+        Type::Struct { .. } => match defs.struct_members(ty).as_deref() {
+            Some([(_, member)]) => c_compatible(member, defs),
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &FuncDecl) {

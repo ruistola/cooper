@@ -112,6 +112,8 @@ pub enum TokenKind {
     Do,
     #[token("else")]
     Else,
+    #[token("extern")]
+    Extern,
     #[token("false")]
     False,
     #[token("for")]
@@ -208,6 +210,7 @@ impl std::fmt::Display for TokenKind {
             Continue => "'continue'",
             Do => "'do'",
             Else => "'else'",
+            Extern => "'extern'",
             False => "'false'",
             For => "'for'",
             Func => "'func'",

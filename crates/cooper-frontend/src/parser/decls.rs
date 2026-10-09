@@ -145,14 +145,7 @@ impl Parser {
             type_params.push(self.expect(Identifier)?.text);
         }
         let (params, return_type, body) = self.parse_func_rest(true)?;
-        let params = params
-            .into_iter()
-            .map(|p| TypedIdent {
-                name: p.name,
-                ty: p.ty.expect("a declaration's parameter types are required"),
-                span: p.span,
-            })
-            .collect();
+        let params = typed_params(params);
         Ok(FuncDecl {
             receiver,
             name,
@@ -164,12 +157,41 @@ impl Parser {
         })
     }
 
+    /// `extern func name(params): R`: a C function's signature, with no body.
+    pub(super) fn parse_extern_func(&mut self) -> PResult<Stmt> {
+        let start = self.peek().span;
+        self.expect(Extern)?;
+        self.expect(Func)?;
+        let name = self.expect(Identifier)?.text;
+        let params = self.parse_params(true)?;
+        let params = typed_params(params);
+        let return_type = self.parse_return_type()?;
+        Ok(Stmt {
+            kind: StmtKind::ExternFunc {
+                name,
+                params,
+                return_type,
+            },
+            span: start.to(self.prev_token().span),
+        })
+    }
+
     /// The part of a function declaration or literal after its name and binders:
     /// `(params) (: type)? { body }`. A literal's parameter types are optional.
     pub(super) fn parse_func_rest(
         &mut self,
         typed: bool,
     ) -> PResult<(Vec<LiteralParam>, Option<TypeExpr>, Vec<Stmt>)> {
+        let params = self.parse_params(typed)?;
+        let return_type = self.parse_return_type()?;
+        self.expect(OpenCurly)?;
+        let body = self.parse_block_stmt();
+        self.expect(CloseCurly)?;
+        Ok((params, return_type, body))
+    }
+
+    /// `(params)`, each `name: type`, or just `name` unless `typed`.
+    fn parse_params(&mut self, typed: bool) -> PResult<Vec<LiteralParam>> {
         self.expect(OpenParen)?;
         let mut params = Vec::new();
         while self.peek().kind != CloseParen {
@@ -193,16 +215,16 @@ impl Parser {
             }
         }
         self.expect(CloseParen)?;
-        let return_type = if self.peek().kind == Colon {
-            self.expect(Colon)?;
-            Some(self.parse_type_expr()?)
-        } else {
-            None
-        };
-        self.expect(OpenCurly)?;
-        let body = self.parse_block_stmt();
-        self.expect(CloseCurly)?;
-        Ok((params, return_type, body))
+        Ok(params)
+    }
+
+    /// An optional `: type` return annotation.
+    fn parse_return_type(&mut self) -> PResult<Option<TypeExpr>> {
+        if self.peek().kind != Colon {
+            return Ok(None);
+        }
+        self.expect(Colon)?;
+        Ok(Some(self.parse_type_expr()?))
     }
 
     pub(super) fn parse_struct_decl_stmt(&mut self) -> PResult<Stmt> {
@@ -366,4 +388,16 @@ impl Parser {
             Ok(None)
         }
     }
+}
+
+/// Parameters parsed with their types required, as typed identifiers.
+fn typed_params(params: Vec<LiteralParam>) -> Vec<TypedIdent> {
+    params
+        .into_iter()
+        .map(|p| TypedIdent {
+            name: p.name,
+            ty: p.ty.expect("parsed with types required"),
+            span: p.span,
+        })
+        .collect()
 }

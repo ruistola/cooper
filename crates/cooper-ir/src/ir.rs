@@ -29,6 +29,23 @@ pub struct Function {
     pub span: Span,
 }
 
+/// A C function the program declares `extern`: its symbol and C-compatible signature.
+#[derive(Debug, Clone)]
+pub struct Extern {
+    pub name: String,
+    pub params: Vec<Type>,
+    pub return_type: Type,
+}
+
+impl Extern {
+    /// Whether two declarations give the symbol the same signature.
+    pub fn same_signature(&self, other: &Extern) -> bool {
+        self.return_type.equals(&other.return_type)
+            && self.params.len() == other.params.len()
+            && self.params.iter().zip(&other.params).all(|(a, b)| a.equals(b))
+    }
+}
+
 /// A bound place in a signature: a name, its resolved type, and its source span.
 #[derive(Debug, Clone)]
 pub struct Param {

@@ -58,7 +58,9 @@ impl std::error::Error for MonoError {}
 
 fn item_name(item: &Callable) -> String {
     match item {
-        Callable::Func { name, .. } | Callable::Method { name, .. } => name.clone(),
+        Callable::Func { name, .. } | Callable::Method { name, .. } | Callable::Extern { name } => {
+            name.clone()
+        }
         Callable::Closure { parent, index } => format!("{}.{index}", item_name(parent)),
     }
 }
@@ -86,7 +88,8 @@ pub fn monomorphize(functions: &[Function]) -> Result<Vec<Function>, MonoError> 
     let mut instances = Vec::new();
     while let Some((item, type_args, file, span)) = queue.pop_front() {
         let seen = instantiated.entry(item.clone()).or_default();
-        if seen.iter().any(|args| same_types(args, &type_args)) {
+        // An extern C function is declared, never instantiated.
+        if matches!(item, Callable::Extern { .. }) || seen.iter().any(|args| same_types(args, &type_args)) {
             continue;
         }
         if type_args.iter().any(|t| size(t) > MAX_TYPE_SIZE) {

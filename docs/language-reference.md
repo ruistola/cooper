@@ -125,7 +125,7 @@ kind := match n with {               # integer, bool, tuple, struct, or sum-type
   subset.
 * Identifiers are `[A-Za-z_][A-Za-z0-9_]*`. Types are PascalCase and everything else is
   camelCase. Casing matters to the compiler only in patterns (below).
-* Reserved words: `and as break continue do else false for func if in let match nil oneof or
+* Reserved words: `and as break continue do else extern false for func if in let match nil oneof or
   repeat return struct then true until use while with xor`.
 * Numbers: `42`, `1_000`, `0xFF`, `0b1010`, `3.14`, `1e9`, `2.5e-3`. A float needs digits on
   both sides of the point. Strings are `"…"` with the escapes `\n \t \r \0 \\ \" \'`.
@@ -147,12 +147,13 @@ useBlock   ::= "use" "{" useItem* "}"                 # items: comma-separated
 useItem    ::= path ("as" ident)? | path "." "{" (ident ("as" ident)?)* "}"
 path       ::= ident ("." ident)*
 
-decl       ::= struct | oneof | func | "let" …        # a module-level `let` parses; lowering rejects it
+decl       ::= struct | oneof | func | extern | "let" …   # a module-level `let` parses; lowering rejects it
 struct     ::= "struct" ident ident* "{" member* "}"  # ident* are type-parameter binders
 member     ::= ident ":" type
 oneof      ::= "oneof" ident ident* "{" variant* "}"
 variant    ::= ident ("(" type* ")")?
 func       ::= receiver? "func" ident ident* "(" param* ")" (":" type)? block
+extern     ::= "extern" "func" ident "(" param* ")" (":" type)?   # a C function
 receiver   ::= "(" ident ":" type ")"
 param      ::= ident ":" type
 
@@ -259,7 +260,7 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
 These are designed or reserved but rejected today. Do not write them:
 
 * Generic nested functions.
-* Module-level variables, static arrays `T[N]`, and `extern func`.
+* Module-level variables and static arrays `T[N]`.
 * Methods across sum-type variants.
 * Named-field variant payloads, nested patterns inside variant payloads, or-patterns, guards.
 
@@ -269,5 +270,5 @@ These are designed or reserved but rejected today. Do not write them:
 [Methods and Functions](./methods-and-functions.md), [Sum Types](./sum-types.md),
 [Generics](./generics.md), [Numeric Types](./numeric-types.md),
 [Modules and Projects](./modules-and-projects.md), [Type System](./type-system.md),
-[Memory and the Object Model](./memory-and-object-model.md), and
-[Polymorphism](./polymorphism.md).
+[Memory and the Object Model](./memory-and-object-model.md),
+[Polymorphism](./polymorphism.md), and [C Interop](./c-interop.md).

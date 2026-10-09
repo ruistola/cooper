@@ -11,4 +11,4 @@ mod compile;
 mod loader;
 
 pub use compile::{build, BuildError};
-pub use loader::{load, load_project, LoadError, Loaded};
+pub use loader::{load, load_project, LoadError, Loaded, Native};

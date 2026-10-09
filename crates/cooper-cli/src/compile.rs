@@ -15,6 +15,8 @@ use cooper_frontend::{Diagnostic, Project, ProjectKind};
 use cooper_ir::ProgramError;
 use cooper_llvm::CodegenError;
 
+use crate::Native;
+
 /// The environment variable naming the C compiler, overriding `clang`.
 const CC_VAR: &str = "COOPER_CC";
 const DEFAULT_CC: &str = "clang";
@@ -62,8 +64,9 @@ impl BuildError {
 impl std::error::Error for BuildError {}
 
 /// Build `project` into an executable in `build_dir`, returning the executable's path.
-/// The emitted IR (`<name>.ll`) and the runtime source are left beside it.
-pub fn build(project: &Project, build_dir: &Path) -> Result<PathBuf, BuildError> {
+/// The emitted IR (`<name>.ll`) and the runtime source are left beside it. The program
+/// is linked with the C code `native` names.
+pub fn build(project: &Project, native: &Native, build_dir: &Path) -> Result<PathBuf, BuildError> {
     if project.manifest.kind == ProjectKind::Library {
         return Err(BuildError::Library);
     }
@@ -86,12 +89,15 @@ pub fn build(project: &Project, build_dir: &Path) -> Result<PathBuf, BuildError>
         .arg(&executable)
         .arg(&ir_path)
         .arg(&runtime_path)
+        .args(&native.sources)
+        .args(native.libraries.iter().map(|library| format!("-l{library}")))
         .output()
         .map_err(|e| BuildError::Toolchain(format!("cannot run `{cc}`: {e}")))?;
     if !output.status.success() {
-        // Generated code the toolchain rejects is a compiler bug, not a user error.
+        // Generated code the toolchain rejects is a compiler bug, unless it is the
+        // program's own C code or libraries that fail.
         return Err(BuildError::Toolchain(format!(
-            "`{cc}` rejected the generated code ({}):\n{}",
+            "`{cc}` failed to compile or link the program ({}):\n{}",
             ir_path.display(),
             String::from_utf8_lossy(&output.stderr)
         )));

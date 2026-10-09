@@ -275,8 +275,8 @@ impl Parser {
                     self.advance();
                     return;
                 }
-                For | Func | If | Let | Match | Return | Struct | Oneof | Use | While | Until
-                | Do | Repeat | Break | Continue
+                For | Func | Extern | If | Let | Match | Return | Struct | Oneof | Use | While
+                | Until | Do | Repeat | Break | Continue
                     if depth == 0 =>
                 {
                     return
@@ -390,6 +390,7 @@ impl Parser {
                     span,
                 })
             }
+            Extern => self.parse_extern_func(),
             Struct => self.parse_struct_decl_stmt(),
             Oneof => self.parse_oneof_decl_stmt(),
             Let => self.parse_var_decl_stmt(),

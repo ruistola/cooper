@@ -1,11 +1,20 @@
 //! Calls: function values, bound methods, thunks, and receivers.
 
+use cooper_frontend::resolve::Callable;
+
 use super::*;
 
 impl Emitter<'_, '_> {
     /// A call: direct to a named function or method, or indirect through a function
     /// value, which passes the value's environment as a hidden first argument.
     pub(super) fn call(&mut self, callee: &IrExpr, args: &[IrExpr], result: &Type, span: Span) -> Result<Option<Value>, CodegenError> {
+        if let IrExprKind::FuncRef {
+            item: Callable::Extern { name },
+            ..
+        } = &callee.kind
+        {
+            return self.extern_call(name, args, result, span);
+        }
         let mut operands = Vec::with_capacity(args.len() + 1);
         let target = match &callee.kind {
             IrExprKind::FuncRef { item, type_args } => format!("@{}", mangle::symbol(item, type_args)),
@@ -44,6 +53,49 @@ impl Emitter<'_, '_> {
         }
         let operand = self.assign(&call);
         Ok(Some(Value { ty: ret, operand }))
+    }
+
+    /// A call to the C function `name`: each argument crosses as its C counterpart
+    /// (a one-member struct as its member), and the result comes back the same way.
+    fn extern_call(&mut self, name: &str, args: &[IrExpr], result: &Type, span: Span) -> Result<Option<Value>, CodegenError> {
+        let mut operands = Vec::with_capacity(args.len());
+        for arg in args {
+            let value = self.expr(arg)?.expect("a C argument has a value");
+            let c_type = self.module.c_param(&arg.ty).or_else(|what| self.unsupported(&what, span))?;
+            let operand = self.c_argument(&arg.ty, value);
+            operands.push(format!("{c_type} {operand}"));
+        }
+        if matches!(result, Type::Unit) {
+            self.inst(&format!("call void @{name}({})", operands.join(", ")));
+            return Ok(None);
+        }
+        let c_type = self.module.c_return(result).or_else(|what| self.unsupported(&what, span))?;
+        let operand = self.assign(&format!("call {c_type} @{name}({})", operands.join(", ")));
+        self.c_result(result, operand, span).map(Some)
+    }
+
+    /// The operand `value`, of type `ty`, passes to C as: a one-member struct's member.
+    fn c_argument(&mut self, ty: &Type, value: Value) -> String {
+        match self.module.defs.struct_members(ty).as_deref() {
+            Some([(_, member)]) => {
+                let inner = self.assign(&format!("extractvalue {} {}, 0", value.ty, value.operand));
+                let llvm = self.module.llvm_type(member).ok().flatten().expect("a C member has a value");
+                self.c_argument(member, Value { ty: llvm, operand: inner })
+            }
+            _ => value.operand,
+        }
+    }
+
+    /// The value of type `ty` that the C result `operand` stands for.
+    fn c_result(&mut self, ty: &Type, operand: String, span: Span) -> Result<Value, CodegenError> {
+        let llvm = self.value_type(ty, span)?.expect("a C result has a value");
+        match self.module.defs.struct_members(ty).as_deref() {
+            Some([(_, member)]) => {
+                let inner = self.c_result(member, operand, span)?;
+                Ok(self.aggregate(&llvm, vec![Some(inner)]))
+            }
+            _ => Ok(Value { ty: llvm, operand }),
+        }
     }
 
     /// A function value for the function instance `symbol`, of function type `ty`: its

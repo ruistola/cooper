@@ -49,7 +49,7 @@ impl SemanticAnalyzer<'_> {
                     self.analyze_expr(init);
                 }
             }
-            StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } => {}
+            StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } | StmtKind::ExternFunc { .. } => {}
             StmtKind::FuncDecl(func) if self.depth > 0 => {
                 let label = format!("function '{}'", func.name);
                 self.analyze_literal(&func.return_type, false, &func.body, func.span, &label)

@@ -145,7 +145,15 @@ turns their calls into intrinsics (`Print`, `CopyBytes`), and the runtime implem
 The conversions `CString(s)` and `string(c)` lower to the intrinsics `ToCString` and
 `FromCString`; a callee of struct type can only be a type name, which is how `CString(s)`
 is recognized however the type is spelled. Used as a value, such a function lowers to a lifted function that calls the
-intrinsic, like a function literal capturing nothing. `string(x)` lowers to a conversion that the runtime formats.
+intrinsic, like a function literal capturing nothing.
+
+`string(x)` lowers to a conversion. After monomorphization, `format.rs` expands every
+conversion to `string` of a value other than a number or `bool` (which the backend formats
+through the runtime): a `string` is itself, a `CString` is copied, and anything else calls a
+generated formatter, one IR function per type (`Callable::Formatter`), built from field
+access, `match`, loops, and concatenation, which calls the formatters of the types inside it.
+Intrinsics reach the runtime for quoting strings, printing addresses, and tracking which
+pointer targets one formatting has expanded and how deep.
 
 A runtime error (integer overflow, division by zero, an index out of bounds) calls the
 runtime's `cooper_panic`, which

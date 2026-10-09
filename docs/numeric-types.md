@@ -59,6 +59,6 @@ wider one by the source's signedness (`u32(-7)` is `4294967289`). A float-to-int
 conversion rounds toward zero and saturates at the target's range, with NaN becoming 0
 (`i32(1e10)` is `2147483647`).
 
-`string(x)` formats a number or a `bool` as text (and converts a C string; see
-[C Interop](./c-interop.md#strings-and-buffers)): integers in decimal, floats as the shortest
+`string(x)` formats a number or a `bool` as text: integers in decimal, floats as the shortest
 text that reads back as the same value (`string(0.1)` is `"0.1"`), bools as `true`/`false`.
+It formats any other value too ([Type System](./type-system.md#formatting)).

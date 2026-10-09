@@ -138,3 +138,97 @@ void cooper_format_float(double value, int32_t is_f32, CooperString *out) {
     }
     string_of(text, len, out);
 }
+
+/* --- Formatting any value (`string(x)`) ---
+   Generated formatters expand a pointer's target at most once per formatting, and at
+   most FORMAT_DEPTH pointers deep, printing the address otherwise, so that cyclic and
+   shared structures terminate. */
+
+#define FORMAT_DEPTH 64
+
+static const void **format_seen;
+static uint64_t format_seen_capacity;
+static uint64_t format_seen_count;
+static int format_depth;
+
+static uint64_t format_slot(const void *p) {
+    uint64_t h = (uint64_t)(uintptr_t)p * 0x9E3779B97F4A7C15ull;
+    return (h >> 32) & (format_seen_capacity - 1);
+}
+
+/* Record `p` as expanded, returning 0 if it already was. */
+static int format_insert(const void *p) {
+    if (format_seen_count * 2 >= format_seen_capacity) {
+        const void **old = format_seen;
+        uint64_t old_capacity = format_seen_capacity;
+        format_seen_capacity = old_capacity ? old_capacity * 2 : 64;
+        format_seen = calloc(format_seen_capacity, sizeof *format_seen);
+        if (format_seen == NULL) cooper_panic("out of memory");
+        format_seen_count = 0;
+        for (uint64_t i = 0; i < old_capacity; i++) {
+            if (old[i]) format_insert(old[i]);
+        }
+        free(old);
+    }
+    uint64_t i = format_slot(p);
+    while (format_seen[i]) {
+        if (format_seen[i] == p) return 0;
+        i = (i + 1) & (format_seen_capacity - 1);
+    }
+    format_seen[i] = p;
+    format_seen_count++;
+    return 1;
+}
+
+/* Start formatting a value: no pointer has been expanded yet. */
+void cooper_format_begin(void) {
+    if (format_seen_count) memset(format_seen, 0, format_seen_capacity * sizeof *format_seen);
+    format_seen_count = 0;
+    format_depth = 0;
+}
+
+/* Whether to expand the target of the non-null pointer `p`; if so, the expansion ends
+   with cooper_format_leave. */
+int32_t cooper_format_enter(const void *p) {
+    if (format_depth >= FORMAT_DEPTH || !format_insert(p)) return 0;
+    format_depth++;
+    return 1;
+}
+
+void cooper_format_leave(void) {
+    format_depth--;
+}
+
+/* The address `p` as text. */
+void cooper_format_address(const void *p, CooperString *out) {
+    char buffer[32];
+    int len = snprintf(buffer, sizeof buffer, "%p", p);
+    string_of(buffer, len, out);
+}
+
+/* The string as a quoted literal: `"` and `\` escaped, and the control characters
+   Cooper literals spell (`\n`, `\t`, `\r`, `\0`) written as escapes. */
+void cooper_quote(const char *data, uint64_t len, CooperString *out) {
+    uint64_t size = 2;
+    for (uint64_t i = 0; i < len; i++) {
+        char c = data[i];
+        size += (c == '"' || c == '\\' || c == '\n' || c == '\t' || c == '\r' || c == '\0') ? 2 : 1;
+    }
+    char *text = cooper_alloc(size);
+    uint64_t at = 0;
+    text[at++] = '"';
+    for (uint64_t i = 0; i < len; i++) {
+        char c = data[i];
+        const char *escape = c == '"' ? "\\\"" : c == '\\' ? "\\\\" : c == '\n' ? "\\n"
+                           : c == '\t' ? "\\t" : c == '\r' ? "\\r" : c == '\0' ? "\\0" : NULL;
+        if (escape) {
+            text[at++] = escape[0];
+            text[at++] = escape[1];
+        } else {
+            text[at++] = c;
+        }
+    }
+    text[at++] = '"';
+    out->data = text;
+    out->len = at;
+}

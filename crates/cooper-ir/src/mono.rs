@@ -62,6 +62,7 @@ fn item_name(item: &Callable) -> String {
             name.clone()
         }
         Callable::Closure { parent, index } => format!("{}.{index}", item_name(parent)),
+        Callable::Formatter { index } => format!("formatter {index}"),
     }
 }
 

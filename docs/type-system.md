@@ -32,7 +32,7 @@ Cooper's domain *X* has three kinds of constraint:
   unifies with any pointer type.
 * **Predicates** on a type, checked once it is solved: numeric, addable (`+`), integer
   (indices, shift operands), logical (`bool` or an integer, for `and`/`or`/`xor`),
-  comparable (`==`), and formattable (`string(x)`). A numeric literal is a variable
+  and comparable (`==`). A numeric literal is a variable
   of its class that defaults only when nothing constrains it
   ([Numeric Types](./numeric-types.md)).
 * **Member obligations**: field and method access, variant construction, and `match` patterns
@@ -69,7 +69,8 @@ uses inside and outside it alike.
   maps and sets. A user-defined collection exposes ordinary methods (`at`, `set`, …). The
   full index surface includes interior pointers (`&a[i]`) and shared slices (`a[lo..hi]`),
   which rely on a representation only the compiler controls.
-* **User types do not hook into equality, ordering, hashing, or copying through methods.**
+* **User types do not hook into equality, ordering, hashing, formatting, or copying through
+  methods.**
   Equality and hashing are built in (below). An algorithm that needs another operation on a
   user type, such as an ordering for sorting, takes it as a function.
 
@@ -90,3 +91,27 @@ The comparable types are also the **hashable** types, and hashing agrees with `=
 by address, which requires the runtime to keep object identity stable.
 
 Ordering operators (`<`, `<=`, `>`, `>=`) apply to numeric types only.
+
+## Formatting
+
+`string(x)` formats any value as text, structurally, in the shape of its literal:
+
+| Value | Text |
+|---|---|
+| number, `bool` | `42`, `0.1`, `true` (see [Numeric Types](./numeric-types.md)) |
+| `string` | itself; quoted with escapes inside another value: `["a, b", "c\"d"]` |
+| struct | `Point{x: 1, y: 2}` |
+| tuple, unit | `(1, "a")`, `()` |
+| array | `[1, 2, 3]` |
+| sum type | `Some(3)`, `None` |
+| pointer | `nil`, or `&` and its target: `&Node{value: 1, next: nil}` |
+| function | `<func>` |
+
+A formatting expands each pointer's target once and at most 64 pointers deep; past that, or
+on reaching a target it already expanded (a cycle, or sharing), it shows the pointer's
+address instead, so every value formats in finite time.
+
+The format is fixed: a type cannot override it, as it cannot override equality. A type with
+its own presentation has a plain function for it (`func showPoint(p: Point): string`), and
+code that formats a collection of such values takes that function as an argument, the way
+generic code takes any behavior it needs.

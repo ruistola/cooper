@@ -11,6 +11,7 @@
 //! item     ::= "F" path ident             free function: module, name
 //!            | "M" path ident ident       method: module, receiver type, name
 //!            | "L" item <decimal> "_"     the nth function literal lifted from item
+//!            | "S" <decimal> "_"          the formatter of the nth type the program formats
 //! path     ::= "N" ident+ "E"             module path segments
 //! ident    ::= <decimal byte length> <bytes>
 //! type     ::= "p" ident                  primitive, by name (p3i32)
@@ -66,6 +67,9 @@ fn item(out: &mut String, item: &Callable) {
             write!(out, "{index}_").expect("writing to a String cannot fail");
         }
         Callable::Extern { .. } => unreachable!("an extern symbol is its bare name"),
+        Callable::Formatter { index } => {
+            write!(out, "S{index}_").expect("writing to a String cannot fail");
+        }
     }
 }
 

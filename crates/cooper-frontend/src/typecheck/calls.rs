@@ -191,7 +191,7 @@ impl<'g> TypeChecker<'g> {
     }
 
     /// Type check an explicit conversion `T(value)`: to a numeric type from any numeric
-    /// type, or to `string` from any numeric type, `bool`, or `CString`. The result is `T`.
+    /// type, or to `string` from any value, which it formats. The result is `T`.
     fn check_conversion(&mut self, name: &str, args: &[Expr], span: Span) -> Option<Type> {
         if args.len() != 1 {
             self.err(

@@ -37,6 +37,9 @@ pub enum Callable {
     /// A C function declared `extern`: the C symbol `name`, one function however many
     /// modules declare it.
     Extern { name: String },
+    /// The function lowering generates to format values of one type as `string(x)`
+    /// does: the `index`th type the program formats.
+    Formatter { index: u32 },
 }
 
 /// A resolved function or method signature. `type_params` lists every binder in

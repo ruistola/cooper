@@ -253,7 +253,8 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
 * A function literal or nested function captures the variables it names by reference: they
   are shared with the enclosing body, not copied. Each execution of a binding, including
   each pass's loop variable, is a fresh variable, so a closure made in a loop keeps its own.
-* Output goes through `std.io` (`print` and `println`, each taking a `string`). C functions
+* Output goes through `std.io` (`print` and `println`, each taking a `string`), and
+  `string(x)` formats any value: `Point{x: 1, y: 2}`, `[1, 2]`, `Some("a")`. C functions
   are declared `extern func`, and strings convert to and from C with `CString(s)` and
   `string(c)` ([C Interop](./c-interop.md)).
 

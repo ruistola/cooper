@@ -16,6 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 mod decision;
+mod format;
 mod ir;
 mod mono;
 
@@ -154,8 +155,9 @@ pub fn lower_program(project: &CheckedProject) -> Result<Program, ProgramError> 
             }
         }
     }
+    let functions = monomorphize(&functions).map_err(ProgramError::Mono)?;
     Ok(Program {
-        functions: monomorphize(&functions).map_err(ProgramError::Mono)?,
+        functions: format::expand_formatting(functions, &project.defs),
         externs,
         defs: project.defs.clone(),
     })
@@ -968,15 +970,10 @@ impl Lower<'_> {
         result: &Type,
     ) -> Result<IrExprKind, LowerError> {
         if let ExprKind::Ident(name) = &callee.kind {
+            // A conversion to `string` of anything but a number or `bool` is expanded
+            // after monomorphization, when its operand's type is concrete.
             if is_numeric_name(name) || name == "string" {
-                let operand = self.expr(&args[0])?;
-                if stdlib::is_c_string(&operand.ty) {
-                    return Ok(IrExprKind::Intrinsic {
-                        op: Intrinsic::FromCString,
-                        args: vec![operand],
-                    });
-                }
-                return Ok(IrExprKind::Convert(Box::new(operand)));
+                return Ok(IrExprKind::Convert(Box::new(self.expr(&args[0])?)));
             }
         }
         // A callee of struct type is a type name: `CString(s)`.

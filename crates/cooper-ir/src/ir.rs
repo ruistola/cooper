@@ -336,8 +336,9 @@ pub enum IrExprKind {
         variant: String,
         args: Vec<IrExpr>,
     },
-    /// A constructor-style numeric conversion `T(x)`. The source value is the operand;
-    /// the destination type is the node's resolved type.
+    /// A constructor-style conversion `T(x)` to a number or `string`. The source value
+    /// is the operand; the destination type is the node's resolved type. After
+    /// [`lower_program`], a conversion to `string` is only of a number or `bool`.
     Convert(Box<IrExpr>),
     /// Tuple-destructuring binding `(a, b) := value`: each name is bound to the
     /// matching component of the tuple `value`, and the whole expression evaluates to
@@ -391,4 +392,100 @@ pub enum Intrinsic {
     /// `std.ffi.copyBytes(p, n)`: an array holding a copy of the `n` bytes at `p`.
     /// Args: `[pointer, count]`.
     CopyBytes,
+    /// Start formatting a value: forget the pointers an earlier formatting expanded.
+    /// Args: `[]`.
+    FormatBegin,
+    /// Whether to expand the target of a non-null pointer being formatted: false when
+    /// the formatting has already expanded it, or is nested too deeply. Expanding it
+    /// must end with `FormatLeave`. Args: `[pointer]`; the result is a `bool`.
+    FormatEnter,
+    /// End the expansion `FormatEnter` began. Args: `[]`.
+    FormatLeave,
+    /// A pointer's address as text (`0x7ffd…`). Args: `[pointer]`.
+    FormatAddress,
+    /// A string as a quoted literal, with `"`, `\`, and control characters escaped.
+    /// Args: `[string]`.
+    Quote,
+}
+
+/// Visit every expression in `stmts` mutably, each after the expressions inside it.
+pub(crate) fn visit_exprs_mut(stmts: &mut [IrStmt], visit: &mut dyn FnMut(&mut IrExpr)) {
+    for stmt in stmts {
+        match &mut stmt.kind {
+            IrStmtKind::Var { init, .. } => init.iter_mut().for_each(|e| visit_expr_mut(e, visit)),
+            IrStmtKind::Expr(expr) => visit_expr_mut(expr, visit),
+            IrStmtKind::Return(value) => value.iter_mut().for_each(|e| visit_expr_mut(e, visit)),
+            IrStmtKind::While { cond, body, .. } => {
+                visit_expr_mut(cond, visit);
+                visit_exprs_mut(body, visit);
+            }
+            IrStmtKind::ForRange { start, end, body, .. } => {
+                visit_expr_mut(start, visit);
+                visit_expr_mut(end, visit);
+                visit_exprs_mut(body, visit);
+            }
+            IrStmtKind::ForEach { array, body, .. } => {
+                visit_expr_mut(array, visit);
+                visit_exprs_mut(body, visit);
+            }
+            IrStmtKind::Block(stmts) => visit_exprs_mut(stmts, visit),
+            IrStmtKind::Break | IrStmtKind::Continue => {}
+            IrStmtKind::Match { scrutinee, actions, .. } => {
+                visit_expr_mut(scrutinee, visit);
+                visit_exprs_mut(actions, visit);
+            }
+        }
+    }
+}
+
+fn visit_expr_mut(expr: &mut IrExpr, visit: &mut dyn FnMut(&mut IrExpr)) {
+    let all = |exprs: &mut [IrExpr], visit: &mut dyn FnMut(&mut IrExpr)| {
+        exprs.iter_mut().for_each(|e| visit_expr_mut(e, visit))
+    };
+    match &mut expr.kind {
+        IrExprKind::Int(_)
+        | IrExprKind::Float(_)
+        | IrExprKind::Bool(_)
+        | IrExprKind::Str(_)
+        | IrExprKind::Nil
+        | IrExprKind::Unit
+        | IrExprKind::Var(_)
+        | IrExprKind::FuncRef { .. }
+        | IrExprKind::Closure { .. } => {}
+        IrExprKind::Method { receiver, .. } => visit_expr_mut(receiver, visit),
+        IrExprKind::Tuple(elems)
+        | IrExprKind::Intrinsic { args: elems, .. }
+        | IrExprKind::Variant { args: elems, .. } => all(elems, visit),
+        IrExprKind::Unary { operand, .. }
+        | IrExprKind::Deref(operand)
+        | IrExprKind::AddressOf(operand)
+        | IrExprKind::Convert(operand)
+        | IrExprKind::Field { target: operand, .. }
+        | IrExprKind::Let { value: operand, .. }
+        | IrExprKind::LetTuple { value: operand, .. } => visit_expr_mut(operand, visit),
+        IrExprKind::Binary { lhs, rhs, .. } => {
+            visit_expr_mut(lhs, visit);
+            visit_expr_mut(rhs, visit);
+        }
+        IrExprKind::Assign { target, value, .. } => {
+            visit_expr_mut(target, visit);
+            visit_expr_mut(value, visit);
+        }
+        IrExprKind::Call { callee, args } => {
+            visit_expr_mut(callee, visit);
+            all(args, visit);
+        }
+        IrExprKind::Block { stmts, result } => {
+            visit_exprs_mut(stmts, visit);
+            visit_expr_mut(result, visit);
+        }
+        IrExprKind::StructLiteral { members, .. } => {
+            members.iter_mut().for_each(|(_, value)| visit_expr_mut(value, visit));
+        }
+        IrExprKind::Match { scrutinee, actions, .. } => {
+            visit_expr_mut(scrutinee, visit);
+            all(actions, visit);
+        }
+    }
+    visit(expr);
 }

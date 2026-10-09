@@ -44,6 +44,16 @@ impl Emitter<'_, '_> {
         if matches!(op, Intrinsic::ToCString | Intrinsic::FromCString | Intrinsic::CopyBytes) {
             return self.ffi(op, args, result, span).map(Some);
         }
+        if matches!(
+            op,
+            Intrinsic::FormatBegin
+                | Intrinsic::FormatEnter
+                | Intrinsic::FormatLeave
+                | Intrinsic::FormatAddress
+                | Intrinsic::Quote
+        ) {
+            return self.formatting(op, args, span);
+        }
         if op == Intrinsic::ArrayLiteral {
             let Type::Array(elem) = result else {
                 unreachable!("an array literal is an array");
@@ -61,7 +71,12 @@ impl Emitter<'_, '_> {
             | Intrinsic::Print { .. }
             | Intrinsic::ToCString
             | Intrinsic::FromCString
-            | Intrinsic::CopyBytes => unreachable!("handled above"),
+            | Intrinsic::CopyBytes
+            | Intrinsic::FormatBegin
+            | Intrinsic::FormatEnter
+            | Intrinsic::FormatLeave
+            | Intrinsic::FormatAddress
+            | Intrinsic::Quote => unreachable!("handled above"),
             Intrinsic::ArrayLength => {
                 let operand = self.assign(&format!("extractvalue {ARRAY} {}, 1", array.operand));
                 Ok(Some(Value {

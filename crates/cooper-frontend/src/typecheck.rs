@@ -87,6 +87,7 @@ enum PredicateKind {
     /// `bool` or an integer: the operand of `and`, `or`, `xor`, and `!`.
     Logical,
     Comparable,
+    /// Any value: the operand of `string(x)`.
     Formattable,
 }
 

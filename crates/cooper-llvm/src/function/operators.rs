@@ -457,4 +457,48 @@ impl Emitter<'_, '_> {
             None => self.unsupported(&format!("converting {} to string", operand.ty), span),
         }
     }
+
+    /// A runtime operation of the formatting `string(x)` does of any value (see
+    /// `cooper_ir::Intrinsic`).
+    pub(super) fn formatting(&mut self, op: Intrinsic, args: &[IrExpr], span: Span) -> Result<Option<Value>, CodegenError> {
+        let string = Type::Primitive("string".to_string());
+        match op {
+            Intrinsic::FormatBegin => {
+                self.module.declare("declare void @cooper_format_begin()");
+                self.inst("call void @cooper_format_begin()");
+                Ok(None)
+            }
+            Intrinsic::FormatLeave => {
+                self.module.declare("declare void @cooper_format_leave()");
+                self.inst("call void @cooper_format_leave()");
+                Ok(None)
+            }
+            Intrinsic::FormatEnter => {
+                let pointer = self.expr(&args[0])?.expect("a pointer has a value");
+                self.module.declare("declare i32 @cooper_format_enter(ptr)");
+                let entered = self.assign(&format!("call i32 @cooper_format_enter(ptr {})", pointer.operand));
+                let operand = self.assign(&format!("icmp ne i32 {entered}, 0"));
+                Ok(Some(Value {
+                    ty: "i1".to_string(),
+                    operand,
+                }))
+            }
+            Intrinsic::FormatAddress => {
+                let pointer = self.expr(&args[0])?.expect("a pointer has a value");
+                self.module.declare("declare void @cooper_format_address(ptr, ptr)");
+                let out = self.slot(None, &string, span)?;
+                self.inst(&format!("call void @cooper_format_address(ptr {}, ptr {})", pointer.operand, out.ptr));
+                Ok(self.load(&out))
+            }
+            Intrinsic::Quote => {
+                let text = self.expr(&args[0])?.expect("a string has a value");
+                let (data, length) = self.string_parts(&text);
+                self.module.declare("declare void @cooper_quote(ptr, i64, ptr)");
+                let out = self.slot(None, &string, span)?;
+                self.inst(&format!("call void @cooper_quote(ptr {data}, i64 {length}, ptr {})", out.ptr));
+                Ok(self.load(&out))
+            }
+            _ => unreachable!("not a formatting intrinsic"),
+        }
+    }
 }

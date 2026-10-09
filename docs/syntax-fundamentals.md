@@ -153,14 +153,15 @@ let (a, b): (i32, string) = row
 ## Logical and bitwise operators
 
 A symbol is a unary prefix and a keyword is a binary infix: negation is `!`, and the binary
-connectives are `and`, `or`, and `xor`. Each is logical on `bool` operands and bitwise on
-integer operands. Mixed operands are a type error. Which of the two applies is a predicate
+connectives are `and`, `or`, and `xor`. Each of the four is logical on `bool` operands and
+bitwise on integer operands, so `!` on an integer is its complement (`!0` is `-1`). Mixed operands are a type error. Which of the two applies is a predicate
 on the operands' type, decided once inference has solved the body, so a later use may
 fix it. On `bool`, `and` and `or` short-circuit, while `xor` evaluates both operands, since
 its result depends on both. On integers, all three evaluate both operands, like arithmetic.
-Shifts are `<<` and `>>`, binding tighter
-than comparison and looser than `+` and `-` as in C, so `1 << n - 1` is `1 << (n - 1)`
-(see [Numeric Types](./numeric-types.md) for their semantics).
+Shifts are `<<` and `>>`, binding tighter than comparison and looser than `+` and `-` as in
+C, so `1 << n - 1` is `1 << (n - 1)` (see [Numeric Types](./numeric-types.md) for their
+semantics). Only the arithmetic operators have compound assignments (`+=` `-=` `*=` `/=`
+`%=`); a bitwise update is written out, as in `x = x << 8`.
 
 `and` binds tighter than `xor`, which binds tighter than `or`, and all three bind looser than
 comparison. Every binary operator groups left to right. `and` over `or` is the order boolean

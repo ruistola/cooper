@@ -13,8 +13,9 @@ impl Emitter<'_, '_> {
         match op {
             UnaryOp::Pos => self.expr(operand),
             UnaryOp::Not => {
-                let value = self.expr(operand)?.expect("`!` applies to a bool");
-                let operand = self.assign(&format!("xor i1 {}, true", value.operand));
+                // Flipping every bit: logical negation of an `i1`, complement of an integer.
+                let value = self.expr(operand)?.expect("`!` applies to a bool or an integer");
+                let operand = self.assign(&format!("xor {} {}, -1", value.ty, value.operand));
                 Ok(Some(Value { ty: value.ty, operand }))
             }
             UnaryOp::Neg => {

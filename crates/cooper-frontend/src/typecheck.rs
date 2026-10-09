@@ -82,7 +82,7 @@ enum PredicateKind {
     Numeric,
     Addable,
     Integer,
-    /// `bool` or an integer: the operand of `and`, `or`, `xor`.
+    /// `bool` or an integer: the operand of `and`, `or`, `xor`, and `!`.
     Logical,
     Comparable,
     Formattable,
@@ -864,21 +864,13 @@ impl<'g> TypeChecker<'g> {
             }
         }
         let operand_type = self.check_expr(operand)?;
-        match op {
-            UnaryOp::Neg | UnaryOp::Pos => {
-                self.predicate(PredicateKind::Numeric, operand_type.clone(), span, PredicateSite::Unary(op));
-                Some(operand_type)
-            }
-            UnaryOp::Not => {
-                let boolean = Type::Primitive("bool".to_string());
-                if self.infer.unify(&operand_type, &boolean).is_ok() {
-                    return Some(boolean);
-                }
-                let shown = self.shown_type(&operand_type);
-                self.err(span, format!("invalid operand for {}: {shown}", op.symbol()));
-                None
-            }
-        }
+        // `!` is logical on `bool` and bitwise on integers, like `and`/`or`/`xor`.
+        let kind = match op {
+            UnaryOp::Neg | UnaryOp::Pos => PredicateKind::Numeric,
+            UnaryOp::Not => PredicateKind::Logical,
+        };
+        self.predicate(kind, operand_type.clone(), span, PredicateSite::Unary(op));
+        Some(operand_type)
     }
 
     fn check_let_tuple(

@@ -52,10 +52,13 @@ impl Emitter<'_, '_> {
                 | Intrinsic::FormatLeave
                 | Intrinsic::FormatLabel
                 | Intrinsic::FormatReference
+                | Intrinsic::FormatTake
+                | Intrinsic::FormatText
+                | Intrinsic::FormatQuoted
+                | Intrinsic::FormatScalar
                 | Intrinsic::FormatRadix(_)
                 | Intrinsic::FormatFixed { .. }
                 | Intrinsic::Pad { .. }
-                | Intrinsic::Quote
         ) {
             return self.formatting(op, args, span);
         }
@@ -83,10 +86,13 @@ impl Emitter<'_, '_> {
             | Intrinsic::FormatLeave
             | Intrinsic::FormatLabel
             | Intrinsic::FormatReference
+            | Intrinsic::FormatTake
+            | Intrinsic::FormatText
+            | Intrinsic::FormatQuoted
+            | Intrinsic::FormatScalar
             | Intrinsic::FormatRadix(_)
             | Intrinsic::FormatFixed { .. }
-            | Intrinsic::Pad { .. }
-            | Intrinsic::Quote => unreachable!("handled above"),
+            | Intrinsic::Pad { .. } => unreachable!("handled above"),
             Intrinsic::Format(_) => unreachable!("expanded before code generation"),
             Intrinsic::ArrayLength => {
                 let operand = self.assign(&format!("extractvalue {ARRAY} {}, 1", array.operand));

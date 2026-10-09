@@ -497,18 +497,52 @@ impl Emitter<'_, '_> {
             Intrinsic::FormatLabel | Intrinsic::FormatReference => {
                 let name = if op == Intrinsic::FormatLabel { "cooper_format_label" } else { "cooper_format_reference" };
                 let pointer = self.expr(&args[0])?.expect("a pointer has a value");
-                self.module.declare(&format!("declare void @{name}(ptr, ptr)"));
+                self.module.declare(&format!("declare void @{name}(ptr)"));
+                self.inst(&format!("call void @{name}(ptr {})", pointer.operand));
+                Ok(None)
+            }
+            Intrinsic::FormatTake => {
+                self.module.declare("declare void @cooper_format_take(ptr)");
                 let out = self.slot(None, &string, span)?;
-                self.inst(&format!("call void @{name}(ptr {}, ptr {})", pointer.operand, out.ptr));
+                self.inst(&format!("call void @cooper_format_take(ptr {})", out.ptr));
                 Ok(self.load(&out))
             }
-            Intrinsic::Quote => {
+            Intrinsic::FormatText | Intrinsic::FormatQuoted => {
+                let name = if op == Intrinsic::FormatText { "cooper_format_text" } else { "cooper_format_quoted" };
                 let text = self.expr(&args[0])?.expect("a string has a value");
                 let (data, length) = self.string_parts(&text);
-                self.module.declare("declare void @cooper_quote(ptr, i64, ptr)");
-                let out = self.slot(None, &string, span)?;
-                self.inst(&format!("call void @cooper_quote(ptr {data}, i64 {length}, ptr {})", out.ptr));
-                Ok(self.load(&out))
+                self.module.declare(&format!("declare void @{name}(ptr, i64)"));
+                self.inst(&format!("call void @{name}(ptr {data}, i64 {length})"));
+                Ok(None)
+            }
+            Intrinsic::FormatScalar => {
+                let value = self.expr(&args[0])?.expect("a scalar has a value");
+                match Scalar::of(&args[0].ty) {
+                    Some(Scalar::Bool) => {
+                        let yes = self.module.string("true");
+                        let no = self.module.string("false");
+                        let data = self.assign(&format!("select i1 {}, ptr {yes}, ptr {no}", value.operand));
+                        let length = self.assign(&format!("select i1 {}, i64 4, i64 5", value.operand));
+                        self.module.declare("declare void @cooper_format_text(ptr, i64)");
+                        self.inst(&format!("call void @cooper_format_text(ptr {data}, i64 {length})"));
+                    }
+                    Some(Scalar::Int { signed, .. }) => {
+                        let wide = self.widen_index(&value, &args[0].ty);
+                        self.module.declare("declare void @cooper_format_append_int(i64, i32)");
+                        self.inst(&format!("call void @cooper_format_append_int(i64 {wide}, i32 {})", i32::from(signed)));
+                    }
+                    Some(Scalar::Float { bits }) => {
+                        let wide = if bits == 32 {
+                            self.assign(&format!("fpext float {} to double", value.operand))
+                        } else {
+                            value.operand
+                        };
+                        self.module.declare("declare void @cooper_format_append_float(double, i32)");
+                        self.inst(&format!("call void @cooper_format_append_float(double {wide}, i32 {})", i32::from(bits == 32)));
+                    }
+                    None => unreachable!("a scalar is a number or bool"),
+                }
+                Ok(None)
             }
             Intrinsic::FormatRadix(radix) => {
                 let value = self.expr(&args[0])?.expect("an integer has a value");

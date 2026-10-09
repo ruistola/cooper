@@ -158,11 +158,12 @@ fixed-precision, and padding intrinsics around the value's formatting. After mon
 conversion to `string` of a value other than a number or `bool` (which the backend formats
 through the runtime): a `string` is itself, a `CString` is copied, and anything else calls a
 generated formatter, one IR function per type (`Callable::Formatter`), built from field
-access, `match`, loops, and concatenation, which calls the formatters of the types inside it.
-For a type that can hold a pointer, the formatter runs twice: a first pass, whose text is
-discarded, finds the pointer targets reached more than once, and the second labels them (`#1=…`, then `#1`). Intrinsics reach
-the runtime for quoting strings and for that bookkeeping: which targets each pass has
-expanded, how deep, and their labels.
+access, `match`, and loops, which appends the value's text to the runtime's formatting
+buffer and calls the formatters of the types inside it; the formatting then takes the
+buffer's text as a string. For a type that can hold a pointer, the formatter runs twice: a
+first pass, whose text is discarded, finds the pointer targets reached more than once, and
+the second labels them (`#1=…`, then `#1`). The runtime also does the bookkeeping: which
+targets each pass has expanded, how deep, and their labels.
 
 A runtime error (integer overflow, division by zero, an index out of bounds) calls the
 runtime's `cooper_panic`, which

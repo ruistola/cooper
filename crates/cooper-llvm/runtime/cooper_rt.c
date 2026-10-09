@@ -127,25 +127,31 @@ void cooper_format_int(int64_t value, int32_t is_signed, CooperString *out) {
 
 /* The shortest decimal text that reads back as the same float (an `f32` when
    `is_f32`), so 0.1 prints as "0.1". NaN and infinities print as "nan", "inf", "-inf". */
-void cooper_format_float(double value, int32_t is_f32, CooperString *out) {
-    char text[40];
+static int float_text(double value, int32_t is_f32, char text[40]) {
     int len = 0;
     for (int precision = 1; precision <= 17; precision++) {
-        len = snprintf(text, sizeof text, "%.*g", precision, value);
+        len = snprintf(text, 40, "%.*g", precision, value);
         if (is_f32 ? strtof(text, NULL) == (float)value : strtod(text, NULL) == value) {
             break;
         }
     }
-    string_of(text, len, out);
+    return len;
+}
+
+void cooper_format_float(double value, int32_t is_f32, CooperString *out) {
+    char text[40];
+    string_of(text, float_text(value, is_f32, text), out);
 }
 
 /* --- Formatting any value (`string(x)`) ---
-   A formatting runs the generated formatters twice over the value. The first pass finds
-   the pointer targets reached more than once (through a cycle or sharing); the second,
-   whose text is kept, labels each such target where it is expanded (`#1=&...`) and
-   shows the label wherever it is reached again (`#1`). Each pass expands a target at
-   most once, and at most FORMAT_DEPTH pointers deep (`...` past that), so every value
-   formats in time proportional to its size. */
+   Generated formatters append a value's text to one buffer, which the formatting then
+   copies out as a string. A value that can hold pointers is formatted twice. The first
+   pass finds the pointer targets reached more than once (through a cycle or sharing);
+   the second, whose text is kept, labels each such target where it is expanded
+   (`#1=&...`) and shows the label wherever it is reached again (`#1`). Each pass expands
+   a target at most once, and at most FORMAT_DEPTH pointers deep (`...` past that), so
+   every value formats in time proportional to its size. Formatting runs no program code,
+   so formattings never interleave. */
 
 #define FORMAT_DEPTH 64
 
@@ -162,6 +168,9 @@ static uint64_t format_count;
 static int format_depth;
 static int format_printing;
 static int32_t format_labels;
+static char *format_text;
+static uint64_t format_len;
+static uint64_t format_room;
 
 static FormatEntry *format_find(const void *p) {
     if (format_capacity == 0) return NULL;
@@ -192,19 +201,29 @@ static FormatEntry *format_entry(const void *p) {
     return entry;
 }
 
-/* Start the first pass of formatting a value. */
+/* Start formatting a value: its first (or only) pass. */
 void cooper_format_begin(void) {
     if (format_count) memset(format_entries, 0, format_capacity * sizeof *format_entries);
     format_count = 0;
     format_depth = 0;
     format_printing = 0;
     format_labels = 0;
+    format_len = 0;
 }
 
-/* Start the printing pass. */
+/* Start the printing pass, discarding the first pass's text. */
 void cooper_format_print(void) {
     format_depth = 0;
     format_printing = 1;
+    format_len = 0;
+}
+
+/* The formatted text, as a fresh string. */
+void cooper_format_take(CooperString *out) {
+    char *data = cooper_alloc(format_len);
+    if (format_len) memcpy(data, format_text, format_len);
+    out->data = data;
+    out->len = format_len;
 }
 
 /* Whether to expand the target of the non-null pointer `p`; if so, the expansion ends
@@ -227,54 +246,71 @@ void cooper_format_leave(void) {
     format_depth--;
 }
 
-/* The label of an expanded target: `#n=` if it is shared, numbered in printing order. */
-void cooper_format_label(const void *p, CooperString *out) {
-    FormatEntry *entry = format_printing ? format_find(p) : NULL;
-    if (!entry || !entry->target || entry->shared < 2) {
-        string_of("", 0, out);
-        return;
+/* Append `len` bytes to the text. */
+void cooper_format_text(const char *data, uint64_t len) {
+    if (format_len + len > format_room) {
+        uint64_t room = format_room ? format_room : 256;
+        while (room < format_len + len) room *= 2;
+        format_text = realloc(format_text, room);
+        if (format_text == NULL) cooper_panic("out of memory");
+        format_room = room;
     }
-    entry->label = ++format_labels;
-    char buffer[16];
-    string_of(buffer, snprintf(buffer, sizeof buffer, "#%d=", entry->label), out);
+    if (len) memcpy(format_text + format_len, data, len);
+    format_len += len;
 }
 
-/* A target not expanded: its label, or `...` past the depth limit. */
-void cooper_format_reference(const void *p, CooperString *out) {
-    FormatEntry *entry = format_printing ? format_find(p) : NULL;
-    if (!entry || !entry->target || !entry->label) {
-        string_of("...", 3, out);
-        return;
-    }
-    char buffer[16];
-    string_of(buffer, snprintf(buffer, sizeof buffer, "#%d", entry->label), out);
+/* Append an integer's decimal text (see cooper_format_int). */
+void cooper_format_append_int(int64_t value, int32_t is_signed) {
+    char text[32];
+    int len = is_signed ? snprintf(text, sizeof text, "%" PRId64, value)
+                        : snprintf(text, sizeof text, "%" PRIu64, (uint64_t)value);
+    cooper_format_text(text, (uint64_t)len);
 }
 
-/* The string as a quoted literal: `"` and `\` escaped, and the control characters
+/* Append a float's text (see cooper_format_float). */
+void cooper_format_append_float(double value, int32_t is_f32) {
+    char text[40];
+    cooper_format_text(text, (uint64_t)float_text(value, is_f32, text));
+}
+
+/* Append a string as a quoted literal: `"` and `\` escaped, and the control characters
    Cooper literals spell (`\n`, `\t`, `\r`, `\0`) written as escapes. */
-void cooper_quote(const char *data, uint64_t len, CooperString *out) {
-    uint64_t size = 2;
-    for (uint64_t i = 0; i < len; i++) {
-        char c = data[i];
-        size += (c == '"' || c == '\\' || c == '\n' || c == '\t' || c == '\r' || c == '\0') ? 2 : 1;
-    }
-    char *text = cooper_alloc(size);
-    uint64_t at = 0;
-    text[at++] = '"';
+void cooper_format_quoted(const char *data, uint64_t len) {
+    cooper_format_text("\"", 1);
+    uint64_t run = 0;
     for (uint64_t i = 0; i < len; i++) {
         char c = data[i];
         const char *escape = c == '"' ? "\\\"" : c == '\\' ? "\\\\" : c == '\n' ? "\\n"
                            : c == '\t' ? "\\t" : c == '\r' ? "\\r" : c == '\0' ? "\\0" : NULL;
         if (escape) {
-            text[at++] = escape[0];
-            text[at++] = escape[1];
-        } else {
-            text[at++] = c;
+            cooper_format_text(data + run, i - run);
+            cooper_format_text(escape, 2);
+            run = i + 1;
         }
     }
-    text[at++] = '"';
-    out->data = text;
-    out->len = at;
+    cooper_format_text(data + run, len - run);
+    cooper_format_text("\"", 1);
+}
+
+/* Append the label of an expanded target: `#n=` if it is shared, numbered in printing
+   order; nothing otherwise. */
+void cooper_format_label(const void *p) {
+    FormatEntry *entry = format_printing ? format_find(p) : NULL;
+    if (!entry || !entry->target || entry->shared < 2) return;
+    entry->label = ++format_labels;
+    char buffer[16];
+    cooper_format_text(buffer, (uint64_t)snprintf(buffer, sizeof buffer, "#%d=", entry->label));
+}
+
+/* Append a target not expanded: its label, or `...` past the depth limit. */
+void cooper_format_reference(const void *p) {
+    FormatEntry *entry = format_printing ? format_find(p) : NULL;
+    if (!entry || !entry->target || !entry->label) {
+        cooper_format_text("...", 3);
+        return;
+    }
+    char buffer[16];
+    cooper_format_text(buffer, (uint64_t)snprintf(buffer, sizeof buffer, "#%d", entry->label));
 }
 
 /* --- Format specs in string holes --- */

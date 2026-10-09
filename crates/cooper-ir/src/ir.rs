@@ -394,23 +394,33 @@ pub enum Intrinsic {
     /// `std.ffi.copyBytes(p, n)`: an array holding a copy of the `n` bytes at `p`.
     /// Args: `[pointer, count]`.
     CopyBytes,
-    /// Start formatting a value, with a pass that only finds the pointer targets the
-    /// value reaches more than once: forget what an earlier formatting found. Args: `[]`.
+    /// Start formatting a value: empty the formatting buffer that the intrinsics below
+    /// append to. A value that can hold pointers is formatted twice, and this pass only
+    /// finds the pointer targets it reaches more than once. Args: `[]`.
     FormatBegin,
     /// Start the formatting pass whose text is kept, labelling the targets the first
     /// pass found shared. Args: `[]`.
     FormatPrint,
+    /// The formatting buffer's text, as a string. Args: `[]`.
+    FormatTake,
+    /// Append a string to the formatting buffer. Args: `[string]`.
+    FormatText,
+    /// Append a string as a quoted literal, with `"`, `\`, and control characters
+    /// escaped. Args: `[string]`.
+    FormatQuoted,
+    /// Append a number's or `bool`'s text, as `string(x)` gives it. Args: `[value]`.
+    FormatScalar,
     /// Whether to expand the target of a non-null pointer being formatted: false when
     /// this pass has already expanded it, or is nested too deeply. Expanding it must
     /// end with `FormatLeave`. Args: `[pointer]`; the result is a `bool`.
     FormatEnter,
     /// End the expansion `FormatEnter` began. Args: `[]`.
     FormatLeave,
-    /// The label an expanded target is shown with: `#1=` if the value reaches it more
-    /// than once, otherwise empty. Args: `[pointer]`.
+    /// Append the label an expanded target is shown with: `#1=` if the value reaches
+    /// it more than once, otherwise nothing. Args: `[pointer]`.
     FormatLabel,
-    /// A target not expanded: its label (`#1`), or `...` past the depth limit. Args:
-    /// `[pointer]`.
+    /// Append a target not expanded: its label (`#1`), or `...` past the depth limit.
+    /// Args: `[pointer]`.
     FormatReference,
     /// A value formatted as a hole's format spec asks. Args: `[value]`. After
     /// [`lower_program`], it is expanded into the intrinsics below and `string(x)`.
@@ -428,9 +438,6 @@ pub enum Intrinsic {
         fill: char,
         zero: bool,
     },
-    /// A string as a quoted literal, with `"`, `\`, and control characters escaped.
-    /// Args: `[string]`.
-    Quote,
 }
 
 /// Visit every expression in `stmts` mutably, each after the expressions inside it.

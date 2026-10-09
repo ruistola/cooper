@@ -3,7 +3,8 @@
 //! A number or `bool` converts to text in the backend. Every other conversion to
 //! `string` is expanded here, after monomorphization, when every type is concrete: a
 //! `CString` is copied, a `string` is itself, and any other value is formatted by a
-//! generated function, one per type, which calls the functions of the types it contains.
+//! generated function, one per type, which appends the value's text to the runtime's
+//! formatting buffer and calls the functions of the types it contains.
 //! The text mirrors the literal syntax: `Point{x: 1, y: "a"}`, `[1, 2]`, `(1, 2)`,
 //! `Some(3)`, `None`, `()`. A string inside a value is quoted. A function value is
 //! `<func>`. A pointer is `nil`, or `&` and its target's text. A target the value reaches
@@ -106,34 +107,34 @@ impl Formatters<'_> {
         } else if stdlib::is_c_string(&operand.ty) {
             intrinsic(Intrinsic::FromCString, vec![operand], string_type(), span)
         } else {
-            let ty = operand.ty.clone();
-            if !reaches_pointer(self.defs, &ty, &mut Vec::new()) {
-                return self.call(&ty, operand, file, span);
-            }
             // The value is evaluated first: formatting it must not interleave with any
-            // other formatting the evaluation does. The first pass finds shared targets.
+            // other formatting the evaluation does. A value that can hold a pointer is
+            // formatted twice, the first pass finding shared targets.
+            let ty = operand.ty.clone();
             let name = "fmt.value".to_string();
-            let call = self.call(&ty, var(&name, &ty, span), file, span);
-            block(
-                vec![
-                    let_stmt(&name, operand, span),
-                    expr_stmt(intrinsic(Intrinsic::FormatBegin, Vec::new(), Type::Unit, span)),
-                    expr_stmt(call.clone()),
-                    expr_stmt(intrinsic(Intrinsic::FormatPrint, Vec::new(), Type::Unit, span)),
-                ],
-                call,
-            )
+            let append = self.append(&ty, var(&name, &ty, span), file, span);
+            let mut stmts = vec![
+                let_stmt(&name, operand, span),
+                expr_stmt(intrinsic(Intrinsic::FormatBegin, Vec::new(), Type::Unit, span)),
+            ];
+            if reaches_pointer(self.defs, &ty, &mut Vec::new()) {
+                stmts.push(append.clone());
+                stmts.push(expr_stmt(intrinsic(Intrinsic::FormatPrint, Vec::new(), Type::Unit, span)));
+            }
+            stmts.push(append);
+            block(stmts, intrinsic(Intrinsic::FormatTake, Vec::new(), string_type(), span))
         }
     }
 
-    /// A call formatting `value`, of type `ty`, through its type's formatter.
-    fn call(&mut self, ty: &Type, value: IrExpr, file: &str, span: Span) -> IrExpr {
+    /// A statement appending the text of `value`, of type `ty`, to the formatting
+    /// buffer: directly for a number, `bool`, or string, otherwise through its type's
+    /// formatter.
+    fn append(&mut self, ty: &Type, value: IrExpr, file: &str, span: Span) -> IrStmt {
         if is_scalar(ty) {
-            return IrExpr {
-                kind: IrExprKind::Convert(Box::new(value)),
-                ty: string_type(),
-                span,
-            };
+            return append(Intrinsic::FormatScalar, value);
+        }
+        if is_string(ty) {
+            return append(Intrinsic::FormatQuoted, value);
         }
         let index = match self.types.iter().position(|(known, _)| known.equals(ty)) {
             Some(index) => index,
@@ -142,39 +143,35 @@ impl Formatters<'_> {
                 self.types.len() - 1
             }
         };
-        let item = Callable::Formatter { index: index as u32 };
         let callee = IrExpr {
             kind: IrExprKind::FuncRef {
-                item,
+                item: Callable::Formatter { index: index as u32 },
                 type_args: Vec::new(),
             },
             ty: Type::Func {
-                return_type: Box::new(string_type()),
+                return_type: Box::new(Type::Unit),
                 param_types: vec![ty.clone()],
             },
             span,
         };
-        IrExpr {
+        expr_stmt(IrExpr {
             kind: IrExprKind::Call {
                 callee: Box::new(callee),
                 args: vec![value],
             },
-            ty: string_type(),
+            ty: Type::Unit,
             span,
-        }
+        })
     }
 
-    /// The formatter of `ty`: a function of one parameter returning its text.
+    /// The formatter of `ty`: a function appending the text of its one parameter.
     fn formatter(&mut self, index: u32, ty: &Type, file: &str) -> Function {
         let span = Span::new(0, 0);
         let value = var(VALUE, ty, span);
         let body = match ty {
-            Type::Primitive(name) if name == "string" => {
-                vec![ret(intrinsic(Intrinsic::Quote, vec![value], string_type(), span))]
-            }
-            Type::Unit => vec![ret(text("()", span))],
-            Type::Nil => vec![ret(text("nil", span))],
-            Type::Func { .. } => vec![ret(text("<func>", span))],
+            Type::Unit => vec![append_text("()", span)],
+            Type::Nil => vec![append_text("nil", span)],
+            Type::Func { .. } => vec![append_text("<func>", span)],
             Type::Tuple(elems) => {
                 let names: Vec<String> = (0..elems.len()).map(|i| format!("e.{i}")).collect();
                 let bindings = names
@@ -196,9 +193,11 @@ impl Formatters<'_> {
                 let parts = names
                     .iter()
                     .zip(elems)
-                    .map(|(name, elem)| self.call(elem, var(name, elem, span), file, span))
+                    .map(|(name, elem)| self.append(elem, var(name, elem, span), file, span))
                     .collect();
-                vec![expr_stmt(destructure), ret(enclose("(", parts, ")", span))]
+                let mut body = vec![expr_stmt(destructure)];
+                body.extend(enclose("(", parts, ")", span));
+                body
             }
             Type::Struct { id, .. } => {
                 let members = self.defs.struct_members(ty).expect("a formatted struct is defined");
@@ -213,15 +212,15 @@ impl Formatters<'_> {
                             ty: member.clone(),
                             span,
                         };
-                        concat(text(&format!("{name}: "), span), self.call(&member, field, file, span))
+                        vec![append_text(&format!("{name}: "), span), self.append(&member, field, file, span)]
                     })
                     .collect();
-                vec![ret(enclose(&format!("{}{{", id.name), parts, "}", span))]
+                enclose_all(&format!("{}{{", id.name), parts, "}", span)
             }
             Type::Oneof { .. } => self.variants(ty, value, file, span),
             Type::Array(elem) => self.array(elem, value, file, span),
             Type::Pointer(target) => self.pointer(target, value, file, span),
-            _ => unreachable!("a value of type {ty} is never formatted"),
+            _ => unreachable!("a value of type {ty} is never formatted by a formatter"),
         };
         Function {
             item: Callable::Formatter { index },
@@ -235,13 +234,13 @@ impl Formatters<'_> {
                 ty: ty.clone(),
                 span,
             }],
-            return_type: string_type(),
+            return_type: Type::Unit,
             body,
             span,
         }
     }
 
-    /// `match value { V(p0, p1) => return "V(" + … + ")", … }`.
+    /// `match value { V(p0, p1) => { "V(" p0 ", " p1 ")" }, … }`.
     fn variants(&mut self, ty: &Type, value: IrExpr, file: &str, span: Span) -> Vec<IrStmt> {
         let mut patterns = Vec::new();
         let mut actions = Vec::new();
@@ -256,11 +255,11 @@ impl Formatters<'_> {
                 })
                 .collect();
             let action = if binders.is_empty() {
-                text(&variant, span)
+                vec![append_text(&variant, span)]
             } else {
                 let parts = binders
                     .iter()
-                    .map(|b| self.call(&b.ty, var(&b.name, &b.ty, span), file, span))
+                    .map(|b| self.append(&b.ty, var(&b.name, &b.ty, span), file, span))
                     .collect();
                 enclose(&format!("{variant}("), parts, ")", span)
             };
@@ -269,7 +268,10 @@ impl Formatters<'_> {
                 ty: ty.clone(),
                 span,
             });
-            actions.push(ret(action));
+            actions.push(IrStmt {
+                kind: IrStmtKind::Block(action),
+                span,
+            });
         }
         let tree = compile_match(self.defs, ty, &patterns);
         vec![IrStmt {
@@ -282,17 +284,16 @@ impl Formatters<'_> {
         }]
     }
 
-    /// `out := "["; sep := ""; for e in value { out = out + sep + f(e); sep = ", " }`.
+    /// `"["; sep := ""; for e in value { sep; e; sep = ", " }; "]"`.
     fn array(&mut self, elem: &Type, value: IrExpr, file: &str, span: Span) -> Vec<IrStmt> {
-        let out = var("out", &string_type(), span);
         let sep = var("sep", &string_type(), span);
-        let item = self.call(elem, var("e", elem, span), file, span);
         let body = vec![
-            assign(out.clone(), concat(concat(out.clone(), sep.clone()), item)),
-            assign(sep.clone(), text(", ", span)),
+            append(Intrinsic::FormatText, sep.clone()),
+            self.append(elem, var("e", elem, span), file, span),
+            assign(sep, text(", ", span)),
         ];
         vec![
-            let_stmt("out", text("[", span), span),
+            append_text("[", span),
             let_stmt("sep", text("", span), span),
             IrStmt {
                 kind: IrStmtKind::ForEach {
@@ -306,7 +307,7 @@ impl Formatters<'_> {
                 },
                 span,
             },
-            ret(concat(out, text("]", span))),
+            append_text("]", span),
         ]
     }
 
@@ -332,24 +333,57 @@ impl Formatters<'_> {
             ty: target.clone(),
             span,
         };
-        let label = intrinsic(Intrinsic::FormatLabel, vec![value.clone()], string_type(), span);
-        let expanded = concat(concat(label, text("&", span)), self.call(target, deref, file, span));
+        let done = IrStmt {
+            kind: IrStmtKind::Return(None),
+            span,
+        };
         let enter = intrinsic(Intrinsic::FormatEnter, vec![value.clone()], boolean, span);
         vec![
-            if_stmt(self.defs, is_nil, vec![ret(text("nil", span))], span),
+            if_stmt(self.defs, is_nil, vec![append_text("nil", span), done.clone()], span),
             if_stmt(
                 self.defs,
                 enter,
                 vec![
-                    let_stmt("out", expanded, span),
+                    append(Intrinsic::FormatLabel, value.clone()),
+                    append_text("&", span),
+                    self.append(target, deref, file, span),
                     expr_stmt(intrinsic(Intrinsic::FormatLeave, Vec::new(), Type::Unit, span)),
-                    ret(var("out", &string_type(), span)),
+                    done,
                 ],
                 span,
             ),
-            ret(intrinsic(Intrinsic::FormatReference, vec![value], string_type(), span)),
+            append(Intrinsic::FormatReference, value),
         ]
     }
+}
+
+/// A statement appending through the formatting intrinsic `op` with the one argument
+/// `value`.
+fn append(op: Intrinsic, value: IrExpr) -> IrStmt {
+    let span = value.span;
+    expr_stmt(intrinsic(op, vec![value], Type::Unit, span))
+}
+
+fn append_text(s: &str, span: Span) -> IrStmt {
+    append(Intrinsic::FormatText, text(s, span))
+}
+
+/// `open`, then `parts` separated by `, `, then `close`.
+fn enclose(open: &str, parts: Vec<IrStmt>, close: &str, span: Span) -> Vec<IrStmt> {
+    enclose_all(open, parts.into_iter().map(|p| vec![p]).collect(), close, span)
+}
+
+/// `open`, then each group of statements separated by `, `, then `close`.
+fn enclose_all(open: &str, parts: Vec<Vec<IrStmt>>, close: &str, span: Span) -> Vec<IrStmt> {
+    let mut out = vec![append_text(open, span)];
+    for (i, part) in parts.into_iter().enumerate() {
+        if i > 0 {
+            out.push(append_text(", ", span));
+        }
+        out.extend(part);
+    }
+    out.push(append_text(close, span));
+    out
 }
 
 /// Whether a value of type `ty` can hold a pointer, which is all that can make a
@@ -426,31 +460,6 @@ fn intrinsic(op: Intrinsic, args: Vec<IrExpr>, ty: Type, span: Span) -> IrExpr {
     }
 }
 
-fn concat(lhs: IrExpr, rhs: IrExpr) -> IrExpr {
-    let span = lhs.span;
-    IrExpr {
-        kind: IrExprKind::Binary {
-            op: BinaryOp::Add,
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-        },
-        ty: string_type(),
-        span,
-    }
-}
-
-/// `open` followed by `parts` separated by `, `, then `close`.
-fn enclose(open: &str, parts: Vec<IrExpr>, close: &str, span: Span) -> IrExpr {
-    let mut out = text(open, span);
-    for (i, part) in parts.into_iter().enumerate() {
-        if i > 0 {
-            out = concat(out, text(", ", span));
-        }
-        out = concat(out, part);
-    }
-    concat(out, text(close, span))
-}
-
 fn block(stmts: Vec<IrStmt>, result: IrExpr) -> IrExpr {
     let (ty, span) = (result.ty.clone(), result.span);
     IrExpr {
@@ -478,14 +487,6 @@ fn expr_stmt(expr: IrExpr) -> IrStmt {
     let span = expr.span;
     IrStmt {
         kind: IrStmtKind::Expr(expr),
-        span,
-    }
-}
-
-fn ret(value: IrExpr) -> IrStmt {
-    let span = value.span;
-    IrStmt {
-        kind: IrStmtKind::Return(Some(value)),
         span,
     }
 }

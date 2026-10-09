@@ -116,7 +116,8 @@ Pair{left: #1=&Node{value: 7, next: nil}, right: #1}
 ```
 
 Pointers nest at most 64 deep, and a target past that is `...`, so every value formats in
-time proportional to its size. Addresses are never shown.
+time proportional to its size. Addresses are never shown; `u64(p)` gives one as a number
+([Numeric Types](./numeric-types.md)).
 
 The format is fixed: a type cannot override it, as it cannot override equality. A type with
 its own presentation has a plain function for it (`func showPoint(p: Point): string`), and

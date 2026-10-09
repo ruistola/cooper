@@ -218,6 +218,8 @@ impl<'g> TypeChecker<'g> {
             PredicateKind::Logical => is_integer(&ty) || is_primitive(&ty, "bool"),
             PredicateKind::Comparable => incomparable_part(&ty, &self.globals.defs).is_none(),
             PredicateKind::Formattable => !matches!(ty, Type::Module(_)),
+            PredicateKind::Float => crate::types::is_float(&ty),
+            PredicateKind::Address => is_numeric(&ty) || matches!(ty, Type::Pointer(_) | Type::Nil),
         };
         if !valid {
             let message = match predicate.kind {
@@ -245,10 +247,19 @@ impl<'g> TypeChecker<'g> {
                         if name == "string" {
                             "a module is not a value and cannot be converted to string".to_string()
                         } else {
-                            format!("cannot convert value of type {ty} to {name}; source must be numeric")
+                            let sources = if name == "u64" { "numeric or a pointer" } else { "numeric" };
+                            format!("cannot convert value of type {ty} to {name}; source must be {sources}")
                         }
                     }
                     PredicateSite::Index => format!("index must be an integer, found {ty}"),
+                    PredicateSite::Spec(what) => {
+                        let wants = match predicate.kind {
+                            PredicateKind::Integer => "an integer",
+                            PredicateKind::Float => "a float",
+                            _ => "a number",
+                        };
+                        format!("{what} in a format spec applies to {wants}, found {ty}")
+                    }
                     PredicateSite::ShiftCount => format!("shift count must be an integer, found {ty}"),
                     PredicateSite::Range => format!("range bounds must be an integer type, found {ty}"),
                     PredicateSite::IntegerPattern { .. } => {

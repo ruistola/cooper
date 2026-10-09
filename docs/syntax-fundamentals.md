@@ -36,6 +36,25 @@ Each argument fills the next `{}` in order. The template must be a literal, and 
 holes and the arguments must match in number, or the call is a compile error. The
 template's own holes are evaluated first, then the arguments, each once, in order.
 
+### Format specs
+
+After a `:` in a hole, a spec says how to format its value, in Rust's syntax
+`[[fill]align][0][width][.precision][radix]`:
+
+| Spec | Meaning | Example |
+|---|---|---|
+| width | at least this many characters | `"{n:5}"` → `  255` |
+| `<` `>` `^` | align left, right, or center within the width; a number is right-aligned by default, anything else left | `"{s:>5}"` → `   ab` |
+| fill | the character to pad with, before the alignment | `"{n:*^7}"` → `**255**` |
+| `0` | pad a number with zeros after its sign | `"{-42:06}"` → `-00042` |
+| `.precision` | digits after a float's point | `"{f:.2}"` → `3.14` |
+| `x` `X` `b` `o` | an integer in hexadecimal, binary, or octal; a negative one as its two's complement bits | `"{n:08x}"` → `000000ff` |
+
+A positional hole takes a spec the same way: `"{:>4}"`. A radix applies to integers, a
+precision to floats, and zero padding to numbers; any other use is a compile error. The `:`
+that begins a spec is the first one outside the expression's brackets, braces,
+parentheses, and strings, and not part of `:=`.
+
 ## Semicolon inference
 
 Semicolons separate statements, and a newline becomes one when both of these hold, following

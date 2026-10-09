@@ -61,4 +61,9 @@ conversion rounds toward zero and saturates at the target's range, with NaN beco
 
 `string(x)` formats a number or a `bool` as text: integers in decimal, floats as the shortest
 text that reads back as the same value (`string(0.1)` is `"0.1"`), bools as `true`/`false`.
-It formats any other value too ([Type System](./type-system.md#formatting)).
+It formats any other value too ([Type System](./type-system.md#formatting)), and a hole in a
+string literal can choose a radix, precision, or width
+([Syntax Fundamentals](./syntax-fundamentals.md#format-specs)).
+
+`u64(p)` converts a pointer to its address, which no other conversion produces and nothing
+converts back to a pointer: `"{u64(p):x}"` shows it in hexadecimal, and `u64(nil)` is `0`.

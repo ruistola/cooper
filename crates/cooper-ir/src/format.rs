@@ -14,6 +14,8 @@
 
 use super::*;
 
+use cooper_frontend::ast::Align;
+
 /// Expand every conversion to `string` in `functions`, returning them with the
 /// formatting functions they need appended.
 pub(crate) fn expand_formatting(mut functions: Vec<Function>, defs: &TypeDefs) -> Vec<Function> {
@@ -47,24 +49,66 @@ const VALUE: &str = "value";
 
 impl Formatters<'_> {
     /// Replace `expr` if it is a conversion to `string` of a value no backend
-    /// instruction formats.
+    /// instruction formats, or a value formatted by a format spec.
     fn rewrite(&mut self, expr: &mut IrExpr, file: &str) {
-        let IrExprKind::Convert(operand) = &mut expr.kind else {
-            return;
-        };
-        if !is_string(&expr.ty) || is_scalar(&operand.ty) {
-            return;
-        }
-        let operand = std::mem::replace(operand.as_mut(), unit(expr.span));
         let span = expr.span;
-        *expr = if is_string(&operand.ty) {
+        match &mut expr.kind {
+            IrExprKind::Convert(operand) if is_string(&expr.ty) && !is_scalar(&operand.ty) => {
+                let operand = std::mem::replace(operand.as_mut(), unit(span));
+                *expr = self.format_value(operand, file, span);
+            }
+            IrExprKind::Intrinsic {
+                op: Intrinsic::Format(spec),
+                args,
+            } => {
+                let spec = *spec;
+                let value = args.pop().expect("a formatted value");
+                *expr = self.format_spec(value, &spec, file, span);
+            }
+            _ => {}
+        }
+    }
+
+    /// `value` formatted as `spec` asks: its digits in a radix, a float's to a
+    /// precision, or `string(x)`, then padded to a width.
+    fn format_spec(&mut self, value: IrExpr, spec: &FormatSpec, file: &str, span: Span) -> IrExpr {
+        let numeric = is_scalar(&value.ty) && !matches!(&value.ty, Type::Primitive(name) if name == "bool");
+        let text = if let Some(radix) = spec.radix {
+            intrinsic(Intrinsic::FormatRadix(radix), vec![value], string_type(), span)
+        } else if let Some(precision) = spec.precision {
+            intrinsic(Intrinsic::FormatFixed { precision }, vec![value], string_type(), span)
+        } else if is_scalar(&value.ty) {
+            IrExpr {
+                kind: IrExprKind::Convert(Box::new(value)),
+                ty: string_type(),
+                span,
+            }
+        } else {
+            self.format_value(value, file, span)
+        };
+        let Some(width) = spec.width else {
+            return text;
+        };
+        let align = spec.align.unwrap_or(if numeric { Align::Right } else { Align::Left });
+        let pad = Intrinsic::Pad {
+            width,
+            align,
+            fill: spec.fill,
+            zero: spec.zero,
+        };
+        intrinsic(pad, vec![text], string_type(), span)
+    }
+
+    /// `string(operand)` for an operand that is not a number or `bool`.
+    fn format_value(&mut self, operand: IrExpr, file: &str, span: Span) -> IrExpr {
+        if is_string(&operand.ty) {
             operand
         } else if stdlib::is_c_string(&operand.ty) {
             intrinsic(Intrinsic::FromCString, vec![operand], string_type(), span)
         } else {
             let ty = operand.ty.clone();
             if !reaches_pointer(self.defs, &ty, &mut Vec::new()) {
-                return *expr = self.call(&ty, operand, file, span);
+                return self.call(&ty, operand, file, span);
             }
             // The value is evaluated first: formatting it must not interleave with any
             // other formatting the evaluation does. The first pass finds shared targets.
@@ -79,7 +123,7 @@ impl Formatters<'_> {
                 ],
                 call,
             )
-        };
+        }
     }
 
     /// A call formatting `value`, of type `ty`, through its type's formatter.

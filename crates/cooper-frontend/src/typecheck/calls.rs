@@ -214,9 +214,10 @@ impl<'g> TypeChecker<'g> {
                 return Some(None);
             }
         };
-        for arg in rest {
+        for (index, arg) in rest.iter().enumerate() {
             if let Some(ty) = self.check_expr(arg) {
-                self.formattable(ty, arg.span);
+                let spec = positional.get(index).and_then(|(_, spec)| spec.as_ref());
+                self.formattable(ty, arg.span, spec);
             }
         }
         if positional.len() != rest.len() {
@@ -253,7 +254,8 @@ impl<'g> TypeChecker<'g> {
     }
 
     /// Type check an explicit conversion `T(value)`: to a numeric type from any numeric
-    /// type, or to `string` from any value, which it formats. The result is `T`.
+    /// type (and to `u64` from a pointer, its address), or to `string` from any value,
+    /// which it formats. The result is `T`.
     fn check_conversion(&mut self, name: &str, args: &[Expr], span: Span) -> Option<Type> {
         if args.len() != 1 {
             self.err(
@@ -264,7 +266,12 @@ impl<'g> TypeChecker<'g> {
         }
         self.expected = None;
         let arg_type = self.check_expr(&args[0])?;
-        let kind = if name == "string" { PredicateKind::Formattable } else { PredicateKind::Numeric };
+        let kind = match name {
+            "string" => PredicateKind::Formattable,
+            // A pointer's address is a `u64`.
+            "u64" => PredicateKind::Address,
+            _ => PredicateKind::Numeric,
+        };
         self.predicate(kind, arg_type, args[0].span, PredicateSite::Conversion(name.to_string()));
         Some(Type::Primitive(name.to_string()))
     }

@@ -1,5 +1,7 @@
 //! Operators: unary and binary expressions, equality, arithmetic, and conversions.
 
+use cooper_frontend::ast::Align;
+
 use super::*;
 
 impl Emitter<'_, '_> {
@@ -376,6 +378,15 @@ impl Emitter<'_, '_> {
         if is_string(target) {
             return self.format(operand, span).map(Some);
         }
+        if matches!(operand.ty, Type::Pointer(_) | Type::Nil) {
+            // A pointer's address; `u64` is the only conversion the checker allows.
+            let value = self.expr(operand)?.expect("a pointer has a value");
+            let operand = self.assign(&format!("ptrtoint ptr {} to i64", value.operand));
+            return Ok(Some(Value {
+                ty: "i64".to_string(),
+                operand,
+            }));
+        }
         let (Some(from), Some(to)) = (Scalar::of(&operand.ty), Scalar::of(target)) else {
             return self.unsupported(&format!("converting {} to {target}", operand.ty), span);
         };
@@ -497,6 +508,51 @@ impl Emitter<'_, '_> {
                 self.module.declare("declare void @cooper_quote(ptr, i64, ptr)");
                 let out = self.slot(None, &string, span)?;
                 self.inst(&format!("call void @cooper_quote(ptr {data}, i64 {length}, ptr {})", out.ptr));
+                Ok(self.load(&out))
+            }
+            Intrinsic::FormatRadix(radix) => {
+                let value = self.expr(&args[0])?.expect("an integer has a value");
+                let Some(Scalar::Int { bits, .. }) = Scalar::of(&args[0].ty) else {
+                    unreachable!("a radix formats an integer");
+                };
+                let wide = self.widen_index(&value, &args[0].ty);
+                self.module.declare("declare void @cooper_format_radix(i64, i32, i32, i32, ptr)");
+                let out = self.slot(None, &string, span)?;
+                self.inst(&format!(
+                    "call void @cooper_format_radix(i64 {wide}, i32 {bits}, i32 {}, i32 {}, ptr {})",
+                    radix.base,
+                    i32::from(radix.upper),
+                    out.ptr
+                ));
+                Ok(self.load(&out))
+            }
+            Intrinsic::FormatFixed { precision } => {
+                let value = self.expr(&args[0])?.expect("a float has a value");
+                let wide = match Scalar::of(&args[0].ty) {
+                    Some(Scalar::Float { bits: 32 }) => self.assign(&format!("fpext float {} to double", value.operand)),
+                    _ => value.operand,
+                };
+                self.module.declare("declare void @cooper_format_fixed(double, i32, ptr)");
+                let out = self.slot(None, &string, span)?;
+                self.inst(&format!("call void @cooper_format_fixed(double {wide}, i32 {precision}, ptr {})", out.ptr));
+                Ok(self.load(&out))
+            }
+            Intrinsic::Pad { width, align, fill, zero } => {
+                let text = self.expr(&args[0])?.expect("a string has a value");
+                let (data, length) = self.string_parts(&text);
+                let align = match align {
+                    Align::Left => 0,
+                    Align::Right => 1,
+                    Align::Center => 2,
+                };
+                self.module.declare("declare void @cooper_pad(ptr, i64, i64, i32, i32, i32, ptr)");
+                let out = self.slot(None, &string, span)?;
+                self.inst(&format!(
+                    "call void @cooper_pad(ptr {data}, i64 {length}, i64 {width}, i32 {align}, i32 {}, i32 {}, ptr {})",
+                    u32::from(fill),
+                    i32::from(zero),
+                    out.ptr
+                ));
                 Ok(self.load(&out))
             }
             _ => unreachable!("not a formatting intrinsic"),

@@ -89,6 +89,9 @@ enum PredicateKind {
     Comparable,
     /// Any value: the operand of `string(x)`.
     Formattable,
+    Float,
+    /// A number or a pointer: the operand of `u64(x)`.
+    Address,
 }
 
 enum PredicateSite {
@@ -100,6 +103,8 @@ enum PredicateSite {
     ShiftCount,
     Range,
     IntegerPattern { negative: bool, magnitude: String },
+    /// A format spec in a string hole, by what it asks for (`a radix`).
+    Spec(&'static str),
 }
 
 struct Predicate {
@@ -649,7 +654,7 @@ impl<'g> TypeChecker<'g> {
             }
             ExprKind::Interpolated(parts) => {
                 let (string, positional) = self.check_template(parts, expr.span);
-                if let Some(&span) = positional.first() {
+                if let Some(&(span, _)) = positional.first() {
                     self.err(
                         span,
                         "a `{}` hole takes its value from a call: write `format(\"…{}\", x)`, or put the expression in the braces",
@@ -726,8 +731,12 @@ impl<'g> TypeChecker<'g> {
     }
 
     /// Check the parts of an interpolated string, returning its type (`string`, unless
-    /// a hole failed to check) and the spans of its positional holes.
-    pub(super) fn check_template(&mut self, parts: &[StrPart], span: Span) -> (Option<Type>, Vec<Span>) {
+    /// a hole failed to check) and its positional holes, with their format specs.
+    pub(super) fn check_template(
+        &mut self,
+        parts: &[StrPart],
+        span: Span,
+    ) -> (Option<Type>, Vec<(Span, Option<FormatSpec>)>) {
         let mut ok = true;
         let mut positional = Vec::new();
         for part in parts {
@@ -737,20 +746,34 @@ impl<'g> TypeChecker<'g> {
                         self.err(span, format!("unknown escape sequence `{escape}` in string literal"));
                     }
                 }
-                // A hole formats its value as `string(x)` does.
-                StrPart::Hole(hole) => match self.check_expr(hole) {
-                    Some(ty) => self.formattable(ty, hole.span),
+                // A hole formats its value as `string(x)` does, or as its spec says.
+                StrPart::Hole { expr, spec } => match self.check_expr(expr) {
+                    Some(ty) => self.formattable(ty, expr.span, spec.as_ref()),
                     None => ok = false,
                 },
-                StrPart::Positional(span) => positional.push(*span),
+                StrPart::Positional { span, spec } => positional.push((*span, *spec)),
             }
         }
         (ok.then(|| Type::Primitive("string".to_string())), positional)
     }
 
-    /// Require a value of type `ty` to be formattable as `string(x)` formats it.
-    pub(super) fn formattable(&mut self, ty: Type, span: Span) {
-        self.predicate(PredicateKind::Formattable, ty, span, PredicateSite::Conversion("string".to_string()));
+    /// Require a value of type `ty` to be formattable as `string(x)` formats it, and as
+    /// `spec` asks: in a radix, an integer; with a precision, a float; zero-padded, a
+    /// number.
+    pub(super) fn formattable(&mut self, ty: Type, span: Span, spec: Option<&FormatSpec>) {
+        let site = || PredicateSite::Conversion("string".to_string());
+        if let Some(spec) = spec {
+            if spec.radix.is_some() {
+                self.predicate(PredicateKind::Integer, ty.clone(), span, PredicateSite::Spec("a radix"));
+            }
+            if spec.precision.is_some() {
+                self.predicate(PredicateKind::Float, ty.clone(), span, PredicateSite::Spec("a precision"));
+            }
+            if spec.zero {
+                self.predicate(PredicateKind::Numeric, ty.clone(), span, PredicateSite::Spec("zero padding"));
+            }
+        }
+        self.predicate(PredicateKind::Formattable, ty, span, site());
     }
 
     fn check_ident(&mut self, name: &str, span: Span) -> Option<Type> {

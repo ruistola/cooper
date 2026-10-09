@@ -192,8 +192,8 @@ impl SemanticAnalyzer<'_> {
             } => self.analyze_literal(return_type, true, body, expr.span, "function literal"),
             ExprKind::Chain { operands, .. } => operands.iter().for_each(|e| self.analyze_expr(e)),
             ExprKind::Interpolated(parts) => parts.iter().for_each(|part| {
-                if let StrPart::Hole(hole) = part {
-                    self.analyze_expr(hole);
+                if let StrPart::Hole { expr, .. } = part {
+                    self.analyze_expr(expr);
                 }
             }),
             ExprKind::Block(block) => {

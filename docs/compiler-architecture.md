@@ -152,7 +152,9 @@ the lexer scans whole (holes may hold strings and braces), the parser parses hol
 with spans inside the literal, and lowering joins with its text by concatenation. A call to
 `std.fmt.format`, `print`, or `println` with a literal template fills the template's
 positional holes `{}` with its further arguments: the checker matches their number, and
-lowering binds the holes' and arguments' values in order before joining. After monomorphization, `format.rs` expands every
+lowering binds the holes' and arguments' values in order before joining. A hole with a
+format spec lowers to `Intrinsic::Format(spec)`, which `format.rs` expands into the radix,
+fixed-precision, and padding intrinsics around the value's formatting. After monomorphization, `format.rs` expands every
 conversion to `string` of a value other than a number or `bool` (which the backend formats
 through the runtime): a `string` is itself, a `CString` is copied, and anything else calls a
 generated formatter, one IR function per type (`Callable::Formatter`), built from field

@@ -91,10 +91,26 @@ impl Parser {
                     parts.push(StrPart::Text(inner[segment..i].to_string()));
                     let start = base + i + 1;
                     let source = &inner[i + 1..i + len];
-                    parts.push(if source.trim().is_empty() {
-                        StrPart::Positional(Span::new(start - 1, start + len))
+                    let (expr_source, spec) = split_spec(source);
+                    let spec = match spec {
+                        Some(spec) => {
+                            let at = start + expr_source.len() + 1;
+                            Some(parse_spec(spec).ok_or_else(|| {
+                                self.error(Span::new(at, at + spec.len()), format!("invalid format spec `{spec}`"))
+                            })?)
+                        }
+                        None => None,
+                    };
+                    parts.push(if expr_source.trim().is_empty() {
+                        StrPart::Positional {
+                            span: Span::new(start - 1, start + len),
+                            spec,
+                        }
                     } else {
-                        StrPart::Hole(self.hole(source, start)?)
+                        StrPart::Hole {
+                            expr: self.hole(expr_source, start)?,
+                            spec,
+                        }
                     });
                     i += 1 + len;
                     segment = i;
@@ -512,6 +528,86 @@ fn binary_op(kind: TokenKind) -> Option<BinaryOp> {
         ShiftRight => BinaryOp::Shr,
         _ => return None,
     })
+}
+
+/// A hole's source split at the `:` that begins its format spec: the first one outside
+/// any brackets, braces, parentheses, or string, and not part of `:=`.
+fn split_spec(source: &str) -> (&str, Option<&str>) {
+    let bytes = source.as_bytes();
+    let mut depth = 0i32;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'"' {
+                    i += if bytes[i] == b'\\' { 2 } else { 1 };
+                }
+            }
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b':' if depth == 0 && bytes.get(i + 1) != Some(&b'=') => {
+                return (&source[..i], Some(&source[i + 1..]));
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    (source, None)
+}
+
+/// Parse a format spec, `[[fill]align][0][width][.precision][radix]`.
+fn parse_spec(spec: &str) -> Option<FormatSpec> {
+    let align_of = |c: char| match c {
+        '<' => Some(Align::Left),
+        '>' => Some(Align::Right),
+        '^' => Some(Align::Center),
+        _ => None,
+    };
+    let mut chars: Vec<char> = spec.chars().collect();
+    let mut result = FormatSpec {
+        fill: ' ',
+        align: None,
+        zero: false,
+        width: None,
+        precision: None,
+        radix: None,
+    };
+    if chars.len() >= 2 && align_of(chars[1]).is_some() {
+        result.fill = chars[0];
+        result.align = align_of(chars[1]);
+        chars.drain(..2);
+    } else if let Some(align) = chars.first().copied().and_then(align_of) {
+        result.align = Some(align);
+        chars.remove(0);
+    }
+    let mut rest = chars.as_slice();
+    if rest.first() == Some(&'0') {
+        result.zero = true;
+        rest = &rest[1..];
+    }
+    let digits = |rest: &mut &[char]| -> Option<u32> {
+        let count = rest.iter().take_while(|c| c.is_ascii_digit()).count();
+        let number: String = rest[..count].iter().collect();
+        *rest = &rest[count..];
+        (count > 0).then(|| number.parse().ok()).flatten()
+    };
+    result.width = digits(&mut rest);
+    if rest.first() == Some(&'.') {
+        rest = &rest[1..];
+        result.precision = Some(digits(&mut rest)?);
+    }
+    if let Some(&c) = rest.first() {
+        result.radix = Some(match c {
+            'x' => Radix { base: 16, upper: false },
+            'X' => Radix { base: 16, upper: true },
+            'b' => Radix { base: 2, upper: false },
+            'o' => Radix { base: 8, upper: false },
+            _ => return None,
+        });
+        rest = &rest[1..];
+    }
+    rest.is_empty().then_some(result)
 }
 
 /// For an ordering comparison, whether it is ascending (`<`, `<=`) or descending.

@@ -2,6 +2,8 @@
 
 use super::*;
 
+use cooper_frontend::ast::{Align, FormatSpec, Radix};
+
 /// A lowered function or method: the declaration it lowers, its signature, its body
 /// as typed statements, and the span it was lowered from. A method carries its
 /// receiver as the first bound place. `type_params` lists every binder of the
@@ -410,6 +412,22 @@ pub enum Intrinsic {
     /// A target not expanded: its label (`#1`), or `...` past the depth limit. Args:
     /// `[pointer]`.
     FormatReference,
+    /// A value formatted as a hole's format spec asks. Args: `[value]`. After
+    /// [`lower_program`], it is expanded into the intrinsics below and `string(x)`.
+    Format(FormatSpec),
+    /// An integer's digits in `radix`, a negative one as its two's complement bits.
+    /// Args: `[integer]`.
+    FormatRadix(Radix),
+    /// A float with `precision` digits after its point. Args: `[float]`.
+    FormatFixed { precision: u32 },
+    /// Text padded to at least `width` characters: with `fill` on the side `align`
+    /// leaves, or with zeros after a number's sign when `zero`. Args: `[string]`.
+    Pad {
+        width: u32,
+        align: Align,
+        fill: char,
+        zero: bool,
+    },
     /// A string as a quoted literal, with `"`, `\`, and control characters escaped.
     /// Args: `[string]`.
     Quote,

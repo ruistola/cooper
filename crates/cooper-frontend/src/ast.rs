@@ -145,11 +145,43 @@ pub struct TypedIdent {
 pub enum StrPart {
     /// Literal text as written, escapes undecoded.
     Text(String),
-    /// A hole: an expression formatted as `string(x)` formats it.
-    Hole(Expr),
+    /// A hole: an expression formatted as `string(x)` formats it, or as `spec` says.
+    Hole { expr: Expr, spec: Option<FormatSpec> },
     /// A positional hole `{}`, filled by the next argument of the call the literal is
     /// the template of (`format("X is {}", x)`).
-    Positional(Span),
+    Positional { span: Span, spec: Option<FormatSpec> },
+}
+
+/// How a hole formats its value, after a `:` in the hole: `[[fill]align][0][width]
+/// [.precision][radix]`, as in `{x:>8}`, `{f:.2}`, `{n:08x}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormatSpec {
+    /// The character padding to `width`, a space unless given.
+    pub fill: char,
+    /// Where the text sits within `width`: by default right for a number, else left.
+    pub align: Option<Align>,
+    /// Pad a number with zeros after its sign, instead of with `fill`.
+    pub zero: bool,
+    /// The least number of characters.
+    pub width: Option<u32>,
+    /// Digits after a float's point.
+    pub precision: Option<u32>,
+    /// An integer's base, other than ten.
+    pub radix: Option<Radix>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Align {
+    Left,
+    Right,
+    Center,
+}
+
+/// An integer's digits in base 16 (`x`, or `X` for uppercase), 2 (`b`), or 8 (`o`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Radix {
+    pub base: u32,
+    pub upper: bool,
 }
 
 /// A function literal's parameter, whose type may be left to inference.

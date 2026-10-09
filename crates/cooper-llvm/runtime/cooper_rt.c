@@ -276,3 +276,69 @@ void cooper_quote(const char *data, uint64_t len, CooperString *out) {
     out->data = text;
     out->len = at;
 }
+
+/* --- Format specs in string holes --- */
+
+/* The low `bits` bits of `value` in base `radix` (2, 8, or 16), uppercase when `upper`:
+   a negative number shows as its two's complement. */
+void cooper_format_radix(uint64_t value, int32_t bits, int32_t radix, int32_t upper, CooperString *out) {
+    if (bits < 64) value &= ((uint64_t)1 << bits) - 1;
+    const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    char buffer[64];
+    int at = 64;
+    do {
+        buffer[--at] = digits[value % (uint64_t)radix];
+        value /= (uint64_t)radix;
+    } while (value);
+    string_of(buffer + at, 64 - at, out);
+}
+
+/* `value` with `precision` digits after the point. */
+void cooper_format_fixed(double value, int32_t precision, CooperString *out) {
+    int len = snprintf(NULL, 0, "%.*f", precision, value);
+    char *text = cooper_alloc((size_t)len + 1);
+    snprintf(text, (size_t)len + 1, "%.*f", precision, value);
+    out->data = text;
+    out->len = (uint64_t)len;
+}
+
+/* The UTF-8 encoding of code point `c` into `buffer`, returning its length. */
+static int utf8_encode(uint32_t c, char *buffer) {
+    if (c < 0x80) { buffer[0] = (char)c; return 1; }
+    if (c < 0x800) { buffer[0] = (char)(0xC0 | c >> 6); buffer[1] = (char)(0x80 | (c & 0x3F)); return 2; }
+    if (c < 0x10000) {
+        buffer[0] = (char)(0xE0 | c >> 12); buffer[1] = (char)(0x80 | (c >> 6 & 0x3F));
+        buffer[2] = (char)(0x80 | (c & 0x3F)); return 3;
+    }
+    buffer[0] = (char)(0xF0 | c >> 18); buffer[1] = (char)(0x80 | (c >> 12 & 0x3F));
+    buffer[2] = (char)(0x80 | (c >> 6 & 0x3F)); buffer[3] = (char)(0x80 | (c & 0x3F)); return 4;
+}
+
+/* `text` padded to at least `width` characters (code points): with `fill` after it
+   (`align` 0), before it (1), or around it, the odd one after (2); or, when `zero`, with
+   zeros after a leading sign. */
+void cooper_pad(const char *text, uint64_t len, int64_t width, int32_t align, int32_t fill,
+                int32_t zero, CooperString *out) {
+    int64_t chars = 0;
+    for (uint64_t i = 0; i < len; i++) chars += ((unsigned char)text[i] & 0xC0) != 0x80;
+    if (chars >= width) {
+        out->data = text;
+        out->len = len;
+        return;
+    }
+    int64_t missing = width - chars;
+    char fill_bytes[4];
+    int fill_len = zero ? 1 : utf8_encode((uint32_t)fill, fill_bytes);
+    if (zero) fill_bytes[0] = '0';
+    char *padded = cooper_alloc(len + (uint64_t)(missing * fill_len));
+    uint64_t at = 0;
+    int64_t before = zero || align == 1 ? missing : align == 2 ? missing / 2 : 0;
+    uint64_t start = 0;
+    if (zero && len && (text[0] == '-' || text[0] == '+')) padded[at++] = text[start++];
+    for (int64_t i = 0; i < before; i++) for (int b = 0; b < fill_len; b++) padded[at++] = fill_bytes[b];
+    memcpy(padded + at, text + start, len - start);
+    at += len - start;
+    for (int64_t i = before; i < missing; i++) for (int b = 0; b < fill_len; b++) padded[at++] = fill_bytes[b];
+    out->data = padded;
+    out->len = at;
+}

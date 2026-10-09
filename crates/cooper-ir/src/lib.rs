@@ -26,7 +26,8 @@ pub use mono::{monomorphize, MonoError};
 use decision::{bool_patterns, compile_match};
 
 use cooper_frontend::ast::{
-    AssignOp, BinaryOp, Block, Expr, ExprKind, FuncDecl, Pattern, PatternKind, Stmt, StmtKind, StrPart,
+    AssignOp, BinaryOp, Block, Expr, ExprKind, FormatSpec, FuncDecl, Pattern, PatternKind, Stmt, StmtKind,
+    StrPart,
     TypeExpr, TypedIdent, UnaryOp,
 };
 use cooper_frontend::diag::Span;
@@ -864,8 +865,8 @@ impl Lower<'_> {
         };
         let mut holes = Vec::new();
         for part in parts {
-            if let StrPart::Hole(hole) = part {
-                holes.push(bind(self.expr(hole)?));
+            if let StrPart::Hole { expr, .. } = part {
+                holes.push(bind(self.expr(expr)?));
             }
         }
         let mut filled = Vec::new();
@@ -873,6 +874,14 @@ impl Lower<'_> {
             filled.push(bind(self.expr(arg)?));
         }
         let (mut holes, mut filled) = (holes.into_iter(), filled.into_iter());
+        // `string(x)`, or the formatting `spec` asks for.
+        let formatted = |value: IrExpr, spec: &Option<FormatSpec>| match spec {
+            None => node(IrExprKind::Convert(Box::new(value))),
+            Some(spec) => node(IrExprKind::Intrinsic {
+                op: Intrinsic::Format(*spec),
+                args: vec![value],
+            }),
+        };
         let mut out: Option<IrExpr> = None;
         for part in parts {
             let piece = match part {
@@ -880,9 +889,9 @@ impl Lower<'_> {
                 StrPart::Text(text) => {
                     node(IrExprKind::Str(decode_escapes(text).map_err(|_| LowerError::MalformedLiteral(span))?))
                 }
-                StrPart::Hole(_) => node(IrExprKind::Convert(Box::new(holes.next().expect("bound above")))),
-                StrPart::Positional(_) => {
-                    node(IrExprKind::Convert(Box::new(filled.next().expect("the checker matched holes and arguments"))))
+                StrPart::Hole { spec, .. } => formatted(holes.next().expect("bound above"), spec),
+                StrPart::Positional { spec, .. } => {
+                    formatted(filled.next().expect("the checker matched holes and arguments"), spec)
                 }
             };
             out = Some(match out {

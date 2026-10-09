@@ -38,6 +38,10 @@ error.
 * **Array:** `T[]` binds the element (`for v in xs`) or an index and the element
   (`for (i, v) in xs`, with `i: i64`).
 
+The loop variables are bound afresh on each pass from a hidden position, so assigning one
+lasts only until the end of that pass and never changes the iteration, and a closure created
+in a pass keeps that pass's variable.
+
 ```
 total := 0
 for i in 0..10 do total += i          # 0,1,…,9

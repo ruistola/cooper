@@ -298,7 +298,7 @@ impl<'g> TypeChecker<'g> {
         let kind = match op {
             AssignOp::Assign => return,
             AssignOp::Add => PredicateKind::Addable,
-            _ => PredicateKind::Numeric,
+            AssignOp::Sub | AssignOp::Mul | AssignOp::Div | AssignOp::Rem => PredicateKind::Numeric,
         };
         self.predicate(kind, target_type.clone(), span, PredicateSite::Assignment(op, value_type.clone()));
     }

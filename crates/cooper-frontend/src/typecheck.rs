@@ -42,6 +42,19 @@ pub struct Typed {
     pub diags: Vec<Diagnostic>,
     pub types: HashMap<Span, Type>,
     pub refs: HashMap<Span, ItemRef>,
+    /// The variables each function literal or nested function captures, keyed by its
+    /// span: every enclosing function's local its body (or a function nested in it)
+    /// names, with its type, in order of first use.
+    pub captures: HashMap<Span, Vec<(String, Type)>>,
+}
+
+/// A function literal or nested function whose body is being checked.
+struct Closure {
+    span: Span,
+    /// The index of the literal's own outermost scope: a variable found below it is
+    /// captured.
+    base: usize,
+    captures: Vec<(String, Type)>,
 }
 
 /// A reference to a function or method declaration, instantiated: the declaration's
@@ -69,6 +82,8 @@ enum PredicateKind {
     Numeric,
     Addable,
     Integer,
+    /// `bool` or an integer: the operand of `and`, `or`, `xor`.
+    Logical,
     Comparable,
     Formattable,
 }
@@ -79,6 +94,7 @@ enum PredicateSite {
     Assignment(AssignOp, Type),
     Conversion(String),
     Index,
+    ShiftCount,
     Range,
     IntegerPattern { negative: bool, magnitude: String },
 }
@@ -144,6 +160,7 @@ pub fn check(
         diags: tc.diags,
         types: tc.types,
         refs: tc.refs,
+        captures: tc.captures,
     }
 }
 
@@ -168,6 +185,10 @@ struct TypeChecker<'g> {
     loop_depth: u32,
     /// Every function and method reference, keyed by span: the lowering handoff.
     refs: HashMap<Span, ItemRef>,
+    /// The function literals enclosing the expression being checked, innermost last.
+    closures: Vec<Closure>,
+    /// Every checked closure's captures, keyed by span: the lowering handoff.
+    captures: HashMap<Span, Vec<(String, Type)>>,
     /// The variables and bindings used to instantiate generic references.
     infer: InferTable,
     body: BodyConstraints,
@@ -186,6 +207,8 @@ impl<'g> TypeChecker<'g> {
             expected: None,
             loop_depth: 0,
             refs: HashMap::new(),
+            closures: Vec::new(),
+            captures: HashMap::new(),
             infer: InferTable::default(),
             body: BodyConstraints::default(),
         }
@@ -240,6 +263,26 @@ impl<'g> TypeChecker<'g> {
         self.scopes.iter().rev().find_map(|s| s.get(name))
     }
 
+    /// Look up the variable `name` as a use: one bound in an enclosing function's
+    /// body (not at module level) outside a closure being checked is captured by that
+    /// closure, and by every closure between it and the use.
+    fn use_var(&mut self, name: &str) -> Option<Type> {
+        let (depth, ty) = self
+            .scopes
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(depth, scope)| scope.get(name).map(|ty| (depth, ty.clone())))?;
+        if depth > 0 {
+            for closure in self.closures.iter_mut().filter(|c| c.base > depth) {
+                if !closure.captures.iter().any(|(captured, _)| captured == name) {
+                    closure.captures.push((name.to_string(), ty.clone()));
+                }
+            }
+        }
+        Some(ty)
+    }
+
     fn resolve_local_type(&mut self, type_expr: &TypeExpr) -> Option<Type> {
         resolve::resolve_type(type_expr, &self.type_params, self.globals, &mut self.diags)
     }
@@ -257,6 +300,7 @@ impl<'g> TypeChecker<'g> {
             }
             StmtKind::VarDecl { name, ty, init } => self.check_var_decl(name, ty, init, stmt.span),
             StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } => {}
+            StmtKind::FuncDecl(func) if self.current_return.is_some() => self.check_nested_func(func),
             StmtKind::FuncDecl(func) => self.check_func_decl(func),
             StmtKind::If { cond, then, els } => {
                 let cond_type = self.check_expr(cond);
@@ -439,6 +483,70 @@ impl<'g> TypeChecker<'g> {
         self.type_params = saved_params;
     }
 
+    /// A function declared in a body: a variable bound to a function literal, in
+    /// scope from its declaration on and within its own body, so it may recurse.
+    fn check_nested_func(&mut self, func: &FuncDecl) {
+        if func.receiver.is_some() {
+            self.err(func.span, "a method must be declared at module level");
+            return;
+        }
+        if !func.type_params.is_empty() {
+            self.err(func.span, "a nested function cannot be generic yet");
+            return;
+        }
+        self.check_closure(&func.params, &func.return_type, &func.body, func.span, Some(&func.name));
+    }
+
+    /// Check a function literal or nested function against its annotated signature,
+    /// returning its function type. The body shares the enclosing body's inference,
+    /// so a captured variable's type may be fixed by a use on either side. `return`
+    /// leaves the literal, and a loop around the literal is not one `break` can leave.
+    fn check_closure(
+        &mut self,
+        params: &[TypedIdent],
+        return_type: &Option<TypeExpr>,
+        body: &[Stmt],
+        span: Span,
+        name: Option<&str>,
+    ) -> Option<Type> {
+        let mut bound = HashMap::new();
+        let mut param_types = Vec::with_capacity(params.len());
+        for param in params {
+            let declared = self.resolve_local_type(&param.ty)?;
+            let ty = self.infer_binding(&declared);
+            bound.insert(param.name.clone(), ty.clone());
+            param_types.push(ty);
+        }
+        let ret = match return_type {
+            Some(ty) => self.resolve_local_type(ty)?,
+            None => Type::Unit,
+        };
+        let func_type = Type::Func {
+            return_type: Box::new(ret.clone()),
+            param_types,
+        };
+        if let Some(name) = name {
+            self.define_var(name, func_type.clone());
+        }
+        self.closures.push(Closure {
+            span,
+            base: self.scopes.len(),
+            captures: Vec::new(),
+        });
+        self.scopes.push(bound);
+        let saved_return = self.current_return.replace(ret);
+        let saved_loops = std::mem::replace(&mut self.loop_depth, 0);
+        for stmt in body {
+            self.check_stmt(stmt);
+        }
+        self.loop_depth = saved_loops;
+        self.current_return = saved_return;
+        self.scopes.pop();
+        let closure = self.closures.pop().expect("pushed above");
+        self.captures.insert(closure.span, closure.captures);
+        Some(func_type)
+    }
+
     fn check_return(&mut self, expr: Option<&Expr>, span: Span) {
         let Some(return_type) = self.current_return.clone() else {
             self.err(span, "return statement outside of function");
@@ -517,6 +625,7 @@ impl<'g> TypeChecker<'g> {
             ExprKind::Binary { op, lhs, rhs } => {
                 self.check_binary(*op, lhs, rhs, expr.span)
             }
+            ExprKind::Chain { operands, ops } => self.check_chain(operands, ops),
             ExprKind::Range { .. } => {
                 self.err(expr.span, "a range may only appear as a for-loop iterable");
                 None
@@ -551,12 +660,17 @@ impl<'g> TypeChecker<'g> {
             ExprKind::Match { scrutinee, arms } => self.check_match_expr(scrutinee, arms),
             ExprKind::If { cond, then, els } => self.check_if_expr(cond, then, els),
             ExprKind::Block(block) => self.check_block_expr(block),
+            ExprKind::Func {
+                params,
+                return_type,
+                body,
+            } => self.check_closure(params, return_type, body, expr.span, None),
         }
     }
 
     fn check_ident(&mut self, name: &str, span: Span) -> Option<Type> {
-        if let Some(t) = self.lookup_var(name) {
-            return Some(t.clone());
+        if let Some(t) = self.use_var(name) {
+            return Some(t);
         }
         if let Some(t) = self.globals.lookup_struct(name) {
             return Some(t);
@@ -634,21 +748,29 @@ impl<'g> TypeChecker<'g> {
         rhs: &Expr,
         span: Span,
     ) -> Option<Type> {
-        let boolean = Type::Primitive("bool".to_string());
-        if matches!(op, BinaryOp::And | BinaryOp::Or | BinaryOp::Xor) {
-            let left = self.check_expr(lhs)?;
-            let right = self.check_expr(rhs)?;
-            let left_ok = self.infer.unify(&left, &boolean).is_ok();
-            let right_ok = self.infer.unify(&right, &boolean).is_ok();
-            if left_ok && right_ok {
-                return Some(boolean);
-            }
-            let (left, right) = self.shown_pair(&left, &right);
-            self.err(span, format!("invalid operands for {}: {left} and {right}", op.symbol()));
-            return None;
-        }
         let left = self.check_expr(lhs)?;
         let right = self.check_expr(rhs)?;
+        if matches!(op, BinaryOp::Shl | BinaryOp::Shr) {
+            // The count only says how far to shift: any integer type, independent of
+            // the shifted value's.
+            self.predicate(PredicateKind::Integer, left.clone(), lhs.span, PredicateSite::Binary(op, right.clone()));
+            self.predicate(PredicateKind::Integer, right, rhs.span, PredicateSite::ShiftCount);
+            return Some(left);
+        }
+        self.check_operands(op, left, right, span)
+    }
+
+    /// Apply binary operator `op`'s type rule to operands of types `left` and
+    /// `right`, which must be one type. `and`, `or`, and `xor` take two `bool`s or two
+    /// integers, decided like any predicate once the body's constraints are solved.
+    /// A comparison is `bool` even when its operands are invalid, so the error does not
+    /// cascade into the comparison's use.
+    fn check_operands(&mut self, op: BinaryOp, left: Type, right: Type, span: Span) -> Option<Type> {
+        let boolean = Type::Primitive("bool".to_string());
+        let comparison = matches!(
+            op,
+            BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
+        );
         if self.infer.unify(&left, &right).is_err() {
             let (left, right) = self.shown_pair(&left, &right);
             let message = if matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
@@ -657,18 +779,30 @@ impl<'g> TypeChecker<'g> {
                 format!("invalid operands for {}: {left} and {right}", op.symbol())
             };
             self.err(span, message);
-            return None;
+            return comparison.then_some(boolean);
         }
         let kind = match op {
+            BinaryOp::And | BinaryOp::Or | BinaryOp::Xor => PredicateKind::Logical,
+            BinaryOp::Shl | BinaryOp::Shr => unreachable!("shifts are checked by check_binary"),
             BinaryOp::Add => PredicateKind::Addable,
             BinaryOp::Eq | BinaryOp::Ne => PredicateKind::Comparable,
-            _ => PredicateKind::Numeric,
+            BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => PredicateKind::Numeric,
+            BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => PredicateKind::Numeric,
         };
         self.predicate(kind, left.clone(), span, PredicateSite::Binary(op, right));
-        match op {
-            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => Some(left),
-            _ => Some(boolean),
+        Some(if comparison { boolean } else { left })
+    }
+
+    /// A comparison chain relates each adjacent pair of operands, each checked once.
+    fn check_chain(&mut self, operands: &[Expr], ops: &[BinaryOp]) -> Option<Type> {
+        let types: Vec<Option<Type>> = operands.iter().map(|e| self.check_expr(e)).collect();
+        for (i, op) in ops.iter().enumerate() {
+            if let (Some(left), Some(right)) = (&types[i], &types[i + 1]) {
+                let span = operands[i].span.to(operands[i + 1].span);
+                self.check_operands(*op, left.clone(), right.clone(), span);
+            }
         }
+        Some(Type::Primitive("bool".to_string()))
     }
 
     /// Every array element constrains one shared variable, including elements

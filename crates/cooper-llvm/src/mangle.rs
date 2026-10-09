@@ -10,6 +10,7 @@
 //! symbol   ::= "_C" item [ "I" type+ "E" ]
 //! item     ::= "F" path ident             free function: module, name
 //!            | "M" path ident ident       method: module, receiver type, name
+//!            | "L" item <decimal> "_"     the nth function literal lifted from item
 //! path     ::= "N" ident+ "E"             module path segments
 //! ident    ::= <decimal byte length> <bytes>
 //! type     ::= "p" ident                  primitive, by name (p3i32)
@@ -23,7 +24,10 @@
 //! ```
 //!
 //! `main.add` mangles to `_CFN4mainE3add`; `Box.get` in module `util` at `i32` to
-//! `_CMN4utilE3Box3getIp3i32E`.
+//! `_CMN4utilE3Box3getIp3i32E`; the first function literal in `main.main` to
+//! `_CLFN4mainE4main0_`. A lifted literal takes its declaration's type arguments, so
+//! they follow the whole item. Literals are private to their LLVM module, so these
+//! symbols never meet a C linker.
 
 use std::fmt::Write;
 
@@ -33,21 +37,30 @@ use cooper_frontend::types::Type;
 /// The symbol of the instance of `item` at `type_args`.
 pub fn symbol(item: &Callable, type_args: &[Type]) -> String {
     let mut out = String::from("_C");
+    self::item(&mut out, item);
+    args(&mut out, type_args);
+    out
+}
+
+fn item(out: &mut String, item: &Callable) {
     match item {
         Callable::Func { module, name } => {
             out.push('F');
-            path(&mut out, module);
-            ident(&mut out, name);
+            path(out, module);
+            ident(out, name);
         }
         Callable::Method { receiver, name } => {
             out.push('M');
-            path(&mut out, &receiver.module);
-            ident(&mut out, &receiver.name);
-            ident(&mut out, name);
+            path(out, &receiver.module);
+            ident(out, &receiver.name);
+            ident(out, name);
+        }
+        Callable::Closure { parent, index } => {
+            out.push('L');
+            self::item(out, parent);
+            write!(out, "{index}_").expect("writing to a String cannot fail");
         }
     }
-    args(&mut out, type_args);
-    out
 }
 
 /// The mangled encoding of `ty` alone (the `type` production), which names its LLVM

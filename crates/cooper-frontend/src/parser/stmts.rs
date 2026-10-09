@@ -14,7 +14,8 @@ impl Parser {
         }
         match self.peek().kind {
             For => self.parse_for_stmt(),
-            Func => {
+            // `func name …` declares a nested function; `func(…)` begins a literal.
+            Func if self.lookahead(2).get(1).is_some_and(|t| t.kind == Identifier) => {
                 let decl = self.parse_func_decl()?;
                 let span = decl.span;
                 Ok(Stmt {
@@ -319,6 +320,9 @@ impl Parser {
     pub(super) fn parse_block_stmt(&mut self) -> Vec<Stmt> {
         let saved_header_depth = self.header_depth;
         self.header_depth = 0;
+        // Likewise for enclosing parentheses: a function literal's body passed as an
+        // argument still separates its statements by newlines.
+        let saved_parens = std::mem::take(&mut self.paren_stack);
         let saved_closers = std::mem::take(&mut self.closers);
         let mut statements = Vec::new();
         loop {
@@ -334,6 +338,7 @@ impl Parser {
             }
         }
         self.header_depth = saved_header_depth;
+        self.paren_stack = saved_parens;
         self.closers = saved_closers;
         statements
     }

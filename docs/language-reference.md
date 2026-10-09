@@ -111,6 +111,7 @@ tail := xs[1..]                      # a slice shares elements: `xs[1..=2]`, `xs
 p := &a                              # `p^ += 1` writes through it; `p.field` dereferences
 let box: Box i32 = Box{v: 7}         # struct literal; generic types apply by juxtaposition
 let f: func(i32): i32 = inc          # function type; a bound method is a value too
+add := func(x: i32): i32 { return x + k }   # a function literal, capturing `k` by reference
 kind := match n with {               # integer, bool, tuple, struct, or sum-type scrutinee
     5 => 1
     _ => 0
@@ -169,6 +170,7 @@ stmt       ::= "let" ident (":" type)? ("=" expr)?
              | "for" bindings "in" expr "do" body
              | "match" expr "with" "{" arm* "}"
              | "return" expr? | "break" | "continue"
+             | "func" ident "(" param* ")" (":" type)? block   # nested function, not generic
              | expr                                   # a call, an assignment, …
 bindings   ::= ident | "(" ident "," ident ")"
 arm        ::= pattern "=>" body                      # arms are separated like statements: a newline or ";", never ","
@@ -184,6 +186,7 @@ expr       ::= number | string | "true" | "false" | "nil" | ident | "(" ")"
              | "if" expr "then" expr "else" expr
              | "match" expr "with" "{" (pattern "=>" expr)* "}"
              | "{" stmt* expr "}"                     # a value block
+             | "func" "(" param* ")" (":" type)? block   # function literal
 
 pattern    ::= "_" | ident | "true" | "false" | "-"? number
              | (ident ".")? ident ("(" (ident | "_")* ")")?   # variant: `Some(x)`, `None`
@@ -199,21 +202,23 @@ From loosest to tightest binding:
 
 | Level | Operators |
 |---|---|
-| 1 | `=` `+=` `-=` `*=` `/=` and `:=` (right-associative) |
+| 1 | `=` `+=` `-=` `*=` `/=` `%=` and `:=` (right-associative) |
 | 2 | `..` `..=` (valid only as a `for` iterable or a slice bound) |
 | 3 | `or` |
 | 4 | `xor` |
 | 5 | `and` |
 | 6 | `==` `!=` |
-| 7 | `<` `<=` `>` `>=` |
-| 8 | `+` `-` |
-| 9 | `*` `/` `%` |
-| 10 | prefix `-` `+` `!` `&` |
-| 11 | postfix call `f(…)`, index `a[i]`, struct literal `T{…}`, field `.x`, dereference `^` |
+| 7 | `<` `<=` `>` `>=` (chainable in one direction: `a <= x < b`) |
+| 8 | `<<` `>>` |
+| 9 | `+` `-` |
+| 10 | `*` `/` `%` |
+| 11 | prefix `-` `+` `!` `&` |
+| 12 | postfix call `f(…)`, index `a[i]`, struct literal `T{…}`, field `.x`, dereference `^` |
 
 Binary operators group left to right, so `10 - 3 - 2` is `5`, and assignment groups right to
-left. `and` and `or` short-circuit, `xor` evaluates both operands, and comparisons bind tighter
-than all three, so `x != nil and x.count > 10` needs no parentheses
+left. `and`, `or`, and `xor` are logical on `bool` and bitwise on integers; only the logical
+`and` and `or` short-circuit, and `xor` and the bitwise operators evaluate both operands.
+Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no parentheses
 ([why](./syntax-fundamentals.md#logical-and-bitwise-operators)).
 
 ## Types
@@ -231,8 +236,8 @@ than all three, so `x != nil and x.count > 10` needs no parentheses
 * Every type has a zero value, and `let x: T` alone holds it. Dereferencing `nil` yields zero
   values and discards writes; it does not fault. A sum type's zero value is its first variant,
   so list a lone payloadless variant first.
-* Integer overflow, division by zero, and an out-of-range index stop the program with a
-  runtime error (exit status 101).
+* Integer overflow, division by zero, an out-of-range shift count, and an out-of-range index
+  stop the program with a runtime error (exit status 101).
 * A function body leaves with a value only through `return`. A block evaluates to its trailing
   expression, and ending it with `;` makes it unit. `main` is `func main()` or
   `func main(): i32`, whose result is the exit status.
@@ -240,15 +245,16 @@ than all three, so `x != nil and x.count > 10` needs no parentheses
 * A method name may not collide with a field name, functions are never overloaded, and a
   module's top-level names share one unordered namespace across its files.
 * `==` works on comparable types only: not function types, arrays, or types containing them.
+* A function literal or nested function captures the variables it names by reference: they
+  are shared with the enclosing body, not copied. Each execution of a binding, including
+  each pass's loop variable, is a fresh variable, so a closure made in a loop keeps its own.
 * Output goes through `std.io` (`print` and `println`, each taking a `string`).
 
 ## Not implemented yet
 
 These are designed or reserved but rejected today. Do not write them:
 
-* Bitwise `and`, `or`, `xor` on integers (the three are logical on `bool` today), shifts
-  `<<` and `>>`, chained comparison (`a <= x <= b`), and `%=`.
-* Function literals, closures, and nested functions.
+* Generic nested functions, and parameter types inferred for function literals.
 * Module-level variables, static arrays `T[N]`, and `extern func`.
 * Methods across sum-type variants, and a standard library function used as a value.
 * Named-field variant payloads, nested patterns inside variant payloads, or-patterns, guards.

@@ -10,6 +10,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use cooper_frontend::diag::Span;
 use cooper_frontend::{Diagnostic, Project, ProjectKind};
 use cooper_ir::ProgramError;
 use cooper_llvm::CodegenError;
@@ -38,10 +39,22 @@ impl fmt::Display for BuildError {
         match self {
             BuildError::Diagnostics(diags) => write!(f, "{} error(s) reported", diags.len()),
             BuildError::Library => write!(f, "a library has no `main` to build an executable from"),
-            BuildError::Lower(error) => write!(f, "lowering failed: {error:?}"),
+            BuildError::Lower(error) => write!(f, "{error}"),
             BuildError::Codegen(error) => write!(f, "{error}"),
             BuildError::Toolchain(message) => write!(f, "{message}"),
             BuildError::Io { path, source } => write!(f, "cannot write {}: {source}", path.display()),
+        }
+    }
+}
+
+impl BuildError {
+    /// The source file and span the error refers to, if it is a located error other
+    /// than diagnostics (which carry their own).
+    pub fn location(&self) -> Option<(&str, Span)> {
+        match self {
+            BuildError::Lower(error) => Some(error.location()),
+            BuildError::Codegen(error) => error.location(),
+            _ => None,
         }
     }
 }

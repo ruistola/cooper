@@ -11,7 +11,9 @@
 //! become allocations, barriers, and safepoints. This keeps the IR neutral about
 //! garbage collection, concurrency, and how a runtime is delivered.
 
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 
 mod decision;
 mod ir;
@@ -54,6 +56,31 @@ pub enum LowerError {
     Unsupported { span: Span, what: &'static str },
 }
 
+impl LowerError {
+    /// The source span the error refers to.
+    pub fn span(&self) -> Span {
+        match self {
+            LowerError::MissingType(span)
+            | LowerError::UnresolvedType(span)
+            | LowerError::MalformedLiteral(span)
+            | LowerError::Unsupported { span, .. } => *span,
+        }
+    }
+}
+
+impl fmt::Display for LowerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LowerError::MissingType(_) => write!(f, "internal error: expression has no type"),
+            LowerError::UnresolvedType(_) => write!(f, "internal error: type did not resolve"),
+            LowerError::MalformedLiteral(_) => write!(f, "internal error: literal did not decode"),
+            LowerError::Unsupported { what, .. } => write!(f, "{what} is not supported yet"),
+        }
+    }
+}
+
+impl std::error::Error for LowerError {}
+
 /// The type map keyed by span that the type checker hands off.
 pub type TypeTable = HashMap<Span, Type>;
 
@@ -73,6 +100,27 @@ pub enum ProgramError {
     Lower { file: String, error: LowerError },
     Mono(MonoError),
 }
+
+impl ProgramError {
+    /// The source file and span the error refers to.
+    pub fn location(&self) -> (&str, Span) {
+        match self {
+            ProgramError::Lower { file, error } => (file, error.span()),
+            ProgramError::Mono(error) => error.location(),
+        }
+    }
+}
+
+impl fmt::Display for ProgramError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProgramError::Lower { error, .. } => write!(f, "{error}"),
+            ProgramError::Mono(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for ProgramError {}
 
 /// Lower every file of a checked project and monomorphize the whole: the IR a
 /// backend consumes.
@@ -107,7 +155,7 @@ pub fn lower_module(
     for decl in decls {
         match &decl.kind {
             StmtKind::FuncDecl(func) => {
-                functions.push(lower_function(file, func, globals, checked)?);
+                functions.extend(lower_function(file, func, globals, checked)?);
             }
             StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } => {}
             StmtKind::VarDecl { .. } => {
@@ -127,13 +175,14 @@ pub fn lower_module(
     Ok(functions)
 }
 
-/// Lower a single type-checked function declaration.
+/// Lower a single type-checked function declaration, followed by every function
+/// literal and nested function lifted out of its body.
 fn lower_function(
     file: &str,
     func: &FuncDecl,
     globals: &Globals,
     checked: &Typed,
-) -> Result<Function, LowerError> {
+) -> Result<Vec<Function>, LowerError> {
     let mut type_params: HashSet<String> = func.type_params.iter().cloned().collect();
     if let Some(receiver) = &func.receiver {
         type_params.extend(receiver_pattern_params(&receiver.ty));
@@ -142,8 +191,16 @@ fn lower_function(
     let lower = Lower {
         types: &checked.types,
         refs: &checked.refs,
+        captures: &checked.captures,
         globals,
         type_params,
+        lifting: Some(Lifting {
+            file: file.to_string(),
+            parent: signature.item.clone(),
+            binders: signature.type_params.clone(),
+            next: Cell::new(0),
+            lifted: RefCell::new(Vec::new()),
+        }),
     };
     let receiver = func
         .receiver
@@ -156,17 +213,20 @@ fn lower_function(
         None => Type::Unit,
     };
     let body = lower.block(&func.body)?;
-    Ok(Function {
+    let mut functions = vec![Function {
         item: signature.item.clone(),
         file: file.to_string(),
         receiver,
+        env: None,
         type_params: signature.type_params.clone(),
         type_args: Vec::new(),
         params,
         return_type,
         body,
         span: func.span,
-    })
+    }];
+    functions.extend(lower.lifting.expect("set above").lifted.into_inner());
+    Ok(functions)
 }
 
 /// The resolved signature of a function or method declaration: a free function by
@@ -188,8 +248,10 @@ pub fn lower_expr(expr: &Expr, globals: &Globals, checked: &Typed) -> Result<IrE
     Lower {
         types: &checked.types,
         refs: &checked.refs,
+        captures: &checked.captures,
         globals,
         type_params: HashSet::new(),
+        lifting: None,
     }
     .expr(expr)
 }
@@ -200,8 +262,22 @@ pub fn lower_expr(expr: &Expr, globals: &Globals, checked: &Typed) -> Result<IrE
 struct Lower<'a> {
     types: &'a TypeTable,
     refs: &'a HashMap<Span, ItemRef>,
+    captures: &'a HashMap<Span, Vec<(String, Type)>>,
     globals: &'a Globals,
     type_params: HashSet<String>,
+    /// Where function literals are lifted to; absent when lowering a lone expression.
+    lifting: Option<Lifting>,
+}
+
+/// The function literals and nested functions lifted out of one top-level declaration.
+struct Lifting {
+    file: String,
+    parent: Callable,
+    /// The declaration's binders, which every lifted function inherits.
+    binders: Vec<String>,
+    /// The index the next lifted function takes.
+    next: Cell<u32>,
+    lifted: RefCell<Vec<Function>>,
 }
 
 impl Lower<'_> {
@@ -222,7 +298,106 @@ impl Lower<'_> {
     }
 
     fn block(&self, stmts: &[Stmt]) -> Result<Vec<IrStmt>, LowerError> {
-        stmts.iter().map(|s| self.stmt(s)).collect()
+        let mut out = Vec::with_capacity(stmts.len());
+        for stmt in stmts {
+            match &stmt.kind {
+                StmtKind::FuncDecl(func) => out.extend(self.nested_func(func)?),
+                _ => out.push(self.stmt(stmt)?),
+            }
+        }
+        Ok(out)
+    }
+
+    /// A nested function: its variable, bound first (to an unassigned function value)
+    /// so the closure stored into it can capture it and recurse.
+    fn nested_func(&self, func: &FuncDecl) -> Result<[IrStmt; 2], LowerError> {
+        let closure = self.closure(&func.params, &func.return_type, &func.body, func.span)?;
+        let ty = closure.ty.clone();
+        let var = |kind| IrExpr {
+            kind,
+            ty: ty.clone(),
+            span: func.span,
+        };
+        let assign = var(IrExprKind::Assign {
+            op: AssignOp::Assign,
+            target: Box::new(var(IrExprKind::Var(func.name.clone()))),
+            value: Box::new(closure),
+        });
+        Ok([
+            IrStmt {
+                kind: IrStmtKind::Var {
+                    name: func.name.clone(),
+                    ty: ty.clone(),
+                    init: None,
+                },
+                span: func.span,
+            },
+            IrStmt {
+                kind: IrStmtKind::Expr(assign),
+                span: func.span,
+            },
+        ])
+    }
+
+    /// Lift a function literal or nested function out as a function of its own,
+    /// returning the closure that creates its function value.
+    fn closure(
+        &self,
+        params: &[TypedIdent],
+        return_type: &Option<TypeExpr>,
+        body: &[Stmt],
+        span: Span,
+    ) -> Result<IrExpr, LowerError> {
+        let Some(lifting) = &self.lifting else {
+            return unsupported(span, "a function literal outside a function");
+        };
+        // Numbered before the body, so literals nested in it number after this one.
+        let index = lifting.next.get();
+        lifting.next.set(index + 1);
+        let item = Callable::Closure {
+            parent: Box::new(lifting.parent.clone()),
+            index,
+        };
+        let params: Vec<Param> = params.iter().map(|p| self.param(p)).collect::<Result<_, _>>()?;
+        let return_type = match return_type {
+            Some(ty) => self.resolve(ty)?,
+            None => Type::Unit,
+        };
+        let captured = self.captures.get(&span).ok_or(LowerError::MissingType(span))?;
+        let env = captured
+            .iter()
+            .map(|(name, ty)| Param {
+                name: name.clone(),
+                ty: ty.clone(),
+                span,
+            })
+            .collect();
+        let ty = Type::Func {
+            return_type: Box::new(return_type.clone()),
+            param_types: params.iter().map(|p| p.ty.clone()).collect(),
+        };
+        let body = self.block(body)?;
+        lifting.lifted.borrow_mut().push(Function {
+            item: item.clone(),
+            file: lifting.file.clone(),
+            receiver: None,
+            env: Some(env),
+            type_params: lifting.binders.clone(),
+            type_args: Vec::new(),
+            params,
+            return_type,
+            body,
+            span,
+        });
+        Ok(IrExpr {
+            kind: IrExprKind::Closure {
+                item,
+                type_args: lifting.binders.iter().map(|b| Type::TypeParam(b.clone())).collect(),
+                captures: captured.iter().map(|(name, _)| name.clone()).collect(),
+            },
+            ty,
+            span,
+        })
     }
 
     fn stmt(&self, stmt: &Stmt) -> Result<IrStmt, LowerError> {
@@ -346,7 +521,7 @@ impl Lower<'_> {
                     }
                 }
             },
-            StmtKind::FuncDecl(_) => return unsupported_stmt(stmt.span, "nested function"),
+            StmtKind::FuncDecl(func) => IrStmtKind::Block(self.nested_func(func)?.into()),
             StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } => {
                 return unsupported_stmt(stmt.span, "local type declaration");
             }
@@ -358,8 +533,14 @@ impl Lower<'_> {
     }
 
     fn expr(&self, expr: &Expr) -> Result<IrExpr, LowerError> {
-        if let ExprKind::Group(inner) = &expr.kind {
-            return self.expr(inner);
+        match &expr.kind {
+            ExprKind::Group(inner) => return self.expr(inner),
+            ExprKind::Func {
+                params,
+                return_type,
+                body,
+            } => return self.closure(params, return_type, body, expr.span),
+            _ => {}
         }
         let ty = self
             .types
@@ -434,6 +615,10 @@ impl Lower<'_> {
                 lhs: Box::new(self.expr(lhs)?),
                 rhs: Box::new(self.expr(rhs)?),
             },
+            ExprKind::Chain { operands, ops } => {
+                let operands = self.each(operands)?;
+                return Ok(chain(operands, ops, &ty, expr.span));
+            }
             ExprKind::Call { callee, args } => self.lower_call(callee, args, &ty)?,
             ExprKind::Field { target, name } => match self.types.get(&target.span) {
                 // `Oneof.Variant` reads as a payload-free variant value, not a
@@ -504,7 +689,7 @@ impl Lower<'_> {
                         .collect::<Result<Vec<_>, LowerError>>()?,
                 }
             }
-            ExprKind::Group(_) => unreachable!("grouping collapsed above"),
+            ExprKind::Group(_) | ExprKind::Func { .. } => unreachable!("lowered above"),
             ExprKind::Range { .. } => return unsupported(expr.span, "range"),
             ExprKind::Match { scrutinee, arms } => {
                 let scrutinee = self.expr(scrutinee)?;
@@ -652,9 +837,9 @@ impl Lower<'_> {
             Type::Array(elem) => (**elem).clone(),
             _ => unreachable!("a checked indexed assignment targets an array"),
         };
-        let stored = match op {
-            AssignOp::Assign => value,
-            _ => {
+        let stored = match op.binary() {
+            None => value,
+            Some(binary) => {
                 let value_span = value.span;
                 let current = IrExpr {
                     kind: IrExprKind::Intrinsic {
@@ -666,7 +851,7 @@ impl Lower<'_> {
                 };
                 IrExpr {
                     kind: IrExprKind::Binary {
-                        op: compound_binop(op),
+                        op: binary,
                         lhs: Box::new(current),
                         rhs: Box::new(value),
                     },
@@ -824,16 +1009,54 @@ fn strip_group(expr: &Expr) -> &Expr {
     current
 }
 
-/// The binary operator a compound assignment applies. `Assign` has no operator and
-/// is handled before this is reached.
-fn compound_binop(op: AssignOp) -> BinaryOp {
-    match op {
-        AssignOp::Add => BinaryOp::Add,
-        AssignOp::Sub => BinaryOp::Sub,
-        AssignOp::Mul => BinaryOp::Mul,
-        AssignOp::Div => BinaryOp::Div,
-        AssignOp::Assign => unreachable!("plain assignment has no binary operator"),
+/// Desugar a comparison chain into nested value blocks,
+/// `{ t0 := a; { t1 := b; t0 < t1 and t1 < c } }`: each operand but the last is bound
+/// to a temporary just before the pair that first reads it, so every operand is
+/// evaluated at most once and in order, and `and` stops at the first false pair.
+/// Temporaries are named with a `.`, which no source identifier contains.
+fn chain(mut operands: Vec<IrExpr>, ops: &[BinaryOp], boolean: &Type, span: Span) -> IrExpr {
+    // The checker unified every operand to one type.
+    let operand_ty = operands[0].ty.clone();
+    let name = |i: usize| format!("chain.{}.{i}", span.start);
+    let temp = |i: usize| IrExpr {
+        kind: IrExprKind::Var(name(i)),
+        ty: operand_ty.clone(),
+        span,
+    };
+    let block = |i: usize, operand: IrExpr, result: IrExpr| IrExpr {
+        kind: IrExprKind::Block {
+            stmts: vec![IrStmt {
+                span: operand.span,
+                kind: IrStmtKind::Var {
+                    name: name(i),
+                    ty: operand_ty.clone(),
+                    init: Some(operand),
+                },
+            }],
+            result: Box::new(result),
+        },
+        ty: boolean.clone(),
+        span,
+    };
+    let binary = |op: BinaryOp, lhs: IrExpr, rhs: IrExpr| IrExpr {
+        kind: IrExprKind::Binary {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        },
+        ty: boolean.clone(),
+        span,
+    };
+    let last = operands.pop().expect("a chain has operands");
+    let n = ops.len();
+    let mut rest = binary(ops[n - 1], temp(n - 1), last);
+    for i in (0..n - 1).rev() {
+        let operand = operands.pop().expect("one operand per operator");
+        let pair = binary(ops[i], temp(i), temp(i + 1));
+        rest = block(i + 1, operand, binary(BinaryOp::And, pair, rest));
     }
+    let first = operands.pop().expect("one operand per operator");
+    block(0, first, rest)
 }
 
 fn unsupported(span: Span, what: &'static str) -> Result<IrExpr, LowerError> {

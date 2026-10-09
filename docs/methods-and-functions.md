@@ -16,6 +16,57 @@ Parameters are `name: Type`, and the return type follows the parameter list as `
 omitted return type means unit. A function body leaves with a value only through `return`,
 even though other blocks evaluate to their trailing expression.
 
+## Function literals and nested functions
+
+A function literal is an expression whose value is a function. Its parameter types are
+annotated, and its return type follows the parameter list as in a declaration:
+
+```
+double := func(x: i32): i32 { return x * 2 }
+process(func(b: u8[]): (i32, Error) { … })
+```
+
+A function declared inside a body is a nested function: a variable holding a function
+value, in scope from its declaration on and within its own body, so it may call itself.
+Two nested functions cannot call each other, and a nested function cannot be generic yet.
+
+```
+func fib(n: i32): i32 {
+  if n < 2 then return n
+  return fib(n - 1) + fib(n - 2)
+}
+```
+
+`return` leaves the innermost function, literal or not. `break` and `continue` leave the
+innermost loop within the same function, so a literal's body cannot leave a loop around the
+literal.
+
+### Captures
+
+A literal or nested function may name the variables of the bodies enclosing it. It
+captures each by reference: the variable is shared, not copied, so a change made on either
+side is visible on the other, and the variable lives as long as any closure capturing it.
+
+```
+count := 0
+inc := func() { count += 1 }
+inc()
+inc()                        # count is 2
+```
+
+Every execution of a binding creates a new variable, and a `for` loop binds its variable
+afresh on each pass, so closures made in a loop each keep their own:
+
+```
+for i in 0..3 do fs = fs.push(func(): i32 { return i })   # fs[k]() is k
+```
+
+A variable declared outside the loop is one variable, shared by every closure capturing it.
+
+A literal's body is checked as part of the enclosing body's inference, so a captured
+variable's type may be fixed by a use before or after the literal (see
+[Type System](./type-system.md#inference)).
+
 ## Methods
 
 A method is a function with a distinguished first argument, the receiver, declared outside

@@ -42,6 +42,14 @@ unconstrained literal, they default together.
 Integer arithmetic is checked: an overflowing result, division or remainder by zero, and
 the signed `MIN / -1` stop the program with a runtime error. Float arithmetic follows IEEE.
 
+The bitwise `and`, `or`, and `xor` take two operands of one integer type, like arithmetic,
+and evaluate both. A shift `x << n` or `x >> n` has the type of `x`; the count `n` is not
+combined with `x` arithmetically and may be of any integer type, so `x << n` needs no
+conversion when `n` is an `i32` and `x` a `u64`. A count at least the width of `x`'s type,
+or negative, stops the program; bits a left shift moves out are discarded rather than
+reported as overflow. `>>` is arithmetic on signed integers (it copies the sign bit) and
+logical on unsigned ones.
+
 ## Conversions are explicit and constructor-style
 
 A numeric conversion is spelled as a **constructor-style call on the target

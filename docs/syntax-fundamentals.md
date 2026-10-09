@@ -154,9 +154,13 @@ let (a, b): (i32, string) = row
 
 A symbol is a unary prefix and a keyword is a binary infix: negation is `!`, and the binary
 connectives are `and`, `or`, and `xor`. Each is logical on `bool` operands and bitwise on
-integer operands. Mixed operands are a type error. On `bool`, `and` and `or` short-circuit,
-while `xor` evaluates both operands, since its result depends on both. Shifts are `<<` and
-`>>`.
+integer operands. Mixed operands are a type error. Which of the two applies is a predicate
+on the operands' type, decided once inference has solved the body, so a later use may
+fix it. On `bool`, `and` and `or` short-circuit, while `xor` evaluates both operands, since
+its result depends on both. On integers, all three evaluate both operands, like arithmetic.
+Shifts are `<<` and `>>`, binding tighter
+than comparison and looser than `+` and `-` as in C, so `1 << n - 1` is `1 << (n - 1)`
+(see [Numeric Types](./numeric-types.md) for their semantics).
 
 `and` binds tighter than `xor`, which binds tighter than `or`, and all three bind looser than
 comparison. Every binary operator groups left to right. `and` over `or` is the order boolean
@@ -176,4 +180,6 @@ if !ready and pending or !blocked then start()   # (!ready and pending) or !bloc
 
 A comparison chain running in one direction desugars to the conjunction of its adjacent
 pairs, evaluating each middle operand once. `min <= x <= max` means `min <= x and x <= max`.
-Chains must be all `<`/`<=` or all `>`/`>=`.
+Like `and`, a chain stops at its first false pair, leaving later operands unevaluated.
+Chains must be all `<`/`<=` or all `>`/`>=`; mixing directions is a syntax error. A
+parenthesized comparison is an ordinary `bool` operand, so `(a < b) < c` is not a chain.

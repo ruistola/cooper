@@ -144,6 +144,21 @@ impl Parser {
         while self.peek().kind == Identifier {
             type_params.push(self.expect(Identifier)?.text);
         }
+        let (params, return_type, body) = self.parse_func_rest()?;
+        Ok(FuncDecl {
+            receiver,
+            name,
+            type_params,
+            params,
+            return_type,
+            body,
+            span: start.to(self.prev_token().span),
+        })
+    }
+
+    /// The part of a function declaration or literal after its name and binders:
+    /// `(params) (: type)? { body }`.
+    pub(super) fn parse_func_rest(&mut self) -> PResult<(Vec<TypedIdent>, Option<TypeExpr>, Vec<Stmt>)> {
         self.expect(OpenParen)?;
         let mut params = Vec::new();
         while self.peek().kind != CloseParen {
@@ -172,15 +187,7 @@ impl Parser {
         self.expect(OpenCurly)?;
         let body = self.parse_block_stmt();
         self.expect(CloseCurly)?;
-        Ok(FuncDecl {
-            receiver,
-            name,
-            type_params,
-            params,
-            return_type,
-            body,
-            span: start.to(self.prev_token().span),
-        })
+        Ok((params, return_type, body))
     }
 
     pub(super) fn parse_struct_decl_stmt(&mut self) -> PResult<Stmt> {

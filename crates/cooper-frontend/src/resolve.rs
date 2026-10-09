@@ -30,6 +30,10 @@ use crate::types::{is_primitive_name, OneofDef, StructDef, Type, TypeDefs, TypeI
 pub enum Callable {
     Func { module: String, name: String },
     Method { receiver: TypeId, name: String },
+    /// A function literal or nested function, which lowering lifts out of the
+    /// top-level declaration `parent`: the `index`th in its body, in source order.
+    /// No name resolves to one.
+    Closure { parent: Box<Callable>, index: u32 },
 }
 
 /// A resolved function or method signature. `type_params` lists every binder in

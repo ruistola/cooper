@@ -118,9 +118,12 @@ impl Emitter<'_, '_> {
         Ok(())
     }
 
-    /// `for var in start..end` (or `..=`). Both bounds are evaluated once. An exclusive
-    /// range tests before each pass; an inclusive one tests for the last value before
-    /// stepping, so a range ending at the type's maximum never overflows its counter.
+    /// `for var in start..end` (or `..=`). Both bounds are evaluated once. A hidden
+    /// counter drives the loop, and each pass binds `var` afresh to its value, so an
+    /// assignment to `var` lasts only for that pass and a closure created in it keeps
+    /// its own variable. An exclusive range tests before each pass; an inclusive one
+    /// tests for the last value before stepping, so a range ending at the type's
+    /// maximum never overflows its counter.
     #[allow(clippy::too_many_arguments)]
     fn for_range(
         &mut self,
@@ -144,7 +147,7 @@ impl Emitter<'_, '_> {
         let step = self.fresh("step");
         let exit = self.fresh("exit");
         self.scoped(|e| -> Result<(), CodegenError> {
-            let counter = e.bind(var, ty, span)?;
+            let counter = e.slot(None, ty, span)?;
             e.store(&counter, Some(&first));
             if inclusive {
                 let enter = e.assign(&format!("icmp {less_eq} {int} {}, {}", first.operand, last.operand));
@@ -160,7 +163,12 @@ impl Emitter<'_, '_> {
                 continue_to: step.clone(),
                 break_to: exit.clone(),
             });
-            let result = e.scoped(|e| e.stmts(body));
+            let result = e.scoped(|e| {
+                let i = e.load(&counter).expect("a counter has a value");
+                let bound = e.bind(var, ty, span)?;
+                e.store(&bound, Some(&i));
+                e.stmts(body)
+            });
             e.loops.pop();
             result?;
             e.start_block(&step);

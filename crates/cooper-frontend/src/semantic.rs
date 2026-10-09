@@ -5,7 +5,7 @@
 //! unreachable by a preceding return. It relies on the type checker having already
 //! rejected non-exhaustive matches, so a match returns exactly when all its arms do.
 
-use crate::ast::{Expr, ExprKind, FuncDecl, Stmt, StmtKind};
+use crate::ast::{Expr, ExprKind, FuncDecl, Stmt, StmtKind, TypeExpr, TypeExprKind};
 use crate::diag::{Diagnostic, Span};
 use crate::resolve::{self, Globals};
 use crate::types::{is_unit, Type};
@@ -15,6 +15,7 @@ pub fn analyze(module: &[Stmt], globals: &Globals) -> Vec<Diagnostic> {
     let mut analyzer = SemanticAnalyzer {
         globals,
         diags: Vec::new(),
+        depth: 0,
     };
     analyzer.analyze_block(module);
     analyzer.diags
@@ -23,6 +24,9 @@ pub fn analyze(module: &[Stmt], globals: &Globals) -> Vec<Diagnostic> {
 struct SemanticAnalyzer<'g> {
     globals: &'g Globals,
     diags: Vec<Diagnostic>,
+    /// How many function bodies enclose the statement being analyzed: a function
+    /// declared inside one is nested, with no entry in the globals.
+    depth: u32,
 }
 
 impl SemanticAnalyzer<'_> {
@@ -42,6 +46,9 @@ impl SemanticAnalyzer<'_> {
                 }
             }
             StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } => {}
+            StmtKind::FuncDecl(func) if self.depth > 0 => {
+                self.analyze_literal(&func.return_type, &func.body, func.span, &format!("function '{}'", func.name))
+            }
             StmtKind::FuncDecl(func) => self.analyze_func_decl(func),
             StmtKind::If { cond, then, els } => {
                 self.analyze_expr(cond);
@@ -74,8 +81,22 @@ impl SemanticAnalyzer<'_> {
         }
     }
 
+    /// A function literal or nested function: its body must return on every path
+    /// unless its declared return type is absent or unit.
+    fn analyze_literal(&mut self, return_type: &Option<TypeExpr>, body: &[Stmt], span: Span, label: &str) {
+        self.depth += 1;
+        self.analyze_block(body);
+        self.depth -= 1;
+        let returns_value = return_type.as_ref().is_some_and(|ty| !matches!(ty.kind, TypeExprKind::Unit));
+        if returns_value && !block_returns(body) {
+            self.err(span, format!("{label} does not return a value in all code paths"));
+        }
+    }
+
     fn analyze_func_decl(&mut self, func: &FuncDecl) {
+        self.depth += 1;
         self.analyze_block(&func.body);
+        self.depth -= 1;
 
         // Look up the declared return type: methods are keyed by receiver struct.
         let return_type = match &func.receiver {
@@ -152,6 +173,10 @@ impl SemanticAnalyzer<'_> {
                 self.analyze_expr(then);
                 self.analyze_expr(els);
             }
+            ExprKind::Func {
+                return_type, body, ..
+            } => self.analyze_literal(return_type, body, expr.span, "function literal"),
+            ExprKind::Chain { operands, .. } => operands.iter().for_each(|e| self.analyze_expr(e)),
             ExprKind::Block(block) => {
                 for stmt in &block.statements {
                     self.analyze_stmt(stmt);

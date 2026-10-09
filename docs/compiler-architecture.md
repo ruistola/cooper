@@ -72,7 +72,13 @@ The compiler is a Rust Cargo workspace.
 defining module and name) and type arguments. Members and variants live once in `TypeDefs`
 and are read substituted by those arguments. This allows self-reference through pointers,
 keeps same-named types from different modules distinct, and makes equality cheap. Callables
-have identities too (`Callable`: module and name, or receiver type and name).
+have identities too (`Callable`: module and name, receiver type and name, or a function
+literal's index within the declaration it is lifted from).
+
+**Closures.** The checker checks a function literal's body (and a nested function's) inline,
+sharing the enclosing body's constraints, and records each literal's *captures*: the
+variables of enclosing bodies it names, found below the literal's own scopes. `Typed` hands
+them to lowering keyed by the literal's span.
 
 ## Lowering IR
 
@@ -81,6 +87,12 @@ re-inferred. Every node carries its resolved type, and every callee names its de
 Lowering also desugars: `if` to `match`, `match` to a decision tree, and index syntax and array
 methods to intrinsics. The IR types live in `ir.rs`, the lowering in `lib.rs`, and the
 compilation of patterns to decision trees in `decision.rs`.
+
+Lowering lifts every function literal and nested function out as a `Function` of its own,
+numbered in source order within its top-level declaration, inheriting that declaration's
+binders and listing its captures as an `env`. In its place stays a `Closure` node naming the
+lifted function and the captured variables. A nested function lowers to its variable, then
+an assignment of its closure, so the closure can capture the variable and recurse.
 
 **Monomorphization** (`mono.rs`) is an IR-to-IR pass. Lowering keeps a generic function as a
 template. Starting from the non-generic functions, the pass instantiates each referenced
@@ -116,7 +128,12 @@ A function value is a `{ code, env }` pointer pair, and a call through one passe
 hidden first argument. A function used as a value gets a private thunk with that convention
 and a null `env`; a bound method's `env` is its receiver pointer, or a heap copy of a value
 receiver taken when it is bound. Calling a function value that was never assigned is a
-runtime error.
+runtime error. A closure's `code` is the lifted function itself, defined `private`, and its
+`env` an array of pointers to the captured variables' storage, which the lifted function
+uses as those variables' places. Captured locals are heap-allocated like address-taken
+ones, and every binding is allocated where it executes, so a closure created in a loop
+pass captures that pass's variables. A range loop drives a hidden counter and binds its
+variable afresh on each pass.
 
 A string is a `{ data, length }` pair of immutable bytes, and an array a `{ data, length,
 capacity }` triple whose copies share elements. Concatenation, string equality, and array

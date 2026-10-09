@@ -9,6 +9,7 @@
 //! result holds no type parameter anywhere, and no template that nothing reaches.
 
 use std::collections::{HashMap, VecDeque};
+use std::fmt;
 
 use cooper_frontend::diag::Span;
 use cooper_frontend::resolve::Callable;
@@ -22,10 +23,44 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonoError {
     /// A reference names a function or method absent from the program's functions.
-    UnknownFunction { item: Callable, span: Span },
+    UnknownFunction { item: Callable, file: String, span: Span },
     /// Instantiating `item` keeps demanding ever more deeply nested type arguments —
     /// polymorphic recursion such as `f T` calling `f (T, T)` — so it would never end.
-    UnboundedInstantiation { item: Callable, span: Span },
+    UnboundedInstantiation { item: Callable, file: String, span: Span },
+}
+
+impl MonoError {
+    /// The source file and span of the reference that failed.
+    pub fn location(&self) -> (&str, Span) {
+        match self {
+            MonoError::UnknownFunction { file, span, .. }
+            | MonoError::UnboundedInstantiation { file, span, .. } => (file, *span),
+        }
+    }
+}
+
+impl fmt::Display for MonoError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MonoError::UnknownFunction { item, .. } => {
+                write!(f, "internal error: `{}` is not among the program's functions", item_name(item))
+            }
+            MonoError::UnboundedInstantiation { item, .. } => write!(
+                f,
+                "instantiating `{}` never ends: each instance calls it with larger type arguments",
+                item_name(item)
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MonoError {}
+
+fn item_name(item: &Callable) -> String {
+    match item {
+        Callable::Func { name, .. } | Callable::Method { name, .. } => name.clone(),
+        Callable::Closure { parent, index } => format!("{}.{index}", item_name(parent)),
+    }
 }
 
 /// How many type nodes a type argument may hold before instantiation is deemed
@@ -41,27 +76,32 @@ const MAX_TYPE_SIZE: usize = 256;
 pub fn monomorphize(functions: &[Function]) -> Result<Vec<Function>, MonoError> {
     let templates: HashMap<&Callable, &Function> =
         functions.iter().map(|f| (&f.item, f)).collect();
-    let mut queue: VecDeque<(Callable, Vec<Type>, Span)> = functions
+    // Each queued reference carries the file and span of the site that made it.
+    let mut queue: VecDeque<(Callable, Vec<Type>, String, Span)> = functions
         .iter()
         .filter(|f| f.type_params.is_empty())
-        .map(|f| (f.item.clone(), Vec::new(), f.span))
+        .map(|f| (f.item.clone(), Vec::new(), f.file.clone(), f.span))
         .collect();
     let mut instantiated: HashMap<Callable, Vec<Vec<Type>>> = HashMap::new();
     let mut instances = Vec::new();
-    while let Some((item, type_args, span)) = queue.pop_front() {
+    while let Some((item, type_args, file, span)) = queue.pop_front() {
         let seen = instantiated.entry(item.clone()).or_default();
         if seen.iter().any(|args| same_types(args, &type_args)) {
             continue;
         }
         if type_args.iter().any(|t| size(t) > MAX_TYPE_SIZE) {
-            return Err(MonoError::UnboundedInstantiation { item, span });
+            return Err(MonoError::UnboundedInstantiation { item, file, span });
         }
         let Some(template) = templates.get(&item) else {
-            return Err(MonoError::UnknownFunction { item, span });
+            return Err(MonoError::UnknownFunction { item, file, span });
         };
         seen.push(type_args.clone());
         let (instance, references) = instantiate(template, type_args);
-        queue.extend(references);
+        queue.extend(
+            references
+                .into_iter()
+                .map(|(item, args, span)| (item, args, instance.file.clone(), span)),
+        );
         instances.push(instance);
     }
     Ok(instances)
@@ -115,6 +155,7 @@ fn instantiate(
     if let Some(receiver) = &mut instance.receiver {
         pass.param(receiver);
     }
+    instance.env.iter_mut().flatten().for_each(|p| pass.param(p));
     instance.params.iter_mut().for_each(|p| pass.param(p));
     pass.ty(&mut instance.return_type);
     pass.stmts(&mut instance.body);
@@ -216,7 +257,7 @@ impl Substitute<'_> {
             | IrExprKind::Nil
             | IrExprKind::Unit
             | IrExprKind::Var(_) => {}
-            IrExprKind::FuncRef { item, type_args } => {
+            IrExprKind::FuncRef { item, type_args } | IrExprKind::Closure { item, type_args, .. } => {
                 type_args.iter_mut().for_each(|t| self.ty(t));
                 self.references
                     .push((item.clone(), type_args.clone(), expr.span));

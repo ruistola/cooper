@@ -54,10 +54,11 @@ impl Emitter<'_, '_> {
         rhs: &IrExpr,
         span: Span,
     ) -> Result<Option<Value>, CodegenError> {
-        if matches!(op, BinaryOp::And | BinaryOp::Or) {
+        let logical = matches!(Scalar::of(&lhs.ty), Some(Scalar::Bool));
+        if logical && matches!(op, BinaryOp::And | BinaryOp::Or) {
             return self.short_circuit(op, lhs, rhs).map(Some);
         }
-        if op == BinaryOp::Xor {
+        if logical && op == BinaryOp::Xor {
             // Exclusive-or depends on both operands, so neither is skipped.
             let left = self.expr(lhs)?.expect("a logical operand is a bool");
             let right = self.expr(rhs)?.expect("a logical operand is a bool");
@@ -89,6 +90,11 @@ impl Emitter<'_, '_> {
         };
         let left = self.expr(lhs)?.expect("a scalar operand has a value");
         let right = self.expr(rhs)?.expect("a scalar operand has a value");
+        if matches!(op, BinaryOp::Shl | BinaryOp::Shr) {
+            let count = Scalar::of(&rhs.ty).expect("a shift count is an integer");
+            let operand = self.shift(op, scalar, &left, count, &right, span);
+            return Ok(Some(Value { ty: left.ty, operand }));
+        }
         let comparison = match op {
             BinaryOp::Eq => Some(("eq", "eq", "oeq")),
             BinaryOp::Ne => Some(("ne", "ne", "une")),
@@ -243,8 +249,35 @@ impl Emitter<'_, '_> {
         ))
     }
 
-    /// Arithmetic `op` on two values of one scalar type. Integer overflow, division by
-    /// zero, and the overflowing signed division `MIN / -1` stop the program.
+    /// `value << count` or `value >> count`, where `count` is any integer type. A count
+    /// at least the value's width, or negative, stops the program. Bits a left shift
+    /// moves out are discarded, and `>>` is arithmetic on signed integers.
+    fn shift(&mut self, op: BinaryOp, scalar: Scalar, value: &Value, count_scalar: Scalar, count: &Value, span: Span) -> String {
+        let (Scalar::Int { bits, signed }, Scalar::Int { bits: count_bits, .. }) = (scalar, count_scalar) else {
+            unreachable!("the checker allows shifts on integers only");
+        };
+        // An unsigned comparison also catches a negative signed count; every integer
+        // type holds the largest width, 64.
+        let (cty, c) = (&count.ty, &count.operand);
+        let wide = self.assign(&format!("icmp uge {cty} {c}, {bits}"));
+        self.panic_if(&wide, "shift count out of range", span);
+        let ty = &value.ty;
+        let count = match count_bits.cmp(&bits) {
+            std::cmp::Ordering::Equal => c.clone(),
+            std::cmp::Ordering::Greater => self.assign(&format!("trunc {cty} {c} to {ty}")),
+            std::cmp::Ordering::Less => self.assign(&format!("zext {cty} {c} to {ty}")),
+        };
+        let instruction = match (op, signed) {
+            (BinaryOp::Shl, _) => "shl",
+            (_, true) => "ashr",
+            (_, false) => "lshr",
+        };
+        self.assign(&format!("{instruction} {ty} {}, {count}", value.operand))
+    }
+
+    /// Arithmetic `op` on two values of one scalar type, including the bitwise `and`,
+    /// `or`, and `xor` on integers. Integer overflow, division by zero, and the
+    /// overflowing signed division `MIN / -1` stop the program.
     pub(super) fn arithmetic(&mut self, op: BinaryOp, scalar: Scalar, left: &Value, right: &Value, span: Span) -> String {
         let (l, r, ty) = (&left.operand, &right.operand, &left.ty);
         match scalar {
@@ -293,6 +326,14 @@ impl Emitter<'_, '_> {
                         (BinaryOp::Div, false) => "udiv",
                         (_, true) => "srem",
                         (_, false) => "urem",
+                    };
+                    self.assign(&format!("{instruction} {ty} {l}, {r}"))
+                }
+                BinaryOp::And | BinaryOp::Or | BinaryOp::Xor => {
+                    let instruction = match op {
+                        BinaryOp::And => "and",
+                        BinaryOp::Or => "or",
+                        _ => "xor",
                     };
                     self.assign(&format!("{instruction} {ty} {l}, {r}"))
                 }

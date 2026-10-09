@@ -56,6 +56,29 @@ impl Emitter<'_, '_> {
         })
     }
 
+    /// A closure of the lifted literal `symbol`: its code, with an environment of
+    /// pointers to the storage of each captured variable (heap storage, since the
+    /// closure may outlive the frame). A literal capturing nothing has no environment.
+    pub(super) fn closure(&mut self, symbol: &str, captures: &[String]) -> Result<Value, CodegenError> {
+        let env = if captures.is_empty() {
+            "null".to_string()
+        } else {
+            let env = self.heap_alloc(&format!("[{} x ptr]", captures.len()));
+            for (index, name) in captures.iter().enumerate() {
+                let place = self.lookup(name);
+                let ptr = if place.llvm.is_some() { place.ptr } else { "null".to_string() };
+                let slot = self.assign(&format!("getelementptr ptr, ptr {env}, i64 {index}"));
+                self.inst(&format!("store ptr {ptr}, ptr {slot}"));
+            }
+            env
+        };
+        let pointer = |operand: String| Some(Value {
+            ty: "ptr".to_string(),
+            operand,
+        });
+        Ok(self.aggregate(FUNC_VALUE, vec![pointer(format!("@{symbol}")), pointer(env)]))
+    }
+
     /// A method bound to `receiver`: the method's thunk, with the receiver as its
     /// environment. A pointer receiver is the environment itself; a value receiver is
     /// copied to the heap when bound, so later changes to the original do not reach it.

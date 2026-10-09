@@ -10,12 +10,17 @@ use super::*;
 /// template whose types name those binders; [`monomorphize`] stamps out instances,
 /// each with `type_args` holding one concrete argument per binder (empty for a
 /// non-generic function, and for a template).
+///
+/// A lifted function literal or nested function has an `env`: the captured variables
+/// its environment points to, in order. It inherits every binder of the declaration
+/// it is lifted from.
 #[derive(Debug, Clone)]
 pub struct Function {
     pub item: Callable,
     /// The source file the declaration is in, which its spans index into.
     pub file: String,
     pub receiver: Option<Param>,
+    pub env: Option<Vec<Param>>,
     pub type_params: Vec<String>,
     pub type_args: Vec<Type>,
     pub params: Vec<Param>,
@@ -230,6 +235,14 @@ pub enum IrExprKind {
     Unit,
     /// A reference to a bound variable or parameter.
     Var(String),
+    /// A function value for the lifted function literal `item`, instantiated at
+    /// `type_args` (the enclosing declaration's binders), whose environment refers to
+    /// the variables named by `captures` — the same variables, not copies.
+    Closure {
+        item: Callable,
+        type_args: Vec<Type>,
+        captures: Vec<String>,
+    },
     /// A reference to a free function, instantiated at `type_args` (one per binder of
     /// its signature; none when it is not generic).
     FuncRef { item: Callable, type_args: Vec<Type> },

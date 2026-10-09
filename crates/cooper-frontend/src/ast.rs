@@ -24,6 +24,8 @@ pub enum BinaryOp {
     And,
     Or,
     Xor,
+    Shl,
+    Shr,
 }
 
 impl BinaryOp {
@@ -43,6 +45,8 @@ impl BinaryOp {
             BinaryOp::And => "and",
             BinaryOp::Or => "or",
             BinaryOp::Xor => "xor",
+            BinaryOp::Shl => "<<",
+            BinaryOp::Shr => ">>",
         }
     }
 }
@@ -73,6 +77,7 @@ pub enum AssignOp {
     Sub,
     Mul,
     Div,
+    Rem,
 }
 
 impl AssignOp {
@@ -83,6 +88,19 @@ impl AssignOp {
             AssignOp::Sub => "-=",
             AssignOp::Mul => "*=",
             AssignOp::Div => "/=",
+            AssignOp::Rem => "%=",
+        }
+    }
+
+    /// The binary operator a compound assignment applies; `None` for plain `=`.
+    pub fn binary(self) -> Option<BinaryOp> {
+        match self {
+            AssignOp::Assign => None,
+            AssignOp::Add => Some(BinaryOp::Add),
+            AssignOp::Sub => Some(BinaryOp::Sub),
+            AssignOp::Mul => Some(BinaryOp::Mul),
+            AssignOp::Div => Some(BinaryOp::Div),
+            AssignOp::Rem => Some(BinaryOp::Rem),
         }
     }
 }
@@ -241,6 +259,14 @@ pub enum ExprKind {
         lhs: Box<Expr>,
         rhs: Box<Expr>,
     },
+    /// A comparison chain `a < b <= c` of at least three operands, all `<`/`<=` or all
+    /// `>`/`>=`: the conjunction of its adjacent pairs, each operand evaluated at most
+    /// once and the chain stopping at the first false pair. `ops[i]` relates
+    /// `operands[i]` and `operands[i + 1]`.
+    Chain {
+        operands: Vec<Expr>,
+        ops: Vec<BinaryOp>,
+    },
     /// Range `start..end` (exclusive) or `start..=end` (inclusive of `end`). Valid
     /// only as a `for` iterable.
     Range {
@@ -257,6 +283,13 @@ pub enum ExprKind {
         inclusive: bool,
     },
     Block(Block),
+    /// A function literal `func(x: i32): i32 { … }`, capturing by reference the
+    /// variables of enclosing function bodies it names.
+    Func {
+        params: Vec<TypedIdent>,
+        return_type: Option<TypeExpr>,
+        body: Vec<Stmt>,
+    },
     Group(Box<Expr>),
     Call {
         callee: Box<Expr>,

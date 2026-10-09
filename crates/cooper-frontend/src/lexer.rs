@@ -48,6 +48,10 @@ pub enum TokenKind {
     SlashEquals,
     #[token("%=")]
     PercentEquals,
+    #[token("<<")]
+    ShiftLeft,
+    #[token(">>")]
+    ShiftRight,
 
     // Single-character tokens
     #[token("=")]
@@ -174,6 +178,8 @@ impl std::fmt::Display for TokenKind {
             StarEquals => "'*='",
             SlashEquals => "'/='",
             PercentEquals => "'%='",
+            ShiftLeft => "'<<'",
+            ShiftRight => "'>>'",
             Equals => "'='",
             Not => "'!'",
             Pipe => "'|'",

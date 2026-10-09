@@ -44,6 +44,14 @@ impl Parser {
             OpenBracket => self.parse_array_literal()?,
             If => self.parse_if_expr()?,
             Match => self.parse_match_expr()?,
+            Func => {
+                let (params, return_type, body) = self.parse_func_rest()?;
+                ExprKind::Func {
+                    params,
+                    return_type,
+                    body,
+                }
+            }
             OpenCurly => {
                 let block = self.parse_block_expr();
                 self.expect(CloseCurly)?;
@@ -112,8 +120,12 @@ impl Parser {
                 }
             }
             k if binary_op(k).is_some() => {
-                let op = binary_op(self.advance().kind).unwrap();
+                let op_token = self.advance();
+                let op = binary_op(op_token.kind).unwrap();
                 let rhs = self.parse_expr(rbp)?;
+                if let Some(ascending) = ordering(op) {
+                    return self.extend_chain(head, op, op_token.span, ascending, rhs);
+                }
                 ExprKind::Binary {
                     op,
                     lhs: Box::new(head),
@@ -145,6 +157,49 @@ impl Parser {
         Ok(Expr {
             kind,
             span: start.to(self.prev_token().span),
+        })
+    }
+
+    /// Continue a comparison `head op rhs`: when `head` is itself an unparenthesized
+    /// ordering comparison, the two join into a [`ExprKind::Chain`], whose operators
+    /// must all run in one direction.
+    fn extend_chain(
+        &mut self,
+        head: Expr,
+        op: BinaryOp,
+        op_span: Span,
+        ascending: bool,
+        rhs: Expr,
+    ) -> PResult<Expr> {
+        let span = head.span.to(rhs.span);
+        let (mut operands, mut ops) = match head.kind {
+            ExprKind::Binary { op: first, lhs, rhs: middle } if ordering(first).is_some() => {
+                (vec![*lhs, *middle], vec![first])
+            }
+            ExprKind::Chain { operands, ops } => (operands, ops),
+            kind => {
+                let head = Expr { kind, span: head.span };
+                return Ok(Expr {
+                    kind: ExprKind::Binary {
+                        op,
+                        lhs: Box::new(head),
+                        rhs: Box::new(rhs),
+                    },
+                    span,
+                });
+            }
+        };
+        if ordering(ops[0]) != Some(ascending) {
+            return Err(self.error(
+                op_span,
+                "a comparison chain must use only `<`/`<=` or only `>`/`>=`",
+            ));
+        }
+        operands.push(rhs);
+        ops.push(op);
+        Ok(Expr {
+            kind: ExprKind::Chain { operands, ops },
+            span,
         })
     }
 
@@ -322,11 +377,12 @@ const XOR_BP: i32 = 8;
 const AND_BP: i32 = 10;
 const EQUALITY_BP: i32 = 12;
 const COMPARISON_BP: i32 = 14;
-const ADDITIVE_BP: i32 = 16;
-const MULTIPLICATIVE_BP: i32 = 18;
-const STRUCT_LITERAL_BP: i32 = 20;
-const CALL_BP: i32 = 22;
-const MEMBER_BP: i32 = 24;
+const SHIFT_BP: i32 = 16;
+const ADDITIVE_BP: i32 = 18;
+const MULTIPLICATIVE_BP: i32 = 20;
+const STRUCT_LITERAL_BP: i32 = 22;
+const CALL_BP: i32 = 24;
+const MEMBER_BP: i32 = 26;
 
 /// Right binding power of a prefix operator. Its operand is a postfix chain, so `-a * b`
 /// is `(-a) * b` while `-a.b` is `-(a.b)`.
@@ -342,7 +398,8 @@ fn prefix_bp(kind: TokenKind) -> i32 {
 /// puts the right power one above the left; assignment groups right to left.
 fn tail_bp(kind: TokenKind) -> (i32, i32) {
     match kind {
-        Equals | PlusEquals | DashEquals | StarEquals | SlashEquals | ColonEquals => {
+        Equals | PlusEquals | DashEquals | StarEquals | SlashEquals | PercentEquals
+        | ColonEquals => {
             (ASSIGN_BP, ASSIGN_BP - 1)
         }
         DotDot | DotDotEquals => (RANGE_BP, RANGE_BP + 1),
@@ -351,6 +408,7 @@ fn tail_bp(kind: TokenKind) -> (i32, i32) {
         And => (AND_BP, AND_BP + 1),
         DoubleEquals | NotEquals => (EQUALITY_BP, EQUALITY_BP + 1),
         Less | LessEquals | Greater | GreaterEquals => (COMPARISON_BP, COMPARISON_BP + 1),
+        ShiftLeft | ShiftRight => (SHIFT_BP, SHIFT_BP + 1),
         Plus | Dash => (ADDITIVE_BP, ADDITIVE_BP + 1),
         Star | Slash | Percent => (MULTIPLICATIVE_BP, MULTIPLICATIVE_BP + 1),
         OpenCurly => (STRUCT_LITERAL_BP, 0),
@@ -376,8 +434,19 @@ fn binary_op(kind: TokenKind) -> Option<BinaryOp> {
         And => BinaryOp::And,
         Or => BinaryOp::Or,
         Xor => BinaryOp::Xor,
+        ShiftLeft => BinaryOp::Shl,
+        ShiftRight => BinaryOp::Shr,
         _ => return None,
     })
+}
+
+/// For an ordering comparison, whether it is ascending (`<`, `<=`) or descending.
+fn ordering(op: BinaryOp) -> Option<bool> {
+    match op {
+        BinaryOp::Lt | BinaryOp::Le => Some(true),
+        BinaryOp::Gt | BinaryOp::Ge => Some(false),
+        _ => None,
+    }
 }
 
 fn assign_op(kind: TokenKind) -> Option<AssignOp> {
@@ -387,6 +456,7 @@ fn assign_op(kind: TokenKind) -> Option<AssignOp> {
         DashEquals => AssignOp::Sub,
         StarEquals => AssignOp::Mul,
         SlashEquals => AssignOp::Div,
+        PercentEquals => AssignOp::Rem,
         _ => return None,
     })
 }

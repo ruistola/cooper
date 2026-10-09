@@ -68,6 +68,29 @@ pub(crate) fn emit(module: &mut Module, function: &Function) -> Result<String, C
     emitter.heap = heap;
     let ret = emitter.signature_type(&function.return_type, function.span)?;
     let mut params = Vec::new();
+    if let Some(env) = &function.env {
+        // A lifted literal takes the function-value environment: a pointer to each
+        // captured variable's storage, which the body uses as that variable's place.
+        params.push("ptr %env".to_string());
+        for (index, captured) in env.iter().enumerate() {
+            let llvm = emitter.value_type(&captured.ty, captured.span)?;
+            let ptr = match llvm {
+                Some(_) => {
+                    let slot = emitter.assign(&format!("getelementptr ptr, ptr %env, i64 {index}"));
+                    emitter.assign(&format!("load ptr, ptr {slot}"))
+                }
+                None => String::new(),
+            };
+            let place = Place {
+                ptr,
+                ty: captured.ty.clone(),
+                llvm,
+                nullable: false,
+            };
+            emitter.scopes[0].insert(captured.name.clone(), place);
+        }
+        emitter.scopes.push(HashMap::new());
+    }
     for (index, param) in function.receiver.iter().chain(&function.params).enumerate() {
         let slot = emitter.bind(&param.name, &param.ty, param.span)?;
         if let Some(ty) = &slot.llvm {
@@ -84,8 +107,9 @@ pub(crate) fn emit(module: &mut Module, function: &Function) -> Result<String, C
         // requires a return on every path.
         emitter.terminate(if ret == "void" { "ret void" } else { "unreachable" });
     }
+    let linkage = if function.env.is_some() { "private " } else { "" };
     Ok(format!(
-        "define {ret} @{}({}) {{\nentry:\n{}{}}}\n",
+        "define {linkage}{ret} @{}({}) {{\nentry:\n{}{}}}\n",
         mangle::symbol(&function.item, &function.type_args),
         params.join(", "),
         emitter.allocas,
@@ -387,9 +411,14 @@ impl Emitter<'_, '_> {
     }
 
     /// Record in `heap` the local whose address `expr` takes, explicitly with `&` or
-    /// implicitly as the value receiver of a pointer-receiver method.
+    /// implicitly as the value receiver of a pointer-receiver method, and every local
+    /// a closure captures.
     fn note_escape(&self, expr: &IrExpr, heap: &mut HashSet<String>) {
         let addressed = match &expr.kind {
+            IrExprKind::Closure { captures, .. } => {
+                heap.extend(captures.iter().cloned());
+                None
+            }
             IrExprKind::AddressOf(operand) => Some(operand.as_ref()),
             IrExprKind::Method {
                 receiver,
@@ -534,6 +563,11 @@ impl Emitter<'_, '_> {
                 let symbol = mangle::symbol(item, type_args);
                 self.function_value(&symbol, &expr.ty, span).map(Some)
             }
+            IrExprKind::Closure {
+                item,
+                type_args,
+                captures,
+            } => self.closure(&mangle::symbol(item, type_args), captures).map(Some),
             IrExprKind::Method {
                 receiver,
                 item,
@@ -594,15 +628,9 @@ impl Emitter<'_, '_> {
         span: Span,
     ) -> Result<Option<Value>, CodegenError> {
         let value = self.expr(value)?;
-        if op == AssignOp::Assign {
+        let Some(binary) = op.binary() else {
             self.assign_to(target, value.as_ref(), span)?;
             return Ok(value);
-        }
-        let binary = match op {
-            AssignOp::Add => BinaryOp::Add,
-            AssignOp::Sub => BinaryOp::Sub,
-            AssignOp::Mul => BinaryOp::Mul,
-            _ => BinaryOp::Div,
         };
         let place = self.place(target)?.expect("a checked assignment target is a place");
         let current = self.load(&place).expect("a compound target has a value");
@@ -701,7 +729,8 @@ fn walk_expr(expr: &IrExpr, visit: &mut impl FnMut(&IrExpr)) {
         | IrExprKind::Nil
         | IrExprKind::Unit
         | IrExprKind::Var(_)
-        | IrExprKind::FuncRef { .. } => {}
+        | IrExprKind::FuncRef { .. }
+        | IrExprKind::Closure { .. } => {}
         IrExprKind::Method { receiver, .. } => walk_expr(receiver, visit),
         IrExprKind::Tuple(elems) | IrExprKind::Intrinsic { args: elems, .. } => walk_all(elems, visit),
         IrExprKind::Variant { args, .. } => walk_all(args, visit),

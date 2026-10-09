@@ -182,6 +182,11 @@ impl<'g> TypeChecker<'g> {
         for reference in references {
             self.finish_reference(&reference, &mut reported);
         }
+        for captures in self.captures.values_mut() {
+            for (_, ty) in captures {
+                *ty = self.infer.resolve(ty);
+            }
+        }
         body.spans.sort_by_key(|span| (span.start, span.end));
         body.spans.dedup();
         for span in body.spans {
@@ -210,6 +215,7 @@ impl<'g> TypeChecker<'g> {
             PredicateKind::Numeric => is_numeric(&ty),
             PredicateKind::Addable => is_numeric(&ty) || is_primitive(&ty, "string"),
             PredicateKind::Integer => is_integer(&ty),
+            PredicateKind::Logical => is_integer(&ty) || is_primitive(&ty, "bool"),
             PredicateKind::Comparable => incomparable_part(&ty, &self.globals.defs).is_none(),
             PredicateKind::Formattable => is_numeric(&ty) || is_primitive(&ty, "bool"),
         };
@@ -240,6 +246,7 @@ impl<'g> TypeChecker<'g> {
                         format!("cannot convert value of type {ty} to {name}; source must be {sources}")
                     }
                     PredicateSite::Index => format!("index must be an integer, found {ty}"),
+                    PredicateSite::ShiftCount => format!("shift count must be an integer, found {ty}"),
                     PredicateSite::Range => format!("range bounds must be an integer type, found {ty}"),
                     PredicateSite::IntegerPattern { .. } => {
                         format!("integer pattern cannot match a value of type {ty}")

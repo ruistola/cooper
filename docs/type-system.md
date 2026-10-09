@@ -31,7 +31,8 @@ Cooper's domain *X* has three kinds of constraint:
   returns, arguments, operand pairs, array elements, and instantiations of generics. `nil`
   unifies with any pointer type.
 * **Predicates** on a type, checked once it is solved: numeric, addable (`+`), integer
-  (indices), comparable (`==`), and formattable (`string(x)`). A numeric literal is a variable
+  (indices, shift operands), logical (`bool` or an integer, for `and`/`or`/`xor`),
+  comparable (`==`), and formattable (`string(x)`). A numeric literal is a variable
   of its class that defaults only when nothing constrains it
   ([Numeric Types](./numeric-types.md)).
 * **Member obligations**: field and method access, variant construction, and `match` patterns
@@ -41,7 +42,9 @@ Cooper's domain *X* has three kinds of constraint:
 
 A constraint that nothing determines is an error asking for an annotation, reported where it
 arose. Every top-level signature is declared, so inference runs per function body and never
-crosses a declaration.
+crosses a declaration. A function literal or nested function is part of the body it appears
+in: its body shares that body's constraints, so a variable it captures is inferred from
+uses inside and outside it alike.
 
 ### What Cooper leaves out of HM(X)
 

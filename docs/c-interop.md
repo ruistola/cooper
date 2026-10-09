@@ -42,6 +42,31 @@ n := strlen(&bytes[0])            # 2
 
 C may use a Cooper pointer for the duration of a call, but must not keep it afterwards.
 
+## Strings and buffers
+
+A Cooper `string` is its bytes and their count, with no terminating NUL, so it does not
+cross to C as is. The compiler-provided module `std.ffi` copies between the two:
+
+```
+use { std.ffi.{ CString, toCString, fromCString, copyBytes } }
+
+extern func getenv(name: CString): CString
+
+home := fromCString(getenv(toCString("HOME")))
+```
+
+* `CString` is a NUL-terminated C string, `struct CString { data: u8^ }`. It crosses to C as
+  a `char *`; its zero value is `NULL`.
+* `toCString(s: string): CString` copies a string's bytes and a terminating NUL to fresh
+  memory. A NUL inside the string ends the C string there.
+* `fromCString(c: CString): string` copies the bytes before the NUL into a string. A `NULL`
+  C string yields `""`.
+* `copyBytes(p: u8^, n: i64): u8[]` copies `n` bytes into a new array; a negative `n` stops
+  the program. Reading through `nil` yields zeros, as any load through nil does.
+
+Each copy is independent of its source: C may free or reuse its memory afterwards, and a
+`CString` stays valid however the Cooper string it came from is used.
+
 ## Linking
 
 The C standard library is always linked, so a single file can call it. A project names

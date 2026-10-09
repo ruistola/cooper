@@ -74,6 +74,34 @@ void *cooper_array_grow(const void *data, uint64_t len, uint64_t capacity, uint6
     return grown;
 }
 
+/* A NUL-terminated copy of a string's bytes, for C. */
+char *cooper_to_cstring(const char *data, uint64_t len) {
+    if (len == UINT64_MAX) {
+        cooper_panic("string too long");
+    }
+    char *c = cooper_alloc(len + 1);
+    if (len) memcpy(c, data, len);
+    return c;
+}
+
+/* A string copied from the C string `c` up to its NUL, written to `out`; empty when `c`
+   is null. */
+void cooper_from_cstring(const char *c, CooperString *out) {
+    uint64_t len = c ? strlen(c) : 0;
+    char *data = cooper_alloc(len);
+    if (len) memcpy(data, c, len);
+    out->data = data;
+    out->len = len;
+}
+
+/* A copy of the `n` bytes at `p`, as array storage; generated code rejects a negative
+   `n`. Bytes read through a null `p` are zero, as loads through nil are. */
+void *cooper_copy_bytes(const void *p, int64_t n) {
+    void *bytes = cooper_alloc((size_t)n);
+    if (p && n) memcpy(bytes, p, (size_t)n);
+    return bytes;
+}
+
 /* Write a string to standard output, followed by a newline when `newline` is set. */
 void cooper_print(const char *data, uint64_t len, int32_t newline) {
     if (len) fwrite(data, 1, len, stdout);

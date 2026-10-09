@@ -41,6 +41,9 @@ impl Emitter<'_, '_> {
             ));
             return Ok(None);
         }
+        if matches!(op, Intrinsic::ToCString | Intrinsic::FromCString | Intrinsic::CopyBytes) {
+            return self.ffi(op, args, result, span).map(Some);
+        }
         if op == Intrinsic::ArrayLiteral {
             let Type::Array(elem) = result else {
                 unreachable!("an array literal is an array");
@@ -54,7 +57,11 @@ impl Emitter<'_, '_> {
         let elem = (**elem).clone();
         let array = self.expr(&args[0])?.expect("an array has a value");
         match op {
-            Intrinsic::ArrayLiteral | Intrinsic::Print { .. } => unreachable!("handled above"),
+            Intrinsic::ArrayLiteral
+            | Intrinsic::Print { .. }
+            | Intrinsic::ToCString
+            | Intrinsic::FromCString
+            | Intrinsic::CopyBytes => unreachable!("handled above"),
             Intrinsic::ArrayLength => {
                 let operand = self.assign(&format!("extractvalue {ARRAY} {}, 1", array.operand));
                 Ok(Some(Value {
@@ -106,6 +113,55 @@ impl Emitter<'_, '_> {
                 let count = self.expr(&args[1])?.expect("a count has a value");
                 self.reserve(&array, &elem, &count.operand, span).map(Some)
             }
+        }
+    }
+
+    /// A `std.ffi` copy between Cooper and C data, of result type `result`.
+    fn ffi(&mut self, op: Intrinsic, args: &[IrExpr], result: &Type, span: Span) -> Result<Value, CodegenError> {
+        let arg = self.expr(&args[0])?.expect("an ffi argument has a value");
+        match op {
+            Intrinsic::ToCString => {
+                let (data, length) = self.string_parts(&arg);
+                self.module.declare(TO_CSTRING_DECL);
+                let c = self.assign(&format!("call ptr @cooper_to_cstring(ptr {data}, i64 {length})"));
+                let llvm = self.value_type(result, span)?.expect("a CString has a value");
+                let pointer = Value {
+                    ty: "ptr".to_string(),
+                    operand: c,
+                };
+                Ok(self.aggregate(&llvm, vec![Some(pointer)]))
+            }
+            Intrinsic::FromCString => {
+                let c = self.assign(&format!("extractvalue {} {}, 0", arg.ty, arg.operand));
+                self.module.declare(FROM_CSTRING_DECL);
+                let out = self.slot(None, result, span)?;
+                self.inst(&format!("call void @cooper_from_cstring(ptr {c}, ptr {})", out.ptr));
+                Ok(self.load(&out).expect("a string has a value"))
+            }
+            Intrinsic::CopyBytes => {
+                let count = self.expr(&args[1])?.expect("a count has a value");
+                let negative = self.assign(&format!("icmp slt i64 {}, 0", count.operand));
+                self.panic_if(&negative, "negative byte count", span);
+                self.module.declare(COPY_BYTES_DECL);
+                let data = self.assign(&format!(
+                    "call ptr @cooper_copy_bytes(ptr {}, i64 {})",
+                    arg.operand, count.operand
+                ));
+                let word = |operand: &str| Some(Value {
+                    ty: "i64".to_string(),
+                    operand: operand.to_string(),
+                });
+                let fields = vec![
+                    Some(Value {
+                        ty: "ptr".to_string(),
+                        operand: data,
+                    }),
+                    word(&count.operand),
+                    word(&count.operand),
+                ];
+                Ok(self.aggregate(ARRAY, fields))
+            }
+            _ => unreachable!("not a std.ffi intrinsic"),
         }
     }
 

@@ -139,9 +139,10 @@ A string is a `{ data, length }` pair of immutable bytes, and an array a `{ data
 capacity }` triple whose copies share elements. Concatenation, string equality, and array
 growth are runtime functions; growth doubles the capacity (at least 4).
 
-The standard library's `std.io` is compiler-provided: `stdlib.rs` supplies its interface to
-the module graph, lowering turns its calls into `Intrinsic::Print`, and the runtime writes the
-output. Used as a value, such a function lowers to a lifted function that calls the
+The standard library's `std.io` and `std.ffi` are compiler-provided: `stdlib.rs` supplies
+their interfaces (functions, and `std.ffi`'s `CString` struct) to the module graph, lowering
+turns their calls into intrinsics (`Print`, `ToCString`, `FromCString`, `CopyBytes`), and the
+runtime implements them. Used as a value, such a function lowers to a lifted function that calls the
 intrinsic, like a function literal capturing nothing. `string(x)` lowers to a conversion that the runtime formats.
 
 A runtime error (integer overflow, division by zero, an index out of bounds) calls the

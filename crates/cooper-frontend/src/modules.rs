@@ -82,8 +82,12 @@ pub fn check(project: &Project) -> Result<CheckedProject, Vec<Diagnostic>> {
     // Type definitions accumulate project-wide: a dependency's interface may expose
     // a type whose members name types the dependent never imports, so every module
     // is analyzed against all definitions resolved before it.
-    let mut interfaces: HashMap<ModulePath, Globals> = standard.into_iter().collect();
     let mut defs = TypeDefs::default();
+    for (_, interface) in &standard {
+        defs.structs.extend(interface.defs.structs.clone());
+        defs.oneofs.extend(interface.defs.oneofs.clone());
+    }
+    let mut interfaces: HashMap<ModulePath, Globals> = standard.into_iter().collect();
     let mut checked = Vec::new();
     for index in order {
         let module = &parsed[index];

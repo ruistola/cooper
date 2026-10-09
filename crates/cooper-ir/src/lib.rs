@@ -1207,14 +1207,17 @@ fn standard_intrinsic(item: &Callable) -> Option<Intrinsic> {
     let Callable::Func { module, name } = item else {
         return None;
     };
-    if module != stdlib::IO_MODULE {
-        return None;
-    }
-    match name.as_str() {
-        "print" => Some(Intrinsic::Print { newline: false }),
-        "println" => Some(Intrinsic::Print { newline: true }),
-        _ => unreachable!("std.io declares only print and println"),
-    }
+    Some(match (module.as_str(), name.as_str()) {
+        (stdlib::IO_MODULE, "print") => Intrinsic::Print { newline: false },
+        (stdlib::IO_MODULE, "println") => Intrinsic::Print { newline: true },
+        (stdlib::FFI_MODULE, "toCString") => Intrinsic::ToCString,
+        (stdlib::FFI_MODULE, "fromCString") => Intrinsic::FromCString,
+        (stdlib::FFI_MODULE, "copyBytes") => Intrinsic::CopyBytes,
+        (module, name) if module.starts_with("std.") => {
+            unreachable!("`{module}.{name}` is not a standard function")
+        }
+        _ => return None,
+    })
 }
 
 fn unsupported(span: Span, what: &'static str) -> Result<IrExpr, LowerError> {

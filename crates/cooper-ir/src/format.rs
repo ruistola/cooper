@@ -5,10 +5,12 @@
 //! `CString` is copied, a `string` is itself, and any other value is formatted by a
 //! generated function, one per type, which calls the functions of the types it contains.
 //! The text mirrors the literal syntax: `Point{x: 1, y: "a"}`, `[1, 2]`, `(1, 2)`,
-//! `Some(3)`, `None`, `()`. A string inside a value is quoted. A pointer is `nil`, or `&`
-//! and its target's text; a target the formatting already expanded, or one nested too
-//! deeply, is its address instead, so cyclic and shared structures terminate. A function
-//! value is `<func>`.
+//! `Some(3)`, `None`, `()`. A string inside a value is quoted. A function value is
+//! `<func>`. A pointer is `nil`, or `&` and its target's text. A target the value reaches
+//! more than once, through a cycle or sharing, is expanded once, labelled, and referred
+//! to by its label afterwards: `#1=&Node{value: 1, next: &Node{value: 2, next: #1}}`.
+//! Finding those targets takes a first pass over the value, whose text is discarded. A
+//! target nested too deeply is `...`.
 
 use super::*;
 
@@ -61,7 +63,7 @@ impl Formatters<'_> {
             intrinsic(Intrinsic::FromCString, vec![operand], string_type(), span)
         } else {
             // The value is evaluated first: formatting it must not interleave with any
-            // other formatting the evaluation does.
+            // other formatting the evaluation does. The first pass finds shared targets.
             let name = "fmt.value".to_string();
             let ty = operand.ty.clone();
             let call = self.call(&ty, var(&name, &ty, span), file, span);
@@ -69,6 +71,8 @@ impl Formatters<'_> {
                 vec![
                     let_stmt(&name, operand, span),
                     expr_stmt(intrinsic(Intrinsic::FormatBegin, Vec::new(), Type::Unit, span)),
+                    expr_stmt(call.clone()),
+                    expr_stmt(intrinsic(Intrinsic::FormatPrint, Vec::new(), Type::Unit, span)),
                 ],
                 call,
             )
@@ -259,8 +263,8 @@ impl Formatters<'_> {
         ]
     }
 
-    /// `nil`, `&` and the target's text, or the address of a target already expanded
-    /// or nested too deeply.
+    /// `nil`; a label (if shared), `&`, and the target's text; or, for a target already
+    /// expanded or nested too deeply, its label or `...`.
     fn pointer(&mut self, target: &Type, value: IrExpr, file: &str, span: Span) -> Vec<IrStmt> {
         let boolean = Type::Primitive("bool".to_string());
         let is_nil = IrExpr {
@@ -281,7 +285,8 @@ impl Formatters<'_> {
             ty: target.clone(),
             span,
         };
-        let expanded = concat(text("&", span), self.call(target, deref, file, span));
+        let label = intrinsic(Intrinsic::FormatLabel, vec![value.clone()], string_type(), span);
+        let expanded = concat(concat(label, text("&", span)), self.call(target, deref, file, span));
         let enter = intrinsic(Intrinsic::FormatEnter, vec![value.clone()], boolean, span);
         vec![
             if_stmt(self.defs, is_nil, vec![ret(text("nil", span))], span),
@@ -295,7 +300,7 @@ impl Formatters<'_> {
                 ],
                 span,
             ),
-            ret(intrinsic(Intrinsic::FormatAddress, vec![value], string_type(), span)),
+            ret(intrinsic(Intrinsic::FormatReference, vec![value], string_type(), span)),
         ]
     }
 }

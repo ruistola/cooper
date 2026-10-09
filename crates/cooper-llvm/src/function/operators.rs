@@ -463,14 +463,14 @@ impl Emitter<'_, '_> {
     pub(super) fn formatting(&mut self, op: Intrinsic, args: &[IrExpr], span: Span) -> Result<Option<Value>, CodegenError> {
         let string = Type::Primitive("string".to_string());
         match op {
-            Intrinsic::FormatBegin => {
-                self.module.declare("declare void @cooper_format_begin()");
-                self.inst("call void @cooper_format_begin()");
-                Ok(None)
-            }
-            Intrinsic::FormatLeave => {
-                self.module.declare("declare void @cooper_format_leave()");
-                self.inst("call void @cooper_format_leave()");
+            Intrinsic::FormatBegin | Intrinsic::FormatPrint | Intrinsic::FormatLeave => {
+                let name = match op {
+                    Intrinsic::FormatBegin => "cooper_format_begin",
+                    Intrinsic::FormatPrint => "cooper_format_print",
+                    _ => "cooper_format_leave",
+                };
+                self.module.declare(&format!("declare void @{name}()"));
+                self.inst(&format!("call void @{name}()"));
                 Ok(None)
             }
             Intrinsic::FormatEnter => {
@@ -483,11 +483,12 @@ impl Emitter<'_, '_> {
                     operand,
                 }))
             }
-            Intrinsic::FormatAddress => {
+            Intrinsic::FormatLabel | Intrinsic::FormatReference => {
+                let name = if op == Intrinsic::FormatLabel { "cooper_format_label" } else { "cooper_format_reference" };
                 let pointer = self.expr(&args[0])?.expect("a pointer has a value");
-                self.module.declare("declare void @cooper_format_address(ptr, ptr)");
+                self.module.declare(&format!("declare void @{name}(ptr, ptr)"));
                 let out = self.slot(None, &string, span)?;
-                self.inst(&format!("call void @cooper_format_address(ptr {}, ptr {})", pointer.operand, out.ptr));
+                self.inst(&format!("call void @{name}(ptr {}, ptr {})", pointer.operand, out.ptr));
                 Ok(self.load(&out))
             }
             Intrinsic::Quote => {

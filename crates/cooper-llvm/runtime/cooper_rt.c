@@ -140,57 +140,85 @@ void cooper_format_float(double value, int32_t is_f32, CooperString *out) {
 }
 
 /* --- Formatting any value (`string(x)`) ---
-   Generated formatters expand a pointer's target at most once per formatting, and at
-   most FORMAT_DEPTH pointers deep, printing the address otherwise, so that cyclic and
-   shared structures terminate. */
+   A formatting runs the generated formatters twice over the value. The first pass finds
+   the pointer targets reached more than once (through a cycle or sharing); the second,
+   whose text is kept, labels each such target where it is expanded (`#1=&...`) and
+   shows the label wherever it is reached again (`#1`). Each pass expands a target at
+   most once, and at most FORMAT_DEPTH pointers deep (`...` past that), so every value
+   formats in time proportional to its size. */
 
 #define FORMAT_DEPTH 64
 
-static const void **format_seen;
-static uint64_t format_seen_capacity;
-static uint64_t format_seen_count;
-static int format_depth;
+typedef struct {
+    const void *target;
+    int32_t shared;
+    int32_t label;   /* 0 until labelled in the printing pass */
+    int32_t printed; /* expanded in the printing pass */
+} FormatEntry;
 
-static uint64_t format_slot(const void *p) {
-    uint64_t h = (uint64_t)(uintptr_t)p * 0x9E3779B97F4A7C15ull;
-    return (h >> 32) & (format_seen_capacity - 1);
+static FormatEntry *format_entries;
+static uint64_t format_capacity;
+static uint64_t format_count;
+static int format_depth;
+static int format_printing;
+static int32_t format_labels;
+
+static FormatEntry *format_find(const void *p) {
+    if (format_capacity == 0) return NULL;
+    uint64_t mask = format_capacity - 1;
+    uint64_t i = ((uint64_t)(uintptr_t)p * 0x9E3779B97F4A7C15ull >> 32) & mask;
+    while (format_entries[i].target && format_entries[i].target != p) i = (i + 1) & mask;
+    return &format_entries[i];
 }
 
-/* Record `p` as expanded, returning 0 if it already was. */
-static int format_insert(const void *p) {
-    if (format_seen_count * 2 >= format_seen_capacity) {
-        const void **old = format_seen;
-        uint64_t old_capacity = format_seen_capacity;
-        format_seen_capacity = old_capacity ? old_capacity * 2 : 64;
-        format_seen = calloc(format_seen_capacity, sizeof *format_seen);
-        if (format_seen == NULL) cooper_panic("out of memory");
-        format_seen_count = 0;
+/* The entry of `p`, added if absent. */
+static FormatEntry *format_entry(const void *p) {
+    if (format_count * 2 >= format_capacity) {
+        FormatEntry *old = format_entries;
+        uint64_t old_capacity = format_capacity;
+        format_capacity = old_capacity ? old_capacity * 2 : 64;
+        format_entries = calloc(format_capacity, sizeof *format_entries);
+        if (format_entries == NULL) cooper_panic("out of memory");
         for (uint64_t i = 0; i < old_capacity; i++) {
-            if (old[i]) format_insert(old[i]);
+            if (old[i].target) *format_find(old[i].target) = old[i];
         }
         free(old);
     }
-    uint64_t i = format_slot(p);
-    while (format_seen[i]) {
-        if (format_seen[i] == p) return 0;
-        i = (i + 1) & (format_seen_capacity - 1);
+    FormatEntry *entry = format_find(p);
+    if (!entry->target) {
+        entry->target = p;
+        format_count++;
     }
-    format_seen[i] = p;
-    format_seen_count++;
-    return 1;
+    return entry;
 }
 
-/* Start formatting a value: no pointer has been expanded yet. */
+/* Start the first pass of formatting a value. */
 void cooper_format_begin(void) {
-    if (format_seen_count) memset(format_seen, 0, format_seen_capacity * sizeof *format_seen);
-    format_seen_count = 0;
+    if (format_count) memset(format_entries, 0, format_capacity * sizeof *format_entries);
+    format_count = 0;
     format_depth = 0;
+    format_printing = 0;
+    format_labels = 0;
+}
+
+/* Start the printing pass. */
+void cooper_format_print(void) {
+    format_depth = 0;
+    format_printing = 1;
 }
 
 /* Whether to expand the target of the non-null pointer `p`; if so, the expansion ends
    with cooper_format_leave. */
 int32_t cooper_format_enter(const void *p) {
-    if (format_depth >= FORMAT_DEPTH || !format_insert(p)) return 0;
+    if (format_depth >= FORMAT_DEPTH) return 0;
+    if (format_printing) {
+        FormatEntry *entry = format_find(p);
+        if (entry && entry->target && entry->printed) return 0;
+        if (entry && entry->target) entry->printed = 1;
+    } else {
+        FormatEntry *entry = format_entry(p);
+        if (entry->shared++) return 0;
+    }
     format_depth++;
     return 1;
 }
@@ -199,11 +227,27 @@ void cooper_format_leave(void) {
     format_depth--;
 }
 
-/* The address `p` as text. */
-void cooper_format_address(const void *p, CooperString *out) {
-    char buffer[32];
-    int len = snprintf(buffer, sizeof buffer, "%p", p);
-    string_of(buffer, len, out);
+/* The label of an expanded target: `#n=` if it is shared, numbered in printing order. */
+void cooper_format_label(const void *p, CooperString *out) {
+    FormatEntry *entry = format_printing ? format_find(p) : NULL;
+    if (!entry || !entry->target || entry->shared < 2) {
+        string_of("", 0, out);
+        return;
+    }
+    entry->label = ++format_labels;
+    char buffer[16];
+    string_of(buffer, snprintf(buffer, sizeof buffer, "#%d=", entry->label), out);
+}
+
+/* A target not expanded: its label, or `...` past the depth limit. */
+void cooper_format_reference(const void *p, CooperString *out) {
+    FormatEntry *entry = format_printing ? format_find(p) : NULL;
+    if (!entry || !entry->target || !entry->label) {
+        string_of("...", 3, out);
+        return;
+    }
+    char buffer[16];
+    string_of(buffer, snprintf(buffer, sizeof buffer, "#%d", entry->label), out);
 }
 
 /* The string as a quoted literal: `"` and `\` escaped, and the control characters

@@ -152,8 +152,10 @@ conversion to `string` of a value other than a number or `bool` (which the backe
 through the runtime): a `string` is itself, a `CString` is copied, and anything else calls a
 generated formatter, one IR function per type (`Callable::Formatter`), built from field
 access, `match`, loops, and concatenation, which calls the formatters of the types inside it.
-Intrinsics reach the runtime for quoting strings, printing addresses, and tracking which
-pointer targets one formatting has expanded and how deep.
+The formatter runs twice: a first pass, whose text is discarded, finds the pointer targets
+reached more than once, and the second labels them (`#1=…`, then `#1`). Intrinsics reach
+the runtime for quoting strings and for that bookkeeping: which targets each pass has
+expanded, how deep, and their labels.
 
 A runtime error (integer overflow, division by zero, an index out of bounds) calls the
 runtime's `cooper_panic`, which

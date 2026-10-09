@@ -47,9 +47,11 @@ impl Emitter<'_, '_> {
         if matches!(
             op,
             Intrinsic::FormatBegin
+                | Intrinsic::FormatPrint
                 | Intrinsic::FormatEnter
                 | Intrinsic::FormatLeave
-                | Intrinsic::FormatAddress
+                | Intrinsic::FormatLabel
+                | Intrinsic::FormatReference
                 | Intrinsic::Quote
         ) {
             return self.formatting(op, args, span);
@@ -73,9 +75,11 @@ impl Emitter<'_, '_> {
             | Intrinsic::FromCString
             | Intrinsic::CopyBytes
             | Intrinsic::FormatBegin
+            | Intrinsic::FormatPrint
             | Intrinsic::FormatEnter
             | Intrinsic::FormatLeave
-            | Intrinsic::FormatAddress
+            | Intrinsic::FormatLabel
+            | Intrinsic::FormatReference
             | Intrinsic::Quote => unreachable!("handled above"),
             Intrinsic::ArrayLength => {
                 let operand = self.assign(&format!("extractvalue {ARRAY} {}, 1", array.operand));

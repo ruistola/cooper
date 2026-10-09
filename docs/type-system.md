@@ -107,9 +107,16 @@ Ordering operators (`<`, `<=`, `>`, `>=`) apply to numeric types only.
 | pointer | `nil`, or `&` and its target: `&Node{value: 1, next: nil}` |
 | function | `<func>` |
 
-A formatting expands each pointer's target once and at most 64 pointers deep; past that, or
-on reaching a target it already expanded (a cycle, or sharing), it shows the pointer's
-address instead, so every value formats in finite time.
+A target the value reaches more than once, through a cycle or sharing, is shown once with a
+label, and by the label wherever it is reached again:
+
+```
+#1=&Node{value: 1, next: &Node{value: 2, next: #1}}
+Pair{left: #1=&Node{value: 7, next: nil}, right: #1}
+```
+
+Pointers nest at most 64 deep, and a target past that is `...`, so every value formats in
+time proportional to its size. Addresses are never shown.
 
 The format is fixed: a type cannot override it, as it cannot override equality. A type with
 its own presentation has a plain function for it (`func showPoint(p: Point): string`), and

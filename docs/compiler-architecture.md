@@ -141,7 +141,8 @@ growth are runtime functions; growth doubles the capacity (at least 4).
 
 The standard library's `std.io` is compiler-provided: `stdlib.rs` supplies its interface to
 the module graph, lowering turns its calls into `Intrinsic::Print`, and the runtime writes the
-output. `string(x)` lowers to a conversion that the runtime formats.
+output. Used as a value, such a function lowers to a lifted function that calls the
+intrinsic, like a function literal capturing nothing. `string(x)` lowers to a conversion that the runtime formats.
 
 A runtime error (integer overflow, division by zero, an index out of bounds) calls the
 runtime's `cooper_panic`, which

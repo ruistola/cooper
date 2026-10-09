@@ -256,7 +256,7 @@ These are designed or reserved but rejected today. Do not write them:
 
 * Generic nested functions, and parameter types inferred for function literals.
 * Module-level variables, static arrays `T[N]`, and `extern func`.
-* Methods across sum-type variants, and a standard library function used as a value.
+* Methods across sum-type variants.
 * Named-field variant payloads, nested patterns inside variant payloads, or-patterns, guards.
 
 ## Where to read more

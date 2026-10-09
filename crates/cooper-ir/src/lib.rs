@@ -354,10 +354,6 @@ impl Lower<'_> {
         // Numbered before the body, so literals nested in it number after this one.
         let index = lifting.next.get();
         lifting.next.set(index + 1);
-        let item = Callable::Closure {
-            parent: Box::new(lifting.parent.clone()),
-            index,
-        };
         let params: Vec<Param> = params.iter().map(|p| self.param(p)).collect::<Result<_, _>>()?;
         let return_type = match return_type {
             Some(ty) => self.resolve(ty)?,
@@ -377,6 +373,46 @@ impl Lower<'_> {
             param_types: params.iter().map(|p| p.ty.clone()).collect(),
         };
         let body = self.block(body)?;
+        self.lift_at(index, params, return_type, body, env, ty, span)
+    }
+
+    /// Lift a function with the given signature, body, and environment out of the
+    /// declaration being lowered, returning the closure that creates its value.
+    fn lift(
+        &self,
+        params: Vec<Param>,
+        return_type: Type,
+        body: Vec<IrStmt>,
+        env: Vec<Param>,
+        ty: Type,
+        span: Span,
+    ) -> Result<IrExpr, LowerError> {
+        let Some(lifting) = &self.lifting else {
+            return unsupported(span, "a function value outside a function");
+        };
+        let index = lifting.next.get();
+        lifting.next.set(index + 1);
+        self.lift_at(index, params, return_type, body, env, ty, span)
+    }
+
+    /// [`Self::lift`] at an index already taken.
+    #[allow(clippy::too_many_arguments)]
+    fn lift_at(
+        &self,
+        index: u32,
+        params: Vec<Param>,
+        return_type: Type,
+        body: Vec<IrStmt>,
+        env: Vec<Param>,
+        ty: Type,
+        span: Span,
+    ) -> Result<IrExpr, LowerError> {
+        let lifting = self.lifting.as_ref().expect("checked by the caller");
+        let item = Callable::Closure {
+            parent: Box::new(lifting.parent.clone()),
+            index,
+        };
+        let captures = env.iter().map(|p| p.name.clone()).collect();
         lifting.lifted.borrow_mut().push(Function {
             item: item.clone(),
             file: lifting.file.clone(),
@@ -393,7 +429,7 @@ impl Lower<'_> {
             kind: IrExprKind::Closure {
                 item,
                 type_args: lifting.binders.iter().map(|b| Type::TypeParam(b.clone())).collect(),
-                captures: captured.iter().map(|(name, _)| name.clone()).collect(),
+                captures,
             },
             ty,
             span,
@@ -553,8 +589,8 @@ impl Lower<'_> {
         // A reference to a function or method names its declaration; a module prefix
         // carries no runtime value and drops away.
         if let Some(reference) = self.refs.get(&expr.span) {
-            if matches!(&reference.item, Callable::Func { module, .. } if module.starts_with("std.")) {
-                return unsupported(expr.span, "a standard library function as a value");
+            if let Some(op) = standard_intrinsic(&reference.item) {
+                return self.standard_value(op, ty, expr.span);
             }
             let item = reference.item.clone();
             let type_args = reference.type_args.clone();
@@ -903,18 +939,46 @@ impl Lower<'_> {
     /// The intrinsic a call to a compiler-provided standard library function lowers to,
     /// if `callee` names one.
     fn standard_function(&self, callee: &Expr) -> Option<Intrinsic> {
-        let reference = self.refs.get(&strip_group(callee).span)?;
-        let Callable::Func { module, name } = &reference.item else {
-            return None;
+        standard_intrinsic(&self.refs.get(&strip_group(callee).span)?.item)
+    }
+
+    /// A standard library function used as a value, of function type `ty`: a closure
+    /// of a lifted function that calls the intrinsic with its parameters, as if the
+    /// program had written `func(s: string) { io.println(s) }`.
+    fn standard_value(&self, op: Intrinsic, ty: Type, span: Span) -> Result<IrExpr, LowerError> {
+        let Type::Func { return_type, param_types } = &ty else {
+            unreachable!("a function reference has a function type");
         };
-        if module != stdlib::IO_MODULE {
-            return None;
-        }
-        match name.as_str() {
-            "print" => Some(Intrinsic::Print { newline: false }),
-            "println" => Some(Intrinsic::Print { newline: true }),
-            _ => unreachable!("std.io declares only print and println"),
-        }
+        // Named with a `.`, which no source identifier contains.
+        let params: Vec<Param> = param_types
+            .iter()
+            .enumerate()
+            .map(|(index, ty)| Param {
+                name: format!("arg.{index}"),
+                ty: ty.clone(),
+                span,
+            })
+            .collect();
+        let call = IrExpr {
+            kind: IrExprKind::Intrinsic {
+                op,
+                args: params
+                    .iter()
+                    .map(|p| IrExpr {
+                        kind: IrExprKind::Var(p.name.clone()),
+                        ty: p.ty.clone(),
+                        span,
+                    })
+                    .collect(),
+            },
+            ty: (**return_type).clone(),
+            span,
+        };
+        let body = vec![IrStmt {
+            kind: IrStmtKind::Return(Some(call)),
+            span,
+        }];
+        self.lift(params, (**return_type).clone(), body, Vec::new(), ty, span)
     }
 
     /// Lower a slice `array[start..end]` to the slice intrinsic. An omitted start is
@@ -1057,6 +1121,22 @@ fn chain(mut operands: Vec<IrExpr>, ops: &[BinaryOp], boolean: &Type, span: Span
     }
     let first = operands.pop().expect("one operand per operator");
     block(0, first, rest)
+}
+
+/// The intrinsic a compiler-provided standard library function lowers to, if `item`
+/// is one.
+fn standard_intrinsic(item: &Callable) -> Option<Intrinsic> {
+    let Callable::Func { module, name } = item else {
+        return None;
+    };
+    if module != stdlib::IO_MODULE {
+        return None;
+    }
+    match name.as_str() {
+        "print" => Some(Intrinsic::Print { newline: false }),
+        "println" => Some(Intrinsic::Print { newline: true }),
+        _ => unreachable!("std.io declares only print and println"),
+    }
 }
 
 fn unsupported(span: Span, what: &'static str) -> Result<IrExpr, LowerError> {

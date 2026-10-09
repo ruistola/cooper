@@ -62,10 +62,13 @@ impl Formatters<'_> {
         } else if stdlib::is_c_string(&operand.ty) {
             intrinsic(Intrinsic::FromCString, vec![operand], string_type(), span)
         } else {
+            let ty = operand.ty.clone();
+            if !reaches_pointer(self.defs, &ty, &mut Vec::new()) {
+                return *expr = self.call(&ty, operand, file, span);
+            }
             // The value is evaluated first: formatting it must not interleave with any
             // other formatting the evaluation does. The first pass finds shared targets.
             let name = "fmt.value".to_string();
-            let ty = operand.ty.clone();
             let call = self.call(&ty, var(&name, &ty, span), file, span);
             block(
                 vec![
@@ -302,6 +305,35 @@ impl Formatters<'_> {
             ),
             ret(intrinsic(Intrinsic::FormatReference, vec![value], string_type(), span)),
         ]
+    }
+}
+
+/// Whether a value of type `ty` can hold a pointer, which is all that can make a
+/// formatting reach one target twice: without one, formatting takes a single pass.
+/// `visiting` holds the types being examined, which a type may contain through an array.
+fn reaches_pointer(defs: &TypeDefs, ty: &Type, visiting: &mut Vec<Type>) -> bool {
+    if visiting.iter().any(|seen| seen.equals(ty)) {
+        return false;
+    }
+    match ty {
+        Type::Pointer(_) => true,
+        Type::Array(elem) => reaches_pointer(defs, elem, visiting),
+        Type::Tuple(elems) => elems.iter().any(|e| reaches_pointer(defs, e, visiting)),
+        Type::Struct { .. } | Type::Oneof { .. } => {
+            visiting.push(ty.clone());
+            let parts: Vec<Type> = match ty {
+                Type::Struct { .. } => defs.struct_members(ty).unwrap_or_default().into_iter().map(|(_, t)| t).collect(),
+                _ => defs
+                    .variant_order(ty)
+                    .iter()
+                    .flat_map(|v| defs.payload(ty, v).unwrap_or_default())
+                    .collect(),
+            };
+            let found = parts.iter().any(|p| reaches_pointer(defs, p, visiting));
+            visiting.pop();
+            found
+        }
+        _ => false,
     }
 }
 

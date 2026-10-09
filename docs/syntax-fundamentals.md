@@ -164,7 +164,7 @@ semantics). Only the arithmetic operators have compound assignments (`+=` `-=` `
 `%=`); a bitwise update is written out, as in `x = x << 8`.
 
 `and` binds tighter than `xor`, which binds tighter than `or`, and all three bind looser than
-comparison. Every binary operator groups left to right. `and` over `or` is the order boolean
+comparison. Binary operators on the same level group left to right. `and` over `or` is the order boolean
 connectives take in mainstream languages, and `and` over `xor` over `or` is the order the
 bitwise operators take in C, Java, Rust, and Python, so one keyword holds one position
 whatever its operands. Sitting below comparison lets a condition read naturally

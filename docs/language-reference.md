@@ -216,8 +216,11 @@ From loosest to tightest binding:
 | 11 | prefix `-` `+` `!` `&` |
 | 12 | postfix call `f(…)`, index `a[i]`, struct literal `T{…}`, field `.x`, dereference `^` |
 
-Binary operators group left to right, so `10 - 3 - 2` is `5`, and assignment groups right to
-left. `!`, `and`, `or`, and `xor` are logical on `bool` and bitwise on integers; only the logical
+A tighter level binds first, so `1 + 2 * 3` is `7`. Binary operators on the same level
+group left to right, so `10 - 3 - 2` is `5`, and assignment groups right to left. A run of
+level-7 comparisons is a chain instead (`a <= x < b`).
+
+`!`, `and`, `or`, and `xor` are logical on `bool` and bitwise on integers; only the logical
 `and` and `or` short-circuit, and `xor` and the bitwise operators evaluate both operands.
 Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no parentheses
 ([why](./syntax-fundamentals.md#logical-and-bitwise-operators)).

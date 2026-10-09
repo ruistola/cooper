@@ -51,22 +51,25 @@ C may use a Cooper pointer for the duration of a call, but must not keep it afte
 ## Strings and buffers
 
 A Cooper `string` is its bytes and their count, with no terminating NUL, so it does not
-cross to C as is. The compiler-provided module `std.ffi` copies between the two:
+cross to C as is. The compiler-provided module `std.ffi` declares the C string type and
+copies between the two representations:
 
 ```
-use { std.ffi.{ CString, toCString, fromCString, copyBytes } }
+use { std.ffi.CString }
 
 extern func getenv(name: CString): CString
 
-home := fromCString(getenv(toCString("HOME")))
+home := string(getenv(CString("HOME")))
 ```
 
 * `CString` is a NUL-terminated C string, `struct CString { data: u8^ }`. It crosses to C as
   a `char *`; its zero value is `NULL`.
-* `toCString(s: string): CString` copies a string's bytes and a terminating NUL to fresh
-  memory. A NUL inside the string ends the C string there.
-* `fromCString(c: CString): string` copies the bytes before the NUL into a string. A `NULL`
-  C string yields `""`.
+* `CString(s)` converts a string by copying its bytes and a terminating NUL to fresh
+  memory. A NUL inside the string ends the C string there. It is a conversion like any
+  other, spelled with the type's name however it is in scope (`ffi.CString(s)` after
+  `use { std.ffi as ffi }`).
+* `string(c)` converts back, copying the bytes before the NUL. A `NULL` C string yields
+  `""`.
 * `copyBytes(p: u8^, n: i64): u8[]` copies `n` bytes into a new array; a negative `n` stops
   the program. Reading through `nil` yields zeros, as any load through nil does.
 

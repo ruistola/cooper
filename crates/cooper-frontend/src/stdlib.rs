@@ -7,8 +7,8 @@
 //! * `std.io`: `print(s: string)` writes `s` to standard output, and `println(s: string)`
 //!   writes it followed by a newline.
 //! * `std.ffi`: `CString`, a NUL-terminated C string (`struct CString { data: u8^ }`),
-//!   and the copies between Cooper and C data: `toCString(s: string): CString`,
-//!   `fromCString(c: CString): string`, and `copyBytes(p: u8^, n: i64): u8[]`.
+//!   converted from a string as `CString(s)` and back as `string(c)`, and
+//!   `copyBytes(p: u8^, n: i64): u8[]`, which copies C bytes into an array.
 
 use crate::project::ModulePath;
 use crate::resolve::{Callable, Globals, Signature};
@@ -38,18 +38,12 @@ pub(crate) fn interfaces() -> Vec<(ModulePath, Globals)> {
     };
     ffi.structs.insert(C_STRING.to_string(), id.clone());
     ffi.defs.structs.insert(
-        id.clone(),
+        id,
         StructDef {
             type_params: Vec::new(),
             members: vec![("data".to_string(), byte_ptr())],
         },
     );
-    let c_string = Type::Struct {
-        id,
-        type_args: Vec::new(),
-    };
-    function(&mut ffi, "toCString", vec![string()], c_string.clone());
-    function(&mut ffi, "fromCString", vec![c_string], string());
     let bytes = Type::Array(Box::new(Type::Primitive("u8".to_string())));
     function(&mut ffi, "copyBytes", vec![byte_ptr(), crate::builtins::index_type()], bytes);
 
@@ -57,6 +51,11 @@ pub(crate) fn interfaces() -> Vec<(ModulePath, Globals)> {
         (ModulePath::parse(IO_MODULE), io),
         (ModulePath::parse(FFI_MODULE), ffi),
     ]
+}
+
+/// Whether `ty` is `std.ffi`'s `CString`, which converts from and to `string`.
+pub fn is_c_string(ty: &Type) -> bool {
+    matches!(ty, Type::Struct { id, .. } if id.module == FFI_MODULE && id.name == C_STRING)
 }
 
 fn module(path: &str) -> Globals {

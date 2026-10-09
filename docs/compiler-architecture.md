@@ -141,8 +141,10 @@ growth are runtime functions; growth doubles the capacity (at least 4).
 
 The standard library's `std.io` and `std.ffi` are compiler-provided: `stdlib.rs` supplies
 their interfaces (functions, and `std.ffi`'s `CString` struct) to the module graph, lowering
-turns their calls into intrinsics (`Print`, `ToCString`, `FromCString`, `CopyBytes`), and the
-runtime implements them. Used as a value, such a function lowers to a lifted function that calls the
+turns their calls into intrinsics (`Print`, `CopyBytes`), and the runtime implements them.
+The conversions `CString(s)` and `string(c)` lower to the intrinsics `ToCString` and
+`FromCString`; a callee of struct type can only be a type name, which is how `CString(s)`
+is recognized however the type is spelled. Used as a value, such a function lowers to a lifted function that calls the
 intrinsic, like a function literal capturing nothing. `string(x)` lowers to a conversion that the runtime formats.
 
 A runtime error (integer overflow, division by zero, an index out of bounds) calls the

@@ -217,7 +217,9 @@ impl<'g> TypeChecker<'g> {
             PredicateKind::Integer => is_integer(&ty),
             PredicateKind::Logical => is_integer(&ty) || is_primitive(&ty, "bool"),
             PredicateKind::Comparable => incomparable_part(&ty, &self.globals.defs).is_none(),
-            PredicateKind::Formattable => is_numeric(&ty) || is_primitive(&ty, "bool"),
+            PredicateKind::Formattable => {
+                is_numeric(&ty) || is_primitive(&ty, "bool") || crate::stdlib::is_c_string(&ty)
+            }
         };
         if !valid {
             let message = match predicate.kind {
@@ -242,7 +244,7 @@ impl<'g> TypeChecker<'g> {
                         format!("invalid operands for {}: {left} and {right}", op.symbol())
                     }
                     PredicateSite::Conversion(name) => {
-                        let sources = if name == "string" { "numeric or bool" } else { "numeric" };
+                        let sources = if name == "string" { "numeric, bool, or CString" } else { "numeric" };
                         format!("cannot convert value of type {ty} to {name}; source must be {sources}")
                     }
                     PredicateSite::Index => format!("index must be an integer, found {ty}"),

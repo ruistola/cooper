@@ -382,11 +382,11 @@ pub enum Intrinsic {
     /// `std.io.print(s)`, or `std.io.println(s)` when `newline`: write the string to
     /// standard output. Args: `[string]`.
     Print { newline: bool },
-    /// `std.ffi.toCString(s)`: a NUL-terminated heap copy of the string, as a
-    /// `CString`. Args: `[string]`.
+    /// The conversion `CString(s)`: a NUL-terminated heap copy of the string, as a
+    /// `std.ffi.CString`. Args: `[string]`.
     ToCString,
-    /// `std.ffi.fromCString(c)`: a string copied from the C string up to its NUL, empty
-    /// when it is null. Args: `[c_string]`.
+    /// The conversion `string(c)` of a `CString`: a string copied from the C string up
+    /// to its NUL, empty when it is null. Args: `[c_string]`.
     FromCString,
     /// `std.ffi.copyBytes(p, n)`: an array holding a copy of the `n` bytes at `p`.
     /// Args: `[pointer, count]`.

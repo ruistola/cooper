@@ -969,8 +969,22 @@ impl Lower<'_> {
     ) -> Result<IrExprKind, LowerError> {
         if let ExprKind::Ident(name) = &callee.kind {
             if is_numeric_name(name) || name == "string" {
-                return Ok(IrExprKind::Convert(Box::new(self.expr(&args[0])?)));
+                let operand = self.expr(&args[0])?;
+                if stdlib::is_c_string(&operand.ty) {
+                    return Ok(IrExprKind::Intrinsic {
+                        op: Intrinsic::FromCString,
+                        args: vec![operand],
+                    });
+                }
+                return Ok(IrExprKind::Convert(Box::new(operand)));
             }
+        }
+        // A callee of struct type is a type name: `CString(s)`.
+        if self.types.get(&strip_group(callee).span).is_some_and(stdlib::is_c_string) {
+            return Ok(IrExprKind::Intrinsic {
+                op: Intrinsic::ToCString,
+                args: self.each(args)?,
+            });
         }
         if let Some(op) = self.standard_function(callee) {
             return Ok(IrExprKind::Intrinsic {
@@ -1210,8 +1224,6 @@ fn standard_intrinsic(item: &Callable) -> Option<Intrinsic> {
     Some(match (module.as_str(), name.as_str()) {
         (stdlib::IO_MODULE, "print") => Intrinsic::Print { newline: false },
         (stdlib::IO_MODULE, "println") => Intrinsic::Print { newline: true },
-        (stdlib::FFI_MODULE, "toCString") => Intrinsic::ToCString,
-        (stdlib::FFI_MODULE, "fromCString") => Intrinsic::FromCString,
         (stdlib::FFI_MODULE, "copyBytes") => Intrinsic::CopyBytes,
         (module, name) if module.starts_with("std.") => {
             unreachable!("`{module}.{name}` is not a standard function")

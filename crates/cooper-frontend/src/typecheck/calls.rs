@@ -41,6 +41,10 @@ impl<'g> TypeChecker<'g> {
         }
         self.expected = None;
         let callee_type = self.check_expr(callee)?;
+        // Only a type name has a struct type as a callee: `CString(s)` converts a string.
+        if crate::stdlib::is_c_string(&callee_type) {
+            return self.check_c_string_conversion(callee_type, args, span);
+        }
         let deferred = matches!(callee_type, Type::Infer(_));
         let callee_type = if deferred {
             let signature = Type::Func {
@@ -171,8 +175,23 @@ impl<'g> TypeChecker<'g> {
         );
     }
 
+    /// Type check `CString(s)`, a NUL-terminated copy of the string `s`.
+    fn check_c_string_conversion(&mut self, c_string: Type, args: &[Expr], span: Span) -> Option<Type> {
+        let [arg] = args else {
+            self.err(span, format!("conversion to CString takes exactly one argument, found {}", args.len()));
+            return None;
+        };
+        let arg_type = self.check_expr(arg)?;
+        let string = Type::Primitive("string".to_string());
+        if self.infer.unify(&arg_type, &string).is_err() {
+            let shown = self.shown_type(&arg_type);
+            self.err(arg.span, format!("cannot convert value of type {shown} to CString; source must be string"));
+        }
+        Some(c_string)
+    }
+
     /// Type check an explicit conversion `T(value)`: to a numeric type from any numeric
-    /// type, or to `string` from any numeric type or `bool`. The result is `T`.
+    /// type, or to `string` from any numeric type, `bool`, or `CString`. The result is `T`.
     fn check_conversion(&mut self, name: &str, args: &[Expr], span: Span) -> Option<Type> {
         if args.len() != 1 {
             self.err(

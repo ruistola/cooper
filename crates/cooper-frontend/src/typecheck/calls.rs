@@ -45,6 +45,9 @@ impl<'g> TypeChecker<'g> {
         if crate::stdlib::is_c_string(&callee_type) {
             return self.check_c_string_conversion(callee_type, args, span);
         }
+        if let Some(result) = self.check_template_call(callee, &callee_type, args, span) {
+            return result;
+        }
         let deferred = matches!(callee_type, Type::Infer(_));
         let callee_type = if deferred {
             let signature = Type::Func {
@@ -173,6 +176,65 @@ impl<'g> TypeChecker<'g> {
                 type_args,
             },
         );
+    }
+
+    /// Type check a call to a function taking a template (`format`, `print`, `println`)
+    /// whose literal template has positional holes or that passes further arguments:
+    /// one argument fills each `{}` in order, and is formatted as `string(x)` formats it.
+    /// `None` when the call is an ordinary one.
+    fn check_template_call(&mut self, callee: &Expr, callee_type: &Type, args: &[Expr], span: Span) -> Option<Option<Type>> {
+        let mut head = callee;
+        while let ExprKind::Group(inner) = &head.kind {
+            head = inner;
+        }
+        let item = &self.body.references.get(&head.span)?.item;
+        if !crate::stdlib::takes_template(item) {
+            return None;
+        }
+        let (template, rest) = args.split_first()?;
+        let Type::Func { return_type, .. } = callee_type else {
+            unreachable!("a template function has a function type");
+        };
+        let positional = match &template.kind {
+            ExprKind::Interpolated(parts) => {
+                let (string, positional) = self.check_template(parts, template.span);
+                if let Some(string) = string {
+                    self.body.spans.push(template.span);
+                    self.types.insert(template.span, string);
+                }
+                positional
+            }
+            _ if rest.is_empty() => return None,
+            ExprKind::Str(_) => {
+                self.check_expr(template);
+                Vec::new()
+            }
+            _ => {
+                self.err(template.span, "a template with further arguments must be a string literal");
+                return Some(None);
+            }
+        };
+        for arg in rest {
+            if let Some(ty) = self.check_expr(arg) {
+                self.formattable(ty, arg.span);
+            }
+        }
+        if positional.len() != rest.len() {
+            let message = match (positional.len(), rest.len()) {
+                (holes, args) if holes > args => format!(
+                    "{holes} `{{}}` hole{} but {args} argument{} to fill them",
+                    if holes == 1 { "" } else { "s" },
+                    if args == 1 { "" } else { "s" }
+                ),
+                (holes, args) => format!(
+                    "{args} argument{} but {holes} `{{}}` hole{} to fill",
+                    if args == 1 { "" } else { "s" },
+                    if holes == 1 { "" } else { "s" }
+                ),
+            };
+            self.err(span, message);
+        }
+        Some(Some((**return_type).clone()))
     }
 
     /// Type check `CString(s)`, a NUL-terminated copy of the string `s`.

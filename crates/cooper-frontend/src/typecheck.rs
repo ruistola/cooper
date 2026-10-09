@@ -648,27 +648,14 @@ impl<'g> TypeChecker<'g> {
                 Some(Type::Primitive("string".to_string()))
             }
             ExprKind::Interpolated(parts) => {
-                let mut ok = true;
-                for part in parts {
-                    match part {
-                        StrPart::Text(text) => {
-                            if let Err(escape) = decode_escapes(text) {
-                                self.err(expr.span, format!("unknown escape sequence `{escape}` in string literal"));
-                            }
-                        }
-                        // A hole formats its value as `string(x)` does.
-                        StrPart::Hole(hole) => match self.check_expr(hole) {
-                            Some(ty) => self.predicate(
-                                PredicateKind::Formattable,
-                                ty,
-                                hole.span,
-                                PredicateSite::Conversion("string".to_string()),
-                            ),
-                            None => ok = false,
-                        },
-                    }
+                let (string, positional) = self.check_template(parts, expr.span);
+                if let Some(&span) = positional.first() {
+                    self.err(
+                        span,
+                        "a `{}` hole takes its value from a call: write `format(\"…{}\", x)`, or put the expression in the braces",
+                    );
                 }
-                ok.then(|| Type::Primitive("string".to_string()))
+                string
             }
             ExprKind::Bool(_) => Some(Type::Primitive("bool".to_string())),
             ExprKind::Nil => Some(Type::Nil),
@@ -736,6 +723,34 @@ impl<'g> TypeChecker<'g> {
                 self.check_closure(&params, return_type, body, expr.span, None)
             }
         }
+    }
+
+    /// Check the parts of an interpolated string, returning its type (`string`, unless
+    /// a hole failed to check) and the spans of its positional holes.
+    pub(super) fn check_template(&mut self, parts: &[StrPart], span: Span) -> (Option<Type>, Vec<Span>) {
+        let mut ok = true;
+        let mut positional = Vec::new();
+        for part in parts {
+            match part {
+                StrPart::Text(text) => {
+                    if let Err(escape) = decode_escapes(text) {
+                        self.err(span, format!("unknown escape sequence `{escape}` in string literal"));
+                    }
+                }
+                // A hole formats its value as `string(x)` does.
+                StrPart::Hole(hole) => match self.check_expr(hole) {
+                    Some(ty) => self.formattable(ty, hole.span),
+                    None => ok = false,
+                },
+                StrPart::Positional(span) => positional.push(*span),
+            }
+        }
+        (ok.then(|| Type::Primitive("string".to_string())), positional)
+    }
+
+    /// Require a value of type `ty` to be formattable as `string(x)` formats it.
+    pub(super) fn formattable(&mut self, ty: Type, span: Span) {
+        self.predicate(PredicateKind::Formattable, ty, span, PredicateSite::Conversion("string".to_string()));
     }
 
     fn check_ident(&mut self, name: &str, span: Span) -> Option<Type> {

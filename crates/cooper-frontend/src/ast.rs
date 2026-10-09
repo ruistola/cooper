@@ -147,6 +147,9 @@ pub enum StrPart {
     Text(String),
     /// A hole: an expression formatted as `string(x)` formats it.
     Hole(Expr),
+    /// A positional hole `{}`, filled by the next argument of the call the literal is
+    /// the template of (`format("X is {}", x)`).
+    Positional(Span),
 }
 
 /// A function literal's parameter, whose type may be left to inference.
@@ -260,7 +263,7 @@ pub enum ExprKind {
     Bool(bool),
     /// A string literal without holes, as written (quotes and escapes included).
     Str(String),
-    /// A string literal with holes, `"X is {x}"`: its text and formatted expressions in
+    /// A string literal with holes, `"X is {x}"` or `"X is {}"`: its text and holes in
     /// order.
     Interpolated(Vec<StrPart>),
     Ident(String),

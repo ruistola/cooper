@@ -6,6 +6,9 @@
 //!
 //! * `std.io`: `print(s: string)` writes `s` to standard output, and `println(s: string)`
 //!   writes it followed by a newline.
+//! * `std.fmt`: `format(template: string): string`, the text of a template whose
+//!   positional holes `{}` its further arguments fill (`format("X is {}", x)`). `print`
+//!   and `println` take such arguments too.
 //! * `std.ffi`: `CString`, a NUL-terminated C string (`struct CString { data: u8^ }`),
 //!   converted from a string as `CString(s)` and back as `string(c)`, and
 //!   `copyBytes(p: u8^, n: i64): u8[]`, which copies C bytes into an array.
@@ -16,6 +19,8 @@ use crate::types::{StructDef, Type, TypeId};
 
 /// The module path of standard input and output.
 pub const IO_MODULE: &str = "std.io";
+/// The module path of text formatting.
+pub const FMT_MODULE: &str = "std.fmt";
 /// The module path of the C interop helpers.
 pub const FFI_MODULE: &str = "std.ffi";
 /// The C string type `std.ffi` declares.
@@ -30,6 +35,9 @@ pub(crate) fn interfaces() -> Vec<(ModulePath, Globals)> {
     for name in ["print", "println"] {
         function(&mut io, name, vec![string()], Type::Unit);
     }
+
+    let mut fmt = module(FMT_MODULE);
+    function(&mut fmt, "format", vec![string()], string());
 
     let mut ffi = module(FFI_MODULE);
     let id = TypeId {
@@ -49,8 +57,16 @@ pub(crate) fn interfaces() -> Vec<(ModulePath, Globals)> {
 
     vec![
         (ModulePath::parse(IO_MODULE), io),
+        (ModulePath::parse(FMT_MODULE), fmt),
         (ModulePath::parse(FFI_MODULE), ffi),
     ]
+}
+
+/// Whether `item` takes a template, whose positional holes its further arguments fill:
+/// `std.fmt.format`, `std.io.print`, and `std.io.println`.
+pub fn takes_template(item: &Callable) -> bool {
+    matches!(item, Callable::Func { module, name }
+        if (module == FMT_MODULE && name == "format") || (module == IO_MODULE && (name == "print" || name == "println")))
 }
 
 /// Whether `ty` is `std.ffi`'s `CString`, which converts from and to `string`.

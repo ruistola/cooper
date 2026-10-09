@@ -91,7 +91,11 @@ impl Parser {
                     parts.push(StrPart::Text(inner[segment..i].to_string()));
                     let start = base + i + 1;
                     let source = &inner[i + 1..i + len];
-                    parts.push(StrPart::Hole(self.hole(source, start)?));
+                    parts.push(if source.trim().is_empty() {
+                        StrPart::Positional(Span::new(start - 1, start + len))
+                    } else {
+                        StrPart::Hole(self.hole(source, start)?)
+                    });
                     i += 1 + len;
                     segment = i;
                 }
@@ -107,10 +111,6 @@ impl Parser {
 
     /// Parse the source of a hole, which begins at byte `start` of the file.
     fn hole(&mut self, source: &str, start: usize) -> PResult<Expr> {
-        let span = Span::new(start, start + source.len());
-        if source.trim().is_empty() {
-            return Err(self.error(span, "a hole in a string needs an expression"));
-        }
         let mut tokens = match crate::lexer::tokenize(source) {
             Ok(tokens) => tokens,
             Err(mut diag) => {

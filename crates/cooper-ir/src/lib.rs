@@ -636,6 +636,11 @@ impl Lower<'_> {
             if let Some(op) = standard_intrinsic(&reference.item) {
                 return self.wrapper(ty, expr.span, |args| IrExprKind::Intrinsic { op, args });
             }
+            if stdlib::takes_template(&reference.item) {
+                return self.wrapper(ty, expr.span, |args| {
+                    args.into_iter().next().expect("format takes its template").kind
+                });
+            }
             if matches!(reference.item, Callable::Extern { .. }) {
                 let item = reference.item.clone();
                 let callee_ty = ty.clone();
@@ -677,7 +682,7 @@ impl Lower<'_> {
             ExprKind::Str(text) => IrExprKind::Str(
                 decode_string_literal(text).map_err(|_| LowerError::MalformedLiteral(expr.span))?,
             ),
-            ExprKind::Interpolated(parts) => return self.interpolated(parts, &ty, expr.span),
+            ExprKind::Interpolated(parts) => return self.interpolated(parts, &[], &ty, expr.span),
             ExprKind::Nil => IrExprKind::Nil,
             ExprKind::Unit => IrExprKind::Unit,
             ExprKind::Ident(name) => {
@@ -830,14 +835,44 @@ impl Lower<'_> {
         })
     }
 
-    /// An interpolated string: its text and each hole's `string(x)`, concatenated in
-    /// order.
-    fn interpolated(&self, parts: &[StrPart], string: &Type, span: Span) -> Result<IrExpr, LowerError> {
+    /// An interpolated string, its positional holes filled by `args` in order: each
+    /// hole's value and each argument is evaluated once, in that order, then formatted
+    /// as `string(x)` formats it and joined with the text.
+    fn interpolated(&self, parts: &[StrPart], args: &[Expr], string: &Type, span: Span) -> Result<IrExpr, LowerError> {
         let node = |kind| IrExpr {
             kind,
             ty: string.clone(),
             span,
         };
+        let mut stmts = Vec::new();
+        let mut bind = |value: IrExpr| {
+            let name = format!("fmt.{}.{}", span.start, stmts.len());
+            let var = IrExpr {
+                kind: IrExprKind::Var(name.clone()),
+                ty: value.ty.clone(),
+                span: value.span,
+            };
+            stmts.push(IrStmt {
+                span: value.span,
+                kind: IrStmtKind::Var {
+                    name,
+                    ty: value.ty.clone(),
+                    init: Some(value),
+                },
+            });
+            var
+        };
+        let mut holes = Vec::new();
+        for part in parts {
+            if let StrPart::Hole(hole) = part {
+                holes.push(bind(self.expr(hole)?));
+            }
+        }
+        let mut filled = Vec::new();
+        for arg in args {
+            filled.push(bind(self.expr(arg)?));
+        }
+        let (mut holes, mut filled) = (holes.into_iter(), filled.into_iter());
         let mut out: Option<IrExpr> = None;
         for part in parts {
             let piece = match part {
@@ -845,7 +880,10 @@ impl Lower<'_> {
                 StrPart::Text(text) => {
                     node(IrExprKind::Str(decode_escapes(text).map_err(|_| LowerError::MalformedLiteral(span))?))
                 }
-                StrPart::Hole(hole) => node(IrExprKind::Convert(Box::new(self.expr(hole)?))),
+                StrPart::Hole(_) => node(IrExprKind::Convert(Box::new(holes.next().expect("bound above")))),
+                StrPart::Positional(_) => {
+                    node(IrExprKind::Convert(Box::new(filled.next().expect("the checker matched holes and arguments"))))
+                }
             };
             out = Some(match out {
                 None => piece,
@@ -856,7 +894,14 @@ impl Lower<'_> {
                 }),
             });
         }
-        Ok(out.unwrap_or_else(|| node(IrExprKind::Str(String::new()))))
+        let result = out.unwrap_or_else(|| node(IrExprKind::Str(String::new())));
+        if stmts.is_empty() {
+            return Ok(result);
+        }
+        Ok(node(IrExprKind::Block {
+            stmts,
+            result: Box::new(result),
+        }))
     }
 
     fn value_block(&self, block: &Block) -> Result<IrExprKind, LowerError> {
@@ -1013,6 +1058,11 @@ impl Lower<'_> {
                 args: self.each(args)?,
             });
         }
+        if let Some(reference) = self.refs.get(&strip_group(callee).span) {
+            if stdlib::takes_template(&reference.item) {
+                return self.template_call(&reference.item, args);
+            }
+        }
         if let Some(op) = self.standard_function(callee) {
             return Ok(IrExprKind::Intrinsic {
                 op,
@@ -1048,6 +1098,21 @@ impl Lower<'_> {
         Ok(IrExprKind::Call {
             callee: Box::new(self.expr(callee)?),
             args: self.each(args)?,
+        })
+    }
+
+    /// A call to `format`, `print`, or `println`: the text of its template, its
+    /// positional holes filled by the further arguments, then printed or returned.
+    fn template_call(&self, item: &Callable, args: &[Expr]) -> Result<IrExprKind, LowerError> {
+        let template = &args[0];
+        let string = Type::Primitive("string".to_string());
+        let text = match &template.kind {
+            ExprKind::Interpolated(parts) => self.interpolated(parts, &args[1..], &string, template.span)?,
+            _ => self.expr(template)?,
+        };
+        Ok(match standard_intrinsic(item) {
+            Some(op) => IrExprKind::Intrinsic { op, args: vec![text] },
+            None => text.kind,
         })
     }
 
@@ -1252,6 +1317,8 @@ fn standard_intrinsic(item: &Callable) -> Option<Intrinsic> {
         (stdlib::IO_MODULE, "print") => Intrinsic::Print { newline: false },
         (stdlib::IO_MODULE, "println") => Intrinsic::Print { newline: true },
         (stdlib::FFI_MODULE, "copyBytes") => Intrinsic::CopyBytes,
+        // `format` of a finished string is that string.
+        (stdlib::FMT_MODULE, "format") => return None,
         (module, name) if module.starts_with("std.") => {
             unreachable!("`{module}.{name}` is not a standard function")
         }

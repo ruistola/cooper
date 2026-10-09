@@ -23,6 +23,19 @@ A hole is any single expression, written on one line. A string inside a value is
 `string(x)` quotes it (`"{[name]}"` gives `["Q"]`), while a string in a hole on its own is
 spliced as is.
 
+An empty hole `{}` is positional: it takes its value from the call the literal is the
+template of, for an expression better kept outside the text. `std.fmt.format` returns the
+text, and `print` and `println` accept the same arguments:
+
+```
+println("{} + {} = {}", a, b, a + b)
+label := format("total {} of {limit}", sum(xs))
+```
+
+Each argument fills the next `{}` in order. The template must be a literal, and its `{}`
+holes and the arguments must match in number, or the call is a compile error. The
+template's own holes are evaluated first, then the arguments, each once, in order.
+
 ## Semicolon inference
 
 Semicolons separate statements, and a newline becomes one when both of these hold, following

@@ -2,6 +2,8 @@
 
 use cooper_frontend::resolve::Callable;
 
+use crate::ffi::{shim_symbol, Passing};
+
 use super::*;
 
 impl Emitter<'_, '_> {
@@ -55,43 +57,68 @@ impl Emitter<'_, '_> {
         Ok(Some(Value { ty: ret, operand }))
     }
 
-    /// A call to the C function `name`: each argument crosses as its C counterpart
-    /// (a one-member struct as its member), and the result comes back the same way.
+    /// A call to the C function `name`. Each argument and the result cross as
+    /// [`Passing`] says: a scalar directly (out of any one-member struct around it), or
+    /// a struct by pointer to the C wrapper, which makes the by-value call.
     fn extern_call(&mut self, name: &str, args: &[IrExpr], result: &Type, span: Span) -> Result<Option<Value>, CodegenError> {
-        let mut operands = Vec::with_capacity(args.len());
+        let unsupported = |e: &Self, what: String| e.unsupported::<()>(&what, span).unwrap_err();
+        let params: Vec<Type> = args.iter().map(|a| a.ty.clone()).collect();
+        let shim = self.module.needs_shim(&params, result).map_err(|w| unsupported(self, w))?;
+        let mut operands = Vec::with_capacity(args.len() + 1);
+        let result_slot = if shim && !matches!(result, Type::Unit) {
+            let slot = self.slot(None, result, span)?;
+            operands.push(format!("ptr {}", slot.ptr));
+            Some(slot)
+        } else {
+            None
+        };
         for arg in args {
             let value = self.expr(arg)?.expect("a C argument has a value");
-            let c_type = self.module.c_param(&arg.ty).or_else(|what| self.unsupported(&what, span))?;
-            let operand = self.c_argument(&arg.ty, value);
-            operands.push(format!("{c_type} {operand}"));
+            match self.module.passing(&arg.ty).map_err(|w| unsupported(self, w))? {
+                Passing::Indirect => {
+                    let temp = self.slot(None, &arg.ty, span)?;
+                    self.store(&temp, Some(&value));
+                    operands.push(format!("ptr {}", temp.ptr));
+                }
+                Passing::Direct { .. } => {
+                    let c_type = self.module.c_param(&arg.ty).map_err(|w| unsupported(self, w))?;
+                    let operand = self.unwrap_members(&arg.ty, value, span)?;
+                    operands.push(format!("{c_type} {operand}"));
+                }
+            }
+        }
+        let target = if shim { shim_symbol(name) } else { name.to_string() };
+        if let Some(slot) = result_slot {
+            self.inst(&format!("call void @{target}({})", operands.join(", ")));
+            return Ok(self.load(&slot));
         }
         if matches!(result, Type::Unit) {
-            self.inst(&format!("call void @{name}({})", operands.join(", ")));
+            self.inst(&format!("call void @{target}({})", operands.join(", ")));
             return Ok(None);
         }
-        let c_type = self.module.c_return(result).or_else(|what| self.unsupported(&what, span))?;
-        let operand = self.assign(&format!("call {c_type} @{name}({})", operands.join(", ")));
-        self.c_result(result, operand, span).map(Some)
+        let c_type = self.module.c_return(result).map_err(|w| unsupported(self, w))?;
+        let operand = self.assign(&format!("call {c_type} @{target}({})", operands.join(", ")));
+        self.wrap_members(result, operand, span).map(Some)
     }
 
-    /// The operand `value`, of type `ty`, passes to C as: a one-member struct's member.
-    fn c_argument(&mut self, ty: &Type, value: Value) -> String {
+    /// The scalar inside the one-member structs around `value`, of type `ty`.
+    fn unwrap_members(&mut self, ty: &Type, value: Value, span: Span) -> Result<String, CodegenError> {
         match self.module.defs.struct_members(ty).as_deref() {
             Some([(_, member)]) => {
-                let inner = self.assign(&format!("extractvalue {} {}, 0", value.ty, value.operand));
-                let llvm = self.module.llvm_type(member).ok().flatten().expect("a C member has a value");
-                self.c_argument(member, Value { ty: llvm, operand: inner })
+                let inner = self.extract(&value, 0, member, span)?.expect("a C member has a value");
+                self.unwrap_members(member, inner, span)
             }
-            _ => value.operand,
+            _ => Ok(value.operand),
         }
     }
 
-    /// The value of type `ty` that the C result `operand` stands for.
-    fn c_result(&mut self, ty: &Type, operand: String, span: Span) -> Result<Value, CodegenError> {
+    /// The value of type `ty` that the direct C result `operand` stands for, wrapping
+    /// it in the one-member structs `ty` has around its scalar.
+    fn wrap_members(&mut self, ty: &Type, operand: String, span: Span) -> Result<Value, CodegenError> {
         let llvm = self.value_type(ty, span)?.expect("a C result has a value");
         match self.module.defs.struct_members(ty).as_deref() {
             Some([(_, member)]) => {
-                let inner = self.c_result(member, operand, span)?;
+                let inner = self.wrap_members(member, operand, span)?;
                 Ok(self.aggregate(&llvm, vec![Some(inner)]))
             }
             _ => Ok(Value { ty: llvm, operand }),

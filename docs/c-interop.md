@@ -27,12 +27,18 @@ and its declaration is the visible marker of that.
 | `f32`, `f64` | `float`, `double` |
 | `bool` | `bool` (`_Bool`) |
 | `T^` (`nil` is `NULL`) | `T *` |
-| a struct of one such member | the same struct, passed as its member |
+| a struct of these, nested structs included | the struct with the same members in order |
 | no return type | `void` |
 
-A Cooper struct is laid out in declaration order with C alignment, so a pointer to one is a
-pointer to the matching C struct. Strings, arrays, tuples, sum types, function values, and
-structs of more than one member cannot cross by value. A C buffer is a `u8^`, and `&xs[0]`
+A Cooper struct is laid out in declaration order with C alignment, so it matches the C struct
+declaring the same member types in the same order, by value or through a pointer. The member
+names need not match. Strings, arrays, tuples, sum types, and function values cannot cross,
+nor can a struct containing one.
+
+```
+struct DivT { quot: i32, rem: i32 }
+extern func div(a: i32, b: i32): DivT     # the C library's div_t div(int, int)
+``` A C buffer is a `u8^`, and `&xs[0]`
 points into an array's storage, so C can read or fill a Cooper buffer:
 
 ```

@@ -519,7 +519,7 @@ fn resolve_extern_func(
         }
         diags.push(
             Diagnostic::error(ty.span, format!("type {resolved} cannot cross to C"))
-                .with_note("C functions take and return integers, floats, bool, pointers, and structs of one such member"),
+                .with_note("C functions take and return integers, floats, bool, pointers, and structs of these"),
         );
         None
     };
@@ -554,17 +554,16 @@ fn resolve_extern_func(
     );
 }
 
-/// Whether a value of type `ty` has a C counterpart it is passed as: an integer, a
-/// float, `bool`, a pointer, or a struct of exactly one such member, which every
-/// supported C ABI passes as that member.
+/// Whether a value of type `ty` has a C counterpart with the same layout: an integer, a
+/// float, `bool`, a pointer, or a struct of at least one member, every member such a
+/// value. A struct cannot contain itself by value, so the recursion ends.
 fn c_compatible(ty: &Type, defs: &TypeDefs) -> bool {
     match ty {
         Type::Primitive(name) => name != "string",
         Type::Pointer(_) => true,
-        Type::Struct { .. } => match defs.struct_members(ty).as_deref() {
-            Some([(_, member)]) => c_compatible(member, defs),
-            _ => false,
-        },
+        Type::Struct { .. } => defs
+            .struct_members(ty)
+            .is_some_and(|members| !members.is_empty() && members.iter().all(|(_, m)| c_compatible(m, defs))),
         _ => false,
     }
 }

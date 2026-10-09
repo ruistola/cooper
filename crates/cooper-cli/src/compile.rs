@@ -21,6 +21,7 @@ use crate::Native;
 const CC_VAR: &str = "COOPER_CC";
 const DEFAULT_CC: &str = "clang";
 const RUNTIME_FILE: &str = "cooper_rt.c";
+const SHIMS_FILE: &str = "cooper_shims.c";
 
 /// Why a program could not be built.
 #[derive(Debug)]
@@ -74,21 +75,28 @@ pub fn build(project: &Project, native: &Native, build_dir: &Path) -> Result<Pat
     let program = cooper_ir::lower_program(&checked).map_err(BuildError::Lower)?;
     let cc = std::env::var(CC_VAR).unwrap_or_else(|_| DEFAULT_CC.to_string());
     let triple = target_triple(&cc)?;
-    let ir = cooper_llvm::emit(&program, &triple, project).map_err(BuildError::Codegen)?;
+    let emitted = cooper_llvm::emit(&program, &triple, project).map_err(BuildError::Codegen)?;
 
     let name = &project.manifest.name;
     let ir_path = build_dir.join(format!("{name}.ll"));
     let runtime_path = build_dir.join(RUNTIME_FILE);
     let executable = build_dir.join(name);
     create_dir(build_dir)?;
-    write(&ir_path, &ir)?;
+    write(&ir_path, &emitted.ir)?;
     write(&runtime_path, cooper_llvm::RUNTIME_C)?;
+    // Wrappers for C functions that pass structs by value, compiled with the program.
+    let shims_path = build_dir.join(SHIMS_FILE);
+    let shims = (!emitted.c_shims.is_empty()).then_some(&shims_path);
+    if shims.is_some() {
+        write(&shims_path, &emitted.c_shims)?;
+    }
 
     let output = Command::new(&cc)
         .arg("-o")
         .arg(&executable)
         .arg(&ir_path)
         .arg(&runtime_path)
+        .args(shims)
         .args(&native.sources)
         .args(native.libraries.iter().map(|library| format!("-l{library}")))
         .output()

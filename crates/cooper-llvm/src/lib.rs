@@ -11,6 +11,7 @@
 //! covers a growing subset of the IR; anything outside it is reported as
 //! [`CodegenError::Unsupported`] rather than miscompiled.
 
+mod ffi;
 mod function;
 mod layout;
 mod mangle;
@@ -22,7 +23,7 @@ use cooper_frontend::diag::{line_col, Span};
 use cooper_frontend::resolve::Callable;
 use cooper_frontend::types::{Type, TypeDefs};
 use cooper_frontend::Project;
-use cooper_ir::{Extern, Function, Program};
+use cooper_ir::{Function, Program};
 
 /// The C runtime every program links against: the process entry point and the
 /// operations the IR's intrinsics lower to.
@@ -71,9 +72,17 @@ impl fmt::Display for CodegenError {
 
 impl std::error::Error for CodegenError {}
 
+/// A compiled program: its LLVM IR module, and the C source of the wrappers its calls
+/// to C functions that pass structs by value go through (empty when there are none),
+/// which the driver compiles with it.
+pub struct Emitted {
+    pub ir: String,
+    pub c_shims: String,
+}
+
 /// Emit `program` as a textual LLVM IR module for the target `triple`. `project`
 /// supplies the source text that runtime error messages locate their cause in.
-pub fn emit(program: &Program, triple: &str, project: &Project) -> Result<String, CodegenError> {
+pub fn emit(program: &Program, triple: &str, project: &Project) -> Result<Emitted, CodegenError> {
     let receivers = program
         .functions
         .iter()
@@ -90,15 +99,16 @@ pub fn emit(program: &Program, triple: &str, project: &Project) -> Result<String
         strings: Vec::new(),
         types: BTreeMap::new(),
         thunks: BTreeMap::new(),
+        c_types: Vec::new(),
+        shims: String::new(),
         nil_size: 0,
     };
     for declared in &program.externs {
-        let declaration = module.extern_declaration(declared).map_err(|what| CodegenError::Unsupported {
+        module.declare_extern(declared).map_err(|what| CodegenError::Unsupported {
             what,
             file: String::new(),
             span: Span::new(0, 0),
         })?;
-        module.declare(&declaration);
     }
     let mut functions = String::new();
     for function in &program.functions {
@@ -140,7 +150,8 @@ pub fn emit(program: &Program, triple: &str, project: &Project) -> Result<String
     });
     out.push('\n');
     out.push_str(&entry(&program.functions)?);
-    Ok(out)
+    let c_shims = module.c_source();
+    Ok(Emitted { ir: out, c_shims })
 }
 
 /// Module-wide emission state shared by every function: external declarations and
@@ -158,61 +169,17 @@ struct Module<'p> {
     /// Adapters giving functions and bound methods the function-value calling
     /// convention (a hidden environment argument first), by name.
     thunks: BTreeMap<String, String>,
+    /// The C definitions of the struct types C wrappers pass by value, in an order where
+    /// each follows the types it contains, by mangled type name.
+    c_types: Vec<(String, String)>,
+    /// The C wrappers of extern functions that pass a struct by value (see `ffi`).
+    shims: String,
     /// The size of the zero buffer and sink that loads and stores through nil use: the
     /// largest type accessed through a pointer.
     nil_size: usize,
 }
 
 impl Module<'_> {
-    /// The LLVM declaration of the C function `declared`, its types as C passes them.
-    fn extern_declaration(&mut self, declared: &Extern) -> Result<String, String> {
-        let ret = match &declared.return_type {
-            Type::Unit => "void".to_string(),
-            ty => self.c_return(ty)?,
-        };
-        let params = declared
-            .params
-            .iter()
-            .map(|ty| self.c_param(ty))
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(format!("declare {ret} @{}({})", declared.name, params.join(", ")))
-    }
-
-    /// The C counterpart a value of type `ty` crosses to C as: itself, or for a struct
-    /// of one member, that member's counterpart.
-    fn c_scalar(&self, ty: &Type) -> Type {
-        match self.defs.struct_members(ty).as_deref() {
-            Some([(_, member)]) => self.c_scalar(member),
-            _ => ty.clone(),
-        }
-    }
-
-    /// The LLVM type of `ty` as a C parameter, with its ABI attribute (`i8 signext`).
-    fn c_param(&mut self, ty: &Type) -> Result<String, String> {
-        let (llvm, extension) = self.c_type(ty)?;
-        Ok(format!("{llvm}{}", extension.map(|e| format!(" {e}")).unwrap_or_default()))
-    }
-
-    /// The LLVM type of `ty` as a C return value, after its ABI attribute (`signext i8`).
-    fn c_return(&mut self, ty: &Type) -> Result<String, String> {
-        let (llvm, extension) = self.c_type(ty)?;
-        Ok(format!("{}{llvm}", extension.map(|e| format!("{e} ")).unwrap_or_default()))
-    }
-
-    /// The LLVM type of `ty` as C passes it, and the extension attribute it needs: C
-    /// widens a small integer or `bool`, so its signedness is spelled out.
-    fn c_type(&mut self, ty: &Type) -> Result<(String, Option<&'static str>), String> {
-        let scalar = self.c_scalar(ty);
-        let llvm = self.llvm_type(&scalar)?.ok_or_else(|| format!("passing {ty} to C"))?;
-        let extension = match layout::Scalar::of(&scalar) {
-            Some(layout::Scalar::Bool) => Some("zeroext"),
-            Some(layout::Scalar::Int { bits: 8 | 16, signed: true }) => Some("signext"),
-            Some(layout::Scalar::Int { bits: 8 | 16, signed: false }) => Some("zeroext"),
-            _ => None,
-        };
-        Ok((llvm, extension))
-    }
-
     /// Declare an external function (an LLVM intrinsic or a runtime function).
     fn declare(&mut self, declaration: &str) {
         self.declarations.insert(declaration.to_string());

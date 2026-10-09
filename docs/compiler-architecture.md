@@ -156,9 +156,13 @@ functions from different modules never collide.
 An `extern func` resolves to `Callable::Extern`, whose symbol is the bare C name. Lowering
 collects the program's externs into `Program::externs`, once per symbol, and a call to one
 stays a direct call; used as a value, it lowers to a lifted wrapper like a standard library
-function. The backend declares each with the C ABI's extension attributes (`signext`,
-`zeroext`) on small integers and `bool`, and passes a one-member struct as its member. The
-CLI links the C sources and libraries of the manifest's `[c]` table. Constructs the backend does not handle yet
+function. The backend (`ffi.rs`) declares each with the C ABI's extension attributes (`signext`,
+`zeroext`) on small integers and `bool`, and passes a one-member struct of an integer,
+`bool`, or pointer as that member. Any other struct crosses through a generated C wrapper
+taking the struct arguments and result by pointer, so the C compiler implements the
+target's rules for structs by value; `emit` returns the wrappers' C source beside the IR,
+and the CLI compiles it (`build/cooper_shims.c`) with the program, the runtime, and the C
+sources and libraries of the manifest's `[c]` table. Constructs the backend does not handle yet
 are reported, never miscompiled.
 
 Golden programs in `cooper-cli/tests/programs/` are built and run by `cargo test`, each

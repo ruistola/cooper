@@ -424,7 +424,7 @@ impl Emitter<'_, '_> {
     /// a closure captures.
     fn note_escape(&self, expr: &IrExpr, heap: &mut HashSet<String>) {
         let addressed = match &expr.kind {
-            IrExprKind::Closure { captures, .. } => {
+            IrExprKind::Closure { captures, .. } | IrExprKind::GenericClosure { captures } => {
                 heap.extend(captures.iter().cloned());
                 None
             }
@@ -576,7 +576,22 @@ impl Emitter<'_, '_> {
                 item,
                 type_args,
                 captures,
-            } => self.closure(&mangle::symbol(item, type_args), captures).map(Some),
+            } => self.closure(Some(&mangle::symbol(item, type_args)), captures).map(Some),
+            IrExprKind::GenericClosure { captures } => self.closure(None, captures).map(Some),
+            IrExprKind::Instantiate {
+                closure,
+                item,
+                type_args,
+            } => {
+                let value = self.expr(closure)?.expect("a function value has a value");
+                let env = self.assign(&format!("extractvalue {FUNC_VALUE} {}, 1", value.operand));
+                let code = Value {
+                    ty: "ptr".to_string(),
+                    operand: format!("@{}", mangle::symbol(item, type_args)),
+                };
+                let env = Value { ty: "ptr".to_string(), operand: env };
+                Ok(Some(self.aggregate(FUNC_VALUE, vec![Some(code), Some(env)])))
+            }
             IrExprKind::Method {
                 receiver,
                 item,
@@ -740,8 +755,11 @@ fn walk_expr(expr: &IrExpr, visit: &mut impl FnMut(&IrExpr)) {
         | IrExprKind::Var(_)
         | IrExprKind::Global { .. }
         | IrExprKind::FuncRef { .. }
+        | IrExprKind::GenericClosure { .. }
         | IrExprKind::Closure { .. } => {}
-        IrExprKind::Method { receiver, .. } => walk_expr(receiver, visit),
+        IrExprKind::Instantiate { closure: receiver, .. } | IrExprKind::Method { receiver, .. } => {
+            walk_expr(receiver, visit)
+        }
         IrExprKind::Tuple(elems) | IrExprKind::Intrinsic { args: elems, .. } => walk_all(elems, visit),
         IrExprKind::Variant { args, .. } => walk_all(args, visit),
         IrExprKind::Unary { operand, .. }

@@ -287,6 +287,17 @@ impl Substitute<'_> {
                 self.references
                     .push((item.clone(), type_args.clone(), expr.span));
             }
+            IrExprKind::GenericClosure { .. } => {}
+            IrExprKind::Instantiate {
+                closure,
+                item,
+                type_args,
+            } => {
+                self.expr(closure);
+                type_args.iter_mut().for_each(|t| self.ty(t));
+                self.references
+                    .push((item.clone(), type_args.clone(), expr.span));
+            }
             IrExprKind::Method {
                 receiver,
                 item,

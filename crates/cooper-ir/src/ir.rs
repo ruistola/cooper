@@ -273,6 +273,17 @@ pub enum IrExprKind {
         type_args: Vec<Type>,
         captures: Vec<String>,
     },
+    /// The environment of a generic nested function, as a function value without code:
+    /// its variable holds this, and each use makes an [`Instantiate`](Self::Instantiate)
+    /// from it. `captures` are as for `Closure`.
+    GenericClosure { captures: Vec<String> },
+    /// The function value of the lifted generic nested function `item` instantiated at
+    /// `type_args`, sharing the environment of `closure`, the value of its variable.
+    Instantiate {
+        closure: Box<IrExpr>,
+        item: Callable,
+        type_args: Vec<Type>,
+    },
     /// A reference to a free function, instantiated at `type_args` (one per binder of
     /// its signature; none when it is not generic).
     FuncRef { item: Callable, type_args: Vec<Type> },
@@ -501,8 +512,11 @@ fn visit_expr_mut(expr: &mut IrExpr, visit: &mut dyn FnMut(&mut IrExpr)) {
         | IrExprKind::Var(_)
         | IrExprKind::Global { .. }
         | IrExprKind::FuncRef { .. }
+        | IrExprKind::GenericClosure { .. }
         | IrExprKind::Closure { .. } => {}
-        IrExprKind::Method { receiver, .. } => visit_expr_mut(receiver, visit),
+        IrExprKind::Instantiate { closure, .. } | IrExprKind::Method { receiver: closure, .. } => {
+            visit_expr_mut(closure, visit)
+        }
         IrExprKind::Tuple(elems)
         | IrExprKind::Intrinsic { args: elems, .. }
         | IrExprKind::Variant { args: elems, .. } => all(elems, visit),

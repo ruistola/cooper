@@ -36,7 +36,7 @@ use cooper_frontend::resolve::{
     receiver_pattern_params, resolve_type, underlying_struct_name, Callable, Globals, Signature,
 };
 use cooper_frontend::typecheck::{
-    decode_escapes, decode_number_literal, decode_string_literal, ItemRef, LiteralValue, Typed, VarRef,
+    decode_escapes, decode_number_literal, decode_string_literal, ItemRef, LiteralValue, LocalRef, Typed, VarRef,
 };
 use cooper_frontend::{stdlib, CheckedProject};
 use cooper_frontend::types::{is_numeric_name, Type, TypeDefs, INDEX_INT};
@@ -289,12 +289,14 @@ fn lower_initializer(
         refs: &checked.refs,
         captures: &checked.captures,
         variables: &checked.variables,
+        local_refs: &checked.local_refs,
         globals,
-        type_params: HashSet::new(),
+        type_params: RefCell::new(HashSet::new()),
         lifting: Some(Lifting {
             file: file.to_string(),
             parent: item.clone(),
-            binders: Vec::new(),
+            binders: RefCell::new(Vec::new()),
+            generics: RefCell::new(HashMap::new()),
             next: Cell::new(0),
             lifted: RefCell::new(Vec::new()),
         }),
@@ -353,12 +355,14 @@ fn lower_function(
         refs: &checked.refs,
         captures: &checked.captures,
         variables: &checked.variables,
+        local_refs: &checked.local_refs,
         globals,
-        type_params,
+        type_params: RefCell::new(type_params),
         lifting: Some(Lifting {
             file: file.to_string(),
             parent: signature.item.clone(),
-            binders: signature.type_params.clone(),
+            binders: RefCell::new(signature.type_params.clone()),
+            generics: RefCell::new(HashMap::new()),
             next: Cell::new(0),
             lifted: RefCell::new(Vec::new()),
         }),
@@ -411,8 +415,9 @@ pub fn lower_expr(expr: &Expr, globals: &Globals, checked: &Typed) -> Result<IrE
         refs: &checked.refs,
         captures: &checked.captures,
         variables: &checked.variables,
+        local_refs: &checked.local_refs,
         globals,
-        type_params: HashSet::new(),
+        type_params: RefCell::new(HashSet::new()),
         lifting: None,
     }
     .expr(expr)
@@ -426,8 +431,9 @@ struct Lower<'a> {
     refs: &'a HashMap<Span, ItemRef>,
     captures: &'a HashMap<Span, Vec<(String, Type)>>,
     variables: &'a HashMap<Span, VarRef>,
+    local_refs: &'a HashMap<Span, LocalRef>,
     globals: &'a Globals,
-    type_params: HashSet<String>,
+    type_params: RefCell<HashSet<String>>,
     /// Where function literals are lifted to; absent when lowering a lone expression.
     lifting: Option<Lifting>,
 }
@@ -436,8 +442,12 @@ struct Lower<'a> {
 struct Lifting {
     file: String,
     parent: Callable,
-    /// The declaration's binders, which every lifted function inherits.
-    binders: Vec<String>,
+    /// The binders in scope, which every lifted function inherits: the declaration's,
+    /// then those of each generic nested function being lowered.
+    binders: RefCell<Vec<String>>,
+    /// Each generic nested function lowered so far, by the span of its declaration: its
+    /// lifted function and the binders in scope where it is declared, which precede its own.
+    generics: RefCell<HashMap<Span, (Callable, Vec<String>)>>,
     /// The index the next lifted function takes.
     next: Cell<u32>,
     lifted: RefCell<Vec<Function>>,
@@ -456,7 +466,7 @@ impl Lower<'_> {
     /// check, so an unresolved annotation is an internal inconsistency.
     fn resolve(&self, ty: &TypeExpr) -> Result<Type, LowerError> {
         let mut diags = Vec::new();
-        resolve_type(ty, &self.type_params, self.globals, &mut diags)
+        resolve_type(ty, &self.type_params.borrow(), self.globals, &mut diags)
             .ok_or(LowerError::UnresolvedType(ty.span))
     }
 
@@ -475,7 +485,15 @@ impl Lower<'_> {
     /// so the closure stored into it can capture it and recurse.
     fn nested_func(&self, func: &FuncDecl) -> Result<[IrStmt; 2], LowerError> {
         let params: Vec<_> = func.params.iter().map(|p| (p.name.as_str(), p.span)).collect();
-        let closure = self.closure(&params, &func.body, func.span)?;
+        let mut closure = self.closure(&params, &func.body, func.span, &func.type_params)?;
+        // A generic function's variable holds only its environment; each use supplies
+        // the code of its instantiation.
+        if !func.type_params.is_empty() {
+            let IrExprKind::Closure { captures, .. } = closure.kind else {
+                unreachable!("lifting yields a closure");
+            };
+            closure.kind = IrExprKind::GenericClosure { captures };
+        }
         let ty = closure.ty.clone();
         let var = |kind| IrExpr {
             kind,
@@ -506,7 +524,7 @@ impl Lower<'_> {
     /// Lift a function literal or nested function out as a function of its own,
     /// returning the closure that creates its function value. Its signature is the
     /// function type the checker gave it, inferred parts included.
-    fn closure(&self, params: &[(&str, Span)], body: &[Stmt], span: Span) -> Result<IrExpr, LowerError> {
+    fn closure(&self, params: &[(&str, Span)], body: &[Stmt], span: Span, own: &[String]) -> Result<IrExpr, LowerError> {
         let Some(lifting) = &self.lifting else {
             return unsupported(span, "a function literal outside a function");
         };
@@ -536,8 +554,24 @@ impl Lower<'_> {
                 span,
             })
             .collect();
+        // A generic function's own binders are in scope in its body and lifted with it.
+        let outer = lifting.binders.borrow().clone();
+        if !own.is_empty() {
+            let item = Callable::Closure {
+                parent: Box::new(lifting.parent.clone()),
+                index,
+            };
+            lifting.generics.borrow_mut().insert(span, (item, outer.clone()));
+            lifting.binders.borrow_mut().extend(own.iter().cloned());
+            self.type_params.borrow_mut().extend(own.iter().cloned());
+        }
         let body = self.block(body)?;
-        self.lift_at(index, params, return_type, body, env, ty, span)
+        let lifted = self.lift_at(index, params, return_type, body, env, ty, span);
+        lifting.binders.borrow_mut().truncate(outer.len());
+        own.iter().for_each(|binder| {
+            self.type_params.borrow_mut().remove(binder);
+        });
+        lifted
     }
 
     /// Lift a function with the given signature, body, and environment out of the
@@ -582,7 +616,7 @@ impl Lower<'_> {
             file: lifting.file.clone(),
             receiver: None,
             env: Some(env),
-            type_params: lifting.binders.clone(),
+            type_params: lifting.binders.borrow().clone(),
             type_args: Vec::new(),
             params,
             return_type,
@@ -592,7 +626,7 @@ impl Lower<'_> {
         Ok(IrExpr {
             kind: IrExprKind::Closure {
                 item,
-                type_args: lifting.binders.iter().map(|b| Type::TypeParam(b.clone())).collect(),
+                type_args: lifting.binders.borrow().iter().map(|b| Type::TypeParam(b.clone())).collect(),
                 captures,
             },
             ty,
@@ -738,7 +772,7 @@ impl Lower<'_> {
             ExprKind::Group(inner) => return self.expr(inner),
             ExprKind::Func { params, body, .. } => {
                 let params: Vec<_> = params.iter().map(|p| (p.name.as_str(), p.span)).collect();
-                return self.closure(&params, body, expr.span);
+                return self.closure(&params, body, expr.span, &[]);
             }
             _ => {}
         }
@@ -755,6 +789,30 @@ impl Lower<'_> {
                 kind: IrExprKind::Global {
                     module: var.module.clone(),
                     name: var.name.clone(),
+                },
+                ty,
+                span: expr.span,
+            });
+        }
+        if let (Some(local), ExprKind::Ident(name), Some(lifting)) =
+            (self.local_refs.get(&expr.span), &expr.kind, &self.lifting)
+        {
+            let (item, outer) = lifting.generics.borrow()[&local.decl].clone();
+            let type_args = outer
+                .into_iter()
+                .map(Type::TypeParam)
+                .chain(local.type_args.iter().cloned())
+                .collect();
+            let closure = IrExpr {
+                kind: IrExprKind::Var(name.clone()),
+                ty: ty.clone(),
+                span: expr.span,
+            };
+            return Ok(IrExpr {
+                kind: IrExprKind::Instantiate {
+                    closure: Box::new(closure),
+                    item,
+                    type_args,
                 },
                 ty,
                 span: expr.span,

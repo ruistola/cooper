@@ -36,7 +36,9 @@ them may come before or after it: in `sq := func(v) { return v * v }`, a later `
 A function declared inside a body is a nested function: a variable holding a function
 value, in scope from its declaration on and within its own body, so it may call itself. Its
 signature is written out in full, like any declaration's.
-Two nested functions cannot call each other, and a nested function cannot be generic yet.
+Two nested functions cannot call each other. A nested function may be generic, declared with
+binders like any function (`func tag T (x: T): string { … }`): each use instantiates it at
+its own types, and its binders may not reuse a name the enclosing function binds.
 
 ```
 func fib(n: i32): i32 {

@@ -131,7 +131,7 @@ impl<'g> TypeChecker<'g> {
         let pending = PendingRef {
             span,
             label: label.to_string(),
-            item: sig.item.clone(),
+            item: RefTarget::Item(sig.item.clone()),
             type_args,
         };
         self.body.references.insert(span, pending);
@@ -169,13 +169,14 @@ impl<'g> TypeChecker<'g> {
         let type_args = pending.type_args.iter()
             .map(|(_, arg)| self.infer.resolve(arg))
             .collect();
-        self.refs.insert(
-            pending.span,
-            ItemRef {
-                item: pending.item.clone(),
-                type_args,
-            },
-        );
+        match &pending.item {
+            RefTarget::Item(item) => {
+                self.refs.insert(pending.span, ItemRef { item: item.clone(), type_args });
+            }
+            RefTarget::Local(decl) => {
+                self.local_refs.insert(pending.span, LocalRef { decl: *decl, type_args });
+            }
+        }
     }
 
     /// Type check a call to a function taking a template (`format`, `print`, `println`)
@@ -187,7 +188,9 @@ impl<'g> TypeChecker<'g> {
         while let ExprKind::Group(inner) = &head.kind {
             head = inner;
         }
-        let item = &self.body.references.get(&head.span)?.item;
+        let RefTarget::Item(item) = &self.body.references.get(&head.span)?.item else {
+            return None;
+        };
         if !crate::stdlib::takes_template(item) {
             return None;
         }

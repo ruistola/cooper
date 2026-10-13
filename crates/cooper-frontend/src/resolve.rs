@@ -736,7 +736,7 @@ pub fn receiver_pattern_params(type_expr: &TypeExpr) -> Vec<String> {
 /// binders too, so `(m: Map string i32)` — which would otherwise bind phantom
 /// parameters named after concrete types — is rejected here. Binders carry no
 /// individual span, so diagnostics point at the declaration (or receiver).
-fn check_type_param_binders(
+pub(crate) fn check_type_param_binders(
     names: &[String],
     span: Span,
     globals: &Globals,

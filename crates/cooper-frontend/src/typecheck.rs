@@ -49,6 +49,8 @@ pub struct Typed {
     /// The module-level variable each use names, keyed by the span of the expression
     /// (a bare name, or a qualified `module.name`).
     pub variables: HashMap<Span, VarRef>,
+    /// Every use of a generic nested function, keyed by span.
+    pub local_refs: HashMap<Span, LocalRef>,
 }
 
 /// A use of a module-level variable: the module that declares it and its name there.
@@ -79,12 +81,36 @@ pub struct ItemRef {
     pub type_args: Vec<Type>,
 }
 
+/// A use of a generic nested function: the span of its declaration and one type
+/// argument per binder, in order. A nested function is lifted out of the declaration
+/// around it, which lowering resolves to the lifted function.
+#[derive(Debug, Clone)]
+pub struct LocalRef {
+    pub decl: Span,
+    pub type_args: Vec<Type>,
+}
+
+/// What a variable name is bound to in a scope: its type and, for a generic nested
+/// function, the declaration and binders its type is generalized over.
+#[derive(Clone)]
+struct Binding {
+    ty: Type,
+    generic: Option<(Span, Vec<String>)>,
+}
+
+/// What a reference names: a declaration, or a generic nested function by the span of
+/// its declaration.
+enum RefTarget {
+    Item(Callable),
+    Local(Span),
+}
+
 /// A function or method reference awaiting the body's resolved type arguments.
 struct PendingRef {
     span: Span,
     /// How diagnostics name the declaration (`function id`, `method map`).
     label: String,
-    item: Callable,
+    item: RefTarget,
     /// Each binder's name and the inference variable for its type argument.
     type_args: Vec<(String, Type)>,
 }
@@ -180,6 +206,7 @@ pub fn check(
         refs: tc.refs,
         captures: tc.captures,
         variables: tc.variables,
+        local_refs: tc.local_refs,
     }
 }
 
@@ -193,7 +220,7 @@ struct TypeChecker<'g> {
     /// Expressions that failed to check, so a second check reports nothing again.
     failed: HashSet<Span>,
     /// Block-scoped variable bindings, innermost scope last.
-    scopes: Vec<HashMap<String, Type>>,
+    scopes: Vec<HashMap<String, Binding>>,
     /// The return type of the function whose body is being checked, if any.
     current_return: Option<Type>,
     /// The type parameters in scope for the current function's local annotations.
@@ -212,6 +239,8 @@ struct TypeChecker<'g> {
     captures: HashMap<Span, Vec<(String, Type)>>,
     /// Every use of a module-level variable, keyed by span: the lowering handoff.
     variables: HashMap<Span, VarRef>,
+    /// Every use of a generic nested function, keyed by span: the lowering handoff.
+    local_refs: HashMap<Span, LocalRef>,
     /// The variables and bindings used to instantiate generic references.
     infer: InferTable,
     body: BodyConstraints,
@@ -234,6 +263,7 @@ impl<'g> TypeChecker<'g> {
             closures: Vec::new(),
             captures: HashMap::new(),
             variables: HashMap::new(),
+            local_refs: HashMap::new(),
             infer: InferTable::default(),
             body: BodyConstraints::default(),
         }
@@ -285,23 +315,30 @@ impl<'g> TypeChecker<'g> {
     // --- variable scope stack ---
 
     fn define_var(&mut self, name: &str, ty: Type) {
-        self.scopes.last_mut().unwrap().insert(name.to_string(), ty);
+        self.scopes.last_mut().unwrap().insert(name.to_string(), Binding { ty, generic: None });
+    }
+
+    /// Bind `name` to the generic nested function declared at `decl`, of type `ty`
+    /// generalized over `binders`.
+    fn define_generic(&mut self, name: &str, ty: Type, decl: Span, binders: Vec<String>) {
+        let generic = Some((decl, binders));
+        self.scopes.last_mut().unwrap().insert(name.to_string(), Binding { ty, generic });
     }
 
     fn lookup_var(&self, name: &str) -> Option<&Type> {
-        self.scopes.iter().rev().find_map(|s| s.get(name))
+        self.scopes.iter().rev().find_map(|s| s.get(name)).map(|b| &b.ty)
     }
 
     /// Look up the variable `name` as a use: one bound in an enclosing function's
     /// body (not at module level) outside a closure being checked is captured by that
     /// closure, and by every closure between it and the use.
-    fn use_var(&mut self, name: &str) -> Option<Type> {
-        let (depth, ty) = self
+    fn use_var(&mut self, name: &str, span: Span) -> Option<Type> {
+        let (depth, Binding { ty, generic }) = self
             .scopes
             .iter()
             .enumerate()
             .rev()
-            .find_map(|(depth, scope)| scope.get(name).map(|ty| (depth, ty.clone())))?;
+            .find_map(|(depth, scope)| scope.get(name).map(|binding| (depth, binding.clone())))?;
         if depth > 0 {
             for closure in self.closures.iter_mut().filter(|c| c.base > depth) {
                 if !closure.captures.iter().any(|(captured, _)| captured == name) {
@@ -309,7 +346,25 @@ impl<'g> TypeChecker<'g> {
                 }
             }
         }
-        Some(ty)
+        let Some((decl, binders)) = generic else {
+            return Some(ty);
+        };
+        // A use of a generic nested function instantiates its binders afresh.
+        let type_args: Vec<_> = binders
+            .iter()
+            .map(|binder| (binder.clone(), self.infer.fresh(InferKind::General)))
+            .collect();
+        let subst = type_args.iter().cloned().collect();
+        self.body.references.insert(
+            span,
+            PendingRef {
+                span,
+                label: format!("function {name}"),
+                item: RefTarget::Local(decl),
+                type_args,
+            },
+        );
+        Some(self.infer.resolve(&ty.substitute(&subst)))
     }
 
     fn resolve_local_type(&mut self, type_expr: &TypeExpr) -> Option<Type> {
@@ -527,12 +582,20 @@ impl<'g> TypeChecker<'g> {
             self.err(func.span, "a method must be declared at module level");
             return;
         }
-        if !func.type_params.is_empty() {
-            self.err(func.span, "a nested function cannot be generic yet");
-            return;
+        let mut binders = func.type_params.clone();
+        resolve::check_type_param_binders(&binders, func.span, self.globals, &mut self.diags);
+        for binder in &binders {
+            if self.type_params.contains(binder) {
+                self.err(func.span, format!("type parameter {binder} shadows one of the enclosing function"));
+            }
         }
+        binders.retain(|binder| !self.type_params.contains(binder));
+        let mut type_params = self.type_params.clone();
+        type_params.extend(binders.iter().cloned());
+        let saved = std::mem::replace(&mut self.type_params, type_params);
         let params: Vec<_> = func.params.iter().map(|p| (p.name.as_str(), Some(&p.ty), p.span)).collect();
-        self.check_closure(&params, &func.return_type, &func.body, func.span, Some(&func.name));
+        self.check_closure(&params, &func.return_type, &func.body, func.span, Some((&func.name, binders)));
+        self.type_params = saved;
     }
 
     /// Check a function literal or nested function, returning its function type. A
@@ -548,7 +611,7 @@ impl<'g> TypeChecker<'g> {
         return_type: &Option<TypeExpr>,
         body: &[Stmt],
         span: Span,
-        name: Option<&str>,
+        name: Option<(&str, Vec<String>)>,
     ) -> Option<Type> {
         let mut bound = HashMap::new();
         let mut param_types = Vec::with_capacity(params.len());
@@ -563,7 +626,7 @@ impl<'g> TypeChecker<'g> {
             // Lowering reads every parameter's type here, annotated or inferred.
             self.body.spans.push(param_span);
             self.types.insert(param_span, ty.clone());
-            bound.insert(param.to_string(), ty.clone());
+            bound.insert(param.to_string(), Binding { ty: ty.clone(), generic: None });
             param_types.push(ty);
         }
         let inferred_return = return_type.is_none() && name.is_none();
@@ -576,8 +639,12 @@ impl<'g> TypeChecker<'g> {
             return_type: Box::new(ret.clone()),
             param_types,
         };
-        if let Some(name) = name {
-            self.define_var(name, func_type.clone());
+        if let Some((name, binders)) = name {
+            if binders.is_empty() {
+                self.define_var(name, func_type.clone());
+            } else {
+                self.define_generic(name, self.infer.resolve(&func_type), span, binders);
+            }
             self.body.spans.push(span);
             self.types.insert(span, func_type.clone());
         }
@@ -798,7 +865,7 @@ impl<'g> TypeChecker<'g> {
     }
 
     fn check_ident(&mut self, name: &str, span: Span) -> Option<Type> {
-        if let Some(t) = self.use_var(name) {
+        if let Some(t) = self.use_var(name, span) {
             return Some(t);
         }
         if let Some(var) = self.globals.vars.get(name) {

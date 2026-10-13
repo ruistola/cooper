@@ -173,7 +173,7 @@ stmt       ::= "let" ident (":" type)? ("=" expr)?
              | "for" bindings "in" expr "do" body
              | "match" expr "with" "{" arm* "}"
              | "return" expr? | "break" | "continue"
-             | "func" ident "(" param* ")" (":" type)? block   # nested function, not generic
+             | "func" ident "(" param* ")" (":" type)? block   # nested function
              | expr                                   # a call, an assignment, …
 bindings   ::= ident | "(" ident "," ident ")"
 arm        ::= pattern "=>" body                      # arms are separated like statements: a newline or ";", never ","
@@ -276,7 +276,6 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
 
 These are designed or reserved but rejected today. Do not write them:
 
-* Generic nested functions.
 * Static arrays `T[N]`.
 * Methods across sum-type variants.
 * Named-field variant payloads, nested patterns inside variant payloads, or-patterns, guards.

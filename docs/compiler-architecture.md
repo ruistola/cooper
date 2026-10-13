@@ -92,7 +92,10 @@ Lowering lifts every function literal and nested function out as a `Function` of
 numbered in source order within its top-level declaration, inheriting that declaration's
 binders and listing its captures as an `env`. In its place stays a `Closure` node naming the
 lifted function and the captured variables. A nested function lowers to its variable, then
-an assignment of its closure, so the closure can capture the variable and recurse.
+an assignment of its closure, so the closure can capture the variable and recurse. A generic
+nested function is lifted with its own binders appended to the declaration's. Its variable
+holds only the environment (`GenericClosure`), and each use builds the function value of one
+instantiation from it (`Instantiate`), so every instance shares the captured variables.
 
 A module-level variable lowers to a `Global` place and an `Initializer` function that
 evaluates its initializer and stores the result. `init.rs` orders the initializers module by

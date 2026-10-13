@@ -110,7 +110,7 @@ impl<'g> TypeChecker<'g> {
                 names.sort();
                 for name in names {
                     let inferred = &binders[name];
-                    if let Some(ty) = actual.get(name) {
+                    if let Some(Binding { ty, .. }) = actual.get(name) {
                         if self.infer.unify(inferred, ty).is_err() {
                             let (expected, found) = self.shown_pair(inferred, ty);
                             self.err(pattern.span, format!("pattern binding {name} type mismatch: expected {expected}, found {found}"));

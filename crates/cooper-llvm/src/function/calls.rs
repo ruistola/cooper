@@ -138,7 +138,9 @@ impl Emitter<'_, '_> {
     /// A closure of the lifted literal `symbol`: its code, with an environment of
     /// pointers to the storage of each captured variable (heap storage, since the
     /// closure may outlive the frame). A literal capturing nothing has no environment.
-    pub(super) fn closure(&mut self, symbol: &str, captures: &[String]) -> Result<Value, CodegenError> {
+    /// Without a `symbol`, the closure has no code: it holds only the environment of a
+    /// generic function, whose uses supply the code.
+    pub(super) fn closure(&mut self, symbol: Option<&str>, captures: &[String]) -> Result<Value, CodegenError> {
         let env = if captures.is_empty() {
             "null".to_string()
         } else {
@@ -155,7 +157,7 @@ impl Emitter<'_, '_> {
             ty: "ptr".to_string(),
             operand,
         });
-        Ok(self.aggregate(FUNC_VALUE, vec![pointer(format!("@{symbol}")), pointer(env)]))
+        Ok(self.aggregate(FUNC_VALUE, vec![pointer(symbol.map_or("null".to_string(), |symbol| format!("@{symbol}"))), pointer(env)]))
     }
 
     /// A method bound to `receiver`: the method's thunk, with the receiver as its

@@ -150,6 +150,15 @@ impl<'g> TypeChecker<'g> {
     /// Complete the current body's constraints before its types reach lowering.
     pub(super) fn finish_body(&mut self) {
         self.solve_obligations();
+        // A precision asks for a float, so an integer literal it formats is one.
+        for predicate in &self.body.predicates {
+            let precision = matches!(predicate.kind, PredicateKind::Float)
+                && matches!(predicate.site, PredicateSite::Spec(_));
+            if precision && self.infer.is_int_literal(&predicate.ty) {
+                let float = self.infer.fresh(InferKind::FloatLiteral);
+                let _ = self.infer.unify(&predicate.ty, &float);
+            }
+        }
         for literal in &self.body.literals {
             self.infer.default_literal(&literal.ty);
         }

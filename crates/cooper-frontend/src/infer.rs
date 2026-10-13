@@ -135,6 +135,11 @@ impl InferTable {
         types.iter().map(|ty| self.resolve(ty)).collect()
     }
 
+    /// Whether `ty` is a still-unbound variable of an integer literal.
+    pub(crate) fn is_int_literal(&self, ty: &Type) -> bool {
+        matches!(self.resolve(ty), Type::Infer(id) if id.kind() == InferKind::IntLiteral)
+    }
+
     pub(crate) fn default_literals(&mut self) {
         for index in 0..self.entries.len() {
             let id = InferId::new(index, self.entries[index].kind);

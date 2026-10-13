@@ -51,7 +51,8 @@ After a `:` in a hole, a spec says how to format its value, in Rust's syntax
 | `x` `X` `b` `o` | an integer in hexadecimal, binary, or octal; a negative one as its two's complement bits | `"{n:08x}"` → `000000ff` |
 
 A positional hole takes a spec the same way: `"{:>4}"`. A radix applies to integers, a
-precision to floats, and zero padding to numbers; any other use is a compile error. The `:`
+precision to floats, and zero padding to numbers; any other use is a compile error. An
+integer literal given a precision is a float literal: `"{1:.2}"` gives `1.00`. The `:`
 that begins a spec is the first one outside the expression's brackets, braces,
 parentheses, and strings, and not part of `:=`.
 

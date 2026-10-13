@@ -11,4 +11,5 @@ mod compile;
 mod loader;
 
 pub use compile::{build, BuildError};
+pub use cooper_llvm::Options;
 pub use loader::{load, load_project, LoadError, Loaded, Native};

@@ -67,7 +67,7 @@ impl std::error::Error for BuildError {}
 /// Build `project` into an executable in `build_dir`, returning the executable's path.
 /// The emitted IR (`<name>.ll`) and the runtime source are left beside it. The program
 /// is linked with the C code `native` names.
-pub fn build(project: &Project, native: &Native, build_dir: &Path) -> Result<PathBuf, BuildError> {
+pub fn build(project: &Project, native: &Native, build_dir: &Path, options: cooper_llvm::Options) -> Result<PathBuf, BuildError> {
     if project.manifest.kind == ProjectKind::Library {
         return Err(BuildError::Library);
     }
@@ -75,7 +75,7 @@ pub fn build(project: &Project, native: &Native, build_dir: &Path) -> Result<Pat
     let program = cooper_ir::lower_program(&checked).map_err(BuildError::Lower)?;
     let cc = std::env::var(CC_VAR).unwrap_or_else(|_| DEFAULT_CC.to_string());
     let triple = target_triple(&cc)?;
-    let emitted = cooper_llvm::emit(&program, &triple, project).map_err(BuildError::Codegen)?;
+    let emitted = cooper_llvm::emit(&program, &triple, project, options).map_err(BuildError::Codegen)?;
 
     let name = &project.manifest.name;
     let ir_path = build_dir.join(format!("{name}.ll"));

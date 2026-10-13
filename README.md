@@ -12,6 +12,7 @@ Disclaimer: This is a side project that may or may not see updates.
 cargo run -- run examples/hello.coop     # build and run a file
 cargo run -- check examples/demo         # check a project
 cargo run -- build examples/demo         # build an executable into examples/demo/build/
+cargo run -- run --nil-panic file.coop   # dereferencing nil panics instead of being inert
 ```
 
 Building needs `clang` on the `PATH` (or a compatible compiler named by `COOPER_CC`).

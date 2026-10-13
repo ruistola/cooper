@@ -1,17 +1,27 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use cooper_cli::{BuildError, Loaded};
+use cooper_cli::{BuildError, Loaded, Options};
 use cooper_frontend::{Diagnostic, Project};
 
-const USAGE: &str = "usage: cooper <check|build|run> <source-file.coop | project-dir>";
+const USAGE: &str = "usage: cooper <check|build|run> [--nil-panic] <source-file.coop | project-dir>";
 
 /// The command-line driver. `check` reports diagnostics, `build` produces an
 /// executable in the build directory, and `run` builds and then runs it, exiting with
 /// its status. A directory is loaded as a project via its `project.toml`; a single
 /// file as a one-module program.
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let (flags, args): (Vec<String>, Vec<String>) = std::env::args().skip(1).partition(|arg| arg.starts_with("--"));
+    let mut options = Options::default();
+    for flag in &flags {
+        match flag.as_str() {
+            "--nil-panic" => options.nil_panic = true,
+            _ => {
+                eprintln!("unknown option {flag}\n{USAGE}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
     let [command, path] = args.as_slice() else {
         eprintln!("{USAGE}");
         return ExitCode::FAILURE;
@@ -25,14 +35,14 @@ fn main() -> ExitCode {
     };
     match command.as_str() {
         "check" => check(&loaded.project),
-        "build" => match build(&loaded) {
+        "build" => match build(&loaded, options) {
             Some(executable) => {
                 println!("{}", executable.display());
                 ExitCode::SUCCESS
             }
             None => ExitCode::FAILURE,
         },
-        "run" => match build(&loaded) {
+        "run" => match build(&loaded, options) {
             Some(executable) => run(&executable),
             None => ExitCode::FAILURE,
         },
@@ -54,8 +64,8 @@ fn check(project: &Project) -> ExitCode {
 }
 
 /// Build the loaded program, reporting any failure, and return its executable.
-fn build(loaded: &Loaded) -> Option<std::path::PathBuf> {
-    match cooper_cli::build(&loaded.project, &loaded.native, &loaded.build_dir) {
+fn build(loaded: &Loaded, options: Options) -> Option<std::path::PathBuf> {
+    match cooper_cli::build(&loaded.project, &loaded.native, &loaded.build_dir, options) {
         Ok(executable) => Some(executable),
         Err(BuildError::Diagnostics(diagnostics)) => {
             report(&loaded.project, &diagnostics);

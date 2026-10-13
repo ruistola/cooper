@@ -52,9 +52,10 @@ let y: i32 = p.x     # still 0
 ```
 
 Chains propagate: `a.b.c.value` through a nil link yields the zero value of `value`. Code
-that depends on a pointer being live checks for nil explicitly. A build option will offer the
-traditional treatment instead: stopping the program on any access through nil. Nil models only referential
-absence. Optional values and failures use sum types (`Maybe T`, `Result T E`).
+that depends on a pointer being live checks for nil explicitly. Building with `--nil-panic`
+offers the traditional treatment instead: every dereference of a pointer stops the program
+with a panic naming the source location. It is a choice about how an application treats nil,
+independent of debug or release builds. Nil models only referential absence. Optional values and failures use sum types (`Maybe T`, `Result T E`).
 
 ## Unmanaged memory (future direction)
 

@@ -13,6 +13,9 @@
 //! all-zero `@cooper.zero`, so it yields the zero value, and a store writes the
 //! never-read `@cooper.sink`, so it is discarded.
 //!
+//! With nil panics enabled (`Options::nil_panic`), every dereference of a pointer checks
+//! for nil first and stops the program, so no place is nullable.
+//!
 //! This module holds the emitter's state, values and places, and the expression
 //! dispatcher. Its submodules extend `Emitter` by responsibility: `control` (statements,
 //! loops, `match`), `operators` (unary, binary, equality, conversions), `calls` (function
@@ -362,11 +365,15 @@ impl Emitter<'_, '_> {
         };
         let ptr = self.expr(pointer)?.expect("a pointer has a value").operand;
         let llvm = self.value_type(target, pointer.span)?;
+        if self.module.nil_panic {
+            let is_nil = self.assign(&format!("icmp eq ptr {ptr}, null"));
+            self.panic_if(&is_nil, "nil dereference", pointer.span);
+        }
         Ok(Place {
             ptr,
             ty: (**target).clone(),
             llvm,
-            nullable: true,
+            nullable: !self.module.nil_panic,
         })
     }
 

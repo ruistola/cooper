@@ -80,9 +80,17 @@ pub struct Emitted {
     pub c_shims: String,
 }
 
+/// How a program is compiled, beyond what its source says.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Options {
+    /// Dereferencing nil stops the program with a panic, instead of being inert (a load
+    /// yields the zero value and a store is discarded).
+    pub nil_panic: bool,
+}
+
 /// Emit `program` as a textual LLVM IR module for the target `triple`. `project`
 /// supplies the source text that runtime error messages locate their cause in.
-pub fn emit(program: &Program, triple: &str, project: &Project) -> Result<Emitted, CodegenError> {
+pub fn emit(program: &Program, triple: &str, project: &Project, options: Options) -> Result<Emitted, CodegenError> {
     let receivers = program
         .functions
         .iter()
@@ -93,6 +101,7 @@ pub fn emit(program: &Program, triple: &str, project: &Project) -> Result<Emitte
         .collect();
     let mut module = Module {
         project,
+        nil_panic: options.nil_panic,
         defs: &program.defs,
         receivers,
         declarations: BTreeSet::new(),
@@ -175,6 +184,8 @@ pub fn emit(program: &Program, triple: &str, project: &Project) -> Result<Emitte
 /// string constants, each emitted once at the top of the module.
 struct Module<'p> {
     project: &'p Project,
+    /// Whether dereferencing nil panics (see [`Options::nil_panic`]).
+    nil_panic: bool,
     defs: &'p TypeDefs,
     /// Each method instance's symbol to its receiver's type, so a call site can pass
     /// the receiver by value or by address as the method expects.

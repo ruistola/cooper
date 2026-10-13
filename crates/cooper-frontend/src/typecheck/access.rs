@@ -137,6 +137,13 @@ impl<'g> TypeChecker<'g> {
             self.err(span, format!("{field} is not a method of array type {target_type}"));
             return None;
         }
+        if matches!(&target_type, Type::Primitive(name) if name == "string") {
+            if let Some(method) = crate::builtins::string_method(field) {
+                return Some(method);
+            }
+            self.err(span, format!("{field} is not a method of string"));
+            return None;
+        }
         let Type::Struct { id, .. } = &target_type else {
             self.err(
                 target_span,
@@ -189,7 +196,7 @@ impl<'g> TypeChecker<'g> {
     /// bounds integers. A slice is an array of the same type sharing the elements.
     pub(super) fn check_slice(&mut self, array: &Expr, start: Option<&Expr>, end: Option<&Expr>) -> Option<Type> {
         let array_type = self.check_expr(array)?;
-        if self.array_element(&array_type).is_none() {
+        if self.array_element(&array_type).is_none() && !self.is_string(&array_type) {
             let shown = self.shown_type(&array_type);
             self.err(array.span, format!("type {shown} cannot be sliced"));
             return None;

@@ -1196,8 +1196,13 @@ impl Lower<'_> {
         if let Some(end) = end {
             args.push(self.expr(end)?);
         }
+        let op = if matches!(self.types.get(&array.span), Some(ty) if is_string(ty)) {
+            Intrinsic::StringSlice { inclusive }
+        } else {
+            Intrinsic::ArraySlice { inclusive }
+        };
         Ok(IrExprKind::Intrinsic {
-            op: Intrinsic::ArraySlice { inclusive },
+            op,
             args,
         })
     }
@@ -1213,8 +1218,13 @@ impl Lower<'_> {
         let ExprKind::Field { target, name } = &callee.kind else {
             return Ok(None);
         };
-        if !matches!(self.types.get(&target.span), Some(Type::Array(_))) {
-            return Ok(None);
+        match self.types.get(&target.span) {
+            Some(Type::Array(_)) => {}
+            Some(ty) if is_string(ty) => {
+                let args = vec![self.expr(target)?];
+                return Ok(Some(IrExprKind::Intrinsic { op: Intrinsic::StringLength, args }));
+            }
+            _ => return Ok(None),
         }
         let op = match name.as_str() {
             "length" => Intrinsic::ArrayLength,
@@ -1248,6 +1258,11 @@ impl Lower<'_> {
             _ => None,
         }
     }
+}
+
+/// Whether `ty` is the built-in `string`.
+fn is_string(ty: &Type) -> bool {
+    matches!(ty, Type::Primitive(name) if name == "string")
 }
 
 /// Whether `name` is a variant of sum type `ty`. Used to tell a bare variant value

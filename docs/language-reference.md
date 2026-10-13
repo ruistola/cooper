@@ -254,6 +254,10 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
 * A function literal or nested function captures the variables it names by reference: they
   are shared with the enclosing body, not copied. Each execution of a binding, including
   each pass's loop variable, is a fresh variable, so a closure made in a loop keeps its own.
+* A `string` is an immutable UTF-8 byte buffer: `s.length()` is its size in bytes, and
+  `s[lo..hi]` (also `..=`, `s[lo..]`, `s[..hi]`) is a view of those bytes, with byte
+  offsets that panic when out of range. Offsets are not checked against code point
+  boundaries.
 * Output goes through `std.io` (`print` and `println`, each taking a `string`), and
   `string(x)` formats any value: `Point{x: 1, y: 2}`, `[1, 2]`, `Some("a")`. Every string
   literal interpolates the same formatting: `println("p is {p}")`, or positionally,

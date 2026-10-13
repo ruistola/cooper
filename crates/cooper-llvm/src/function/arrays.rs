@@ -23,6 +23,37 @@ impl Emitter<'_, '_> {
         Ok(self.load(&out).expect("a string has a value"))
     }
 
+    /// `s.length()` and `s[lo..hi]` on a string: its size in bytes, and the byte range
+    /// as a string sharing the original's storage.
+    fn string_intrinsic(&mut self, op: Intrinsic, args: &[IrExpr], span: Span) -> Result<Value, CodegenError> {
+        let string = self.expr(&args[0])?.expect("a string has a value");
+        let (data, length) = self.string_parts(&string);
+        let Intrinsic::StringSlice { inclusive } = op else {
+            return Ok(Value { ty: "i64".to_string(), operand: length });
+        };
+        let start = self.expr(&args[1])?.expect("a bound has a value");
+        let start = self.widen_index(&start, &args[1].ty);
+        let end = match args.get(2) {
+            Some(end_expr) => {
+                let end = self.expr(end_expr)?.expect("a bound has a value");
+                let end = self.widen_index(&end, &end_expr.ty);
+                if inclusive { self.assign(&format!("add i64 {end}, 1")) } else { end }
+            }
+            None => length.clone(),
+        };
+        let past_end = self.assign(&format!("icmp ugt i64 {end}, {length}"));
+        self.panic_if(&past_end, "slice bounds out of range", span);
+        let reversed = self.assign(&format!("icmp ugt i64 {start}, {end}"));
+        self.panic_if(&reversed, "slice bounds out of range", span);
+        let count = self.assign(&format!("sub i64 {end}, {start}"));
+        let first = self.assign(&format!("getelementptr i8, ptr {data}, i64 {start}"));
+        let fields = vec![
+            Some(Value { ty: "ptr".to_string(), operand: first }),
+            Some(Value { ty: "i64".to_string(), operand: count }),
+        ];
+        Ok(self.aggregate(STRING, fields))
+    }
+
     /// The size in bytes of one value of LLVM type `llvm`, as an `i64` operand.
     fn size_of(&mut self, llvm: &str) -> String {
         let end = self.assign(&format!("getelementptr {llvm}, ptr null, i32 1"));
@@ -69,6 +100,9 @@ impl Emitter<'_, '_> {
             let values = args.iter().map(|a| self.expr(a)).collect::<Result<Vec<_>, _>>()?;
             return self.array_literal(elem, values, span).map(Some);
         }
+        if matches!(op, Intrinsic::StringLength | Intrinsic::StringSlice { .. }) {
+            return self.string_intrinsic(op, args, span).map(Some);
+        }
         let Type::Array(elem) = &args[0].ty else {
             unreachable!("an array intrinsic's first argument is the array");
         };
@@ -92,7 +126,9 @@ impl Emitter<'_, '_> {
             | Intrinsic::FormatScalar
             | Intrinsic::FormatRadix(_)
             | Intrinsic::FormatFixed { .. }
-            | Intrinsic::Pad { .. } => unreachable!("handled above"),
+            | Intrinsic::Pad { .. }
+            | Intrinsic::StringLength
+            | Intrinsic::StringSlice { .. } => unreachable!("handled above"),
             Intrinsic::Format(_) => unreachable!("expanded before code generation"),
             Intrinsic::ArrayLength => {
                 let operand = self.assign(&format!("extractvalue {ARRAY} {}, 1", array.operand));

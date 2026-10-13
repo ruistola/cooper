@@ -15,6 +15,10 @@
 //! boundary; only the signatures live here, so a call site type-checks through the same
 //! method-access path as any other method.
 //!
+//! `string` carries a blessed set too: `s.length()` is its size in bytes, and slicing
+//! `s[lo..hi]` takes byte offsets (a string is an immutable UTF-8 byte buffer, so a slice
+//! shares its bytes safely). Offsets are not checked against code point boundaries.
+//!
 //! The only array type modelled today is the dynamic `T[]`, which carries the full set
 //! including `push`. A fixed-size static array `T[N]` — not yet a distinct type — would
 //! carry the static subset (everything but growth), realising the static- vs
@@ -49,6 +53,18 @@ pub(crate) fn array_method(name: &str, elem: &Type) -> Option<Type> {
         "copy" => Some(func(Vec::new(), Type::Array(Box::new(elem.clone())))),
         // Room for at least `n` more elements, by the same return-value idiom as `push`.
         "reserve" => Some(func(vec![index_type()], Type::Array(Box::new(elem.clone())))),
+        _ => None,
+    }
+}
+
+/// The bound signature of the blessed method `name` on `string`, or `None` when
+/// `string` carries no such method.
+pub(crate) fn string_method(name: &str) -> Option<Type> {
+    match name {
+        "length" => Some(Type::Func {
+            return_type: Box::new(index_type()),
+            param_types: Vec::new(),
+        }),
         _ => None,
     }
 }

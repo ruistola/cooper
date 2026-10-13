@@ -377,6 +377,12 @@ pub enum Intrinsic {
     /// never writes into the original (`a[lo..hi]`). Args: `[array, start]` to the
     /// array's end, or `[array, start, end]`.
     ArraySlice { inclusive: bool },
+    /// `length(): u64` — the size of a string in bytes. Args: `[string]`.
+    StringLength,
+    /// The bytes of a string from `start` up to `end` (exclusive, or inclusive when
+    /// `inclusive`), sharing the original's storage (`s[lo..hi]`). Args: `[string,
+    /// start]` to the string's end, or `[string, start, end]`.
+    StringSlice { inclusive: bool },
     /// `copy(): T[]` — a fresh array holding a copy of the elements. Args: `[array]`.
     ArrayCopy,
     /// `reserve(n): T[]` — the array with room for at least `n` more elements,

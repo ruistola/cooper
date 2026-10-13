@@ -264,6 +264,10 @@ impl<'g> TypeChecker<'g> {
         Some(elem)
     }
 
+    fn is_string(&mut self, ty: &Type) -> bool {
+        self.infer.unify(ty, &Type::Primitive("string".to_string())).is_ok()
+    }
+
     // --- variable scope stack ---
 
     fn define_var(&mut self, name: &str, ty: Type) {

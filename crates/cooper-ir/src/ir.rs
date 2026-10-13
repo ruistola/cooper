@@ -31,6 +31,14 @@ pub struct Function {
     pub span: Span,
 }
 
+/// A module-level variable: its module, name, and type.
+#[derive(Debug, Clone)]
+pub struct Global {
+    pub module: String,
+    pub name: String,
+    pub ty: Type,
+}
+
 /// A C function the program declares `extern`: its symbol and C-compatible signature.
 #[derive(Debug, Clone)]
 pub struct Extern {
@@ -254,6 +262,9 @@ pub enum IrExprKind {
     Unit,
     /// A reference to a bound variable or parameter.
     Var(String),
+    /// A reference to the module-level variable `name` of `module`: a place with a
+    /// fixed address that lives for the whole program.
+    Global { module: String, name: String },
     /// A function value for the lifted function literal `item`, instantiated at
     /// `type_args` (the enclosing declaration's binders), whose environment refers to
     /// the variables named by `captures` — the same variables, not copies.
@@ -488,6 +499,7 @@ fn visit_expr_mut(expr: &mut IrExpr, visit: &mut dyn FnMut(&mut IrExpr)) {
         | IrExprKind::Nil
         | IrExprKind::Unit
         | IrExprKind::Var(_)
+        | IrExprKind::Global { .. }
         | IrExprKind::FuncRef { .. }
         | IrExprKind::Closure { .. } => {}
         IrExprKind::Method { receiver, .. } => visit_expr_mut(receiver, visit),

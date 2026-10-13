@@ -46,6 +46,16 @@ pub struct Typed {
     /// span: every enclosing function's local its body (or a function nested in it)
     /// names, with its type, in order of first use.
     pub captures: HashMap<Span, Vec<(String, Type)>>,
+    /// The module-level variable each use names, keyed by the span of the expression
+    /// (a bare name, or a qualified `module.name`).
+    pub variables: HashMap<Span, VarRef>,
+}
+
+/// A use of a module-level variable: the module that declares it and its name there.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct VarRef {
+    pub module: String,
+    pub name: String,
 }
 
 /// A function literal or nested function whose body is being checked.
@@ -169,6 +179,7 @@ pub fn check(
         types: tc.types,
         refs: tc.refs,
         captures: tc.captures,
+        variables: tc.variables,
     }
 }
 
@@ -199,6 +210,8 @@ struct TypeChecker<'g> {
     closures: Vec<Closure>,
     /// Every checked closure's captures, keyed by span: the lowering handoff.
     captures: HashMap<Span, Vec<(String, Type)>>,
+    /// Every use of a module-level variable, keyed by span: the lowering handoff.
+    variables: HashMap<Span, VarRef>,
     /// The variables and bindings used to instantiate generic references.
     infer: InferTable,
     body: BodyConstraints,
@@ -220,6 +233,7 @@ impl<'g> TypeChecker<'g> {
             refs: HashMap::new(),
             closures: Vec::new(),
             captures: HashMap::new(),
+            variables: HashMap::new(),
             infer: InferTable::default(),
             body: BodyConstraints::default(),
         }
@@ -464,7 +478,10 @@ impl<'g> TypeChecker<'g> {
             (None, Some(value)) => self.infer_binding(value),
             (None, None) => Type::Unknown,
         };
-        self.define_var(name, bound);
+        // A module-level variable lives in the module's table, not in a scope.
+        if self.scopes.len() > 1 {
+            self.define_var(name, bound);
+        }
     }
 
     fn check_func_decl(&mut self, func: &FuncDecl) {
@@ -784,6 +801,11 @@ impl<'g> TypeChecker<'g> {
         if let Some(t) = self.use_var(name) {
             return Some(t);
         }
+        if let Some(var) = self.globals.vars.get(name) {
+            let (module, ty) = (var.module.clone(), var.ty.clone());
+            self.variables.insert(span, VarRef { module, name: name.to_string() });
+            return Some(ty);
+        }
         if let Some(t) = self.globals.lookup_struct(name) {
             return Some(t);
         }
@@ -839,6 +861,11 @@ impl<'g> TypeChecker<'g> {
                 let sig = sig.clone();
                 let label = format!("function {}.{field}", prefix.join("."));
                 return self.reference(span, &sig, &label, None);
+            }
+            if let Some(var) = interface.vars.get(field) {
+                let (module, ty) = (var.module.clone(), var.ty.clone());
+                self.variables.insert(span, VarRef { module, name: field.to_string() });
+                return Some(ty);
             }
             self.err(
                 span,

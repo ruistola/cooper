@@ -40,6 +40,16 @@ pub enum Callable {
     /// The function lowering generates to format values of one type as `string(x)`
     /// does: the `index`th type the program formats.
     Formatter { index: u32 },
+    /// The function that evaluates the initializer of the module-level variable `name`
+    /// of `module` and stores it.
+    Initializer { module: String, name: String },
+}
+
+/// A module-level variable: the module that declares it and its declared type.
+#[derive(Debug, Clone)]
+pub struct GlobalVar {
+    pub module: String,
+    pub ty: Type,
 }
 
 /// A resolved function or method signature. `type_params` lists every binder in
@@ -72,15 +82,12 @@ pub struct Globals {
     pub funcs: HashMap<String, Signature>,
     /// Receiver struct identity -> method name -> bound signature (receiver excluded).
     pub methods: HashMap<TypeId, HashMap<String, Signature>>,
-    /// Module-level variable names. Top-level `let` bindings occupy the module
-    /// namespace alongside structs, sum types, and functions; unlike a block-scoped
-    /// `let` — an ordered sequence where a re-binding shadows its predecessor — the
-    /// module namespace is an unordered union across a module's files, so a repeated
-    /// name is a redeclaration, never a shadow. Only the name is recorded: a
-    /// binding's type is inferred later and top-level variables are not yet consumed
-    /// as values by downstream passes, so this table exists purely to enforce the
-    /// namespace rule.
-    pub vars: HashSet<String>,
+    /// Module-level variables in scope, by local spelling. Top-level `let` bindings
+    /// occupy the module namespace alongside structs, sum types, and functions; unlike
+    /// a block-scoped `let` — an ordered sequence where a re-binding shadows its
+    /// predecessor — the module namespace is an unordered union across a module's
+    /// files, so a repeated name is a redeclaration, never a shadow.
+    pub vars: HashMap<String, GlobalVar>,
     /// Types registered by [`declare_types`] whose bodies [`define_types`] has not yet
     /// resolved. A redeclared name is never registered, so its body is skipped.
     pending: HashSet<TypeId>,
@@ -194,7 +201,7 @@ pub fn resolve_signatures(globals: &mut Globals, decls: &[Stmt], diags: &mut Vec
                 params,
                 return_type,
             } => resolve_extern_func(globals, diags, name, params, return_type, stmt.span),
-            StmtKind::VarDecl { name, .. } => resolve_var_decl(globals, diags, name, stmt.span),
+            StmtKind::VarDecl { name, ty, .. } => resolve_var_decl(globals, diags, name, ty.as_ref(), stmt.span),
             _ => {}
         }
     }
@@ -489,8 +496,14 @@ fn define_oneof(
 /// a function, a struct, or a sum type — is a redeclaration, not a shadow. Block-local
 /// shadowing does not apply here: that is an ordered-sequence rule, whereas the module
 /// namespace is an unordered union.
-fn resolve_var_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, name: &str, span: Span) {
-    if globals.vars.contains(name)
+fn resolve_var_decl(
+    globals: &mut Globals,
+    diags: &mut Vec<Diagnostic>,
+    name: &str,
+    ty: Option<&TypeExpr>,
+    span: Span,
+) {
+    if globals.vars.contains_key(name)
         || globals.funcs.contains_key(name)
         || globals.structs.contains_key(name)
         || globals.oneofs.contains_key(name)
@@ -501,7 +514,18 @@ fn resolve_var_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, name: &s
         ));
         return;
     }
-    globals.vars.insert(name.to_string());
+    let Some(ty) = ty else {
+        diags.push(Diagnostic::error(
+            span,
+            format!("module-level variable {name} needs a type annotation: `let {name}: Type = value`"),
+        ));
+        return;
+    };
+    let Some(ty) = resolve_type(ty, &HashSet::new(), globals, diags) else {
+        return;
+    };
+    let module = globals.module.clone();
+    globals.vars.insert(name.to_string(), GlobalVar { module, ty });
 }
 
 /// Resolve an `extern func`, whose parameter and return types must have a C
@@ -539,7 +563,7 @@ fn resolve_extern_func(
     else {
         return;
     };
-    if globals.funcs.contains_key(name) || globals.vars.contains(name) || globals.type_name_taken(name) {
+    if globals.funcs.contains_key(name) || globals.vars.contains_key(name) || globals.type_name_taken(name) {
         diags.push(Diagnostic::error(span, format!("redeclared function {name} in the same scope")));
         return;
     }
@@ -608,7 +632,7 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
 
     let Some(receiver) = &func.receiver else {
         if globals.funcs.contains_key(&func.name)
-            || globals.vars.contains(&func.name)
+            || globals.vars.contains_key(&func.name)
             || globals.type_name_taken(&func.name)
         {
             diags.push(Diagnostic::error(

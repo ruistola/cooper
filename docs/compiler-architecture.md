@@ -94,6 +94,12 @@ binders and listing its captures as an `env`. In its place stays a `Closure` nod
 lifted function and the captured variables. A nested function lowers to its variable, then
 an assignment of its closure, so the closure can capture the variable and recurse.
 
+A module-level variable lowers to a `Global` place and an `Initializer` function that
+evaluates its initializer and stores the result. `init.rs` orders the initializers module by
+module (dependencies first), and within a module by the dependencies between variables found
+by following references through function bodies; the backend zero-initializes each global and
+runs the initializers before `main`.
+
 **Monomorphization** (`mono.rs`) is an IR-to-IR pass. Lowering keeps a generic function as a
 template. Starting from the non-generic functions, the pass instantiates each referenced
 declaration once per distinct set of type arguments and follows the references each instance

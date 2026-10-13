@@ -23,7 +23,7 @@ use crate::diag::{Diagnostic, Span};
 use crate::lexer;
 use crate::parser;
 use crate::project::{Module, ModulePath, Project};
-use crate::resolve::{self, Globals, Signature};
+use crate::resolve::{self, GlobalVar, Globals, Signature};
 use crate::types::{TypeDefs, TypeId};
 use crate::{semantic, typecheck};
 
@@ -314,6 +314,7 @@ struct Imports {
     structs: HashMap<String, TypeId>,
     oneofs: HashMap<String, TypeId>,
     funcs: HashMap<String, Signature>,
+    vars: HashMap<String, GlobalVar>,
     methods: HashMap<TypeId, HashMap<String, Signature>>,
     /// Module bindings keyed by local spelling (`["std", "io"]`, or `["web"]` when
     /// aliased), each mapped to that module's interface for qualified access.
@@ -324,13 +325,14 @@ struct Imports {
 impl Imports {
     /// This file's bare imports overlaid on `base` — the module's own declarations —
     /// yielding the symbol table a file's declarations and bodies are checked against.
-    /// Imported structs, sum types, and functions join by local name; an imported
+    /// Imported structs, sum types, functions, and variables join by local name; an imported
     /// struct's methods merge under its identity.
     fn overlay(&self, base: &Globals) -> Globals {
         let mut globals = base.clone();
         globals.structs.extend(self.structs.clone());
         globals.oneofs.extend(self.oneofs.clone());
         globals.funcs.extend(self.funcs.clone());
+        globals.vars.extend(self.vars.clone());
         for (owner, methods) in &self.methods {
             globals
                 .methods
@@ -501,6 +503,8 @@ fn build_file_imports(
                     imports.oneofs.insert(local, id.clone());
                 } else if let Some(sig) = interface.lookup_func(&item) {
                     imports.funcs.insert(local, sig.clone());
+                } else if let Some(var) = interface.vars.get(&item) {
+                    imports.vars.insert(local, var.clone());
                 } else {
                     diags.push(
                         Diagnostic::error(
@@ -528,6 +532,9 @@ fn strip_imports(mut globals: Globals, imports: &Imports) -> Globals {
     }
     for name in imports.funcs.keys() {
         globals.funcs.remove(name);
+    }
+    for name in imports.vars.keys() {
+        globals.vars.remove(name);
     }
     for owner in imports.methods.keys() {
         globals.methods.remove(owner);

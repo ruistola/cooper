@@ -320,6 +320,12 @@ impl Emitter<'_, '_> {
     fn place(&mut self, expr: &IrExpr) -> Result<Option<Place>, CodegenError> {
         match &expr.kind {
             IrExprKind::Var(name) => Ok(Some(self.lookup(name))),
+            IrExprKind::Global { module, name } => {
+                let ty = expr.ty.clone();
+                let llvm = self.value_type(&ty, expr.span)?;
+                let ptr = format!("@{}", mangle::global_symbol(module, name));
+                Ok(Some(Place { ptr, ty, llvm, nullable: false }))
+            }
             IrExprKind::Deref(pointer) => self.pointee(pointer).map(Some),
             IrExprKind::Intrinsic {
                 op: Intrinsic::ArrayGet,
@@ -483,7 +489,7 @@ impl Emitter<'_, '_> {
                 operand: b.to_string(),
             })),
             IrExprKind::Unit => Ok(None),
-            IrExprKind::Var(_) | IrExprKind::Deref(_) => {
+            IrExprKind::Var(_) | IrExprKind::Global { .. } | IrExprKind::Deref(_) => {
                 let place = self.place(expr)?.expect("a variable or dereference is a place");
                 Ok(self.load(&place))
             }
@@ -732,6 +738,7 @@ fn walk_expr(expr: &IrExpr, visit: &mut impl FnMut(&IrExpr)) {
         | IrExprKind::Nil
         | IrExprKind::Unit
         | IrExprKind::Var(_)
+        | IrExprKind::Global { .. }
         | IrExprKind::FuncRef { .. }
         | IrExprKind::Closure { .. } => {}
         IrExprKind::Method { receiver, .. } => walk_expr(receiver, visit),

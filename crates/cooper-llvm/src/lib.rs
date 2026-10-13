@@ -110,6 +110,19 @@ pub fn emit(program: &Program, triple: &str, project: &Project) -> Result<Emitte
             span: Span::new(0, 0),
         })?;
     }
+    let mut variables = String::new();
+    for global in &program.globals {
+        let unsupported = |what| CodegenError::Unsupported {
+            what,
+            file: String::new(),
+            span: Span::new(0, 0),
+        };
+        // A unit-typed variable has no storage.
+        if let Some(llvm) = module.llvm_type(&global.ty).map_err(unsupported)? {
+            let symbol = mangle::global_symbol(&global.module, &global.name);
+            variables.push_str(&format!("@{symbol} = internal global {llvm} zeroinitializer\n"));
+        }
+    }
     let mut functions = String::new();
     for function in &program.functions {
         functions.push('\n');
@@ -132,6 +145,10 @@ pub fn emit(program: &Program, triple: &str, project: &Project) -> Result<Emitte
              @cooper.sink = private global [{size} x i8] zeroinitializer, align 16\n"
         ));
     }
+    if !variables.is_empty() {
+        out.push('\n');
+        out.push_str(&variables);
+    }
     if !module.strings.is_empty() {
         out.push('\n');
         module.strings.iter().for_each(|s| out.push_str(s));
@@ -149,7 +166,7 @@ pub fn emit(program: &Program, triple: &str, project: &Project) -> Result<Emitte
         out.push_str(t);
     });
     out.push('\n');
-    out.push_str(&entry(&program.functions)?);
+    out.push_str(&entry(&program.functions, &program.initializers)?);
     let c_shims = module.c_source();
     Ok(Emitted { ir: out, c_shims })
 }
@@ -217,9 +234,9 @@ impl Module<'_> {
     }
 }
 
-/// The `cooper_main` export the runtime calls: the program's `main`, with a unit
-/// result turned into exit status 0.
-fn entry(functions: &[Function]) -> Result<String, CodegenError> {
+/// The `cooper_main` export the runtime calls: the module-level variable initializers,
+/// then the program's `main`, with a unit result turned into exit status 0.
+fn entry(functions: &[Function], initializers: &[Callable]) -> Result<String, CodegenError> {
     let main = functions
         .iter()
         .find(|f| {
@@ -240,5 +257,10 @@ fn entry(functions: &[Function]) -> Result<String, CodegenError> {
         file: main.file.clone(),
         span: main.span,
     })?;
+    let initializations: String = initializers
+        .iter()
+        .map(|item| format!("  call void @{}()\n", mangle::symbol(item, &[])))
+        .collect();
+    let body = format!("{initializations}{body}");
     Ok(format!("define i32 @cooper_main() {{\n{body}}}\n"))
 }

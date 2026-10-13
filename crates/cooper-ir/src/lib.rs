@@ -17,6 +17,7 @@ use std::fmt;
 
 mod decision;
 mod format;
+mod init;
 mod ir;
 mod mono;
 
@@ -35,7 +36,7 @@ use cooper_frontend::resolve::{
     receiver_pattern_params, resolve_type, underlying_struct_name, Callable, Globals, Signature,
 };
 use cooper_frontend::typecheck::{
-    decode_escapes, decode_number_literal, decode_string_literal, ItemRef, LiteralValue, Typed,
+    decode_escapes, decode_number_literal, decode_string_literal, ItemRef, LiteralValue, Typed, VarRef,
 };
 use cooper_frontend::{stdlib, CheckedProject};
 use cooper_frontend::types::{is_numeric_name, Type, TypeDefs, INDEX_INT};
@@ -58,6 +59,9 @@ pub enum LowerError {
     Unsupported { span: Span, what: &'static str },
     /// An `extern func` whose C symbol another declaration gives a different signature.
     ConflictingExtern { span: Span, name: String },
+    /// A module-level variable whose initializer depends, directly or through the
+    /// functions it calls, on itself or on a variable that depends on it.
+    InitializationCycle { span: Span, name: String },
 }
 
 impl LowerError {
@@ -68,7 +72,8 @@ impl LowerError {
             | LowerError::UnresolvedType(span)
             | LowerError::MalformedLiteral(span)
             | LowerError::Unsupported { span, .. }
-            | LowerError::ConflictingExtern { span, .. } => *span,
+            | LowerError::ConflictingExtern { span, .. }
+            | LowerError::InitializationCycle { span, .. } => *span,
         }
     }
 }
@@ -82,6 +87,9 @@ impl fmt::Display for LowerError {
             LowerError::Unsupported { what, .. } => write!(f, "{what} is not supported yet"),
             LowerError::ConflictingExtern { name, .. } => {
                 write!(f, "extern function `{name}` is declared elsewhere with a different signature")
+            }
+            LowerError::InitializationCycle { name, .. } => {
+                write!(f, "initialization cycle: the initializer of `{name}` depends on `{name}`")
             }
         }
     }
@@ -100,6 +108,11 @@ pub struct Program {
     pub functions: Vec<Function>,
     /// The C functions the program declares, once per symbol.
     pub externs: Vec<Extern>,
+    /// The module-level variables, each zero-initialized.
+    pub globals: Vec<Global>,
+    /// The initializer functions to run, in order, before `main`: each module's after
+    /// those of the modules it depends on.
+    pub initializers: Vec<Callable>,
     pub defs: TypeDefs,
 }
 
@@ -137,12 +150,14 @@ impl std::error::Error for ProgramError {}
 pub fn lower_program(project: &CheckedProject) -> Result<Program, ProgramError> {
     let mut functions = Vec::new();
     let mut externs: Vec<Extern> = Vec::new();
+    let mut variables = Vec::new();
     for file in &project.files {
         let error = |error| ProgramError::Lower {
             file: file.name.clone(),
             error,
         };
         functions.extend(lower_module(&file.name, &file.decls, &file.globals, &file.typed).map_err(error)?);
+        variables.extend(file_variables(&file.name, &file.decls, &file.globals));
         for (declared, span) in file_externs(&file.decls, &file.globals) {
             match externs.iter().find(|e| e.name == declared.name) {
                 Some(existing) if !existing.same_signature(&declared) => {
@@ -156,12 +171,48 @@ pub fn lower_program(project: &CheckedProject) -> Result<Program, ProgramError> 
             }
         }
     }
+    let initializers = init::order(&variables, &functions)?;
     let functions = monomorphize(&functions).map_err(ProgramError::Mono)?;
     Ok(Program {
         functions: format::expand_formatting(functions, &project.defs),
         externs,
+        globals: variables.into_iter().map(|v| v.global).collect(),
+        initializers,
         defs: project.defs.clone(),
     })
+}
+
+/// A module-level variable a file declares, with where it is declared.
+struct Variable {
+    global: Global,
+    file: String,
+    span: Span,
+    /// Whether the declaration has an initializer; without one the variable keeps its
+    /// zero value.
+    initialized: bool,
+}
+
+/// The module-level variables a file's top-level declarations declare.
+fn file_variables(file: &str, decls: &[Stmt], globals: &Globals) -> Vec<Variable> {
+    decls
+        .iter()
+        .filter_map(|decl| {
+            let StmtKind::VarDecl { name, init, .. } = &decl.kind else {
+                return None;
+            };
+            let var = globals.vars.get(name)?;
+            Some(Variable {
+                global: Global {
+                    module: var.module.clone(),
+                    name: name.clone(),
+                    ty: var.ty.clone(),
+                },
+                file: file.to_string(),
+                span: decl.span,
+                initialized: init.is_some(),
+            })
+        })
+        .collect()
 }
 
 /// The C functions a file's top-level declarations declare, with their signatures.
@@ -202,11 +253,9 @@ pub fn lower_module(
                 functions.extend(lower_function(file, func, globals, checked)?);
             }
             StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } | StmtKind::ExternFunc { .. } => {}
-            StmtKind::VarDecl { .. } => {
-                return Err(LowerError::Unsupported {
-                    span: decl.span,
-                    what: "module-level variable",
-                });
+            StmtKind::VarDecl { init: None, .. } => {}
+            StmtKind::VarDecl { name, init: Some(init), .. } => {
+                functions.extend(lower_initializer(file, decl.span, name, init, globals, checked)?);
             }
             _ => {
                 return Err(LowerError::Unsupported {
@@ -216,6 +265,73 @@ pub fn lower_module(
             }
         }
     }
+    Ok(functions)
+}
+
+/// Lower the initializer of the module-level variable `name` into a function that
+/// evaluates it and stores the result, followed by every function literal lifted out of
+/// the expression.
+fn lower_initializer(
+    file: &str,
+    span: Span,
+    name: &str,
+    init: &Expr,
+    globals: &Globals,
+    checked: &Typed,
+) -> Result<Vec<Function>, LowerError> {
+    let var = globals.vars.get(name).ok_or(LowerError::UnresolvedType(span))?;
+    let item = Callable::Initializer {
+        module: var.module.clone(),
+        name: name.to_string(),
+    };
+    let lower = Lower {
+        types: &checked.types,
+        refs: &checked.refs,
+        captures: &checked.captures,
+        variables: &checked.variables,
+        globals,
+        type_params: HashSet::new(),
+        lifting: Some(Lifting {
+            file: file.to_string(),
+            parent: item.clone(),
+            binders: Vec::new(),
+            next: Cell::new(0),
+            lifted: RefCell::new(Vec::new()),
+        }),
+    };
+    let target = IrExpr {
+        kind: IrExprKind::Global {
+            module: var.module.clone(),
+            name: name.to_string(),
+        },
+        ty: var.ty.clone(),
+        span,
+    };
+    let store = IrExpr {
+        kind: IrExprKind::Assign {
+            op: AssignOp::Assign,
+            target: Box::new(target),
+            value: Box::new(lower.expr(init)?),
+        },
+        ty: var.ty.clone(),
+        span,
+    };
+    let mut functions = vec![Function {
+        item,
+        file: file.to_string(),
+        receiver: None,
+        env: None,
+        type_params: Vec::new(),
+        type_args: Vec::new(),
+        params: Vec::new(),
+        return_type: Type::Unit,
+        body: vec![IrStmt {
+            kind: IrStmtKind::Expr(store),
+            span,
+        }],
+        span,
+    }];
+    functions.extend(lower.lifting.expect("set above").lifted.into_inner());
     Ok(functions)
 }
 
@@ -236,6 +352,7 @@ fn lower_function(
         types: &checked.types,
         refs: &checked.refs,
         captures: &checked.captures,
+        variables: &checked.variables,
         globals,
         type_params,
         lifting: Some(Lifting {
@@ -293,6 +410,7 @@ pub fn lower_expr(expr: &Expr, globals: &Globals, checked: &Typed) -> Result<IrE
         types: &checked.types,
         refs: &checked.refs,
         captures: &checked.captures,
+        variables: &checked.variables,
         globals,
         type_params: HashSet::new(),
         lifting: None,
@@ -307,6 +425,7 @@ struct Lower<'a> {
     types: &'a TypeTable,
     refs: &'a HashMap<Span, ItemRef>,
     captures: &'a HashMap<Span, Vec<(String, Type)>>,
+    variables: &'a HashMap<Span, VarRef>,
     globals: &'a Globals,
     type_params: HashSet<String>,
     /// Where function literals are lifted to; absent when lowering a lone expression.
@@ -630,6 +749,16 @@ impl Lower<'_> {
             .ok_or(LowerError::MissingType(expr.span))?;
         if matches!(ty, Type::Infer(_)) {
             unreachable!("inference variables are resolved before lowering");
+        }
+        if let Some(var) = self.variables.get(&expr.span) {
+            return Ok(IrExpr {
+                kind: IrExprKind::Global {
+                    module: var.module.clone(),
+                    name: var.name.clone(),
+                },
+                ty,
+                span: expr.span,
+            });
         }
         // A reference to a function or method names its declaration; a module prefix
         // carries no runtime value and drops away.

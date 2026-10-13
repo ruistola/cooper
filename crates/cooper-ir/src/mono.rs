@@ -63,6 +63,7 @@ fn item_name(item: &Callable) -> String {
         }
         Callable::Closure { parent, index } => format!("{}.{index}", item_name(parent)),
         Callable::Formatter { index } => format!("formatter {index}"),
+        Callable::Initializer { name, .. } => format!("initializer of {name}"),
     }
 }
 
@@ -153,6 +154,7 @@ fn instantiate(
     let mut pass = Substitute {
         subst: &subst,
         references: Vec::new(),
+        globals: Vec::new(),
     };
     let mut instance = template.clone();
     instance.type_args = type_args;
@@ -166,11 +168,27 @@ fn instantiate(
     (instance, pass.references)
 }
 
+/// The functions and methods, and the module-level variables, the statements `body`
+/// refer to.
+pub(crate) fn dependencies(body: &[IrStmt]) -> (Vec<Callable>, Vec<(String, String)>) {
+    let subst = HashMap::new();
+    let mut pass = Substitute {
+        subst: &subst,
+        references: Vec::new(),
+        globals: Vec::new(),
+    };
+    pass.stmts(&mut body.to_vec());
+    let callables = pass.references.into_iter().map(|(item, ..)| item).collect();
+    (callables, pass.globals)
+}
+
 /// An in-place walk substituting type parameters through a function body, collecting
 /// the function and method references it passes.
 struct Substitute<'a> {
     subst: &'a HashMap<String, Type>,
     references: Vec<(Callable, Vec<Type>, Span)>,
+    /// The module-level variables the walk passes, as (module, name).
+    globals: Vec<(String, String)>,
 }
 
 impl Substitute<'_> {
@@ -261,6 +279,9 @@ impl Substitute<'_> {
             | IrExprKind::Nil
             | IrExprKind::Unit
             | IrExprKind::Var(_) => {}
+            IrExprKind::Global { module, name } => {
+                self.globals.push((module.clone(), name.clone()));
+            }
             IrExprKind::FuncRef { item, type_args } | IrExprKind::Closure { item, type_args, .. } => {
                 type_args.iter_mut().for_each(|t| self.ty(t));
                 self.references

@@ -243,7 +243,7 @@ impl<'g> TypeChecker<'g> {
     /// a place only on a built-in array, whose element lives in the backing buffer.
     fn is_addressable(&mut self, expr: &Expr) -> bool {
         match &expr.kind {
-            ExprKind::Ident(name) => self.lookup_var(name).is_some(),
+            ExprKind::Ident(name) => self.lookup_var(name).is_some() || self.globals.vars.contains_key(name),
             ExprKind::Field { .. } | ExprKind::Deref(_) => true,
             ExprKind::Index { array, .. } => matches!(self.check_expr(array), Some(Type::Array(_))),
             ExprKind::Group(inner) => self.is_addressable(inner),

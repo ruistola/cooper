@@ -148,7 +148,7 @@ useBlock   ::= "use" "{" useItem* "}"                 # items: comma-separated
 useItem    ::= path ("as" ident)? | path "." "{" (ident ("as" ident)?)* "}"
 path       ::= ident ("." ident)*
 
-decl       ::= struct | oneof | func | extern | "let" …   # a module-level `let` parses; lowering rejects it
+decl       ::= struct | oneof | func | extern | "let" ident ":" type ("=" expr)?   # a module-level variable
 struct     ::= "struct" ident ident* "{" member* "}"  # ident* are type-parameter binders
 member     ::= ident ":" type
 oneof      ::= "oneof" ident ident* "{" variant* "}"
@@ -248,6 +248,13 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
   expression, and ending it with `;` makes it unit. `main` is `func main()` or
   `func main(): i32`, whose result is the exit status.
 * `match` must be exhaustive: name every variant, or end with `_` or a binding.
+* A module-level variable is declared `let name: Type = value`; the annotation is required
+  and the initializer optional (the zero value otherwise). It is mutable, and `&name` is
+  its address. A module's initializers run depth-first before `main`: those of the modules it
+  uses first, then its own in declaration order, except that a variable is initialized after
+  every variable its initializer reaches, directly or through the functions it calls. An
+  initializer that reaches its own variable is an error. Another module's variable is reached
+  as `module.name` or bound by `use { module.name }`.
 * A method name may not collide with a field name, functions are never overloaded, and a
   module's top-level names share one unordered namespace across its files.
 * `==` works on comparable types only: not function types, arrays, or types containing them.
@@ -270,7 +277,7 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
 These are designed or reserved but rejected today. Do not write them:
 
 * Generic nested functions.
-* Module-level variables and static arrays `T[N]`.
+* Static arrays `T[N]`.
 * Methods across sum-type variants.
 * Named-field variant payloads, nested patterns inside variant payloads, or-patterns, guards.
 

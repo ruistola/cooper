@@ -12,6 +12,7 @@
 //!            | "M" path ident ident       method: module, receiver type, name
 //!            | "L" item <decimal> "_"     the nth function literal lifted from item
 //!            | "S" <decimal> "_"          the formatter of the nth type the program formats
+//!            | "V" path ident             the initializer of a module-level variable
 //! path     ::= "N" ident+ "E"             module path segments
 //! ident    ::= <decimal byte length> <bytes>
 //! type     ::= "p" ident                  primitive, by name (p3i32)
@@ -48,6 +49,14 @@ pub fn symbol(item: &Callable, type_args: &[Type]) -> String {
     out
 }
 
+/// The symbol of the module-level variable `name` of `module`.
+pub fn global_symbol(module: &str, name: &str) -> String {
+    let mut out = String::from("_CG");
+    path(&mut out, module);
+    ident(&mut out, name);
+    out
+}
+
 fn item(out: &mut String, item: &Callable) {
     match item {
         Callable::Func { module, name } => {
@@ -67,6 +76,11 @@ fn item(out: &mut String, item: &Callable) {
             write!(out, "{index}_").expect("writing to a String cannot fail");
         }
         Callable::Extern { .. } => unreachable!("an extern symbol is its bare name"),
+        Callable::Initializer { module, name } => {
+            out.push('V');
+            path(out, module);
+            ident(out, name);
+        }
         Callable::Formatter { index } => {
             write!(out, "S{index}_").expect("writing to a String cannot fail");
         }

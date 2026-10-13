@@ -560,7 +560,10 @@ fn instances_of<'f>(functions: &'f [Function], name: &str) -> Vec<&'f Function> 
         .iter()
         .filter(|f| match &f.item {
             Callable::Func { name: n, .. } | Callable::Method { name: n, .. } => n == name,
-            Callable::Closure { .. } | Callable::Extern { .. } | Callable::Formatter { .. } => false,
+            Callable::Closure { .. }
+            | Callable::Extern { .. }
+            | Callable::Formatter { .. }
+            | Callable::Initializer { .. } => false,
         })
         .collect()
 }

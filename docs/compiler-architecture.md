@@ -113,6 +113,11 @@ A `return`, `break`, or `continue` in expression position lowers to a block that
 jump, then an `Unreachable` value of the expression's type. The checker types it as a fresh
 inference variable that the surrounding arm or branch determines.
 
+A `defer` lowers like a function literal: its function value is bound to a local at the
+`defer`, and lowering expands a call of it at every exit from the block. It keeps a stack of
+the deferred calls of each block being lowered, and a `return` (after saving its value), `break`,
+or `continue` runs those of every block it leaves. The backend sees only ordinary calls.
+
 **Monomorphization** (`mono.rs`) is an IR-to-IR pass. Lowering keeps a generic function as a
 template. Starting from the non-generic functions, the pass instantiates each referenced
 declaration once per distinct set of type arguments and follows the references each instance

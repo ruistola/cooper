@@ -121,7 +121,7 @@ kind := match n with {               # integer, bool, tuple, struct, or sum-type
   subset.
 * Identifiers are `[A-Za-z_][A-Za-z0-9_]*`. Types are PascalCase and everything else is
   camelCase. Casing matters to the compiler only in patterns (below).
-* Reserved words: `and as break continue do else extern false for func if in is let match nil oneof or
+* Reserved words: `and as break continue defer do else extern false for func if in is let match nil oneof or
   repeat return struct then true until use while with xor`.
 * Numbers: `42`, `1_000`, `0xFF`, `0b1010`, `3.14`, `1e9`, `2.5e-3`. A float needs digits on
   both sides of the point. Strings are `"…"` with the escapes `\n \t \r \0 \\ \" \' \{`, and interpolate:
@@ -169,6 +169,7 @@ stmt       ::= "let" ident (":" type)? ("=" expr)?
              | "for" bindings "in" expr "do" body
              | "match" expr "with" "{" arm* "}"
              | "return" expr? | "break" | "continue"
+             | "defer" stmt                           # run stmt when the enclosing block is left
              | "func" ident "(" param* ")" (":" type)? block   # nested function
              | expr                                   # a call, an assignment, …
 bindings   ::= ident | "(" ident "," ident ")"

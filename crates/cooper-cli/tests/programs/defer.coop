@@ -1,0 +1,90 @@
+# exit: 0
+# stdout: body
+# stdout: second deferred
+# stdout: first deferred, runs last
+# stdout: inner
+# stdout: cleanup 3
+# stdout: cleanup 0
+# stdout: 6 -1
+# stdout: inner x 2
+# stdout: x is 1
+# stdout: end of pass 0
+# stdout: pass 1
+# stdout: end of pass 1
+# stdout: end of pass 2
+# stdout: 1 506
+# stdout: viaMatch done
+# stdout: viaMatch done
+# stdout: 4 0
+# `defer`: LIFO order, every exit from the block (`return`, `break`, `continue`, falling
+# off the end, a `return` in a `match` arm), a fresh scope per loop pass, deferred code
+# seeing the variable it names even where an inner block shadows it, and the returned or
+# block value being evaluated before the deferred code runs.
+use {
+  std.io,
+}
+
+func order() {
+  defer std.io.println("first deferred, runs last")
+  defer std.io.println("second deferred")
+  std.io.println("body")
+}
+
+func early(n: i32): i32 {
+  defer std.io.println("cleanup {n}")
+  if n > 0 then {
+    defer std.io.println("inner")
+    return n * 2
+  }
+  return -1
+}
+
+func shadow() {
+  x := 1
+  defer std.io.println("x is {x}")
+  if x > 0 then {
+    x := 2
+    std.io.println("inner x {x}")
+    return
+  }
+}
+
+func loops() {
+  for i in 0..3 do {
+    defer std.io.println("end of pass {i}")
+    if i == 0 then continue
+    if i == 2 then break
+    std.io.println("pass {i}")
+  }
+}
+
+func counter(): i32 {
+  count := 0
+  defer count += 100
+  count += 1
+  return count
+}
+
+func block(): i32 {
+  total := 5
+  v := {
+    defer total += 1
+    total
+  }
+  return v * 100 + total
+}
+
+func viaMatch(m: Maybe i32): i32 {
+  defer std.io.println("viaMatch done")
+  x := if m is Some(x) then x else return 0
+  return x
+}
+
+func main() {
+  order()
+  std.io.println("{early(3)} {early(0)}")
+  shadow()
+  loops()
+  std.io.println("{counter()} {block()}")
+  std.io.println("{viaMatch(Some(4))} {viaMatch(None)}")
+}

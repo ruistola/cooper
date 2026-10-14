@@ -77,6 +77,9 @@ impl SemanticAnalyzer<'_> {
                 self.analyze_block(body);
             }
             StmtKind::Break | StmtKind::Continue => {}
+            StmtKind::Defer(body) => {
+                self.analyze_literal(&None, true, std::slice::from_ref(&**body), stmt.span, "deferred statement")
+            }
             StmtKind::Return(expr) => {
                 if let Some(expr) = expr {
                     if let Some(valued) = self.valued_returns.last_mut() {

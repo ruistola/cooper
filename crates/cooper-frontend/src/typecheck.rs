@@ -425,6 +425,18 @@ impl<'g> TypeChecker<'g> {
                     self.check_stmt(els);
                 }
             }
+            StmtKind::Defer(body) => {
+                if self.current_return.is_none() {
+                    self.err(stmt.span, "`defer` outside of a function");
+                    return;
+                }
+                // A deferred statement is the body of a function literal made here.
+                let body = std::slice::from_ref(&**body);
+                if let Some(ty) = self.check_closure(&[], &None, body, stmt.span, None) {
+                    self.body.spans.push(stmt.span);
+                    self.types.insert(stmt.span, ty);
+                }
+            }
             StmtKind::Match { scrutinee, arms } => self.check_match_stmt(scrutinee, arms),
             StmtKind::ForIn {
                 bindings,

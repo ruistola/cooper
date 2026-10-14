@@ -58,6 +58,35 @@ while n < 5 do {
 repeat n -= 1 until n == 0            # runs at least once
 ```
 
+## `defer`
+
+`defer STMT` runs `STMT` when the block it is in is left, after the statements deferred
+later in that block, so deferred code unwinds last to first. It runs on every way out of the
+block: falling off its end, `return`, `break`, and `continue`. Its scope is the block, not the
+function, so a `defer` in a loop body runs at the end of each pass:
+
+```
+f := open(path)
+defer close(f)
+for line in lines do {
+  mark := lock()
+  defer unlock(mark)      # at the end of each pass
+  if line == "" then continue
+  process(line)
+}
+```
+
+A deferred statement is the body of a function literal made at the `defer` and called at
+each exit, so it captures the variables it names by reference, exactly as a closure does,
+and sees their value at exit, not when it was deferred. An inner block that shadows a
+variable does not change which one it refers to. A `return` or a value block evaluates its
+value first and then runs the deferred code, which therefore cannot change that value, though
+it can change what a returned pointer or array points to.
+
+`defer` is a statement of a `{ }` block, not the single statement of an `if` or a loop. A
+deferred statement cannot itself be a `defer`. Deferred code does not run when the program
+panics.
+
 ## Header expressions and newlines
 
 Newlines are insignificant inside a header expression (an `if`/`while`/`until` condition, a

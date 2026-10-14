@@ -291,6 +291,7 @@ fn lower_initializer(
         variables: &checked.variables,
         local_refs: &checked.local_refs,
         aliases: &checked.aliases,
+        defers: RefCell::new(Vec::new()),
         globals,
         type_params: RefCell::new(HashSet::new()),
         lifting: Some(Lifting {
@@ -358,6 +359,7 @@ fn lower_function(
         variables: &checked.variables,
         local_refs: &checked.local_refs,
         aliases: &checked.aliases,
+        defers: RefCell::new(Vec::new()),
         globals,
         type_params: RefCell::new(type_params),
         lifting: Some(Lifting {
@@ -419,6 +421,7 @@ pub fn lower_expr(expr: &Expr, globals: &Globals, checked: &Typed) -> Result<IrE
         variables: &checked.variables,
         local_refs: &checked.local_refs,
         aliases: &checked.aliases,
+        defers: RefCell::new(Vec::new()),
         globals,
         type_params: RefCell::new(HashSet::new()),
         lifting: None,
@@ -436,10 +439,19 @@ struct Lower<'a> {
     variables: &'a HashMap<Span, VarRef>,
     local_refs: &'a HashMap<Span, LocalRef>,
     aliases: &'a HashMap<Span, String>,
+    /// The blocks being lowered, innermost last, with the deferred calls each has met.
+    defers: RefCell<Vec<DeferScope>>,
     globals: &'a Globals,
     type_params: RefCell<HashSet<String>>,
     /// Where function literals are lifted to; absent when lowering a lone expression.
     lifting: Option<Lifting>,
+}
+
+/// A block being lowered: the calls of the statements it has deferred so far, in order,
+/// and whether it is the body of a loop, which `break` and `continue` leave.
+struct DeferScope {
+    calls: Vec<IrStmt>,
+    loop_body: bool,
 }
 
 /// The function literals and nested functions lifted out of one top-level declaration.
@@ -475,14 +487,136 @@ impl Lower<'_> {
     }
 
     fn block(&self, stmts: &[Stmt]) -> Result<Vec<IrStmt>, LowerError> {
+        self.scope(false, stmts)
+    }
+
+    /// The body of a loop: a block that `break` and `continue` leave.
+    fn loop_block(&self, stmts: &[Stmt]) -> Result<Vec<IrStmt>, LowerError> {
+        self.scope(true, stmts)
+    }
+
+    /// Lower the statements of a block, then the calls it deferred, last deferred first,
+    /// unless the block ends by leaving, which has run them already.
+    fn scope(&self, loop_body: bool, stmts: &[Stmt]) -> Result<Vec<IrStmt>, LowerError> {
+        let (mut out, calls) = self.deferring(loop_body, |this| this.statements(stmts))?;
+        if !matches!(stmts.last().map(|s| &s.kind), Some(StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue)) {
+            out.extend(calls);
+        }
+        Ok(out)
+    }
+
+    /// Run `lower` in a new block, returning its result and the calls the block deferred,
+    /// in the order they run.
+    fn deferring<T>(
+        &self,
+        loop_body: bool,
+        lower: impl FnOnce(&Self) -> Result<T, LowerError>,
+    ) -> Result<(T, Vec<IrStmt>), LowerError> {
+        self.defers.borrow_mut().push(DeferScope { calls: Vec::new(), loop_body });
+        let result = lower(self);
+        let scope = self.defers.borrow_mut().pop().expect("pushed above");
+        let mut calls = scope.calls;
+        calls.reverse();
+        Ok((result?, calls))
+    }
+
+    fn statements(&self, stmts: &[Stmt]) -> Result<Vec<IrStmt>, LowerError> {
         let mut out = Vec::with_capacity(stmts.len());
         for stmt in stmts {
             match &stmt.kind {
                 StmtKind::FuncDecl(func) => out.extend(self.nested_func(func)?),
+                StmtKind::Defer(body) => out.push(self.defer(body, stmt.span)?),
                 _ => out.push(self.stmt(stmt)?),
             }
         }
         Ok(out)
+    }
+
+    /// A deferred statement: its function value is made here, and called by every exit
+    /// from the block that follows.
+    fn defer(&self, body: &Stmt, span: Span) -> Result<IrStmt, LowerError> {
+        let closure = self.closure(&[], std::slice::from_ref(body), span, &[])?;
+        let Type::Func { return_type, .. } = &closure.ty else {
+            unreachable!("a function literal has a function type");
+        };
+        let name = format!("defer.{}", span.start);
+        let function = |ty: Type| IrExpr {
+            kind: IrExprKind::Var(name.clone()),
+            ty,
+            span,
+        };
+        let call = IrExpr {
+            ty: (**return_type).clone(),
+            kind: IrExprKind::Call {
+                callee: Box::new(function(closure.ty.clone())),
+                args: Vec::new(),
+            },
+            span,
+        };
+        self.defers
+            .borrow_mut()
+            .last_mut()
+            .expect("a deferred statement is in a block")
+            .calls
+            .push(IrStmt { kind: IrStmtKind::Expr(call), span });
+        Ok(IrStmt {
+            kind: IrStmtKind::Var {
+                name,
+                ty: closure.ty.clone(),
+                init: Some(closure),
+            },
+            span,
+        })
+    }
+
+    /// The calls that leaving the blocks of the current function down to, and with, the
+    /// innermost loop body (or all of them, for a `return`) must run, innermost first.
+    fn unwinding(&self, to_loop: bool) -> Vec<IrStmt> {
+        let mut calls = Vec::new();
+        for scope in self.defers.borrow().iter().rev() {
+            calls.extend(scope.calls.iter().rev().cloned());
+            if to_loop && scope.loop_body {
+                break;
+            }
+        }
+        calls
+    }
+
+    /// A `return`, `break`, or `continue` as one statement.
+    fn leave(&self, jump: IrStmtKind, span: Span) -> IrStmt {
+        let mut stmts = self.jump(jump, span);
+        if stmts.len() == 1 {
+            return stmts.remove(0);
+        }
+        IrStmt { kind: IrStmtKind::Block(stmts), span }
+    }
+
+    /// The statements for a `return`, `break`, or `continue` of `jump`: the returned value
+    /// is evaluated first, then the deferred calls run, then the jump.
+    fn jump(&self, jump: IrStmtKind, span: Span) -> Vec<IrStmt> {
+        let calls = self.unwinding(!matches!(jump, IrStmtKind::Return(_)));
+        if calls.is_empty() {
+            return vec![IrStmt { kind: jump, span }];
+        }
+        let statement = |kind| IrStmt { kind, span };
+        let mut out = Vec::new();
+        let jump = match jump {
+            IrStmtKind::Return(Some(value)) if matches!(value.ty, Type::Unit) => {
+                out.push(statement(IrStmtKind::Expr(value)));
+                IrStmtKind::Return(None)
+            }
+            IrStmtKind::Return(Some(value)) => {
+                let name = format!("return.{}", span.start);
+                let ty = value.ty.clone();
+                let saved = IrExpr { kind: IrExprKind::Var(name.clone()), ty: ty.clone(), span };
+                out.push(statement(IrStmtKind::Var { name, ty, init: Some(value) }));
+                IrStmtKind::Return(Some(saved))
+            }
+            other => other,
+        };
+        out.extend(calls);
+        out.push(statement(jump));
+        out
     }
 
     /// A nested function: its variable, bound first (to an unassigned function value)
@@ -569,7 +703,11 @@ impl Lower<'_> {
             lifting.binders.borrow_mut().extend(own.iter().cloned());
             self.type_params.borrow_mut().extend(own.iter().cloned());
         }
-        let body = self.block(body)?;
+        // A function's deferred calls belong to its own blocks.
+        let enclosing = self.defers.replace(Vec::new());
+        let body = self.block(body);
+        self.defers.replace(enclosing);
+        let body = body?;
         let lifted = self.lift_at(index, params, return_type, body, env, ty, span);
         lifting.binders.borrow_mut().truncate(outer.len());
         own.iter().for_each(|binder| {
@@ -658,7 +796,8 @@ impl Lower<'_> {
                 }
             }
             StmtKind::Return(value) => {
-                IrStmtKind::Return(value.as_ref().map(|e| self.expr(e)).transpose()?)
+                let value = value.as_ref().map(|e| self.expr(e)).transpose()?;
+                return Ok(self.leave(IrStmtKind::Return(value), stmt.span));
             }
             StmtKind::If { cond, then, els } => {
                 let mut declared = Vec::new();
@@ -698,7 +837,7 @@ impl Lower<'_> {
                 let patterns = bool_patterns(&tested.ty, tested.span);
                 let tree = compile_match(&self.globals.defs, &tested.ty, &patterns);
                 let leave = IrStmt { kind: IrStmtKind::Break, span: stmt.span };
-                let run = IrStmt { kind: IrStmtKind::Block(self.block(body)?), span: stmt.span };
+                let run = IrStmt { kind: IrStmtKind::Block(self.loop_block(body)?), span: stmt.span };
                 declared.push(IrStmt {
                     kind: IrStmtKind::Match { scrutinee: tested, actions: vec![run, leave], tree },
                     span: stmt.span,
@@ -722,12 +861,13 @@ impl Lower<'_> {
                 until,
             } => IrStmtKind::While {
                 cond: self.expr(cond)?,
-                body: self.block(body)?,
+                body: self.loop_block(body)?,
                 post_test: *post_test,
                 until: *until,
             },
-            StmtKind::Break => IrStmtKind::Break,
-            StmtKind::Continue => IrStmtKind::Continue,
+            StmtKind::Break => return Ok(self.leave(IrStmtKind::Break, stmt.span)),
+            StmtKind::Continue => return Ok(self.leave(IrStmtKind::Continue, stmt.span)),
+            StmtKind::Defer(_) => unreachable!("a deferred statement is lowered with its block"),
             StmtKind::Match { scrutinee, arms } => {
                 let scrutinee = self.expr(scrutinee)?;
                 let patterns = arms
@@ -763,7 +903,7 @@ impl Lower<'_> {
                         start: Box::new(start),
                         end: Box::new(end),
                         inclusive: *inclusive,
-                        body: self.block(body)?,
+                        body: self.loop_block(body)?,
                     }
                 }
                 // Array iteration drives from the backing's length and reads each
@@ -792,7 +932,7 @@ impl Lower<'_> {
                             name: elem_name.clone(),
                             ty: elem_ty,
                         },
-                        body: self.block(body)?,
+                        body: self.loop_block(body)?,
                     }
                 }
             },
@@ -824,7 +964,7 @@ impl Lower<'_> {
                     ExprKind::Break => IrStmtKind::Break,
                     _ => IrStmtKind::Continue,
                 };
-                return Ok(self.leaving(jump, ty, expr.span));
+                return Ok(self.leaving(self.jump(jump, expr.span), ty, expr.span));
             }
             ExprKind::Is { .. } | ExprKind::Binary { op: BinaryOp::And, .. } => {
                 let mut declared = Vec::new();
@@ -1253,24 +1393,43 @@ impl Lower<'_> {
     }
 
     fn value_block(&self, block: &Block, ty: &Type) -> Result<IrExprKind, LowerError> {
-        let stmts = self.block(&block.statements)?;
-        let result = if cooper_frontend::typecheck::ends_in_jump(block) {
-            IrExpr {
-                kind: IrExprKind::Unreachable,
-                ty: ty.clone(),
-                span: block.result.span,
-            }
-        } else {
-            self.expr(&block.result)?
-        };
-        Ok(IrExprKind::Block { stmts, result: Box::new(result) })
+        let ((mut stmts, result), calls) = self.deferring(false, |this| {
+            let stmts = this.statements(&block.statements)?;
+            let result = if cooper_frontend::typecheck::ends_in_jump(block) {
+                IrExpr {
+                    kind: IrExprKind::Unreachable,
+                    ty: ty.clone(),
+                    span: block.result.span,
+                }
+            } else {
+                this.expr(&block.result)?
+            };
+            Ok((stmts, result))
+        })?;
+        if calls.is_empty() || cooper_frontend::typecheck::ends_in_jump(block) {
+            return Ok(IrExprKind::Block { stmts, result: Box::new(result) });
+        }
+        // The value is evaluated before the deferred calls run.
+        let span = result.span;
+        if matches!(result.ty, Type::Unit) {
+            stmts.push(IrStmt { kind: IrStmtKind::Expr(result), span });
+            stmts.extend(calls);
+            let unit = IrExpr { kind: IrExprKind::Unit, ty: Type::Unit, span };
+            return Ok(IrExprKind::Block { stmts, result: Box::new(unit) });
+        }
+        let name = format!("value.{}", span.start);
+        let ty = result.ty.clone();
+        let saved = IrExpr { kind: IrExprKind::Var(name.clone()), ty: ty.clone(), span };
+        stmts.push(IrStmt { kind: IrStmtKind::Var { name, ty, init: Some(result) }, span });
+        stmts.extend(calls);
+        Ok(IrExprKind::Block { stmts, result: Box::new(saved) })
     }
 
-    /// An expression that runs the jump `jump` and so never yields its value, of type `ty`.
-    fn leaving(&self, jump: IrStmtKind, ty: Type, span: Span) -> IrExpr {
+    /// An expression that runs the jump `stmts` and so never yields its value, of type `ty`.
+    fn leaving(&self, stmts: Vec<IrStmt>, ty: Type, span: Span) -> IrExpr {
         IrExpr {
             kind: IrExprKind::Block {
-                stmts: vec![IrStmt { kind: jump, span }],
+                stmts,
                 result: Box::new(IrExpr { kind: IrExprKind::Unreachable, ty: ty.clone(), span }),
             },
             ty,

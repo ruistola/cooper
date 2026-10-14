@@ -508,6 +508,9 @@ pub enum StmtKind {
     },
     Break,
     Continue,
+    /// `defer STMT`: run `STMT` when the enclosing block is left, after the statements
+    /// deferred later. It is the body of a function literal created here and called there.
+    Defer(Box<Stmt>),
     Match {
         scrutinee: Expr,
         arms: Vec<StmtArm>,

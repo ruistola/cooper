@@ -35,6 +35,7 @@ impl Parser {
             Let => self.parse_var_decl_stmt(),
             Match => self.parse_match_stmt(),
             Return => self.parse_return_stmt(),
+            Defer => self.parse_defer_stmt(),
             Struct => self.parse_struct_decl_stmt(),
             Oneof => self.parse_oneof_decl_stmt(),
             _ => self.parse_expression_stmt(),
@@ -176,6 +177,7 @@ impl Parser {
                 span: start.to(self.prev_token().span),
             })
         } else {
+            self.reject_lone_defer()?;
             self.closers.push(Else);
             let s = self.parse_stmt();
             self.closers.pop();
@@ -286,8 +288,34 @@ impl Parser {
             self.expect(CloseCurly)?;
             Ok(body)
         } else {
+            self.reject_lone_defer()?;
             Ok(vec![self.parse_stmt()?])
         }
+    }
+
+    /// `defer STMT`. Only a statement of a `{ }` block may defer, since the deferred
+    /// statement runs when that block is left.
+    fn parse_defer_stmt(&mut self) -> PResult<Stmt> {
+        let start = self.expect(Defer)?.span;
+        if self.peek().kind == Defer {
+            let span = self.peek().span;
+            return Err(self.error(span, "a deferred statement cannot itself be deferred"));
+        }
+        let body = self.parse_stmt()?;
+        Ok(Stmt {
+            kind: StmtKind::Defer(Box::new(body)),
+            span: start.to(self.prev_token().span),
+        })
+    }
+
+    /// An error if the single statement about to be parsed is a `defer`, which belongs
+    /// directly in a `{ }` block.
+    fn reject_lone_defer(&mut self) -> PResult<()> {
+        if self.peek().kind == Defer {
+            let span = self.peek().span;
+            return Err(self.error(span, "`defer` must be a statement of a `{ }` block"));
+        }
+        Ok(())
     }
 
     fn parse_return_stmt(&mut self) -> PResult<Stmt> {

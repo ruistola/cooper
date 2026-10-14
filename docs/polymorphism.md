@@ -30,7 +30,11 @@ capabilities differ by case.
 When every variant of a sum type carries a payload type that defines a method with the same
 signature, that method can be called on the sum-type value. It dispatches by branching on
 the variant tag. A variant whose payload lacks the method makes the call a compile error
-(`not all variants of Attack define isLethal(): bool`).
+(`not all variants of Attack define isLethal`), as does a method whose signature differs
+between variants. Each variant carries exactly one payload, a struct, whose method takes its
+receiver by value (a pointer receiver would change only a copy). The call works through a
+pointer to the sum type too. A generic payload works as well. The method can be called but not
+taken as a value (`f := a.isLethal`).
 
 ```
 struct Melee {

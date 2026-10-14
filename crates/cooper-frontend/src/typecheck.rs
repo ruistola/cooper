@@ -53,6 +53,9 @@ pub struct Typed {
     pub local_refs: HashMap<Span, LocalRef>,
     /// The unique name each use of an `is`-bound variable stands for, keyed by span.
     pub aliases: HashMap<Span, String>,
+    /// The method each variant of a sum type supplies to a call across its variants,
+    /// keyed by the callee's span and the variant's position.
+    pub dispatch: HashMap<(Span, usize), ItemRef>,
 }
 
 /// A use of a module-level variable: the module that declares it and its name there.
@@ -113,6 +116,9 @@ pub fn is_binder(name: &str, test: Span) -> String {
 enum RefTarget {
     Item(Callable),
     Local(Span),
+    /// The method one variant of a sum type supplies to a call across its variants: the
+    /// call's callee span and the variant's position.
+    Variant(Callable, Span, usize),
 }
 
 /// A function or method reference awaiting the body's resolved type arguments.
@@ -190,6 +196,8 @@ struct BodyConstraints {
     predicates: Vec<Predicate>,
     literals: Vec<Literal>,
     references: HashMap<Span, PendingRef>,
+    /// The per-variant methods of calls across a sum type's variants.
+    dispatches: Vec<PendingRef>,
     obligations: Vec<Obligation>,
     calls: HashMap<Span, DeferredCall>,
     reported: HashSet<InferId>,
@@ -218,6 +226,7 @@ pub fn check(
         variables: tc.variables,
         local_refs: tc.local_refs,
         aliases: tc.aliases,
+        dispatch: tc.dispatch,
     }
 }
 
@@ -252,6 +261,9 @@ struct TypeChecker<'g> {
     variables: HashMap<Span, VarRef>,
     /// Every use of a generic nested function, keyed by span: the lowering handoff.
     local_refs: HashMap<Span, LocalRef>,
+    /// The method each variant of a sum type supplies to a call across its variants, keyed
+    /// by the callee's span and the variant's position: the lowering handoff.
+    dispatch: HashMap<(Span, usize), ItemRef>,
     /// Every use of an `is`-bound variable, keyed by span: the lowering handoff.
     aliases: HashMap<Span, String>,
     /// The variables each `is` test, or `and` of tests, binds where it holds, keyed by
@@ -281,6 +293,7 @@ impl<'g> TypeChecker<'g> {
             variables: HashMap::new(),
             local_refs: HashMap::new(),
             aliases: HashMap::new(),
+            dispatch: HashMap::new(),
             tests: HashMap::new(),
             infer: InferTable::default(),
             body: BodyConstraints::default(),

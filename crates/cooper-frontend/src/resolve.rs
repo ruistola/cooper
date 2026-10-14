@@ -65,6 +65,9 @@ pub struct Signature {
     pub receiver: Option<Type>,
     /// The function type, receiver excluded.
     pub ty: Type,
+    /// Whether a method declares its receiver as a pointer, so it may change the value
+    /// it is called on.
+    pub by_pointer: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -577,6 +580,7 @@ fn resolve_extern_func(
                 return_type: Box::new(return_type),
                 param_types,
             },
+            by_pointer: false,
         },
     );
 }
@@ -652,6 +656,7 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
                 type_params: binders,
                 receiver: None,
                 ty: func_type,
+                by_pointer: false,
             },
         );
         return;
@@ -704,6 +709,7 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
             type_params: binders,
             receiver: Some(receiver_struct),
             ty: func_type,
+            by_pointer: matches!(recv_type, Type::Pointer(_)),
         },
     );
 }

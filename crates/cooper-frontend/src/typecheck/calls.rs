@@ -20,7 +20,10 @@ impl<'g> TypeChecker<'g> {
         // unifying the payload slots against the arguments.
         if let ExprKind::Field { target, name } = &callee.kind {
             if let Some(oneof @ Type::Oneof { .. }) = self.check_expr(target) {
-                return self.check_variant_construction(&oneof, name, args, callee.span);
+                // A call of a name that is not a variant is a method called across them.
+                if self.globals.defs.payload(&oneof, name).is_some() {
+                    return self.check_variant_construction(&oneof, name, args, callee.span);
+                }
             }
         }
         // A bare constructor records its payload now and resolves its sum type later.
@@ -175,6 +178,9 @@ impl<'g> TypeChecker<'g> {
             }
             RefTarget::Local(decl) => {
                 self.local_refs.insert(pending.span, LocalRef { decl: *decl, type_args });
+            }
+            RefTarget::Variant(item, call, index) => {
+                self.dispatch.insert((*call, *index), ItemRef { item: item.clone(), type_args });
             }
         }
     }

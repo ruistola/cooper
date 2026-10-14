@@ -288,7 +288,6 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
 These are designed or reserved but rejected today. Do not write them:
 
 * Static arrays `T[N]`.
-* Methods across sum-type variants.
 * Named-field variant payloads, nested patterns inside variant payloads, or-patterns, guards.
 
 ## Where to read more

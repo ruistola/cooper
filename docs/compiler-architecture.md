@@ -118,6 +118,11 @@ A `defer` lowers like a function literal: its function value is bound to a local
 the deferred calls of each block being lowered, and a `return` (after saving its value), `break`,
 or `continue` runs those of every block it leaves. The backend sees only ordinary calls.
 
+A call of a method across a sum type's variants lowers to a `match` on the receiver, whose
+arm for each variant calls that variant's method on its payload. The checker records the
+method each variant supplies, keyed by the callee and the variant's position, and the
+receiver and arguments are evaluated once before the `match`.
+
 **Monomorphization** (`mono.rs`) is an IR-to-IR pass. Lowering keeps a generic function as a
 template. Starting from the non-generic functions, the pass instantiates each referenced
 declaration once per distinct set of type arguments and follows the references each instance

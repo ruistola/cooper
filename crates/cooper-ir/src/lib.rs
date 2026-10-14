@@ -291,6 +291,7 @@ fn lower_initializer(
         variables: &checked.variables,
         local_refs: &checked.local_refs,
         aliases: &checked.aliases,
+        dispatch: &checked.dispatch,
         defers: RefCell::new(Vec::new()),
         globals,
         type_params: RefCell::new(HashSet::new()),
@@ -359,6 +360,7 @@ fn lower_function(
         variables: &checked.variables,
         local_refs: &checked.local_refs,
         aliases: &checked.aliases,
+        dispatch: &checked.dispatch,
         defers: RefCell::new(Vec::new()),
         globals,
         type_params: RefCell::new(type_params),
@@ -421,6 +423,7 @@ pub fn lower_expr(expr: &Expr, globals: &Globals, checked: &Typed) -> Result<IrE
         variables: &checked.variables,
         local_refs: &checked.local_refs,
         aliases: &checked.aliases,
+        dispatch: &checked.dispatch,
         defers: RefCell::new(Vec::new()),
         globals,
         type_params: RefCell::new(HashSet::new()),
@@ -439,6 +442,7 @@ struct Lower<'a> {
     variables: &'a HashMap<Span, VarRef>,
     local_refs: &'a HashMap<Span, LocalRef>,
     aliases: &'a HashMap<Span, String>,
+    dispatch: &'a HashMap<(Span, usize), ItemRef>,
     /// The blocks being lowered, innermost last, with the deferred calls each has met.
     defers: RefCell<Vec<DeferScope>>,
     globals: &'a Globals,
@@ -1108,6 +1112,9 @@ impl Lower<'_> {
                 return Ok(chain(operands, ops, &ty, expr.span));
             }
             ExprKind::Call { callee, args } => self.lower_call(callee, args, &ty)?,
+            ExprKind::Field { .. } if self.dispatch.contains_key(&(expr.span, 0)) => {
+                return unsupported(expr.span, "a method of a sum type used as a value");
+            }
             ExprKind::Field { target, name } => match self.types.get(&target.span) {
                 // `Oneof.Variant` reads as a payload-free variant value, not a
                 // field access on a runtime target.
@@ -1604,6 +1611,9 @@ impl Lower<'_> {
         if let Some(intrinsic) = self.array_method(callee, args)? {
             return Ok(intrinsic);
         }
+        if let Some(call) = self.dispatch_call(callee, args, result)? {
+            return Ok(call);
+        }
         // A C function is called directly, not through a function value.
         if let Some(reference) = self.refs.get(&strip_group(callee).span) {
             if matches!(reference.item, Callable::Extern { .. }) {
@@ -1759,16 +1769,96 @@ impl Lower<'_> {
         Ok(Some(IrExprKind::Intrinsic { op, args: lowered }))
     }
 
+    /// A call `value.method(args)` of a method across the variants of a sum type: the receiver
+    /// and arguments are evaluated once, in that order, then a `match` on the receiver calls
+    /// the method of the variant it holds on that variant's payload.
+    fn dispatch_call(&self, callee: &Expr, args: &[Expr], result: &Type) -> Result<Option<IrExprKind>, LowerError> {
+        let callee = strip_group(callee);
+        let ExprKind::Field { target, .. } = &callee.kind else {
+            return Ok(None);
+        };
+        if !self.dispatch.contains_key(&(callee.span, 0)) {
+            return Ok(None);
+        }
+        let span = callee.span;
+        let mut receiver = self.expr(target)?;
+        if let Type::Pointer(inner) = &receiver.ty {
+            let ty = (**inner).clone();
+            receiver = IrExpr { kind: IrExprKind::Deref(Box::new(receiver)), ty, span };
+        }
+        let oneof = receiver.ty.clone();
+        let local = |name: &str, init: IrExpr| {
+            let var = IrExpr { kind: IrExprKind::Var(name.to_string()), ty: init.ty.clone(), span };
+            let decl = IrStmt {
+                kind: IrStmtKind::Var { name: name.to_string(), ty: init.ty.clone(), init: Some(init) },
+                span,
+            };
+            (decl, var)
+        };
+        let (decl, receiver) = local(&format!("recv.{}", span.start), receiver);
+        let mut stmts = vec![decl];
+        let mut arguments = Vec::new();
+        for (index, arg) in args.iter().enumerate() {
+            let (decl, var) = local(&format!("arg.{}.{index}", span.start), self.expr(arg)?);
+            stmts.push(decl);
+            arguments.push(var);
+        }
+        let method_ty = Type::Func {
+            return_type: Box::new(result.clone()),
+            param_types: arguments.iter().map(|a| a.ty.clone()).collect(),
+        };
+        let payload_name = format!("payload.{}", span.start);
+        let mut patterns = Vec::new();
+        let mut actions = Vec::new();
+        for (index, variant) in self.globals.defs.variant_order(&oneof).iter().enumerate() {
+            let payload = self.globals.defs.payload(&oneof, variant).and_then(|p| p.into_iter().next());
+            let (Some(payload), Some(method)) = (payload, self.dispatch.get(&(span, index))) else {
+                return Err(LowerError::MissingType(span));
+            };
+            patterns.push(IrPattern {
+                kind: IrPatternKind::Variant {
+                    variant: variant.clone(),
+                    binders: vec![Binder { name: payload_name.clone(), ty: payload.clone() }],
+                },
+                ty: oneof.clone(),
+                span,
+            });
+            let bound = IrExpr {
+                kind: IrExprKind::Method {
+                    receiver: Box::new(IrExpr { kind: IrExprKind::Var(payload_name.clone()), ty: payload, span }),
+                    item: method.item.clone(),
+                    type_args: method.type_args.clone(),
+                },
+                ty: method_ty.clone(),
+                span,
+            };
+            actions.push(IrExpr {
+                kind: IrExprKind::Call { callee: Box::new(bound), args: arguments.clone() },
+                ty: result.clone(),
+                span,
+            });
+        }
+        let tree = compile_match(&self.globals.defs, &oneof, &patterns);
+        let dispatch = IrExpr {
+            kind: IrExprKind::Match { scrutinee: Box::new(receiver), actions, tree: Box::new(tree) },
+            ty: result.clone(),
+            span,
+        };
+        Ok(Some(IrExprKind::Block { stmts, result: Box::new(dispatch) }))
+    }
+
     /// The variant name a call constructs, if the callee denotes a sum-type variant
     /// rather than a function: a qualified `Oneof.Variant(..)` (target typed as a sum
     /// type) or a bare `Variant(..)` whose result type is a sum type owning that
     /// variant and whose name is not a known function.
     fn variant_callee(&self, callee: &Expr, result: &Type) -> Option<String> {
         match &callee.kind {
-            ExprKind::Field { target, name } => {
-                matches!(self.types.get(&target.span), Some(Type::Oneof { .. }))
-                    .then(|| name.clone())
-            }
+            ExprKind::Field { target, name } => match self.types.get(&target.span) {
+                Some(oneof @ Type::Oneof { .. }) if self.globals.defs.payload(oneof, name).is_some() => {
+                    Some(name.clone())
+                }
+                _ => None,
+            },
             ExprKind::Ident(name) => (variant_named(&self.globals.defs, name, result)
                 && self.globals.lookup_func(name).is_none())
             .then(|| name.clone()),

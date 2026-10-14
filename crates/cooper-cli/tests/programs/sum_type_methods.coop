@@ -1,0 +1,68 @@
+# exit: 0
+# stdout: false true 30 121
+# stdout: false true
+# stdout: true
+# stdout: 5 3
+# A method called on a sum-type value when every variant carries a struct that defines it
+# with the same signature: the call branches on the variant, through a pointer too, and
+# with a generic payload.
+use {
+    std.io.println,
+}
+
+struct Melee {
+    damage: i32,
+}
+
+(m: Melee) func isLethal(): bool { return m.damage > 100 }
+(m: Melee) func scaled(by: i32): i32 { return m.damage * by }
+
+struct Ranged {
+    damage: i32,
+    accuracy: f32,
+}
+
+(r: Ranged) func isLethal(): bool { return r.damage > 50 and r.accuracy > 0.9 }
+(r: Ranged) func scaled(by: i32): i32 { return r.damage * by + 1 }
+
+oneof Attack {
+    Melee(Melee),
+    Ranged(Ranged),
+}
+
+func anyLethal(attacks: Attack[]): bool {
+    for a in attacks do {
+        if a.isLethal() then return true
+    }
+    return false
+}
+
+struct Box T {
+    v: T,
+}
+
+(b: Box T) func get(): T { return b.v }
+
+struct Pair {
+    a: i32,
+    b: i32,
+}
+
+(p: Pair) func get(): i32 { return p.a + p.b }
+
+oneof Holder {
+    Boxed(Box i32),
+    Paired(Pair),
+}
+
+func main() {
+    weak := Attack.Melee(Melee{damage: 10})
+    strong := Attack.Ranged(Ranged{damage: 60, accuracy: 0.95})
+    println("{weak.isLethal()} {strong.isLethal()} {weak.scaled(3)} {strong.scaled(2)}")
+    println("{anyLethal([weak])} {anyLethal([weak, strong])}")
+    p := &strong
+    println("{p.isLethal()}")
+    boxed := Holder.Boxed(Box{v: 5})
+    paired := Holder.Paired(Pair{a: 1, b: 2})
+    println("{boxed.get()} {paired.get()}")
+}

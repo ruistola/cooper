@@ -123,6 +123,7 @@ fn function(globals: &mut Globals, name: &str, params: Vec<Type>, ret: Type) {
             return_type: Box::new(ret),
             param_types: params,
         },
+        by_pointer: false,
     };
     globals.funcs.insert(name.to_string(), signature);
 }

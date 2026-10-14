@@ -90,7 +90,7 @@ impl<'g> TypeChecker<'g> {
         let errors = self.diags.len();
         match &obligation.kind {
             ObligationKind::Field { name, result, target_span } => {
-                if let Some(actual) = self.resolve_field(subject, name, obligation.span, *target_span) {
+                if let Some(actual) = self.resolve_field(subject, name, obligation.span, *target_span, false) {
                     if self.check_deferred_call(obligation.span, &actual)
                         && self.infer.unify(result, &actual).is_err()
                     {
@@ -188,6 +188,7 @@ impl<'g> TypeChecker<'g> {
         }
         let mut references: Vec<_> = body.references.into_values().collect();
         references.sort_by_key(|reference| reference.span.start);
+        references.extend(body.dispatches);
         for reference in references {
             self.finish_reference(&reference, &mut reported);
         }

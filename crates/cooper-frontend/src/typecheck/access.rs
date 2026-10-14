@@ -106,12 +106,17 @@ impl<'g> TypeChecker<'g> {
             });
             return Some(result);
         }
-        self.resolve_field(target_type, field, span, target.span)
+        // A type name (`Shape.Circle`) names a variant; a value (`shape.area()`) may call a
+        // method across its variants.
+        let type_name = matches!(&target.kind, ExprKind::Ident(name)
+            if self.lookup_var(name).is_none() && self.globals.lookup_oneof(name).is_some());
+        self.resolve_field(target_type, field, span, target.span, type_name)
     }
 
     pub(super) fn resolve_field(
         &mut self, mut target_type: Type, field: &str, span: Span,
         target_span: Span,
+        type_name: bool,
     ) -> Option<Type> {
         // A member access whose base is a module reference selects an exported item
         // (or a deeper module), distinct from struct-field and variant access.
@@ -121,11 +126,17 @@ impl<'g> TypeChecker<'g> {
         }
         // A member access whose base is a sum type names a variant constructor.
         if matches!(target_type, Type::Oneof { .. }) {
-            return self.check_variant_access(&target_type, field, span);
+            if type_name || self.globals.defs.payload(&target_type, field).is_some() {
+                return self.check_variant_access(&target_type, field, span);
+            }
+            return self.check_oneof_method(&target_type, field, span);
         }
         // Auto-deref: `p.field` works transparently through a pointer-to-struct.
         if let Type::Pointer(elem) = target_type {
             target_type = *elem;
+        }
+        if matches!(target_type, Type::Oneof { .. }) {
+            return self.check_oneof_method(&target_type, field, span);
         }
         // An array exposes a compiler-blessed method set (`xs.length()`, the `get`/
         // `set` that index syntax binds to) rather than data fields; these resolve by
@@ -165,6 +176,66 @@ impl<'g> TypeChecker<'g> {
         }
         self.err(span, format!("{field} is not a member of struct {name}"));
         None
+    }
+
+    /// A method `name` called on a sum type's value: every variant must carry one payload,
+    /// a struct whose method `name` takes its receiver by value, and all of them must
+    /// agree on the signature. The call branches on the variant, so each variant's method is
+    /// recorded for lowering. Returns the shared signature.
+    fn check_oneof_method(&mut self, oneof: &Type, name: &str, span: Span) -> Option<Type> {
+        let Type::Oneof { id, .. } = oneof else {
+            unreachable!("checked by the caller");
+        };
+        let oneof_name = id.name.clone();
+        let mut shared: Option<Type> = None;
+        for (index, variant) in self.globals.defs.variant_order(oneof).to_vec().into_iter().enumerate() {
+            let payload = self.globals.defs.payload(oneof, &variant).unwrap_or_default();
+            let method = match payload.as_slice() {
+                [owner @ Type::Struct { id, .. }] => {
+                    self.globals.lookup_method(id, name).cloned().map(|sig| (sig, owner.clone()))
+                }
+                _ => None,
+            };
+            let Some((sig, owner)) = method else {
+                self.err(span, format!("not all variants of {oneof_name} define {name}: variant {variant} does not"));
+                return None;
+            };
+            if sig.by_pointer {
+                self.err(span, format!(
+                    "method {name} of variant {variant} takes a pointer receiver; a method called across the variants of {oneof_name} takes its receiver by value"
+                ));
+                return None;
+            }
+            let type_args: Vec<_> = sig.type_params.iter()
+                .map(|param| (param.clone(), self.infer.fresh(InferKind::General)))
+                .collect();
+            let subst = type_args.iter().cloned().collect();
+            if let Some(template) = &sig.receiver {
+                let _ = self.infer.unify(&template.substitute(&subst), &owner);
+            }
+            let ty = self.infer.resolve(&sig.ty.substitute(&subst));
+            self.body.dispatches.push(PendingRef {
+                span,
+                label: format!("method {name} of variant {variant}"),
+                item: RefTarget::Variant(sig.item.clone(), span, index),
+                type_args,
+            });
+            match &shared {
+                None => shared = Some(ty),
+                Some(first) if self.infer.unify(first, &ty).is_err() => {
+                    let (first, other) = self.shown_pair(first, &ty);
+                    self.err(span, format!(
+                        "the variants of {oneof_name} define {name} with different signatures: {first} and {other}"
+                    ));
+                    return None;
+                }
+                Some(_) => {}
+            }
+        }
+        if shared.is_none() {
+            self.err(span, format!("{oneof_name} has no variants to call {name} on"));
+        }
+        shared
     }
 
     /// Index syntax is a built-in-array privilege: `a[i]` reads and `a[i] = v` writes an

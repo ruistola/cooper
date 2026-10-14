@@ -46,6 +46,8 @@ impl Module<'_> {
         let mut depth = 0;
         while let Type::Struct { .. } = scalar {
             match self.defs.struct_members(&scalar).as_deref() {
+                // An array member makes the struct an aggregate, whatever its length.
+                Some([(_, Type::StaticArray(..))]) => return Ok(Passing::Indirect),
                 Some([(_, member)]) => scalar = member.clone(),
                 _ => return Ok(Passing::Indirect),
             }
@@ -157,6 +159,17 @@ impl Module<'_> {
         Ok(())
     }
 
+    /// The C type of a struct member and the array dimensions that follow its name.
+    fn c_member(&mut self, ty: &Type) -> Result<(String, String), String> {
+        match ty {
+            Type::StaticArray(elem, len) => {
+                let (member, dimensions) = self.c_member(elem)?;
+                Ok((member, format!("[{len}]{dimensions}")))
+            }
+            _ => Ok((self.c_name(ty)?, String::new())),
+        }
+    }
+
     /// The C spelling of type `ty`, defining the C struct types it names.
     fn c_name(&mut self, ty: &Type) -> Result<String, String> {
         Ok(match ty {
@@ -168,8 +181,8 @@ impl Module<'_> {
                     let members = self.defs.struct_members(ty).ok_or_else(|| format!("passing {ty} to C"))?;
                     let mut fields = String::new();
                     for (index, (_, member)) in members.iter().enumerate() {
-                        let member = self.c_name(member)?;
-                        writeln!(fields, "    {member} m{index};").expect("writing to a String cannot fail");
+                        let (member, dimensions) = self.c_member(member)?;
+                        writeln!(fields, "    {member} m{index}{dimensions};").expect("writing to a String cannot fail");
                     }
                     self.c_types.push((name.clone(), format!("typedef struct {{\n{fields}}} {name};")));
                 }

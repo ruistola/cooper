@@ -116,6 +116,8 @@ pub struct TypeExpr {
 pub enum TypeExprKind {
     Named(String),
     Array(Box<TypeExpr>),
+    /// `T[N]`: a fixed-length array of `N` elements.
+    StaticArray(Box<TypeExpr>, u64),
     /// Postfix `^` pointer, e.g. `T^`.
     Pointer(Box<TypeExpr>),
     Func {

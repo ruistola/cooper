@@ -123,6 +123,11 @@ arm for each variant calls that variant's method on its payload. The checker rec
 method each variant supplies, keyed by the callee and the variant's position, and the
 receiver and arguments are evaluated once before the `match`.
 
+A static array is an LLVM `[N x T]` value, copied like any aggregate. The array operations
+take a `{ pointer, length, capacity }` view of their operand, which for a static array is built
+over its storage (the variable, field, or element it is, or a temporary when it is none), so
+indexing, `for`, `length()`, and slicing share the code of dynamic arrays.
+
 **Monomorphization** (`mono.rs`) is an IR-to-IR pass. Lowering keeps a generic function as a
 template. Starting from the non-generic functions, the pass instantiates each referenced
 declaration once per distinct set of type arguments and follows the references each instance

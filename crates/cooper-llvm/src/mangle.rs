@@ -19,6 +19,7 @@
 //!            | "u"                        unit
 //!            | "P" type                   pointer
 //!            | "A" type                   array
+//!            | "Y" <decimal> "_" type     static array: length, then element type
 //!            | "T" type+ "E"              tuple
 //!            | "K" type* "E" type         function: parameters, then return type
 //!            | "Q" path ident [ "I" type+ "E" ]   struct or sum type, with arguments
@@ -128,6 +129,10 @@ fn ty(out: &mut String, t: &Type) {
         }
         Type::Array(elem) => {
             out.push('A');
+            ty(out, elem);
+        }
+        Type::StaticArray(elem, len) => {
+            write!(out, "Y{len}_").expect("writing to a String cannot fail");
             ty(out, elem);
         }
         Type::Tuple(elems) => {

@@ -32,8 +32,10 @@ and its declaration is the visible marker of that.
 
 A Cooper struct is laid out in declaration order with C alignment, so it matches the C struct
 declaring the same member types in the same order, by value or through a pointer. The member
-names need not match. Strings, arrays, tuples, sum types, and function values cannot cross,
-nor can a struct containing one.
+names need not match. A struct may hold a static array (`rgb: u8[3]`), which is the C array
+member. Strings, dynamic arrays, tuples, sum types, and function values cannot cross, nor can a
+struct containing one, and neither can a static array on its own, since C passes an array as a
+pointer: pass `&a[0]`.
 
 ```
 struct DivT { quot: i32, rem: i32 }

@@ -120,7 +120,7 @@ fn same_types(a: &[Type], b: &[Type]) -> bool {
 /// How many type nodes `ty` holds.
 fn size(ty: &Type) -> usize {
     1 + match ty {
-        Type::Array(elem) | Type::Pointer(elem) => size(elem),
+        Type::Array(elem) | Type::StaticArray(elem, _) | Type::Pointer(elem) => size(elem),
         Type::Tuple(elems) => elems.iter().map(size).sum(),
         Type::Func {
             return_type,

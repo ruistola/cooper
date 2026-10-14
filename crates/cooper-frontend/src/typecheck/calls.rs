@@ -90,9 +90,10 @@ impl<'g> TypeChecker<'g> {
             let arg_type = self.check_expr(arg)?;
             if let Err(conflict) = self.infer.unify(param, &arg_type) {
                 let (param_shown, arg_type_shown) = self.shown_pair(&conflict.left, &conflict.right);
+                let hint = slice_hint(&conflict.left, &conflict.right);
                 self.err(
                     arg.span,
-                    format!("argument {} type mismatch: expected {param_shown}, found {arg_type_shown}", i + 1),
+                    format!("argument {} type mismatch: expected {param_shown}, found {arg_type_shown}{hint}", i + 1),
                 );
                 return None;
             }
@@ -397,5 +398,13 @@ impl<'g> TypeChecker<'g> {
         let subject = self.variant_subject(oneof);
         let payload = self.variant_arguments(args)?;
         Some(self.defer_variant(subject, variant, Some(payload), false, span))
+    }
+}
+
+/// The advice for passing a static array where an array is expected: slicing shares it.
+fn slice_hint(expected: &Type, found: &Type) -> &'static str {
+    match (expected, found) {
+        (Type::Array(a), Type::StaticArray(b, _)) if a.equals(b) => "; slice it with `[..]` to pass it as an array",
+        _ => "",
     }
 }

@@ -334,7 +334,7 @@ impl Emitter<'_, '_> {
                 op: Intrinsic::ArrayGet,
                 args,
             } => {
-                let array = self.expr(&args[0])?.expect("an array has a value");
+                let array = self.array_view(&args[0], true)?;
                 let index = self.expr(&args[1])?.expect("an index has a value");
                 let ptr = self.element(&array, &index, &args[1].ty, &expr.ty, expr.span)?;
                 Ok(Some(Place {

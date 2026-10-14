@@ -121,6 +121,9 @@ pub enum Type {
     Unit,
     Primitive(String),
     Array(Box<Type>),
+    /// A fixed-length array stored inline: `T[N]`. Assigning or passing one copies it;
+    /// slicing it yields an `Array` sharing its elements.
+    StaticArray(Box<Type>, u64),
     Pointer(Box<Type>),
     /// The type of the `nil` literal, compatible with any pointer type.
     Nil,
@@ -164,6 +167,7 @@ impl Type {
             (Type::Unit, Type::Unit) => true,
             (Type::Primitive(a), Type::Primitive(b)) => a == b,
             (Type::Array(a), Type::Array(b)) => a.equals(b),
+            (Type::StaticArray(a, n), Type::StaticArray(b, m)) => n == m && a.equals(b),
             (Type::Pointer(a), Type::Pointer(b)) => a.equals(b),
             (Type::Pointer(_), Type::Nil) => true,
             (Type::Nil, Type::Nil) => true,
@@ -197,6 +201,7 @@ impl Type {
         match self {
             Type::TypeParam(name) => subst.get(name).cloned().unwrap_or_else(|| self.clone()),
             Type::Array(elem) => Type::Array(Box::new(elem.substitute(subst))),
+            Type::StaticArray(elem, len) => Type::StaticArray(Box::new(elem.substitute(subst)), *len),
             Type::Pointer(elem) => Type::Pointer(Box::new(elem.substitute(subst))),
             Type::Tuple(elems) => {
                 Type::Tuple(elems.iter().map(|e| e.substitute(subst)).collect())
@@ -304,6 +309,7 @@ pub(crate) fn incomparable_part(t: &Type, defs: &TypeDefs) -> Option<Type> {
     match t {
         Type::Unknown | Type::Unit | Type::Primitive(_) | Type::Pointer(_) | Type::Nil => None,
         Type::Array(_)
+        | Type::StaticArray(..)
         | Type::Func { .. }
         | Type::TypeParam(_)
         | Type::Infer(_)
@@ -347,7 +353,7 @@ impl Type {
     /// Every declaration identity `self` mentions, including within type arguments.
     fn collect_ids<'a>(&'a self, out: &mut Vec<&'a TypeId>) {
         match self {
-            Type::Array(elem) | Type::Pointer(elem) => elem.collect_ids(out),
+            Type::Array(elem) | Type::StaticArray(elem, _) | Type::Pointer(elem) => elem.collect_ids(out),
             Type::Tuple(elems) => elems.iter().for_each(|e| e.collect_ids(out)),
             Type::Func {
                 return_type,
@@ -387,6 +393,7 @@ impl fmt::Display for Rendered<'_> {
             Type::Unit => write!(f, "()"),
             Type::Primitive(name) => write!(f, "{}", name),
             Type::Array(elem) => write!(f, "{}[]", r(elem)),
+            Type::StaticArray(elem, len) => write!(f, "{}[{len}]", r(elem)),
             Type::Pointer(elem) => write!(f, "{}^", r(elem)),
             Type::Nil => write!(f, "nil"),
             Type::Tuple(elems) => {

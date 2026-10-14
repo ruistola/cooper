@@ -63,8 +63,22 @@ impl Parser {
             kind = match self.peek().kind {
                 OpenBracket => {
                     self.expect(OpenBracket)?;
-                    self.expect(CloseBracket)?;
-                    TypeExprKind::Array(Box::new(ty))
+                    if self.peek().kind == Number {
+                        let length = self.expect(Number)?;
+                        let Some(crate::typecheck::LiteralValue::Int(value)) =
+                            crate::typecheck::decode_number_literal(&length.text)
+                        else {
+                            return Err(self.error(length.span, "an array length is an integer literal"));
+                        };
+                        let Ok(value) = u64::try_from(value) else {
+                            return Err(self.error(length.span, "array length out of range"));
+                        };
+                        self.expect(CloseBracket)?;
+                        TypeExprKind::StaticArray(Box::new(ty), value)
+                    } else {
+                        self.expect(CloseBracket)?;
+                        TypeExprKind::Array(Box::new(ty))
+                    }
                 }
                 Chevron => {
                     self.expect(Chevron)?;

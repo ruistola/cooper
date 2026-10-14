@@ -265,6 +265,7 @@ fn contains_by_value(ty: &Type, root: &Type, defs: &TypeDefs, path: &mut Vec<Typ
             .iter()
             .flat_map(|v| defs.payload(ty, v).unwrap_or_default())
             .collect(),
+        Type::StaticArray(elem, _) => vec![(**elem).clone()],
         _ => return false,
     };
     if path.iter().any(|seen| seen.equals(ty)) || path.len() > MAX_VALUE_NESTING {
@@ -333,6 +334,10 @@ pub fn resolve_type(
             globals,
             diags,
         )?))),
+        TypeExprKind::StaticArray(elem, len) => Some(Type::StaticArray(
+            Box::new(resolve_type(elem, type_params, globals, diags)?),
+            *len,
+        )),
         TypeExprKind::Pointer(elem) => Some(Type::Pointer(Box::new(resolve_type(
             elem,
             type_params,
@@ -544,7 +549,8 @@ fn resolve_extern_func(
     let binders = HashSet::new();
     let c_type = |ty: &TypeExpr, globals: &Globals, diags: &mut Vec<Diagnostic>| {
         let resolved = resolve_type(ty, &binders, globals, diags)?;
-        if c_compatible(&resolved, &globals.defs) {
+        // C passes an array as a pointer, so only a struct may hold one.
+        if !matches!(resolved, Type::StaticArray(..)) && c_compatible(&resolved, &globals.defs) {
             return Some(resolved);
         }
         diags.push(
@@ -586,12 +592,13 @@ fn resolve_extern_func(
 }
 
 /// Whether a value of type `ty` has a C counterpart with the same layout: an integer, a
-/// float, `bool`, a pointer, or a struct of at least one member, every member such a
-/// value. A struct cannot contain itself by value, so the recursion ends.
+/// float, `bool`, a pointer, a non-empty array of such values (as a struct member), or a
+/// struct of at least one member, every member such a value. A struct cannot contain itself by value, so the recursion ends.
 fn c_compatible(ty: &Type, defs: &TypeDefs) -> bool {
     match ty {
         Type::Primitive(name) => name != "string",
         Type::Pointer(_) => true,
+        Type::StaticArray(elem, len) => *len > 0 && c_compatible(elem, defs),
         Type::Struct { .. } => defs
             .struct_members(ty)
             .is_some_and(|members| !members.is_empty() && members.iter().all(|(_, m)| c_compatible(m, defs))),

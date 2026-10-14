@@ -141,6 +141,13 @@ impl<'g> TypeChecker<'g> {
         // An array exposes a compiler-blessed method set (`xs.length()`, the `get`/
         // `set` that index syntax binds to) rather than data fields; these resolve by
         // name against the builtin registry.
+        if let Type::StaticArray(..) = &target_type {
+            if field == "length" {
+                return Some(crate::builtins::array_method(field, &Type::Unit).expect("arrays have a length"));
+            }
+            self.err(span, format!("{field} is not a method of static array type {target_type}; it has only length()"));
+            return None;
+        }
         if let Type::Array(elem) = &target_type {
             if let Some(method) = crate::builtins::array_method(field, elem) {
                 return Some(method);
@@ -267,7 +274,8 @@ impl<'g> TypeChecker<'g> {
     /// bounds integers. A slice is an array of the same type sharing the elements.
     pub(super) fn check_slice(&mut self, array: &Expr, start: Option<&Expr>, end: Option<&Expr>) -> Option<Type> {
         let array_type = self.check_expr(array)?;
-        if self.array_element(&array_type).is_none() && !self.is_string(&array_type) {
+        let elem = self.array_element(&array_type);
+        if elem.is_none() && !self.is_string(&array_type) {
             let shown = self.shown_type(&array_type);
             self.err(array.span, format!("type {shown} cannot be sliced"));
             return None;
@@ -275,7 +283,18 @@ impl<'g> TypeChecker<'g> {
         for bound in start.into_iter().chain(end) {
             self.check_index_value(bound)?;
         }
-        Some(array_type)
+        let Some(elem) = elem.filter(|_| matches!(self.infer.resolve(&array_type), Type::StaticArray(..))) else {
+            return Some(array_type);
+        };
+        // A slice shares the array's elements, so the array must be stored somewhere.
+        if !self.is_addressable(array) {
+            self.err(
+                array.span,
+                "cannot slice an array that is not stored in a variable; assign it to one first",
+            );
+            return None;
+        }
+        Some(Type::Array(Box::new(elem)))
     }
 
     pub(super) fn check_address_of(&mut self, operand: &Expr, span: Span) -> Option<Type> {
@@ -315,8 +334,17 @@ impl<'g> TypeChecker<'g> {
     fn is_addressable(&mut self, expr: &Expr) -> bool {
         match &expr.kind {
             ExprKind::Ident(name) => self.lookup_var(name).is_some() || self.globals.vars.contains_key(name),
-            ExprKind::Field { .. } | ExprKind::Deref(_) => true,
-            ExprKind::Index { array, .. } => matches!(self.check_expr(array), Some(Type::Array(_))),
+            ExprKind::Deref(_) => true,
+            ExprKind::Field { target, .. } => match self.check_expr(target) {
+                Some(Type::Pointer(_) | Type::Module(_)) => true,
+                Some(_) => self.is_addressable(target),
+                None => false,
+            },
+            ExprKind::Index { array, .. } => match self.check_expr(array) {
+                Some(Type::Array(_)) => true,
+                Some(Type::StaticArray(..)) => self.is_addressable(array),
+                _ => false,
+            },
             ExprKind::Group(inner) => self.is_addressable(inner),
             _ => false,
         }

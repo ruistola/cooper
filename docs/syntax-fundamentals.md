@@ -85,15 +85,15 @@ no visibility meaning. The visibility mechanism is still to be designed.
 
 `T[]` is the default sequence type: a growable run of elements with a length and capacity. An
 array value refers to its elements, so assigning or passing an array, or slicing one, shares
-them; `copy()` makes an independent copy. A **static array** `T[N]` has a fixed compile-time
-length.
+them; `copy()` makes an independent copy. A **static array** `T[N]` has a fixed length,
+written as an integer literal, and is covered [below](#static-arrays).
 
 ```
 let items: i32[]
 let matrix: i32[][]
 let callbacks: func(i32)[]
 let rgb: u8[3]
-let grid: i32[8][8]
+let grid: i32[3][2]
 ```
 
 An array literal is a bracketed, comma-separated list. Its elements share one type, which an
@@ -139,6 +139,39 @@ moves it to fresh storage first and never writes into the array it came from. Tw
 one array with spare capacity both append into the same storage, so after `xs = xs.push(..)`
 other copies of the old `xs` should not be appended to. Arrays shared with a grown array keep
 seeing its old storage.
+
+### Static arrays
+
+A static array `T[N]` is a value of exactly `N` elements, stored inline: in a struct, it is
+part of the struct. Assigning, passing, or returning one copies it, and its zero value has
+every element zero. A literal takes its length from the type it is expected to have, which an
+annotation, parameter, or return type gives, and the count must match; without such a type
+a literal is a `T[]`.
+
+```
+let rgb: u8[3] = [10, 20, 30]
+let zero: i32[4]            # [0, 0, 0, 0]
+b := rgb                    # a copy
+b[0] = 99                   # rgb is unchanged
+rgb.length()                # 3
+```
+
+Types are read left to right, as `Point^[]` is: `i32[3][2]` is an array of 2 arrays of 3
+`i32`, so `grid[row][col]` with `row < 2` and `col < 3`.
+
+A static array has indexing, `for` iteration, and `length()`, but no `push`, `reserve`, or
+`copy()`, since its length is fixed and assignment copies. To use one where a `T[]` is
+expected, slice it: `a[..]` is a `T[]` sharing the array's elements, so a function taking
+`i32[]` serves static and dynamic arrays alike. Like any slice its capacity is its length,
+so `push` on it never writes into the array. Only an array stored in a variable (or a field
+or element of one) can be sliced; a function's result must be assigned first.
+
+```
+func sum(xs: i32[]): i32 { … }
+sum(nums[..])               # nums: i32[4]
+```
+
+Static arrays are not comparable with `==` yet.
 
 ## Pointers
 

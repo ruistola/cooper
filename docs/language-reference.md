@@ -228,7 +228,8 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
 ## Types
 
 * Primitives: `i8 i16 i32 i64`, `u8 u16 u32 u64`, `f32 f64`, `bool`, `string`. Unit is `()`.
-* Composites: tuple `(A, B)`, array `T[]`, pointer `T^`, function `func(A, B): R`.
+* Composites: tuple `(A, B)`, array `T[]`, static array `T[3]` (a copied value; `a[..]` slices
+  it to a `T[]`), pointer `T^`, function `func(A, B): R`.
 * Declared types are nominal: `struct` and `oneof`, optionally generic (`Box T`, `Result T E`).
 * There is no implicit numeric conversion. Arithmetic needs both operands to share one type,
   and a literal takes the type its uses give it ([Numeric Types](./numeric-types.md)).
@@ -268,7 +269,8 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
   `v := match step() with { Ok(v) => v; Err(err) => return Err("step: {err}") }`.
 * A method name may not collide with a field name, functions are never overloaded, and a
   module's top-level names share one unordered namespace across its files.
-* `==` works on comparable types only: not function types, arrays, or types containing them.
+* `==` works on comparable types only: not function types, arrays (static ones included), or
+  types containing them.
 * A function literal or nested function captures the variables it names by reference: they
   are shared with the enclosing body, not copied. Each execution of a binding, including
   each pass's loop variable, is a fresh variable, so a closure made in a loop keeps its own.
@@ -287,7 +289,6 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
 
 These are designed or reserved but rejected today. Do not write them:
 
-* Static arrays `T[N]`.
 * Named-field variant payloads, nested patterns inside variant payloads, or-patterns, guards.
 
 ## Where to read more

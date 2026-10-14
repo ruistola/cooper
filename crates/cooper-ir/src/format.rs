@@ -218,7 +218,7 @@ impl Formatters<'_> {
                 enclose_all(&format!("{}{{", id.name), parts, "}", span)
             }
             Type::Oneof { .. } => self.variants(ty, value, file, span),
-            Type::Array(elem) => self.array(elem, value, file, span),
+            Type::Array(elem) | Type::StaticArray(elem, _) => self.array(elem, value, file, span),
             Type::Pointer(target) => self.pointer(target, value, file, span),
             _ => unreachable!("a value of type {ty} is never formatted by a formatter"),
         };
@@ -395,7 +395,7 @@ fn reaches_pointer(defs: &TypeDefs, ty: &Type, visiting: &mut Vec<Type>) -> bool
     }
     match ty {
         Type::Pointer(_) => true,
-        Type::Array(elem) => reaches_pointer(defs, elem, visiting),
+        Type::Array(elem) | Type::StaticArray(elem, _) => reaches_pointer(defs, elem, visiting),
         Type::Tuple(elems) => elems.iter().any(|e| reaches_pointer(defs, e, visiting)),
         Type::Struct { .. } | Type::Oneof { .. } => {
             visiting.push(ty.clone());

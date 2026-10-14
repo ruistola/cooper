@@ -334,6 +334,9 @@ impl<'g> TypeChecker<'g> {
     }
 
     fn array_element(&mut self, ty: &Type) -> Option<Type> {
+        if let Type::StaticArray(elem, _) = self.infer.resolve(ty) {
+            return Some(*elem);
+        }
         let elem = self.infer.fresh(InferKind::General);
         self.infer.unify(ty, &Type::Array(Box::new(elem.clone()))).ok()?;
         Some(elem)
@@ -810,7 +813,7 @@ impl<'g> TypeChecker<'g> {
                 }
                 Some(Type::Tuple(elem_types))
             }
-            ExprKind::Array(elems) => self.check_array_literal(elems),
+            ExprKind::Array(elems) => self.check_array_literal(elems, expected, expr.span),
             ExprKind::Ident(name) => {
                 // Restore the hint so a bare payload-free variant can see it, but
                 // clear it afterwards so an ordinary identifier never lets it leak.
@@ -1127,8 +1130,17 @@ impl<'g> TypeChecker<'g> {
 
     /// Every array element constrains one shared variable, including elements
     /// whose own types are supplied by later uses or deferred obligations.
-    fn check_array_literal(&mut self, elems: &[Expr]) -> Option<Type> {
-        let elem_type = self.infer.fresh(InferKind::General);
+    /// An array literal is a dynamic array, unless its expected type is a static array, whose
+    /// length it must then match.
+    fn check_array_literal(&mut self, elems: &[Expr], expected: Option<Type>, span: Span) -> Option<Type> {
+        let fixed = match expected.map(|ty| self.infer.resolve(&ty)) {
+            Some(Type::StaticArray(elem, len)) => Some((*elem, len)),
+            _ => None,
+        };
+        let elem_type = match &fixed {
+            Some((elem, _)) => elem.clone(),
+            None => self.infer.fresh(InferKind::General),
+        };
         for elem in elems {
             let Some(actual) = self.check_expr(elem) else {
                 continue;
@@ -1141,7 +1153,13 @@ impl<'g> TypeChecker<'g> {
                 );
             }
         }
-        Some(Type::Array(Box::new(elem_type)))
+        let Some((_, len)) = fixed else {
+            return Some(Type::Array(Box::new(elem_type)));
+        };
+        if elems.len() as u64 != len {
+            self.err(span, format!("this array literal has {} element(s) but its type has {len}", elems.len()));
+        }
+        Some(Type::StaticArray(Box::new(elem_type), len))
     }
 
     fn check_expr_expecting(&mut self, expr: &Expr, expected: Option<Type>) -> Option<Type> {

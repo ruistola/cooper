@@ -54,6 +54,25 @@ impl Emitter<'_, '_> {
         Ok(self.aggregate(STRING, fields))
     }
 
+    /// An array operand as the `{ ptr, length, capacity }` value array operations work on.
+    /// A static array is viewed in place, or in a temporary when it is not stored anywhere;
+    /// `writes` says the view is to be written through, which a nil place discards.
+    pub(super) fn array_view(&mut self, array: &IrExpr, writes: bool) -> Result<Value, CodegenError> {
+        let Type::StaticArray(_, len) = &array.ty else {
+            return Ok(self.expr(array)?.expect("an array has a value"));
+        };
+        let ptr = match self.place(array)? {
+            Some(place) => self.access_ptr(&place, if writes { "@cooper.sink" } else { "@cooper.zero" }),
+            None => {
+                let value = self.expr(array)?;
+                let slot = self.slot(None, &array.ty, array.span)?;
+                self.store(&slot, value.as_ref());
+                slot.ptr
+            }
+        };
+        Ok(self.array_value(ptr, len.to_string(), len.to_string()))
+    }
+
     /// The size in bytes of one value of LLVM type `llvm`, as an `i64` operand.
     fn size_of(&mut self, llvm: &str) -> String {
         let end = self.assign(&format!("getelementptr {llvm}, ptr null, i32 1"));
@@ -94,20 +113,25 @@ impl Emitter<'_, '_> {
             return self.formatting(op, args, span);
         }
         if op == Intrinsic::ArrayLiteral {
-            let Type::Array(elem) = result else {
-                unreachable!("an array literal is an array");
-            };
             let values = args.iter().map(|a| self.expr(a)).collect::<Result<Vec<_>, _>>()?;
-            return self.array_literal(elem, values, span).map(Some);
+            return match result {
+                Type::Array(elem) => self.array_literal(elem, values, span).map(Some),
+                Type::StaticArray(..) => {
+                    let llvm = self.value_type(result, span)?.expect("an array has an LLVM type");
+                    Ok(Some(self.aggregate(&llvm, values)))
+                }
+                _ => unreachable!("an array literal is an array"),
+            };
         }
         if matches!(op, Intrinsic::StringLength | Intrinsic::StringSlice { .. }) {
             return self.string_intrinsic(op, args, span).map(Some);
         }
-        let Type::Array(elem) = &args[0].ty else {
+        let (Type::Array(elem) | Type::StaticArray(elem, _)) = &args[0].ty else {
             unreachable!("an array intrinsic's first argument is the array");
         };
         let elem = (**elem).clone();
-        let array = self.expr(&args[0])?.expect("an array has a value");
+        let writes = matches!(op, Intrinsic::ArraySet | Intrinsic::ArrayElementPtr);
+        let array = self.array_view(&args[0], writes)?;
         match op {
             Intrinsic::ArrayLiteral
             | Intrinsic::Print { .. }
@@ -390,7 +414,7 @@ impl Emitter<'_, '_> {
     }
 
     /// An array value from its storage, length, and capacity operands.
-    fn array_value(&mut self, storage: String, length: String, capacity: String) -> Value {
+    pub(super) fn array_value(&mut self, storage: String, length: String, capacity: String) -> Value {
         let fields = [("ptr", storage), ("i64", length), ("i64", capacity)]
             .into_iter()
             .map(|(ty, operand)| Some(Value { ty: ty.to_string(), operand }))

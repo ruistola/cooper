@@ -914,7 +914,7 @@ impl Lower<'_> {
                 // element; it binds either `[elem]` or `[index, elem]`.
                 _ => {
                     let array = self.expr(iterable)?;
-                    let Type::Array(elem_ty) = &array.ty else {
+                    let (Type::Array(elem_ty) | Type::StaticArray(elem_ty, _)) = &array.ty else {
                         unreachable!("a checked for-in iterates a range or an array");
                     };
                     let elem_ty = (**elem_ty).clone();
@@ -1537,7 +1537,7 @@ impl Lower<'_> {
         let index = self.expr(index)?;
         let value = self.expr(value)?;
         let elem_ty = match &array.ty {
-            Type::Array(elem) => (**elem).clone(),
+            Type::Array(elem) | Type::StaticArray(elem, _) => (**elem).clone(),
             _ => unreachable!("a checked indexed assignment targets an array"),
         };
         let stored = match op.binary() {
@@ -1746,7 +1746,7 @@ impl Lower<'_> {
             return Ok(None);
         };
         match self.types.get(&target.span) {
-            Some(Type::Array(_)) => {}
+            Some(Type::Array(_) | Type::StaticArray(..)) => {}
             Some(ty) if is_string(ty) => {
                 let args = vec![self.expr(target)?];
                 return Ok(Some(IrExprKind::Intrinsic { op: Intrinsic::StringLength, args }));

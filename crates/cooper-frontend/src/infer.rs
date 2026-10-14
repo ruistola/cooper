@@ -113,6 +113,7 @@ impl InferTable {
     pub(crate) fn resolve(&self, ty: &Type) -> Type {
         match self.shallow(ty) {
             Type::Array(elem) => Type::Array(Box::new(self.resolve(&elem))),
+            Type::StaticArray(elem, len) => Type::StaticArray(Box::new(self.resolve(&elem)), len),
             Type::Pointer(elem) => Type::Pointer(Box::new(self.resolve(&elem))),
             Type::Tuple(elems) => Type::Tuple(self.resolve_all(&elems)),
             Type::Func { return_type, param_types } => Type::Func {
@@ -168,7 +169,7 @@ impl InferTable {
     pub(crate) fn unbound_ids(&self, ty: &Type, out: &mut Vec<InferId>) {
         match self.shallow(ty) {
             Type::Infer(id) => out.push(id),
-            Type::Array(elem) | Type::Pointer(elem) => self.unbound_ids(&elem, out),
+            Type::Array(elem) | Type::StaticArray(elem, _) | Type::Pointer(elem) => self.unbound_ids(&elem, out),
             Type::Tuple(elems) => {
                 for elem in elems {
                     self.unbound_ids(&elem, out);
@@ -199,7 +200,7 @@ impl InferTable {
     pub(crate) fn is_resolved(&self, ty: &Type) -> bool {
         match ty {
             Type::Infer(_) => self.is_bound(ty) && self.is_resolved(&self.shallow(ty)),
-            Type::Array(elem) | Type::Pointer(elem) => self.is_resolved(elem),
+            Type::Array(elem) | Type::StaticArray(elem, _) | Type::Pointer(elem) => self.is_resolved(elem),
             Type::Tuple(elems) => elems.iter().all(|ty| self.is_resolved(ty)),
             Type::Func { return_type, param_types } => {
                 self.is_resolved(return_type)
@@ -249,6 +250,7 @@ impl InferTable {
             (Type::Array(a), Type::Array(b)) | (Type::Pointer(a), Type::Pointer(b)) => {
                 self.unify_inner(a, b)
             }
+            (Type::StaticArray(a, n), Type::StaticArray(b, m)) if n == m => self.unify_inner(a, b),
             (Type::Pointer(_), Type::Nil) | (Type::Nil, Type::Pointer(_)) => Ok(()),
             (Type::Tuple(a), Type::Tuple(b)) => self.unify_all(a, b),
             (
@@ -309,6 +311,7 @@ impl InferTable {
         match ty {
             Type::Nil => Type::Pointer(Box::new(self.fresh(InferKind::General))),
             Type::Array(elem) => Type::Array(Box::new(self.pointer_nils(elem))),
+            Type::StaticArray(elem, len) => Type::StaticArray(Box::new(self.pointer_nils(elem)), *len),
             Type::Pointer(elem) => Type::Pointer(Box::new(self.pointer_nils(elem))),
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|ty| self.pointer_nils(ty)).collect()),
             Type::Func { return_type, param_types } => Type::Func {
@@ -330,7 +333,7 @@ impl InferTable {
     fn occurs(&self, index: usize, ty: &Type) -> bool {
         match self.shallow(ty) {
             Type::Infer(id) => self.root(id.index()) == index,
-            Type::Array(elem) | Type::Pointer(elem) => self.occurs(index, &elem),
+            Type::Array(elem) | Type::StaticArray(elem, _) | Type::Pointer(elem) => self.occurs(index, &elem),
             Type::Tuple(elems) => elems.iter().any(|ty| self.occurs(index, ty)),
             Type::Func { return_type, param_types } => {
                 self.occurs(index, &return_type)

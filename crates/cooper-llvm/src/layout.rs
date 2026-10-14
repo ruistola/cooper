@@ -74,6 +74,7 @@ impl Module<'_> {
             Type::Unit => return Ok(None),
             Type::Primitive(name) if name == "string" => STRING.to_string(),
             Type::Array(_) => ARRAY.to_string(),
+            Type::StaticArray(elem, len) => format!("[{len} x {}]", self.field_type(elem)?),
             Type::Primitive(_) => Scalar::of(ty)
                 .ok_or_else(|| format!("values of type {ty}"))?
                 .llvm(),
@@ -193,6 +194,7 @@ impl Module<'_> {
             Type::Func { .. } => 16,
             Type::Primitive(name) if name == "string" => 16,
             Type::Array(_) => 24,
+            Type::StaticArray(elem, len) => (*len as usize).saturating_mul(self.size_bound(elem).max(8)),
             Type::Infer(_) => unreachable!("inference variables are resolved before code generation"),
             _ => 8,
         }

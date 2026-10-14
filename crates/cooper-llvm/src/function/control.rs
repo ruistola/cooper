@@ -379,7 +379,7 @@ impl Emitter<'_, '_> {
         body: &[IrStmt],
         span: Span,
     ) -> Result<(), CodegenError> {
-        let array = self.expr(array)?.expect("an array has a value");
+        let array = self.array_view(array, false)?;
         let data = self.assign(&format!("extractvalue {ARRAY} {}, 0", array.operand));
         let length = self.assign(&format!("extractvalue {ARRAY} {}, 1", array.operand));
         let counter = self.slot(None, &Type::Primitive("u64".to_string()), span)?;

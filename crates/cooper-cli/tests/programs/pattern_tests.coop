@@ -15,7 +15,8 @@
 # Pattern tests with `is`: payload extraction, `and` guards, chains, bare booleans,
 # struct and tuple patterns, `while` conditions, shadowing, and closure capture.
 use {
-    std.io,
+    std.io.println,
+    std.io.print,
 }
 
 struct Point {
@@ -35,26 +36,26 @@ func main() {
     # As an expression, extracting a payload with a default.
     x := if foo is Some(x) then x else 0
     y := if none is Some(v) then v else -1
-    std.io.println("{x} {y}")
+    println("{x} {y}")
 
     # Further conditions are ordinary `and`, which sees the bindings; `or` can sit inside.
-    if foo is Some(v) and v > 5 then std.io.println("big {v}")
-    if foo is Some(v) and (v < 3 or v > 6) then std.io.println("odd {v}")
-    if foo is Some(v) and v > 50 then std.io.println("huge") else std.io.println("not huge")
+    if foo is Some(v) and v > 5 then println("big {v}")
+    if foo is Some(v) and (v < 3 or v > 6) then println("odd {v}")
+    if foo is Some(v) and v > 50 then println("huge") else println("not huge")
 
     # A bare test is a bool.
     let ok: bool = foo is Some(_)
     let no: bool = none is Some(_)
-    std.io.println("{ok} {no}")
+    println("{ok} {no}")
 
     # Tests chain, each seeing the bindings before it.
-    if find(2) is Some(a) and find(a + 1) is Some(b) then std.io.println("{a} {b}")
+    if find(2) is Some(a) and find(a + 1) is Some(b) then println("{a} {b}")
 
     # Struct, tuple, and integer patterns.
     p := Point{x: 1, y: 2}
-    if p is Point{x: px, y: py} then std.io.println("{px},{py}")
+    if p is Point{x: px, y: py} then println("{px},{py}")
     t := (1, "a")
-    if t is (n, s) and n == 1 then std.io.println("{s}")
+    if t is (n, s) and n == 1 then println("{s}")
 
     # `while` tests before each pass; its bindings are fresh each time, and a closure
     # made in the body keeps its own.
@@ -64,17 +65,17 @@ func main() {
         cur = Some(k + 1)
         total += k
     }
-    std.io.println("{total}")
+    println("{total}")
 
     # A binding shadows an outer variable only where the test held.
     v := 100
-    if foo is Some(v) then std.io.print("{v} ")
-    std.io.println("{foo is Some(v) and v == 7} {v}")
-    std.io.println("{v}")
+    if foo is Some(v) then print("{v} ")
+    println("{foo is Some(v) and v == 7} {v}")
+    println("{v}")
 
     if foo is Some(c) then {
         f := func(): i32 { return c * 2 }
-        std.io.println("{f()}")
+        println("{f()}")
     }
 
     # Each pass's binding is its own variable.
@@ -84,5 +85,5 @@ func main() {
         fs = fs.push(i)
         count = Some(i + 1)
     }
-    std.io.println("{fs[0]} {fs[1]} {fs[2]}")
+    println("{fs[0]} {fs[1]} {fs[2]}")
 }

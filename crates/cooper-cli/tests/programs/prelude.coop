@@ -5,7 +5,8 @@
 # `Maybe` and `Result` need no declaration or `use`. A sum type of the program's own may
 # share their variant names: a bare variant takes its type from context.
 use {
-    std.io,
+    std.io.println,
+    std.io.print,
 }
 
 oneof Option T {
@@ -29,9 +30,9 @@ func nine(): Maybe i32 {
 
 func main() {
     let m: Maybe i32
-    std.io.println("{parse(3)} {parse(0)} {m}")
+    println("{parse(3)} {parse(0)} {m}")
     r := match parse(2) with { Ok(v) => v; Err(_) => 0 }
-    std.io.println("{r} {pick(4)} {Maybe.Some(1)}")
-    if parse(5) is Ok(v) then std.io.print("{v} ")
-    std.io.println("{nine()}")
+    println("{r} {pick(4)} {Maybe.Some(1)}")
+    if parse(5) is Ok(v) then print("{v} ")
+    println("{nine()}")
 }

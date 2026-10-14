@@ -19,6 +19,7 @@ only reports diagnostics.
 | `let mut x = 5;`, `var x = 5` | `x := 5` or `let x: i32 = 5` (bindings are mutable; there is no `mut`) |
 | `if x > 0 { … } else { … }` | `if x > 0 then … else …` (a body is one statement or a `{ … }` block) |
 | `while x < 9 { … }`, `for i in 0..9 { … }` | `while x < 9 do …`, `for i in 0..9 do …` |
+| `if let Some(x) = foo { … }`, `matches!(foo, Some(_))` | `if foo is Some(x) then …`, `foo is Some(_)` (see below) |
 | `match x { A => 1, B => 2 }` | `match x with {`, then arms `A => 1`, separated like statements (a newline or `;`), never by commas |
 | `impl Point { fn len(&self) … }` | `(p: Point) func len(): i32 { … }`, declared outside the struct |
 | `*p`, `&mut x`, `Box<T>` | `p^`, `&x`, `T^` (`^` is the pointer sigil in types and values) |
@@ -125,7 +126,7 @@ kind := match n with {               # integer, bool, tuple, struct, or sum-type
   subset.
 * Identifiers are `[A-Za-z_][A-Za-z0-9_]*`. Types are PascalCase and everything else is
   camelCase. Casing matters to the compiler only in patterns (below).
-* Reserved words: `and as break continue do else extern false for func if in let match nil oneof or
+* Reserved words: `and as break continue do else extern false for func if in is let match nil oneof or
   repeat return struct then true until use while with xor`.
 * Numbers: `42`, `1_000`, `0xFF`, `0b1010`, `3.14`, `1e9`, `2.5e-3`. A float needs digits on
   both sides of the point. Strings are `"…"` with the escapes `\n \t \r \0 \\ \" \' \{`, and interpolate:
@@ -181,6 +182,7 @@ arm        ::= pattern "=>" body                      # arms are separated like 
 expr       ::= number | string | "true" | "false" | "nil" | ident | "(" ")"
              | "(" expr ")" | "(" expr ("," expr)+ ")" | "[" expr* "]"
              | expr "(" expr* ")"                     # call
+             | expr "is" pattern                       # pattern test, a `bool`
              | expr "." ident | expr "^"              # field, dereference
              | expr "[" expr "]"                      # index
              | expr "[" expr? (".." | "..=") expr? "]"   # slice
@@ -211,7 +213,7 @@ From loosest to tightest binding:
 | 4 | `xor` |
 | 5 | `and` |
 | 6 | `==` `!=` |
-| 7 | `<` `<=` `>` `>=` (chainable in one direction: `a <= x < b`) |
+| 7 | `<` `<=` `>` `>=` (chainable in one direction: `a <= x < b`), and `is` (takes a pattern, not an expression) |
 | 8 | `<<` `>>` |
 | 9 | `+` `-` |
 | 10 | `*` `/` `%` |
@@ -255,6 +257,14 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
   every variable its initializer reaches, directly or through the functions it calls. An
   initializer that reaches its own variable is an error. Another module's variable is reached
   as `module.name` or bound by `use { module.name }`.
+* `value is pattern` is a `bool`: whether the value matches, as `match value with { pattern =>
+  true; _ => false }` would say. The names the pattern binds are in scope where the test is
+  known to have held: the `then` branch of an `if`, the body of a `while`, and the operands of
+  `and` to its right (`if foo is Some(x) and x > 5 then use(x)`). Nowhere else: `or` and `!`
+  bind nothing, so `x` is undefined in `foo is Some(x) or x > 5`, and `until` and the
+  post-test loops have no body that runs on success. The pattern is a single pattern, as in
+  `match`; for several alternatives or any larger logic, write a `match`. A pattern that
+  matches everything (`foo is x`, which a mistyped variant name becomes) is an error.
 * A method name may not collide with a field name, functions are never overloaded, and a
   module's top-level names share one unordered namespace across its files.
 * `==` works on comparable types only: not function types, arrays, or types containing them.

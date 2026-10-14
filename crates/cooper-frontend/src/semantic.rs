@@ -176,6 +176,7 @@ impl SemanticAnalyzer<'_> {
                 self.analyze_expr(target);
                 self.analyze_expr(value);
             }
+            ExprKind::Is { value, .. } => self.analyze_expr(value),
             ExprKind::Let { value, .. } => self.analyze_expr(value),
             ExprKind::LetTuple { value, .. } => self.analyze_expr(value),
             ExprKind::Match { scrutinee, arms } => {

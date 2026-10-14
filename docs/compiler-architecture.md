@@ -103,6 +103,12 @@ module (dependencies first), and within a module by the dependencies between var
 by following references through function bodies; the backend zero-initializes each global and
 runs the initializers before `main`.
 
+An `is` test lowers to a boolean `Match` whose success arm assigns the pattern's bindings to
+locals the condition's consumer (`if`, `while`, or the enclosing expression) declares around
+it. The checker names each such variable uniquely and records every use under that name, so
+shadowing and closure captures need no scope tracking in lowering. A `while` whose condition
+binds becomes `while true` testing inside its body, so the variables are fresh each pass.
+
 **Monomorphization** (`mono.rs`) is an IR-to-IR pass. Lowering keeps a generic function as a
 template. Starting from the non-generic functions, the pass instantiates each referenced
 declaration once per distinct set of type arguments and follows the references each instance

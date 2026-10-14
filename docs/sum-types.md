@@ -114,6 +114,23 @@ Integers, tuples, and structs need an irrefutable arm: `_`, a binding, or a tupl
 pattern built only from those. An exhaustive match
 whose every arm returns counts as returning on all paths.
 
+### Testing one pattern
+
+`value is pattern` is a `bool` saying whether the value matches, and the names the pattern
+binds are available where it held. It covers the common case of wanting one variant's
+payload, without a `match` whose other arm does nothing:
+
+```
+x := if foo is Some(x) then x else 0
+if foo is Some(x) and x > 5 then use(x)
+while next is Some(item) do next = process(item)
+ok := foo is Some(_)
+```
+
+Bindings flow only into the `then` branch, a `while` body, and the right operands of `and`;
+`or` and `!` bind nothing. The pattern is one pattern, so alternatives and anything larger
+belong in a `match`.
+
 ## Planned
 
 * Named-field payloads.

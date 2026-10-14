@@ -51,6 +51,8 @@ pub struct Typed {
     pub variables: HashMap<Span, VarRef>,
     /// Every use of a generic nested function, keyed by span.
     pub local_refs: HashMap<Span, LocalRef>,
+    /// The unique name each use of an `is`-bound variable stands for, keyed by span.
+    pub aliases: HashMap<Span, String>,
 }
 
 /// A use of a module-level variable: the module that declares it and its name there.
@@ -96,6 +98,14 @@ pub struct LocalRef {
 struct Binding {
     ty: Type,
     generic: Option<(Span, Vec<String>)>,
+    /// The unique name of a variable an `is` test binds (see [`is_binder`]): its uses
+    /// are lowered under it, so it never collides with another variable of its name.
+    alias: Option<String>,
+}
+
+/// The unique name of the variable the `is` test at `test` binds for the pattern name `name`.
+pub fn is_binder(name: &str, test: Span) -> String {
+    format!("{name}#{}", test.start)
 }
 
 /// What a reference names: a declaration, or a generic nested function by the span of
@@ -207,6 +217,7 @@ pub fn check(
         captures: tc.captures,
         variables: tc.variables,
         local_refs: tc.local_refs,
+        aliases: tc.aliases,
     }
 }
 
@@ -241,6 +252,11 @@ struct TypeChecker<'g> {
     variables: HashMap<Span, VarRef>,
     /// Every use of a generic nested function, keyed by span: the lowering handoff.
     local_refs: HashMap<Span, LocalRef>,
+    /// Every use of an `is`-bound variable, keyed by span: the lowering handoff.
+    aliases: HashMap<Span, String>,
+    /// The variables each `is` test, or `and` of tests, binds where it holds, keyed by
+    /// the span of the expression.
+    tests: HashMap<Span, Vec<(String, Binding)>>,
     /// The variables and bindings used to instantiate generic references.
     infer: InferTable,
     body: BodyConstraints,
@@ -264,6 +280,8 @@ impl<'g> TypeChecker<'g> {
             captures: HashMap::new(),
             variables: HashMap::new(),
             local_refs: HashMap::new(),
+            aliases: HashMap::new(),
+            tests: HashMap::new(),
             infer: InferTable::default(),
             body: BodyConstraints::default(),
         }
@@ -315,14 +333,14 @@ impl<'g> TypeChecker<'g> {
     // --- variable scope stack ---
 
     fn define_var(&mut self, name: &str, ty: Type) {
-        self.scopes.last_mut().unwrap().insert(name.to_string(), Binding { ty, generic: None });
+        self.scopes.last_mut().unwrap().insert(name.to_string(), Binding { ty, generic: None, alias: None });
     }
 
     /// Bind `name` to the generic nested function declared at `decl`, of type `ty`
     /// generalized over `binders`.
     fn define_generic(&mut self, name: &str, ty: Type, decl: Span, binders: Vec<String>) {
         let generic = Some((decl, binders));
-        self.scopes.last_mut().unwrap().insert(name.to_string(), Binding { ty, generic });
+        self.scopes.last_mut().unwrap().insert(name.to_string(), Binding { ty, generic, alias: None });
     }
 
     fn lookup_var(&self, name: &str) -> Option<&Type> {
@@ -333,12 +351,16 @@ impl<'g> TypeChecker<'g> {
     /// body (not at module level) outside a closure being checked is captured by that
     /// closure, and by every closure between it and the use.
     fn use_var(&mut self, name: &str, span: Span) -> Option<Type> {
-        let (depth, Binding { ty, generic }) = self
+        let (depth, Binding { ty, generic, alias }) = self
             .scopes
             .iter()
             .enumerate()
             .rev()
             .find_map(|(depth, scope)| scope.get(name).map(|binding| (depth, binding.clone())))?;
+        let name = alias.as_deref().unwrap_or(name);
+        if let Some(alias) = &alias {
+            self.aliases.insert(span, alias.clone());
+        }
         if depth > 0 {
             for closure in self.closures.iter_mut().filter(|c| c.base > depth) {
                 if !closure.captures.iter().any(|(captured, _)| captured == name) {
@@ -396,7 +418,9 @@ impl<'g> TypeChecker<'g> {
                 if !cond_type.is_some_and(|ty| self.infer.unify(&ty, &Type::Primitive("bool".to_string())).is_ok()) {
                     self.err(cond.span, "if-statement condition does not evaluate to a boolean type");
                 }
+                self.scopes.push(self.test_scope(cond));
                 self.check_stmt(then);
+                self.scopes.pop();
                 if let Some(els) = els {
                     self.check_stmt(els);
                 }
@@ -407,12 +431,13 @@ impl<'g> TypeChecker<'g> {
                 iterable,
                 body,
             } => self.check_for_in(bindings, iterable, body, stmt.span),
-            StmtKind::While { cond, body, .. } => {
+            StmtKind::While { cond, body, post_test, until } => {
                 let cond_type = self.check_expr(cond);
                 if !cond_type.is_some_and(|ty| self.infer.unify(&ty, &Type::Primitive("bool".to_string())).is_ok()) {
                     self.err(cond.span, "loop condition does not evaluate to a boolean type");
                 }
-                self.scopes.push(HashMap::new());
+                // Only `while COND do BODY` runs its body where the condition held.
+                self.scopes.push(if *post_test || *until { HashMap::new() } else { self.test_scope(cond) });
                 self.loop_depth += 1;
                 for s in body {
                     self.check_stmt(s);
@@ -626,7 +651,7 @@ impl<'g> TypeChecker<'g> {
             // Lowering reads every parameter's type here, annotated or inferred.
             self.body.spans.push(param_span);
             self.types.insert(param_span, ty.clone());
-            bound.insert(param.to_string(), Binding { ty: ty.clone(), generic: None });
+            bound.insert(param.to_string(), Binding { ty: ty.clone(), generic: None, alias: None });
             param_types.push(ty);
         }
         let inferred_return = return_type.is_none() && name.is_none();
@@ -769,6 +794,8 @@ impl<'g> TypeChecker<'g> {
                 self.expected = None;
                 t
             }
+            ExprKind::Binary { op: BinaryOp::And, lhs, rhs } => self.check_and(lhs, rhs, expr.span),
+            ExprKind::Is { value, pattern } => self.check_is(value, pattern, expr.span),
             ExprKind::Binary { op, lhs, rhs } => {
                 self.check_binary(*op, lhs, rhs, expr.span)
             }
@@ -945,6 +972,57 @@ impl<'g> TypeChecker<'g> {
             format!("`{field}` is not a member of module `{}`", prefix.join(".")),
         );
         None
+    }
+
+    /// The scope holding the variables the condition `cond` binds where it holds.
+    fn test_scope(&self, cond: &Expr) -> HashMap<String, Binding> {
+        let mut cond = cond;
+        while let ExprKind::Group(inner) = &cond.kind {
+            cond = inner;
+        }
+        self.tests.get(&cond.span).cloned().unwrap_or_default().into_iter().collect()
+    }
+
+    /// `value is pattern`: a `bool`, binding the pattern's names where it holds.
+    fn check_is(&mut self, value: &Expr, pattern: &Pattern, span: Span) -> Option<Type> {
+        let ty = self.check_expr(value)?;
+        let ty = self.match_type(ty, value.span)?;
+        if matches!(pattern.kind, PatternKind::Binding(_) | PatternKind::Wildcard) {
+            self.err(
+                pattern.span,
+                "this pattern matches every value; a sum-type variant is spelled with a capital letter",
+            );
+            return Some(Type::Primitive("bool".to_string()));
+        }
+        self.scopes.push(HashMap::new());
+        self.check_pattern(pattern, &ty);
+        let bound = self.scopes.pop().expect("pushed above");
+        let bindings = bound
+            .into_iter()
+            .map(|(name, binding)| {
+                let alias = Some(is_binder(&name, span));
+                (name, Binding { alias, ..binding })
+            })
+            .collect();
+        self.tests.insert(span, bindings);
+        Some(Type::Primitive("bool".to_string()))
+    }
+
+    /// `lhs and rhs`, where `rhs` sees the variables `lhs` binds where it holds, as does
+    /// whatever the whole expression guards.
+    fn check_and(&mut self, lhs: &Expr, rhs: &Expr, span: Span) -> Option<Type> {
+        let left = self.check_expr(lhs);
+        let scope = self.test_scope(lhs);
+        let guarded = scope.clone();
+        self.scopes.push(scope);
+        let right = self.check_expr(rhs);
+        self.scopes.pop();
+        let mut bindings: Vec<_> = guarded.into_iter().collect();
+        bindings.extend(self.test_scope(rhs));
+        if !bindings.is_empty() {
+            self.tests.insert(span, bindings);
+        }
+        self.check_operands(BinaryOp::And, left?, right?, span)
     }
 
     fn check_binary(
@@ -1142,7 +1220,10 @@ impl<'g> TypeChecker<'g> {
         if !cond_type.is_some_and(|ty| self.infer.unify(&ty, &Type::Primitive("bool".to_string())).is_ok()) {
             self.err(cond.span, "if-expression condition does not evaluate to a boolean type");
         }
-        let then_type = self.check_expr(then)?;
+        self.scopes.push(self.test_scope(cond));
+        let then_type = self.check_expr(then);
+        self.scopes.pop();
+        let then_type = then_type?;
         let else_type = self.check_expr(els)?;
         if self.infer.unify(&then_type, &else_type).is_err() {
             let (then_type_shown, else_type_shown) = self.shown_pair(&then_type, &else_type);

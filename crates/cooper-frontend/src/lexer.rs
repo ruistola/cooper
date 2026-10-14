@@ -125,6 +125,8 @@ pub enum TokenKind {
     If,
     #[token("in")]
     In,
+    #[token("is")]
+    Is,
     #[token("let")]
     Let,
     #[token("nil")]
@@ -217,6 +219,7 @@ impl std::fmt::Display for TokenKind {
             Func => "'func'",
             If => "'if'",
             In => "'in'",
+            Is => "'is'",
             Let => "'let'",
             Nil => "'nil'",
             Or => "'or'",

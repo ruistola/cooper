@@ -374,6 +374,12 @@ pub enum ExprKind {
         scrutinee: Box<Expr>,
         arms: Vec<ExprArm>,
     },
+    /// `value is pattern`: whether `value` matches the pattern, a `bool`. The names the
+    /// pattern binds are in scope where the test is known to have succeeded.
+    Is {
+        value: Box<Expr>,
+        pattern: Pattern,
+    },
     Assign {
         op: AssignOp,
         target: Box<Expr>,

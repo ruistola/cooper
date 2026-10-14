@@ -36,7 +36,7 @@ use cooper_frontend::resolve::{
     receiver_pattern_params, resolve_type, underlying_struct_name, Callable, Globals, Signature,
 };
 use cooper_frontend::typecheck::{
-    decode_escapes, decode_number_literal, decode_string_literal, ItemRef, LiteralValue, LocalRef, Typed, VarRef,
+    decode_escapes, decode_number_literal, decode_string_literal, is_binder, ItemRef, LiteralValue, LocalRef, Typed, VarRef,
 };
 use cooper_frontend::{stdlib, CheckedProject};
 use cooper_frontend::types::{is_numeric_name, Type, TypeDefs, INDEX_INT};
@@ -290,6 +290,7 @@ fn lower_initializer(
         captures: &checked.captures,
         variables: &checked.variables,
         local_refs: &checked.local_refs,
+        aliases: &checked.aliases,
         globals,
         type_params: RefCell::new(HashSet::new()),
         lifting: Some(Lifting {
@@ -356,6 +357,7 @@ fn lower_function(
         captures: &checked.captures,
         variables: &checked.variables,
         local_refs: &checked.local_refs,
+        aliases: &checked.aliases,
         globals,
         type_params: RefCell::new(type_params),
         lifting: Some(Lifting {
@@ -416,6 +418,7 @@ pub fn lower_expr(expr: &Expr, globals: &Globals, checked: &Typed) -> Result<IrE
         captures: &checked.captures,
         variables: &checked.variables,
         local_refs: &checked.local_refs,
+        aliases: &checked.aliases,
         globals,
         type_params: RefCell::new(HashSet::new()),
         lifting: None,
@@ -432,6 +435,7 @@ struct Lower<'a> {
     captures: &'a HashMap<Span, Vec<(String, Type)>>,
     variables: &'a HashMap<Span, VarRef>,
     local_refs: &'a HashMap<Span, LocalRef>,
+    aliases: &'a HashMap<Span, String>,
     globals: &'a Globals,
     type_params: RefCell<HashSet<String>>,
     /// Where function literals are lifted to; absent when lowering a lone expression.
@@ -657,7 +661,8 @@ impl Lower<'_> {
                 IrStmtKind::Return(value.as_ref().map(|e| self.expr(e)).transpose()?)
             }
             StmtKind::If { cond, then, els } => {
-                let scrutinee = self.expr(cond)?;
+                let mut declared = Vec::new();
+                let scrutinee = self.condition(cond, &mut declared)?;
                 let then = self.stmt(then)?;
                 let els = match els {
                     Some(s) => self.stmt(s)?,
@@ -668,10 +673,46 @@ impl Lower<'_> {
                 };
                 let patterns = bool_patterns(&scrutinee.ty, scrutinee.span);
                 let tree = compile_match(&self.globals.defs, &scrutinee.ty, &patterns);
-                IrStmtKind::Match {
+                let branch = IrStmtKind::Match {
                     scrutinee,
                     actions: vec![then, els],
                     tree,
+                };
+                if declared.is_empty() {
+                    branch
+                } else {
+                    declared.push(IrStmt { kind: branch, span: stmt.span });
+                    IrStmtKind::Block(declared)
+                }
+            }
+            StmtKind::While {
+                cond,
+                body,
+                post_test: false,
+                until: false,
+            } if has_test(cond) => {
+                // The variables a test binds are fresh each pass, so the loop tests inside
+                // its body and leaves when the test fails.
+                let mut declared = Vec::new();
+                let tested = self.condition(cond, &mut declared)?;
+                let patterns = bool_patterns(&tested.ty, tested.span);
+                let tree = compile_match(&self.globals.defs, &tested.ty, &patterns);
+                let leave = IrStmt { kind: IrStmtKind::Break, span: stmt.span };
+                let run = IrStmt { kind: IrStmtKind::Block(self.block(body)?), span: stmt.span };
+                declared.push(IrStmt {
+                    kind: IrStmtKind::Match { scrutinee: tested, actions: vec![run, leave], tree },
+                    span: stmt.span,
+                });
+                let always = IrExpr {
+                    kind: IrExprKind::Bool(true),
+                    ty: Type::Primitive("bool".to_string()),
+                    span: cond.span,
+                };
+                IrStmtKind::While {
+                    cond: always,
+                    body: vec![IrStmt { kind: IrStmtKind::Block(declared), span: stmt.span }],
+                    post_test: false,
+                    until: false,
                 }
             }
             StmtKind::While {
@@ -774,6 +815,11 @@ impl Lower<'_> {
                 let params: Vec<_> = params.iter().map(|p| (p.name.as_str(), p.span)).collect();
                 return self.closure(&params, body, expr.span, &[]);
             }
+            ExprKind::Is { .. } | ExprKind::Binary { op: BinaryOp::And, .. } => {
+                let mut declared = Vec::new();
+                let tested = self.condition(expr, &mut declared)?;
+                return Ok(with_variables(declared, tested));
+            }
             _ => {}
         }
         let ty = self
@@ -874,7 +920,9 @@ impl Lower<'_> {
             ExprKind::Nil => IrExprKind::Nil,
             ExprKind::Unit => IrExprKind::Unit,
             ExprKind::Ident(name) => {
-                if variant_named(&self.globals.defs, name, &ty) {
+                if let Some(alias) = self.aliases.get(&expr.span) {
+                    IrExprKind::Var(alias.clone())
+                } else if variant_named(&self.globals.defs, name, &ty) {
                     // A bare payload-free variant inferred from the expected type.
                     IrExprKind::Variant {
                         variant: name.clone(),
@@ -954,16 +1002,22 @@ impl Lower<'_> {
                 value: Box::new(self.expr(value)?),
             },
             ExprKind::If { cond, then, els } => {
-                let scrutinee = self.expr(cond)?;
+                let mut declared = Vec::new();
+                let scrutinee = self.condition(cond, &mut declared)?;
                 let then = self.expr(then)?;
                 let els = self.expr(els)?;
                 let patterns = bool_patterns(&scrutinee.ty, scrutinee.span);
                 let tree = compile_match(&self.globals.defs, &scrutinee.ty, &patterns);
-                IrExprKind::Match {
-                    scrutinee: Box::new(scrutinee),
-                    actions: vec![then, els],
-                    tree: Box::new(tree),
-                }
+                let branch = IrExpr {
+                    kind: IrExprKind::Match {
+                        scrutinee: Box::new(scrutinee),
+                        actions: vec![then, els],
+                        tree: Box::new(tree),
+                    },
+                    ty: ty.clone(),
+                    span: expr.span,
+                };
+                return Ok(with_variables(declared, branch));
             }
             ExprKind::Block(block) => self.value_block(block)?,
             ExprKind::StructLiteral { members, .. } => {
@@ -978,7 +1032,7 @@ impl Lower<'_> {
                         .collect::<Result<Vec<_>, LowerError>>()?,
                 }
             }
-            ExprKind::Group(_) | ExprKind::Func { .. } => unreachable!("lowered above"),
+            ExprKind::Group(_) | ExprKind::Func { .. } | ExprKind::Is { .. } => unreachable!("lowered above"),
             ExprKind::Range { .. } => return unsupported(expr.span, "range"),
             ExprKind::Match { scrutinee, arms } => {
                 let scrutinee = self.expr(scrutinee)?;
@@ -1021,6 +1075,88 @@ impl Lower<'_> {
             ty,
             span: expr.span,
         })
+    }
+
+    /// Lower a condition, one that may test patterns with `is`. Each variable a test binds
+    /// is a local named by [`is_binder`], pushed onto `declared` for the caller to bring into
+    /// scope around the condition and what it guards, and assigned by the test.
+    fn condition(&self, cond: &Expr, declared: &mut Vec<IrStmt>) -> Result<IrExpr, LowerError> {
+        match &cond.kind {
+            ExprKind::Group(inner) => self.condition(inner, declared),
+            ExprKind::Binary { op: BinaryOp::And, lhs, rhs } => {
+                let lhs = self.condition(lhs, declared)?;
+                let rhs = self.condition(rhs, declared)?;
+                let ty = self.types.get(&cond.span).cloned().ok_or(LowerError::MissingType(cond.span))?;
+                Ok(IrExpr {
+                    kind: IrExprKind::Binary {
+                        op: BinaryOp::And,
+                        lhs: Box::new(lhs),
+                        rhs: Box::new(rhs),
+                    },
+                    ty,
+                    span: cond.span,
+                })
+            }
+            ExprKind::Is { value, pattern } => {
+                let scrutinee = self.expr(value)?;
+                let pattern = self.pattern(&scrutinee.ty, pattern)?;
+                let mut binders = Vec::new();
+                pattern_binders(&pattern, &mut binders);
+                let bool_ty = Type::Primitive("bool".to_string());
+                let mut stores = Vec::new();
+                for Binder { name, ty } in binders {
+                    let alias = is_binder(&name, cond.span);
+                    let place = |name: String| IrExpr {
+                        kind: IrExprKind::Var(name),
+                        ty: ty.clone(),
+                        span: cond.span,
+                    };
+                    stores.push(IrStmt {
+                        kind: IrStmtKind::Expr(IrExpr {
+                            kind: IrExprKind::Assign {
+                                op: AssignOp::Assign,
+                                target: Box::new(place(alias.clone())),
+                                value: Box::new(place(name)),
+                            },
+                            ty: ty.clone(),
+                            span: cond.span,
+                        }),
+                        span: cond.span,
+                    });
+                    declared.push(IrStmt {
+                        kind: IrStmtKind::Var { name: alias, ty, init: None },
+                        span: cond.span,
+                    });
+                }
+                let truth = |value| IrExpr {
+                    kind: IrExprKind::Bool(value),
+                    ty: bool_ty.clone(),
+                    span: cond.span,
+                };
+                let yes = if stores.is_empty() {
+                    truth(true)
+                } else {
+                    IrExpr {
+                        kind: IrExprKind::Block { stmts: stores, result: Box::new(truth(true)) },
+                        ty: bool_ty.clone(),
+                        span: cond.span,
+                    }
+                };
+                let other = IrPattern { kind: IrPatternKind::Wildcard, ty: scrutinee.ty.clone(), span: cond.span };
+                let patterns = vec![pattern, other];
+                let tree = compile_match(&self.globals.defs, &scrutinee.ty, &patterns);
+                Ok(IrExpr {
+                    kind: IrExprKind::Match {
+                        scrutinee: Box::new(scrutinee),
+                        actions: vec![yes, truth(false)],
+                        tree: Box::new(tree),
+                    },
+                    ty: bool_ty.clone(),
+                    span: cond.span,
+                })
+            }
+            _ => self.expr(cond),
+        }
     }
 
     /// An interpolated string, its positional holes filled by `args` in order: each
@@ -1444,6 +1580,41 @@ impl Lower<'_> {
             .then(|| name.clone()),
             _ => None,
         }
+    }
+}
+
+/// Whether the condition `cond` contains a test with `is` that binds variables.
+fn has_test(cond: &Expr) -> bool {
+    match &cond.kind {
+        ExprKind::Group(inner) => has_test(inner),
+        ExprKind::Binary { op: BinaryOp::And, lhs, rhs } => has_test(lhs) || has_test(rhs),
+        ExprKind::Is { .. } => true,
+        _ => false,
+    }
+}
+
+/// `result` evaluated with the locals `declared` in scope.
+fn with_variables(declared: Vec<IrStmt>, result: IrExpr) -> IrExpr {
+    if declared.is_empty() {
+        return result;
+    }
+    IrExpr {
+        ty: result.ty.clone(),
+        span: result.span,
+        kind: IrExprKind::Block { stmts: declared, result: Box::new(result) },
+    }
+}
+
+/// Every name `pattern` binds, with its type.
+fn pattern_binders(pattern: &IrPattern, out: &mut Vec<Binder>) {
+    match &pattern.kind {
+        IrPatternKind::Binding(name) => out.push(Binder { name: name.clone(), ty: pattern.ty.clone() }),
+        IrPatternKind::Variant { binders, .. } => {
+            out.extend(binders.iter().filter(|b| b.name != "_").cloned());
+        }
+        IrPatternKind::Tuple(elems) => elems.iter().for_each(|e| pattern_binders(e, out)),
+        IrPatternKind::Struct { fields, .. } => fields.iter().for_each(|(_, p)| pattern_binders(p, out)),
+        IrPatternKind::Wildcard | IrPatternKind::Bool(_) | IrPatternKind::Int { .. } => {}
     }
 }
 

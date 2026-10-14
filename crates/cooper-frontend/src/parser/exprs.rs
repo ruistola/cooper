@@ -222,6 +222,14 @@ impl Parser {
                     rhs: Box::new(rhs),
                 }
             }
+            Is => {
+                self.advance();
+                let pattern = self.parse_pattern()?;
+                ExprKind::Is {
+                    value: Box::new(head),
+                    pattern,
+                }
+            }
             DotDot | DotDotEquals => {
                 let inclusive = self.advance().kind == DotDotEquals;
                 let end = self.parse_expr(rbp)?;
@@ -494,6 +502,7 @@ fn tail_bp(kind: TokenKind) -> (i32, i32) {
         }
         DotDot | DotDotEquals => (RANGE_BP, RANGE_BP + 1),
         Or => (OR_BP, OR_BP + 1),
+        Is => (COMPARISON_BP, COMPARISON_BP + 1),
         Xor => (XOR_BP, XOR_BP + 1),
         And => (AND_BP, AND_BP + 1),
         DoubleEquals | NotEquals => (EQUALITY_BP, EQUALITY_BP + 1),

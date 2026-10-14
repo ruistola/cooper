@@ -3,7 +3,7 @@
 use super::*;
 
 impl Parser {
-    fn parse_pattern(&mut self) -> PResult<Pattern> {
+    pub(super) fn parse_pattern(&mut self) -> PResult<Pattern> {
         let start = self.peek().span;
         match self.peek().kind {
             OpenParen => return self.parse_tuple_pattern(),

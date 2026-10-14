@@ -5,8 +5,7 @@
 # `Maybe` and `Result` need no declaration or `use`. A sum type of the program's own may
 # share their variant names: a bare variant takes its type from context.
 use {
-    std.io.println,
-    std.io.print,
+    std.io.{ print, println },
 }
 
 oneof Option T {

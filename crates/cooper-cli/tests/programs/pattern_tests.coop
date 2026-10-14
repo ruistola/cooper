@@ -15,8 +15,7 @@
 # Pattern tests with `is`: payload extraction, `and` guards, chains, bare booleans,
 # struct and tuple patterns, `while` conditions, shadowing, and closure capture.
 use {
-    std.io.println,
-    std.io.print,
+    std.io.{ print, println },
 }
 
 struct Point {

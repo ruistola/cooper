@@ -15,7 +15,6 @@ use { std.io as io }
 
 struct Point { x: i32, y: f64 }
 oneof Shape { Dot, Circle(f64), Rect(Point, Point) }
-oneof Maybe T { None, Some(T) }
 struct Node { value: i32, next: Node^ }
 struct Pair { left: Node^, right: Node^ }
 

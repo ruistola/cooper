@@ -29,8 +29,8 @@ struct Point {
 }
 
 func find(n: i32): Maybe i32 {
-    if n > 0 then return Maybe.Some(n)
-    return Maybe.None
+    if n > 0 then return Some(n)
+    return None
 }
 
 func main() {
@@ -66,7 +66,7 @@ func main() {
     cur := Maybe.Some(0)
     total := 0
     while cur is Some(k) and k < 3 do {
-        cur = Maybe.Some(k + 1)
+        cur = Some(k + 1)
         total += k
     }
     std.io.println("{total}")
@@ -87,7 +87,7 @@ func main() {
     let fs: i32[] = []
     while count is Some(i) and i < 3 do {
         fs = fs.push(i)
-        count = Maybe.Some(i + 1)
+        count = Some(i + 1)
     }
     std.io.println("{fs[0]} {fs[1]} {fs[2]}")
 }

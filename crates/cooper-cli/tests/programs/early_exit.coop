@@ -22,23 +22,23 @@ oneof Maybe T {
 }
 
 func read(n: i32): Result i32 string {
-    if n > 0 then return Result.Ok(n)
-    return Result.Err("bad")
+    if n > 0 then return Ok(n)
+    return Err("bad")
 }
 
 # Each step wraps its error with context on the way out.
 func load(n: i32): Result i32 string {
     a := match read(n) with {
         Ok(v) => v
-        Err(err) => return Result.Err("step a: {err}")
+        Err(err) => return Err("step a: {err}")
     }
-    b := match read(a - 1) with { Ok(v) => v; Err(err) => return Result.Err("step b: {err}") }
-    return Result.Ok(a + b)
+    b := match read(a - 1) with { Ok(v) => v; Err(err) => return Err("step b: {err}") }
+    return Ok(a + b)
 }
 
 func double(m: Maybe i32): Maybe i32 {
-    x := if m is Some(x) then x else return Maybe.None
-    return Maybe.Some(x * 2)
+    x := if m is Some(x) then x else return None
+    return Some(x * 2)
 }
 
 func loop(): i32 {
@@ -62,8 +62,8 @@ func logged(m: Maybe i32): i32 {
 
 func main() {
     std.io.println("{load(5)} {load(1)} {load(0)}")
-    std.io.println("{double(Maybe.Some(4))} {double(Maybe.None)}")
+    std.io.println("{double(Some(4))} {double(None)}")
     std.io.println("{loop()}")
-    logged(Maybe.Some(7))
-    logged(Maybe.None)
+    logged(Some(7))
+    logged(None)
 }

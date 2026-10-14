@@ -1,0 +1,37 @@
+# exit: 0
+# stdout: Ok(3) Err("bad") None
+# stdout: 2 Some(4) Some(1)
+# stdout: 5 Some(9)
+# `Maybe` and `Result` need no declaration or `use`. A sum type of the program's own may
+# share their variant names: a bare variant takes its type from context.
+use {
+    std.io,
+}
+
+oneof Option T {
+    Nothing,
+    Some(T),
+}
+
+func parse(n: i32): Result i32 string {
+    if n > 0 then return Ok(n)
+    return Err("bad")
+}
+
+func pick(n: i32): Option i32 {
+    if n > 0 then return Some(n)
+    return Nothing
+}
+
+func nine(): Maybe i32 {
+    return Some(9)
+}
+
+func main() {
+    let m: Maybe i32
+    std.io.println("{parse(3)} {parse(0)} {m}")
+    r := match parse(2) with { Ok(v) => v; Err(_) => 0 }
+    std.io.println("{r} {pick(4)} {Maybe.Some(1)}")
+    if parse(5) is Ok(v) then std.io.print("{v} ")
+    std.io.println("{nine()}")
+}

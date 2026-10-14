@@ -25,7 +25,7 @@ only reports diagnostics.
 | `*p`, `&mut x`, `Box<T>` | `p^`, `&x`, `T^` (`^` is the pointer sigil in types and values) |
 | `Vec<i32>`, `[]int`, `Option<T>`, `Map<K, V>` | `i32[]`, `Maybe T`, `Map K V` (type application by juxtaposition) |
 | `fn id<T>(x: T) -> T` | `func id T (x: T): T` (binders follow the name; no angle brackets) |
-| `enum Maybe<T> { Some(T), None }` | `oneof Maybe T { None, Some(T) }` (list a lone payloadless variant first) |
+| `enum Shape { Circle(i32), Empty }` | `oneof Shape { Empty, Circle(i32) }` (list a lone payloadless variant first); `Maybe` and `Result` are built in |
 | `Maybe::Some(5)` | `Maybe.Some(5)`, or bare `Some(5)` where inference fixes the sum type |
 | `use std::io;`, `import "fmt"` | `use { std.io }` (a braced block of dotted paths) |
 | `println!("{}", n)`, `fmt.Println(n)` | `io.println("n = {n}")` (every string literal interpolates) |
@@ -54,11 +54,6 @@ oneof Shape {
     Empty,
     Circle(i32),
     Rect(i32, i32),
-}
-
-oneof Maybe T {
-    None,
-    Some(T),
 }
 
 (p: Point) func sum(): i32 {         # value receiver: operates on a copy
@@ -265,13 +260,11 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
   post-test loops have no body that runs on success. The pattern is a single pattern, as in
   `match`; for several alternatives or any larger logic, write a `match`. A pattern that
   matches everything (`foo is x`, which a mistyped variant name becomes) is an error.
-* `return`, `break`, and `continue` may also stand where an expression does: as the arm of a
-  `match` or a branch of an `if` expression, or ending a braced block there. They leave the
-  function or loop, so they never produce a value and fit any type. This is how a failed
-  step exits early while a good one yields its value, with context added to an error where
-  it is wanted, and no `?` operator:
-  `x := if m is Some(x) then x else return Maybe.None`, or
-  `v := match step() with { Ok(v) => v; Err(err) => return Result.Err("step: {err}") }`.
+* To leave early on a failed step, `return` (or `break`, `continue`) may be the arm of a
+  `match` or the `else` of an `if` expression, and it fits any type. There is no `?`
+  operator; an error can be given context on the way out:
+  `x := if m is Some(x) then x else return None`, or
+  `v := match step() with { Ok(v) => v; Err(err) => return Err("step: {err}") }`.
 * A method name may not collide with a field name, functions are never overloaded, and a
   module's top-level names share one unordered namespace across its files.
 * `==` works on comparable types only: not function types, arrays, or types containing them.

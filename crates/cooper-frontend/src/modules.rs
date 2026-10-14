@@ -83,6 +83,7 @@ pub fn check(project: &Project) -> Result<CheckedProject, Vec<Diagnostic>> {
     // a type whose members name types the dependent never imports, so every module
     // is analyzed against all definitions resolved before it.
     let mut defs = TypeDefs::default();
+    defs.oneofs.extend(crate::stdlib::prelude().defs.oneofs);
     for (_, interface) in &standard {
         defs.structs.extend(interface.defs.structs.clone());
         defs.oneofs.extend(interface.defs.oneofs.clone());
@@ -329,6 +330,9 @@ impl Imports {
     /// struct's methods merge under its identity.
     fn overlay(&self, base: &Globals) -> Globals {
         let mut globals = base.clone();
+        for (name, id) in crate::stdlib::prelude().oneofs {
+            globals.oneofs.entry(name).or_insert(id);
+        }
         globals.structs.extend(self.structs.clone());
         globals.oneofs.extend(self.oneofs.clone());
         globals.funcs.extend(self.funcs.clone());
@@ -536,6 +540,7 @@ fn strip_imports(mut globals: Globals, imports: &Imports) -> Globals {
     for name in imports.vars.keys() {
         globals.vars.remove(name);
     }
+    globals.oneofs.retain(|_, id| id.module != crate::stdlib::PRELUDE_MODULE);
     for owner in imports.methods.keys() {
         globals.methods.remove(owner);
     }

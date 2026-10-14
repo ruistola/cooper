@@ -9,13 +9,16 @@
 //! * `std.fmt`: `format(template: string): string`, the text of a template whose
 //!   positional holes `{}` its further arguments fill (`format("X is {}", x)`). `print`
 //!   and `println` take such arguments too.
+//! * The prelude, in scope in every module without a `use`: the sum types `Maybe T`
+//!   (`None`, `Some(T)`) and `Result T E` (`Ok(T)`, `Err(E)`). A module's own
+//!   declaration of either name shadows the prelude's.
 //! * `std.ffi`: `CString`, a NUL-terminated C string (`struct CString { data: u8^ }`),
 //!   converted from a string as `CString(s)` and back as `string(c)`, and
 //!   `copyBytes(p: u8^, n: i64): u8[]`, which copies C bytes into an array.
 
 use crate::project::ModulePath;
 use crate::resolve::{Callable, Globals, Signature};
-use crate::types::{StructDef, Type, TypeId};
+use crate::types::{OneofDef, StructDef, Type, TypeId};
 
 /// The module path of standard input and output.
 pub const IO_MODULE: &str = "std.io";
@@ -25,6 +28,34 @@ pub const FMT_MODULE: &str = "std.fmt";
 pub const FFI_MODULE: &str = "std.ffi";
 /// The C string type `std.ffi` declares.
 pub const C_STRING: &str = "CString";
+
+/// The module the prelude's types belong to. It is not a module a program can `use`.
+pub const PRELUDE_MODULE: &str = "std.prelude";
+
+/// The declarations every module sees without a `use`: `Maybe` and `Result`. The first
+/// variant of each is the one a zero value takes.
+pub(crate) fn prelude() -> Globals {
+    let param = |name: &str| Type::TypeParam(name.to_string());
+    let mut globals = module(PRELUDE_MODULE);
+    let mut oneof = |name: &str, params: &[&str], variants: Vec<(&str, Vec<Type>)>| {
+        let id = TypeId {
+            module: PRELUDE_MODULE.to_string(),
+            name: name.to_string(),
+        };
+        globals.oneofs.insert(name.to_string(), id.clone());
+        globals.defs.oneofs.insert(
+            id,
+            OneofDef {
+                type_params: params.iter().map(|p| p.to_string()).collect(),
+                variant_order: variants.iter().map(|(v, _)| v.to_string()).collect(),
+                variants: variants.into_iter().map(|(v, slots)| (v.to_string(), slots)).collect(),
+            },
+        );
+    };
+    oneof("Maybe", &["T"], vec![("None", vec![]), ("Some", vec![param("T")])]);
+    oneof("Result", &["T", "E"], vec![("Ok", vec![param("T")]), ("Err", vec![param("E")])]);
+    globals
+}
 
 /// The interfaces of the compiler-provided modules, by path.
 pub(crate) fn interfaces() -> Vec<(ModulePath, Globals)> {

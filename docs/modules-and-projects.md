@@ -51,17 +51,19 @@ The final path segment decides what is bound:
 * **A module binding** brings the module into scope, and its members are reached qualified:
   `use { std.io }` then `std.io.print("hello")`.
 * **A name binding** brings one exported item (a type or function) into scope for bare use:
-  `use { std.types.Result }` then `let x: Result i32 string`. Several names from one module
-  are grouped: `use { std.types.{ Maybe, Result } }`.
+  `use { geometry.Point }` then `let p: Point`. Several names from one module are grouped:
+  `use { geometry.{ Point, Shape } }`.
 
 `as` renames any binding, and the alias is its only spelling in that file:
 
 ```
 use {
   http as web,                                 # web.serve()
-  std.types.{ Maybe, Result as CoreResult },
+  geometry.{ Point, Shape as Figure },
 }
 ```
+
+`Maybe` and `Result` need no `use`; see [Sum Types](./sum-types.md#maybe-and-result).
 
 A bare-bound name shares the file's top-level namespace with the module's declarations. Two
 bindings of one name, or a binding colliding with a declaration, is an error reported at the

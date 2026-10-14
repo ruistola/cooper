@@ -11,16 +11,6 @@ use {
     std.io,
 }
 
-oneof Result T E {
-    Ok(T),
-    Err(E),
-}
-
-oneof Maybe T {
-    None,
-    Some(T),
-}
-
 func read(n: i32): Result i32 string {
     if n > 0 then return Ok(n)
     return Err("bad")

@@ -11,9 +11,9 @@ oneof Shape {
   Rect(i32, i32),
 }
 
-oneof Result T E {
-  Ok(T),
-  Err(E),
+oneof Tree T {
+  Leaf,
+  Node(T, Tree T, Tree T),
 }
 ```
 
@@ -22,6 +22,20 @@ applications (`Full(Box i32)`). A generic `oneof` binds its type parameters afte
 like a struct. Each instantiation is a distinct type: `Maybe i32` is not `Maybe string`.
 The words `enum` and `union` are kept free for possible C-style integer enumerations and
 untagged unions.
+
+## `Maybe` and `Result`
+
+Two sum types are always in scope, with no declaration or `use`:
+
+```
+oneof Maybe T { None, Some(T) }      # a value that may be absent
+oneof Result T E { Ok(T), Err(E) }   # a success or a failure
+```
+
+They are ordinary sum types, matched with `match` and `is`. A module that declares a type
+of the same name shadows the built-in one, and a sum type of its own may reuse the variant
+names `Some`, `None`, `Ok`, and `Err`: a bare variant takes its type from context, and is an
+error where nothing determines it.
 
 ## Construction
 
@@ -140,7 +154,7 @@ value, and an error can be given context on the way out:
 ```
 n := match parse(text) with {
   Ok(v) => v
-  Err(err) => return Result.Err("parsing {text}: {err}")
+  Err(err) => return Err("parsing {text}: {err}")
 }
 ```
 

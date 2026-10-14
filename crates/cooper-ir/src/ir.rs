@@ -262,6 +262,9 @@ pub enum IrExprKind {
     Unit,
     /// A reference to a bound variable or parameter.
     Var(String),
+    /// The value of an expression that was left before producing one, of the node's
+    /// type. Nothing runs after the jump that precedes it.
+    Unreachable,
     /// A reference to the module-level variable `name` of `module`: a place with a
     /// fixed address that lives for the whole program.
     Global { module: String, name: String },
@@ -510,6 +513,7 @@ fn visit_expr_mut(expr: &mut IrExpr, visit: &mut dyn FnMut(&mut IrExpr)) {
         | IrExprKind::Nil
         | IrExprKind::Unit
         | IrExprKind::Var(_)
+        | IrExprKind::Unreachable
         | IrExprKind::Global { .. }
         | IrExprKind::FuncRef { .. }
         | IrExprKind::GenericClosure { .. }

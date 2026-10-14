@@ -278,6 +278,7 @@ impl Substitute<'_> {
             | IrExprKind::Str(_)
             | IrExprKind::Nil
             | IrExprKind::Unit
+            | IrExprKind::Unreachable
             | IrExprKind::Var(_) => {}
             IrExprKind::Global { module, name } => {
                 self.globals.push((module.clone(), name.clone()));

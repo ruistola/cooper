@@ -177,6 +177,15 @@ impl SemanticAnalyzer<'_> {
                 self.analyze_expr(value);
             }
             ExprKind::Is { value, .. } => self.analyze_expr(value),
+            ExprKind::Break | ExprKind::Continue => {}
+            ExprKind::Return(value) => {
+                if let Some(value) = value {
+                    if let Some(valued) = self.valued_returns.last_mut() {
+                        *valued = true;
+                    }
+                    self.analyze_expr(value);
+                }
+            }
             ExprKind::Let { value, .. } => self.analyze_expr(value),
             ExprKind::LetTuple { value, .. } => self.analyze_expr(value),
             ExprKind::Match { scrutinee, arms } => {

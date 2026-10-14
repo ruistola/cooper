@@ -380,6 +380,12 @@ pub enum ExprKind {
         value: Box<Expr>,
         pattern: Pattern,
     },
+    /// `return`, `break`, and `continue` as expressions, in a `match` arm or a branch of
+    /// an `if` expression. They leave the enclosing function or loop, so they never
+    /// produce a value, and fit any type.
+    Return(Option<Box<Expr>>),
+    Break,
+    Continue,
     Assign {
         op: AssignOp,
         target: Box<Expr>,

@@ -46,6 +46,16 @@ impl Parser {
                 ExprKind::AddressOf(Box::new(operand))
             }
             Nil => ExprKind::Nil,
+            Break => ExprKind::Break,
+            Continue => ExprKind::Continue,
+            Return => {
+                let value = if self.statement_terminates() {
+                    None
+                } else {
+                    Some(Box::new(self.parse_expr(0)?))
+                };
+                ExprKind::Return(value)
+            }
             OpenParen => self.parse_paren_head()?,
             OpenBracket => self.parse_array_literal()?,
             If => self.parse_if_expr()?,

@@ -265,6 +265,13 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
   post-test loops have no body that runs on success. The pattern is a single pattern, as in
   `match`; for several alternatives or any larger logic, write a `match`. A pattern that
   matches everything (`foo is x`, which a mistyped variant name becomes) is an error.
+* `return`, `break`, and `continue` may also stand where an expression does: as the arm of a
+  `match` or a branch of an `if` expression, or ending a braced block there. They leave the
+  function or loop, so they never produce a value and fit any type. This is how a failed
+  step exits early while a good one yields its value, with context added to an error where
+  it is wanted, and no `?` operator:
+  `x := if m is Some(x) then x else return Maybe.None`, or
+  `v := match step() with { Ok(v) => v; Err(err) => return Result.Err("step: {err}") }`.
 * A method name may not collide with a field name, functions are never overloaded, and a
   module's top-level names share one unordered namespace across its files.
 * `==` works on comparable types only: not function types, arrays, or types containing them.

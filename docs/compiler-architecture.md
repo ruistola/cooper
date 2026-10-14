@@ -109,6 +109,10 @@ it. The checker names each such variable uniquely and records every use under th
 shadowing and closure captures need no scope tracking in lowering. A `while` whose condition
 binds becomes `while true` testing inside its body, so the variables are fresh each pass.
 
+A `return`, `break`, or `continue` in expression position lowers to a block that runs the
+jump, then an `Unreachable` value of the expression's type. The checker types it as a fresh
+inference variable that the surrounding arm or branch determines.
+
 **Monomorphization** (`mono.rs`) is an IR-to-IR pass. Lowering keeps a generic function as a
 template. Starting from the non-generic functions, the pass instantiates each referenced
 declaration once per distinct set of type arguments and follows the references each instance

@@ -131,6 +131,19 @@ Bindings flow only into the `then` branch, a `while` body, and the right operand
 `or` and `!` bind nothing. The pattern is one pattern, so alternatives and anything larger
 belong in a `match`.
 
+### Leaving early
+
+A `match` arm or `if` branch in expression position may be a `return`, `break`, or
+`continue`, which fit any type. A failed step leaves while a successful one yields its
+value, and an error can be given context on the way out:
+
+```
+n := match parse(text) with {
+  Ok(v) => v
+  Err(err) => return Result.Err("parsing {text}: {err}")
+}
+```
+
 ## Planned
 
 * Named-field payloads.

@@ -496,6 +496,10 @@ impl Emitter<'_, '_> {
                 operand: b.to_string(),
             })),
             IrExprKind::Unit => Ok(None),
+            IrExprKind::Unreachable => Ok(self.value_type(&expr.ty, span)?.map(|ty| Value {
+                ty,
+                operand: "undef".to_string(),
+            })),
             IrExprKind::Var(_) | IrExprKind::Global { .. } | IrExprKind::Deref(_) => {
                 let place = self.place(expr)?.expect("a variable or dereference is a place");
                 Ok(self.load(&place))
@@ -760,6 +764,7 @@ fn walk_expr(expr: &IrExpr, visit: &mut impl FnMut(&IrExpr)) {
         | IrExprKind::Nil
         | IrExprKind::Unit
         | IrExprKind::Var(_)
+        | IrExprKind::Unreachable
         | IrExprKind::Global { .. }
         | IrExprKind::FuncRef { .. }
         | IrExprKind::GenericClosure { .. }

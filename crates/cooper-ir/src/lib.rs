@@ -815,6 +815,17 @@ impl Lower<'_> {
                 let params: Vec<_> = params.iter().map(|p| (p.name.as_str(), p.span)).collect();
                 return self.closure(&params, body, expr.span, &[]);
             }
+            ExprKind::Return(_) | ExprKind::Break | ExprKind::Continue => {
+                let ty = self.types.get(&expr.span).cloned().ok_or(LowerError::MissingType(expr.span))?;
+                let jump = match &expr.kind {
+                    ExprKind::Return(value) => {
+                        IrStmtKind::Return(value.as_ref().map(|v| self.expr(v)).transpose()?)
+                    }
+                    ExprKind::Break => IrStmtKind::Break,
+                    _ => IrStmtKind::Continue,
+                };
+                return Ok(self.leaving(jump, ty, expr.span));
+            }
             ExprKind::Is { .. } | ExprKind::Binary { op: BinaryOp::And, .. } => {
                 let mut declared = Vec::new();
                 let tested = self.condition(expr, &mut declared)?;
@@ -1019,7 +1030,7 @@ impl Lower<'_> {
                 };
                 return Ok(with_variables(declared, branch));
             }
-            ExprKind::Block(block) => self.value_block(block)?,
+            ExprKind::Block(block) => self.value_block(block, &ty)?,
             ExprKind::StructLiteral { members, .. } => {
                 let Type::Struct { id, .. } = &ty else {
                     return Err(LowerError::MissingType(expr.span));
@@ -1032,7 +1043,12 @@ impl Lower<'_> {
                         .collect::<Result<Vec<_>, LowerError>>()?,
                 }
             }
-            ExprKind::Group(_) | ExprKind::Func { .. } | ExprKind::Is { .. } => unreachable!("lowered above"),
+            ExprKind::Group(_)
+            | ExprKind::Func { .. }
+            | ExprKind::Is { .. }
+            | ExprKind::Return(_)
+            | ExprKind::Break
+            | ExprKind::Continue => unreachable!("lowered above"),
             ExprKind::Range { .. } => return unsupported(expr.span, "range"),
             ExprKind::Match { scrutinee, arms } => {
                 let scrutinee = self.expr(scrutinee)?;
@@ -1236,11 +1252,30 @@ impl Lower<'_> {
         }))
     }
 
-    fn value_block(&self, block: &Block) -> Result<IrExprKind, LowerError> {
-        Ok(IrExprKind::Block {
-            stmts: self.block(&block.statements)?,
-            result: Box::new(self.expr(&block.result)?),
-        })
+    fn value_block(&self, block: &Block, ty: &Type) -> Result<IrExprKind, LowerError> {
+        let stmts = self.block(&block.statements)?;
+        let result = if cooper_frontend::typecheck::ends_in_jump(block) {
+            IrExpr {
+                kind: IrExprKind::Unreachable,
+                ty: ty.clone(),
+                span: block.result.span,
+            }
+        } else {
+            self.expr(&block.result)?
+        };
+        Ok(IrExprKind::Block { stmts, result: Box::new(result) })
+    }
+
+    /// An expression that runs the jump `jump` and so never yields its value, of type `ty`.
+    fn leaving(&self, jump: IrStmtKind, ty: Type, span: Span) -> IrExpr {
+        IrExpr {
+            kind: IrExprKind::Block {
+                stmts: vec![IrStmt { kind: jump, span }],
+                result: Box::new(IrExpr { kind: IrExprKind::Unreachable, ty: ty.clone(), span }),
+            },
+            ty,
+            span,
+        }
     }
 
     /// Lower a match-arm pattern against the type of the value it matches. A variant

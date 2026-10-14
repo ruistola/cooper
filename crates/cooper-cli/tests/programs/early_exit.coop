@@ -1,0 +1,69 @@
+# exit: 0
+# stdout: Ok(9) Err("step b: bad") Err("step a: bad")
+# stdout: Some(8) None
+# stdout: 102
+# stdout: logged 7
+# stdout: missing
+# Divergence in expression position: `return`, `break`, and `continue` as the arm of a
+# `match` or the branch of an `if` expression, alone or ending a braced block. They fit
+# any type, so a failed step leaves early while a successful one yields its value.
+use {
+    std.io,
+}
+
+oneof Result T E {
+    Ok(T),
+    Err(E),
+}
+
+oneof Maybe T {
+    None,
+    Some(T),
+}
+
+func read(n: i32): Result i32 string {
+    if n > 0 then return Result.Ok(n)
+    return Result.Err("bad")
+}
+
+# Each step wraps its error with context on the way out.
+func load(n: i32): Result i32 string {
+    a := match read(n) with {
+        Ok(v) => v
+        Err(err) => return Result.Err("step a: {err}")
+    }
+    b := match read(a - 1) with { Ok(v) => v; Err(err) => return Result.Err("step b: {err}") }
+    return Result.Ok(a + b)
+}
+
+func double(m: Maybe i32): Maybe i32 {
+    x := if m is Some(x) then x else return Maybe.None
+    return Maybe.Some(x * 2)
+}
+
+func loop(): i32 {
+    total := 0
+    for i in 0..4 do {
+        n := if i == 1 then continue else i
+        m := if n == 3 then { total += 100; break } else n
+        total += m
+    }
+    return total
+}
+
+func logged(m: Maybe i32): i32 {
+    x := if m is Some(x) then x else {
+        std.io.println("missing")
+        return -1
+    }
+    std.io.println("logged {x}")
+    return x
+}
+
+func main() {
+    std.io.println("{load(5)} {load(1)} {load(0)}")
+    std.io.println("{double(Maybe.Some(4))} {double(Maybe.None)}")
+    std.io.println("{loop()}")
+    logged(Maybe.Some(7))
+    logged(Maybe.None)
+}

@@ -796,6 +796,17 @@ impl<'g> TypeChecker<'g> {
             }
             ExprKind::Binary { op: BinaryOp::And, lhs, rhs } => self.check_and(lhs, rhs, expr.span),
             ExprKind::Is { value, pattern } => self.check_is(value, pattern, expr.span),
+            ExprKind::Return(value) => {
+                self.check_return(value.as_deref(), expr.span);
+                Some(self.diverging())
+            }
+            ExprKind::Break | ExprKind::Continue => {
+                if self.loop_depth == 0 {
+                    let kw = if matches!(expr.kind, ExprKind::Break) { "break" } else { "continue" };
+                    self.err(expr.span, format!("'{kw}' outside of a loop"));
+                }
+                Some(self.diverging())
+            }
             ExprKind::Binary { op, lhs, rhs } => {
                 self.check_binary(*op, lhs, rhs, expr.span)
             }
@@ -1243,6 +1254,25 @@ impl<'g> TypeChecker<'g> {
         }
         let result = self.check_expr(&block.result);
         self.scopes.pop();
+        if ends_in_jump(block) {
+            return Some(self.diverging());
+        }
         result
     }
+
+    /// The type of an expression that leaves its function or loop instead of producing a
+    /// value: whatever its context needs. One nothing else determines is left to the
+    /// usual "cannot infer" error.
+    fn diverging(&mut self) -> Type {
+        self.infer.fresh(InferKind::General)
+    }
+}
+
+/// Whether a block expression ends in a `return`, `break`, or `continue` statement, so
+/// that it never reaches its (empty) result.
+pub fn ends_in_jump(block: &Block) -> bool {
+    matches!(
+        block.statements.last().map(|s| &s.kind),
+        Some(StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue)
+    )
 }

@@ -1,0 +1,18 @@
+# exit: 0
+# stdout: 104 195 h é llo h
+# stdout: h�i
+# A string is always valid UTF-8: `byteAt` reads a byte, slicing works in byte offsets that
+# must start a rune, and bytes C hands back that are not valid UTF-8 become U+FFFD.
+use {
+    std.io.println,
+    std.ffi.CString,
+}
+
+extern func strdup(s: u8^): CString
+
+func main() {
+    s := "héllo"
+    println("{s.byteAt(0)} {s.byteAt(1)} {s[0..1]} {s[1..3]} {s[3..]} {s[..1]}")
+    let bad: u8[4] = [104, 255, 105, 0]
+    println(string(strdup(&bad[0])))
+}

@@ -59,6 +59,12 @@ wider one by the source's signedness (`u32(-7)` is `4294967289`). A float-to-int
 conversion rounds toward zero and saturates at the target's range, with NaN becoming 0
 (`i32(1e10)` is `2147483647`).
 
+Every conversion is total: it yields a value of the target type, lossy where it must be. The one
+exception is `rune(n)`, which has no representation for an `n` that is not a Unicode scalar value
+and stops the program. A conversion that can fail meaningfully is a library function returning a
+`Maybe` (`runes.fromU32(n): Maybe rune`, and the checked integer narrowing and ASCII conversions
+of the same kind), so the cautious form is available without taxing every `u8(x)`.
+
 `string(x)` formats a number or a `bool` as text: integers in decimal, floats as the shortest
 text that reads back as the same value (`string(0.1)` is `"0.1"`), bools as `true`/`false`.
 It formats any other value too ([Type System](./type-system.md#formatting)), and a hole in a

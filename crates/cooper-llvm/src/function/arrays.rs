@@ -29,6 +29,15 @@ impl Emitter<'_, '_> {
         let string = self.expr(&args[0])?.expect("a string has a value");
         let (data, length) = self.string_parts(&string);
         let Intrinsic::StringSlice { inclusive } = op else {
+            if op == Intrinsic::StringByteAt {
+                let index = self.expr(&args[1])?.expect("an index has a value");
+                let index = self.widen_index(&index, &args[1].ty);
+                let outside = self.assign(&format!("icmp uge i64 {index}, {length}"));
+                self.panic_if(&outside, "index out of bounds", span);
+                let slot = self.assign(&format!("getelementptr i8, ptr {data}, i64 {index}"));
+                let operand = self.assign(&format!("load i8, ptr {slot}"));
+                return Ok(Value { ty: "i8".to_string(), operand });
+            }
             return Ok(Value { ty: "i64".to_string(), operand: length });
         };
         let start = self.expr(&args[1])?.expect("a bound has a value");
@@ -45,6 +54,13 @@ impl Emitter<'_, '_> {
         self.panic_if(&past_end, "slice bounds out of range", span);
         let reversed = self.assign(&format!("icmp ugt i64 {start}, {end}"));
         self.panic_if(&reversed, "slice bounds out of range", span);
+        // A string stays valid UTF-8, so both ends must start a rune (or be the end).
+        self.module.declare("declare i32 @cooper_rune_boundary(ptr, i64, i64)");
+        for offset in [&start, &end] {
+            let on = self.assign(&format!("call i32 @cooper_rune_boundary(ptr {data}, i64 {length}, i64 {offset})"));
+            let off = self.assign(&format!("icmp eq i32 {on}, 0"));
+            self.panic_if(&off, "slice offset is not on a rune boundary", span);
+        }
         let count = self.assign(&format!("sub i64 {end}, {start}"));
         let first = self.assign(&format!("getelementptr i8, ptr {data}, i64 {start}"));
         let fields = vec![
@@ -123,7 +139,7 @@ impl Emitter<'_, '_> {
                 _ => unreachable!("an array literal is an array"),
             };
         }
-        if matches!(op, Intrinsic::StringLength | Intrinsic::StringSlice { .. }) {
+        if matches!(op, Intrinsic::StringLength | Intrinsic::StringByteAt | Intrinsic::StringSlice { .. }) {
             return self.string_intrinsic(op, args, span).map(Some);
         }
         let (Type::Array(elem) | Type::StaticArray(elem, _)) = &args[0].ty else {
@@ -152,6 +168,7 @@ impl Emitter<'_, '_> {
             | Intrinsic::FormatFixed { .. }
             | Intrinsic::Pad { .. }
             | Intrinsic::StringLength
+            | Intrinsic::StringByteAt
             | Intrinsic::StringSlice { .. } => unreachable!("handled above"),
             Intrinsic::Format(_) => unreachable!("expanded before code generation"),
             Intrinsic::ArrayLength => {

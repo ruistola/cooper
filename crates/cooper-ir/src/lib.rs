@@ -1786,8 +1786,12 @@ impl Lower<'_> {
         match self.types.get(&target.span) {
             Some(Type::Array(_) | Type::StaticArray(..)) => {}
             Some(ty) if is_string(ty) => {
-                let args = vec![self.expr(target)?];
-                return Ok(Some(IrExprKind::Intrinsic { op: Intrinsic::StringLength, args }));
+                let mut lowered = vec![self.expr(target)?];
+                for arg in args {
+                    lowered.push(self.expr(arg)?);
+                }
+                let op = if name == "byteAt" { Intrinsic::StringByteAt } else { Intrinsic::StringLength };
+                return Ok(Some(IrExprKind::Intrinsic { op, args: lowered }));
             }
             _ => return Ok(None),
         }

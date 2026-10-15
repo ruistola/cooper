@@ -15,9 +15,10 @@
 //! boundary; only the signatures live here, so a call site type-checks through the same
 //! method-access path as any other method.
 //!
-//! `string` carries a blessed set too: `s.length()` is its size in bytes, and slicing
-//! `s[lo..hi]` takes byte offsets (a string is an immutable UTF-8 byte buffer, so a slice
-//! shares its bytes safely). Offsets are not checked against code point boundaries.
+//! `string` carries a blessed set too: `s.length()` is its size in bytes, `s.byteAt(i)` the
+//! byte at an offset, and slicing `s[lo..hi]` takes byte offsets (a string is an immutable
+//! byte buffer, so a slice shares its bytes safely). A string is always valid UTF-8, so a
+//! slice must start and end on a rune boundary.
 //!
 //! The only array type modelled today is the dynamic `T[]`, which carries the full set
 //! including `push`. A fixed-size static array `T[N]` — not yet a distinct type — would
@@ -64,6 +65,11 @@ pub(crate) fn string_method(name: &str) -> Option<Type> {
         "length" => Some(Type::Func {
             return_type: Box::new(index_type()),
             param_types: Vec::new(),
+        }),
+        // The byte at an offset; the way to read bytes, since `s[i]` is not an index.
+        "byteAt" => Some(Type::Func {
+            return_type: Box::new(Type::Primitive("u8".to_string())),
+            param_types: vec![index_type()],
         }),
         _ => None,
     }

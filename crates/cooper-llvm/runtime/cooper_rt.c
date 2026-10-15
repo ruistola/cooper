@@ -84,14 +84,49 @@ char *cooper_to_cstring(const char *data, uint64_t len) {
     return c;
 }
 
+/* The length of the valid UTF-8 sequence at `p`, with `left` bytes remaining, or 0 if the
+   bytes there are not one: overlong forms, surrogates, and values past U+10FFFF included. */
+static uint32_t utf8_valid(const unsigned char *p, uint64_t left) {
+    uint32_t c = p[0];
+    if (c < 0x80) return 1;
+    uint32_t need = (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 0;
+    if (need == 0 || need > left) return 0;
+    uint32_t cp = c & (0x7Fu >> need);
+    for (uint32_t i = 1; i < need; i++) {
+        if ((p[i] & 0xC0) != 0x80) return 0;
+        cp = cp << 6 | (p[i] & 0x3F);
+    }
+    static const uint32_t least[5] = {0, 0, 0x80, 0x800, 0x10000};
+    if (cp < least[need] || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return 0;
+    return need;
+}
+
 /* A string copied from the C string `c` up to its NUL, written to `out`; empty when `c`
-   is null. */
+   is null. Bytes that are not valid UTF-8 become U+FFFD, so a string is always valid. */
 void cooper_from_cstring(const char *c, CooperString *out) {
     uint64_t len = c ? strlen(c) : 0;
-    char *data = cooper_alloc(len);
-    if (len) memcpy(data, c, len);
+    char *data = cooper_alloc(len * 3);
+    uint64_t at = 0;
+    for (uint64_t i = 0; i < len;) {
+        uint32_t n = utf8_valid((const unsigned char *)c + i, len - i);
+        if (n == 0) {
+            memcpy(data + at, "\xEF\xBF\xBD", 3);
+            at += 3;
+            i += 1;
+        } else {
+            memcpy(data + at, c + i, n);
+            at += n;
+            i += n;
+        }
+    }
     out->data = data;
-    out->len = len;
+    out->len = at;
+}
+
+/* Whether byte offset `pos` of a string starts a rune or is its end: 1 if so, 0 if it is
+   inside a multi-byte sequence. */
+int32_t cooper_rune_boundary(const char *data, uint64_t len, uint64_t pos) {
+    return pos >= len || ((unsigned char)data[pos] & 0xC0) != 0x80;
 }
 
 /* A copy of the `n` bytes at `p`, as array storage; generated code rejects a negative

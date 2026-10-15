@@ -1,0 +1,6 @@
+# exit: 101
+# stderr: panic: slice offset is not on a rune boundary at
+func main(): i32 {
+    s := "héllo"
+    return i32(s[2..].length())
+}

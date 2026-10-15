@@ -407,6 +407,8 @@ pub enum Intrinsic {
     ArraySlice { inclusive: bool },
     /// `length(): u64` — the size of a string in bytes. Args: `[string]`.
     StringLength,
+    /// `byteAt(i): u8` — the byte at an offset of a string. Args: `[string, index]`.
+    StringByteAt,
     /// The bytes of a string from `start` up to `end` (exclusive, or inclusive when
     /// `inclusive`), sharing the original's storage (`s[lo..hi]`). Args: `[string,
     /// start]` to the string's end, or `[string, start, end]`.

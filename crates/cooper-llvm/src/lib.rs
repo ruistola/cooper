@@ -102,6 +102,7 @@ pub fn emit(program: &Program, triple: &str, project: &Project, options: Options
     let mut module = Module {
         project,
         nil_panic: options.nil_panic,
+        variadics: program.externs.iter().filter(|e| e.variadic).map(|e| (e.name.clone(), e.params.len())).collect(),
         defs: &program.defs,
         receivers,
         declarations: BTreeSet::new(),
@@ -186,6 +187,8 @@ struct Module<'p> {
     project: &'p Project,
     /// Whether dereferencing nil panics (see [`Options::nil_panic`]).
     nil_panic: bool,
+    /// The variadic C functions, by name, with the number of arguments they declare.
+    variadics: HashMap<String, usize>,
     defs: &'p TypeDefs,
     /// Each method instance's symbol to its receiver's type, so a call site can pass
     /// the receiver by value or by address as the method expects.

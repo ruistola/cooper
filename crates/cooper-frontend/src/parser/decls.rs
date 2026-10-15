@@ -98,20 +98,17 @@ impl Parser {
         self.expect(OpenParen)?;
         let mut params = Vec::new();
         while self.peek().kind != CloseParen {
+            // A parameter may be named (`name: type`); a bare identifier starts its type.
+            let start = self.pos;
             if self.peek().kind == Identifier {
-                let name_tok = self.expect(Identifier)?;
+                self.expect(Identifier)?;
                 if self.peek().kind == Colon {
                     self.expect(Colon)?;
-                    params.push(self.parse_type_expr()?);
                 } else {
-                    params.push(TypeExpr {
-                        kind: TypeExprKind::Named(name_tok.text),
-                        span: name_tok.span,
-                    });
+                    self.pos = start;
                 }
-            } else {
-                params.push(self.parse_type_expr()?);
             }
+            params.push(self.parse_type_expr()?);
             if self.peek().kind == Comma {
                 self.expect(Comma)?;
             } else {
@@ -177,13 +174,14 @@ impl Parser {
         self.expect(Extern)?;
         self.expect(Func)?;
         let name = self.expect(Identifier)?.text;
-        let params = self.parse_params(true)?;
+        let (params, variadic) = self.parse_params_variadic(true, true)?;
         let params = typed_params(params);
         let return_type = self.parse_return_type()?;
         Ok(Stmt {
             kind: StmtKind::ExternFunc {
                 name,
                 params,
+                variadic,
                 return_type,
             },
             span: start.to(self.prev_token().span),
@@ -206,9 +204,21 @@ impl Parser {
 
     /// `(params)`, each `name: type`, or just `name` unless `typed`.
     fn parse_params(&mut self, typed: bool) -> PResult<Vec<LiteralParam>> {
+        Ok(self.parse_params_variadic(typed, false)?.0)
+    }
+
+    /// [`Self::parse_params`], where a final `...` (when `variadic` allows it) marks a C
+    /// function taking further arguments of any type.
+    fn parse_params_variadic(&mut self, typed: bool, variadic: bool) -> PResult<(Vec<LiteralParam>, bool)> {
         self.expect(OpenParen)?;
         let mut params = Vec::new();
+        let mut open = false;
         while self.peek().kind != CloseParen {
+            if variadic && self.peek().kind == Ellipsis {
+                self.expect(Ellipsis)?;
+                open = true;
+                break;
+            }
             let pstart = self.peek().span;
             let param_name = self.expect(Identifier)?.text;
             let param_type = if typed || self.peek().kind == Colon {
@@ -229,7 +239,7 @@ impl Parser {
             }
         }
         self.expect(CloseParen)?;
-        Ok(params)
+        Ok((params, open))
     }
 
     /// An optional `: type` return annotation.

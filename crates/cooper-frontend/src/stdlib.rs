@@ -124,6 +124,7 @@ fn function(globals: &mut Globals, name: &str, params: Vec<Type>, ret: Type) {
             param_types: params,
         },
         by_pointer: false,
+        variadic: false,
     };
     globals.funcs.insert(name.to_string(), signature);
 }

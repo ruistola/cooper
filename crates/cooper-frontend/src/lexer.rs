@@ -31,6 +31,8 @@ pub enum TokenKind {
     DotDot,
     #[token("..=")]
     DotDotEquals,
+    #[token("...")]
+    Ellipsis,
     #[token("==")]
     DoubleEquals,
     #[token("!=")]
@@ -176,6 +178,7 @@ impl std::fmt::Display for TokenKind {
             FatArrow => "'=>'",
             DotDot => "'..'",
             DotDotEquals => "'..='",
+            Ellipsis => "'...'",
             DoubleEquals => "'=='",
             NotEquals => "'!='",
             LessEquals => "'<='",

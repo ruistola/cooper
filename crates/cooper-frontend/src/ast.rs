@@ -469,6 +469,8 @@ pub enum StmtKind {
     ExternFunc {
         name: String,
         params: Vec<TypedIdent>,
+        /// Whether the C function takes further arguments after `params` (`...`).
+        variadic: bool,
         return_type: Option<TypeExpr>,
     },
     StructDecl {

@@ -44,13 +44,16 @@ pub struct Global {
 pub struct Extern {
     pub name: String,
     pub params: Vec<Type>,
+    /// Whether the function takes further arguments after `params`.
+    pub variadic: bool,
     pub return_type: Type,
 }
 
 impl Extern {
     /// Whether two declarations give the symbol the same signature.
     pub fn same_signature(&self, other: &Extern) -> bool {
-        self.return_type.equals(&other.return_type)
+        self.variadic == other.variadic
+            && self.return_type.equals(&other.return_type)
             && self.params.len() == other.params.len()
             && self.params.iter().zip(&other.params).all(|(a, b)| a.equals(b))
     }

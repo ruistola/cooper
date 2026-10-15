@@ -223,12 +223,14 @@ fn file_externs(decls: &[Stmt], globals: &Globals) -> Vec<(Extern, Span)> {
             let StmtKind::ExternFunc { name, .. } = &decl.kind else {
                 return None;
             };
-            let Type::Func { return_type, param_types } = &globals.lookup_func(name)?.ty else {
+            let signature = globals.lookup_func(name)?;
+            let Type::Func { return_type, param_types } = &signature.ty else {
                 return None;
             };
             let declared = Extern {
                 name: name.clone(),
                 params: param_types.clone(),
+                variadic: signature.variadic,
                 return_type: (**return_type).clone(),
             };
             Some((declared, decl.span))

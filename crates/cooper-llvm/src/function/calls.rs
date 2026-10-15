@@ -72,8 +72,21 @@ impl Emitter<'_, '_> {
         } else {
             None
         };
-        for arg in args {
+        let fixed = self.module.variadics.get(name).copied();
+        let mut declared = Vec::new();
+        for (index, arg) in args.iter().enumerate() {
+            if matches!(arg.ty, Type::Func { .. }) {
+                let symbol = self.callback(arg, span)?;
+                operands.push(format!("ptr {symbol}"));
+                declared.push("ptr".to_string());
+                continue;
+            }
             let value = self.expr(arg)?.expect("a C argument has a value");
+            if fixed.is_some_and(|fixed| index >= fixed) {
+                let (c_type, operand) = self.promoted(arg, value, span)?;
+                operands.push(format!("{c_type} {operand}"));
+                continue;
+            }
             match self.module.passing(&arg.ty).map_err(|w| unsupported(self, w))? {
                 Passing::Indirect => {
                     let temp = self.slot(None, &arg.ty, span)?;
@@ -84,9 +97,13 @@ impl Emitter<'_, '_> {
                     let c_type = self.module.c_param(&arg.ty).map_err(|w| unsupported(self, w))?;
                     let operand = self.unwrap_members(&arg.ty, value, span)?;
                     operands.push(format!("{c_type} {operand}"));
+                    declared.push(c_type);
                 }
             }
         }
+        // A call of a variadic function names its function type, to say where the
+        // variable arguments begin.
+        let variadic = fixed.is_some().then(|| format!("({}, ...)", declared.join(", ")).replace("(, ", "("));
         let target = if shim { shim_symbol(name) } else { name.to_string() };
         if let Some(slot) = result_slot {
             self.inst(&format!("call void @{target}({})", operands.join(", ")));
@@ -97,8 +114,80 @@ impl Emitter<'_, '_> {
             return Ok(None);
         }
         let c_type = self.module.c_return(result).map_err(|w| unsupported(self, w))?;
-        let operand = self.assign(&format!("call {c_type} @{target}({})", operands.join(", ")));
+        let operand = self.assign(&format!(
+            "call {c_type} {}@{target}({})",
+            variadic.map(|v| format!("{v} ")).unwrap_or_default(),
+            operands.join(", ")
+        ));
         self.wrap_members(result, operand, span).map(Some)
+    }
+
+    /// A variable argument of a C call, widened as C's default promotions do: integers
+    /// narrower than `int` and `bool` to `int`, `float` to `double`. Only a scalar or a
+    /// pointer can be passed.
+    fn promoted(&mut self, arg: &IrExpr, value: Value, span: Span) -> Result<(String, String), CodegenError> {
+        match Scalar::of(&arg.ty) {
+            Some(Scalar::Bool) => Ok(("i32".to_string(), self.assign(&format!("zext i1 {} to i32", value.operand)))),
+            Some(Scalar::Int { bits, signed }) if bits < 32 => {
+                let op = if signed { "sext" } else { "zext" };
+                Ok(("i32".to_string(), self.assign(&format!("{op} {} {} to i32", value.ty, value.operand))))
+            }
+            Some(Scalar::Float { bits: 32 }) => {
+                Ok(("double".to_string(), self.assign(&format!("fpext float {} to double", value.operand))))
+            }
+            Some(_) => Ok((value.ty, value.operand)),
+            None if matches!(arg.ty, Type::Pointer(_) | Type::Nil) => Ok(("ptr".to_string(), value.operand)),
+            None => match &arg.ty {
+                Type::Struct { .. } if matches!(self.module.passing(&arg.ty), Ok(Passing::Direct { .. })) => {
+                    let c_type = self.module.c_param(&arg.ty).map_err(|w| self.unsupported::<()>(&w, span).unwrap_err())?;
+                    let operand = self.unwrap_members(&arg.ty, value, span)?;
+                    Ok((c_type, operand))
+                }
+                _ => self.unsupported(&format!("passing {} as a variable argument to C", arg.ty), span),
+            },
+        }
+    }
+
+    /// The C function pointer for the function `arg` names: the function itself when it is
+    /// a C function, otherwise a wrapper with the C calling convention (which extends
+    /// small integers), defined on first use. Only a function named directly qualifies, since
+    /// a C callback has nowhere to keep a closure's environment.
+    fn callback(&mut self, arg: &IrExpr, span: Span) -> Result<String, CodegenError> {
+        let IrExprKind::FuncRef { item, type_args } = &arg.kind else {
+            return self.unsupported("a C callback that is not the name of a function", span);
+        };
+        if let Callable::Extern { name } = item {
+            return Ok(format!("@{name}"));
+        }
+        let symbol = mangle::symbol(item, type_args);
+        let name = format!("@{symbol}.c");
+        if self.module.thunks.contains_key(&name) {
+            return Ok(name);
+        }
+        let Type::Func { param_types, return_type } = &arg.ty else {
+            unreachable!("a callback has a function type");
+        };
+        let unsupported = |e: &Self, what: String| e.unsupported::<()>(&what, span).unwrap_err();
+        let ret = self.signature_type(return_type, span)?;
+        let c_ret = if ret == "void" { ret.clone() } else { self.module.c_return(return_type).map_err(|w| unsupported(self, w))? };
+        let mut params = Vec::new();
+        let mut args = Vec::new();
+        for (index, ty) in param_types.iter().enumerate() {
+            let llvm = self.value_type(ty, span)?.expect("a callback parameter has a value");
+            params.push(format!("{} %a{index}", self.module.c_param(ty).map_err(|w| unsupported(self, w))?));
+            args.push(format!("{llvm} %a{index}"));
+        }
+        let call = format!("call {ret} @{symbol}({})", args.join(", "));
+        let body = if ret == "void" {
+            format!("  {call}\n  ret void\n")
+        } else {
+            format!("  %r = {call}\n  ret {ret} %r\n")
+        };
+        self.module.thunks.insert(
+            name.clone(),
+            format!("define private {c_ret} {name}({}) {{\n{body}}}\n", params.join(", ")),
+        );
+        Ok(name)
     }
 
     /// The scalar inside the one-member structs around `value`, of type `ty`.

@@ -68,6 +68,8 @@ pub struct Signature {
     /// Whether a method declares its receiver as a pointer, so it may change the value
     /// it is called on.
     pub by_pointer: bool,
+    /// Whether a C function takes further arguments after those of `ty`.
+    pub variadic: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -202,8 +204,9 @@ pub fn resolve_signatures(globals: &mut Globals, decls: &[Stmt], diags: &mut Vec
             StmtKind::ExternFunc {
                 name,
                 params,
+                variadic,
                 return_type,
-            } => resolve_extern_func(globals, diags, name, params, return_type, stmt.span),
+            } => resolve_extern_func(globals, diags, name, params, *variadic, return_type, stmt.span),
             StmtKind::VarDecl { name, ty, .. } => resolve_var_decl(globals, diags, name, ty.as_ref(), stmt.span),
             _ => {}
         }
@@ -543,6 +546,7 @@ fn resolve_extern_func(
     diags: &mut Vec<Diagnostic>,
     name: &str,
     params: &[TypedIdent],
+    variadic: bool,
     return_type: &Option<TypeExpr>,
     span: Span,
 ) {
@@ -561,7 +565,20 @@ fn resolve_extern_func(
     };
     let mut param_types = Vec::with_capacity(params.len());
     for param in params {
-        param_types.push(c_type(&param.ty, globals, diags));
+        // A function-typed parameter is a C function pointer.
+        let callback = resolve_type(&param.ty, &binders, globals, &mut Vec::new())
+            .filter(|ty| matches!(ty, Type::Func { .. }));
+        param_types.push(match callback {
+            Some(ty) if c_callback(&ty) => Some(ty),
+            Some(ty) => {
+                diags.push(
+                    Diagnostic::error(param.ty.span, format!("type {ty} cannot cross to C"))
+                        .with_note("a callback takes integers, floats, bool, and pointers, and returns one of these or nothing"),
+                );
+                None
+            }
+            None => c_type(&param.ty, globals, diags),
+        });
     }
     let return_type = match return_type {
         Some(ty) if matches!(ty.kind, TypeExprKind::Unit) => Some(Type::Unit),
@@ -587,8 +604,21 @@ fn resolve_extern_func(
                 param_types,
             },
             by_pointer: false,
+            variadic,
         },
     );
+}
+
+/// Whether the function type `ty` is a C function pointer: its parameters are integers,
+/// floats, `bool`, or pointers, and it returns one of these or nothing.
+fn c_callback(ty: &Type) -> bool {
+    let scalar = |ty: &Type| matches!(ty, Type::Primitive(name) if name != "string") || matches!(ty, Type::Pointer(_));
+    match ty {
+        Type::Func { return_type, param_types } => {
+            param_types.iter().all(scalar) && (matches!(**return_type, Type::Unit) || scalar(return_type))
+        }
+        _ => false,
+    }
 }
 
 /// Whether a value of type `ty` has a C counterpart with the same layout: an integer, a
@@ -664,6 +694,7 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
                 receiver: None,
                 ty: func_type,
                 by_pointer: false,
+                variadic: false,
             },
         );
         return;
@@ -717,6 +748,7 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
             receiver: Some(receiver_struct),
             ty: func_type,
             by_pointer: matches!(recv_type, Type::Pointer(_)),
+            variadic: false,
         },
     );
 }

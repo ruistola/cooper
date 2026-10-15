@@ -269,6 +269,8 @@ struct TypeChecker<'g> {
     /// The variables each `is` test, or `and` of tests, binds where it holds, keyed by
     /// the span of the expression.
     tests: HashMap<Span, Vec<(String, Binding)>>,
+    /// The references to variadic C functions, by span.
+    variadic: HashSet<Span>,
     /// The variables and bindings used to instantiate generic references.
     infer: InferTable,
     body: BodyConstraints,
@@ -292,6 +294,7 @@ impl<'g> TypeChecker<'g> {
             captures: HashMap::new(),
             variables: HashMap::new(),
             local_refs: HashMap::new(),
+            variadic: HashSet::new(),
             aliases: HashMap::new(),
             dispatch: HashMap::new(),
             tests: HashMap::new(),

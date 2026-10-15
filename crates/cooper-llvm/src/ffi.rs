@@ -42,6 +42,10 @@ pub(crate) enum Passing {
 impl Module<'_> {
     /// How a value of type `ty` crosses to C.
     pub(crate) fn passing(&mut self, ty: &Type) -> Result<Passing, String> {
+        // A function value passed to C is a function pointer.
+        if matches!(ty, Type::Func { .. }) {
+            return Ok(Passing::Direct { llvm: "ptr".to_string(), extension: None });
+        }
         let mut scalar = ty.clone();
         let mut depth = 0;
         while let Type::Struct { .. } = scalar {
@@ -84,6 +88,9 @@ impl Module<'_> {
     /// Declare the C function `declared`, or define its wrapper and declare that.
     pub(crate) fn declare_extern(&mut self, declared: &Extern) -> Result<(), String> {
         let shim = self.needs_shim(&declared.params, &declared.return_type)?;
+        if shim && declared.variadic {
+            return Err(format!("the variadic C function {} taking or returning a struct", declared.name));
+        }
         let mut params = Vec::new();
         let mut ret = "void".to_string();
         if shim && !matches!(declared.return_type, Type::Unit) {
@@ -96,6 +103,9 @@ impl Module<'_> {
                 Passing::Indirect => "ptr".to_string(),
                 Passing::Direct { .. } => self.c_param(ty)?,
             });
+        }
+        if declared.variadic {
+            params.push("...".to_string());
         }
         let symbol = if shim { shim_symbol(&declared.name) } else { declared.name.clone() };
         self.declare(&format!("declare {ret} @{symbol}({})", params.join(", ")));
@@ -174,7 +184,7 @@ impl Module<'_> {
     fn c_name(&mut self, ty: &Type) -> Result<String, String> {
         Ok(match ty {
             Type::Unit => "void".to_string(),
-            Type::Pointer(_) | Type::Nil => "void *".to_string(),
+            Type::Pointer(_) | Type::Nil | Type::Func { .. } => "void *".to_string(),
             Type::Struct { .. } => {
                 let name = format!("cooper_t_{}", mangle::type_name(ty));
                 if !self.c_types.iter().any(|(n, _)| *n == name) {

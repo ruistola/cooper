@@ -1,0 +1,37 @@
+# exit: 0
+# stdout: 12 4 -3 1
+# stdout: [5, 4, 3, 1, 1]
+# stdout: bye
+# C callbacks and variadic C functions. A function named as an argument to a function-typed
+# C parameter is passed as a C function pointer (`qsort`, `atexit`); the extra arguments of
+# a variadic function (`snprintf`) are passed with C's default promotions, so a small
+# integer, a `bool`, and an `f32` widen as C widens them.
+use {
+    std.io.println,
+    std.ffi.{ CString, copyBytes },
+}
+
+extern func snprintf(buf: u8^, n: u64, fmt: CString, ...): i32
+extern func qsort(base: i32^, n: u64, size: u64, cmp: func(i32^, i32^): i32)
+extern func atexit(f: func())
+
+func descending(a: i32^, b: i32^): i32 {
+    if a^ < b^ then return 1
+    if a^ > b^ then return -1
+    return 0
+}
+
+func bye() { println("bye") }
+
+func main() {
+    let buf: u8[64]
+    n := snprintf(&buf[0], 64, CString("%d-%s-%.2f-%c"), 42, CString("hi"), 2.5, 120)
+    let small: i8 = -3
+    m := snprintf(&buf[0], 64, CString("%d %d"), small, true)
+    text := string(CString{data: &buf[0]})
+    println("{n} {m} {text}")
+    let nums: i32[5] = [3, 1, 4, 1, 5]
+    qsort(&nums[0], 5, 4, descending)
+    println("{nums}")
+    atexit(bye)
+}

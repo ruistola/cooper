@@ -74,16 +74,28 @@ impl<'g> TypeChecker<'g> {
             self.err(span, format!("cannot call non-function value of type {callee_type}"));
             return None;
         };
-        if args.len() != param_types.len() {
+        let mut head = callee;
+        while let ExprKind::Group(inner) = &head.kind {
+            head = inner;
+        }
+        let variadic = self.variadic.contains(&head.span);
+        if args.len() < param_types.len() || (args.len() > param_types.len() && !variadic) {
             self.err(
                 span,
                 format!(
-                    "wrong number of arguments, expected {}, found {}",
+                    "wrong number of arguments, expected {}{}, found {}",
+                    if variadic { "at least " } else { "" },
                     param_types.len(),
                     args.len()
                 ),
             );
             return None;
+        }
+        // The arguments a variadic C function takes beyond its declared ones have no
+        // declared type; each is passed as its own.
+        for arg in &args[param_types.len()..] {
+            self.expected = None;
+            self.check_expr(arg)?;
         }
         for (i, (arg, param)) in args.iter().zip(param_types).enumerate() {
             self.expected = Some(param.clone());
@@ -132,6 +144,9 @@ impl<'g> TypeChecker<'g> {
             let _ = self.infer.unify(&template.substitute(&subst), actual);
         }
         let ty = self.infer.resolve(&sig.ty.substitute(&subst));
+        if sig.variadic {
+            self.variadic.insert(span);
+        }
         let pending = PendingRef {
             span,
             label: label.to_string(),

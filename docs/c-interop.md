@@ -91,8 +91,39 @@ libraries = ["m", "sqlite3"]   # linked as -lm -lsqlite3
 sources = ["native/shim.c"]    # relative to the project root, compiled with the program
 ```
 
-## Not supported yet
+## Variadic functions
 
-* Passing a Cooper function to C as a function pointer (callbacks).
-* Variadic C functions such as `printf`.
+A final `...` declares a C function that takes further arguments, as `printf` does. A call
+passes any number of extra arguments, each as its own type under C's default promotions:
+integers narrower than `int` and `bool` widen to `int`, and `f32` to `double`. Only integers,
+floats, `bool`, pointers, and `CString` can be passed this way, and a variadic function cannot
+take or return a struct by value. Number the arguments carefully: an integer literal is an
+`i32`, and `%ld` wants an `i64`.
+
+```
+extern func snprintf(buf: u8^, n: u64, fmt: CString, ...): i32
+n := snprintf(&buf[0], 64, CString("%d-%s"), 42, CString("hi"))
+```
+
+## Callbacks
+
+A parameter of a function type is a C function pointer. The argument must be the name of a
+function (a module function, or a C function), whose parameters are integers, floats, `bool`,
+or pointers and whose result is one of these or nothing. A function literal, a closure, a
+nested function, a method, or a variable holding a function value cannot be passed, since a C
+function pointer has nowhere to keep an environment: C APIs carry state in a `void *` argument,
+which here is a pointer the callback casts back.
+
+```
+extern func qsort(base: i32^, n: u64, size: u64, cmp: func(i32^, i32^): i32)
+
+func descending(a: i32^, b: i32^): i32 { … }
+qsort(&nums[0], 5, 4, descending)
+```
+
+A callback runs on the caller's thread during the C call, or later if C keeps the pointer
+(`atexit`). Deferred code and panics behave as anywhere else.
+
+## Not supported yet
+* A C function returning a function pointer.
 * A Cooper function exported under its own name for C to call, and C global variables.

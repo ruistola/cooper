@@ -51,28 +51,24 @@ func join(parts: string[], sep: string): string {
     return out.build()
 }
 
-# The offset of the first occurrence of `sub` at or after `from`, or -1.
-func findFrom(s: string, sub: string, from: i64): i64 {
-    n := s.length()
+# The offset of the first occurrence of `sub` at or after offset `from`, if any.
+(s: string) func indexFrom(sub: string, from: i64): Maybe i64 {
     m := sub.length()
-    i := from
-    while i + m <= n do {
+    for i in from..=s.length() - m do {
         j := 0
         while j < m and s.byteAt(i + j) == sub.byteAt(j) do j += 1
-        if j == m then return i
-        i += 1
+        if j == m then return Some(i)
     }
-    return -1
-}
-
-(s: string) func contains(sub: string): bool {
-    return findFrom(s, sub, 0) >= 0
+    return None
 }
 
 # The offset of the first occurrence of `sub`, if any.
 (s: string) func indexOf(sub: string): Maybe i64 {
-    i := findFrom(s, sub, 0)
-    return if i >= 0 then Some(i) else None
+    return s.indexFrom(sub, 0)
+}
+
+(s: string) func contains(sub: string): bool {
+    return s.indexOf(sub) is Some(_)
 }
 
 (s: string) func startsWith(prefix: string): bool {
@@ -89,7 +85,7 @@ func findFrom(s: string, sub: string, from: i64): i64 {
 }
 
 func isSpace(c: u8): bool {
-    return c == 32 or (c >= 9 and c <= 13)
+    return c == 32 or 9 <= c <= 13
 }
 
 # Without leading ASCII whitespace.
@@ -122,9 +118,7 @@ func isSpace(c: u8): bool {
         return parts
     }
     start := 0
-    while true do {
-        i := findFrom(s, sep, start)
-        if i < 0 then break
+    while s.indexFrom(sep, start) is Some(i) do {
         parts = parts.push(s[start..i])
         start = i + sep.length()
     }
@@ -136,9 +130,7 @@ func isSpace(c: u8): bool {
     if old.length() == 0 then return s
     let out: Builder
     start := 0
-    while true do {
-        i := findFrom(s, old, start)
-        if i < 0 then break
+    while s.indexFrom(old, start) is Some(i) do {
         out.write(s[start..i])
         out.write(new)
         start = i + old.length()
@@ -157,13 +149,13 @@ func isSpace(c: u8): bool {
 # ASCII letters lowercased; everything else unchanged.
 (s: string) func toLower(): string {
     let out: Builder
-    for r in s do out.writeRune(if r >= 'A' and r <= 'Z' then rune(u32(r) + 32) else r)
+    for r in s do out.writeRune(if 'A' <= r <= 'Z' then rune(u32(r) + 32) else r)
     return out.build()
 }
 
 # ASCII letters uppercased; everything else unchanged.
 (s: string) func toUpper(): string {
     let out: Builder
-    for r in s do out.writeRune(if r >= 'a' and r <= 'z' then rune(u32(r) - 32) else r)
+    for r in s do out.writeRune(if 'a' <= r <= 'z' then rune(u32(r) - 32) else r)
     return out.build()
 }

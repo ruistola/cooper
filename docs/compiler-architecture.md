@@ -173,6 +173,14 @@ A string is a `{ data, length }` pair of immutable bytes, and an array a `{ data
 capacity }` triple whose copies share elements. Concatenation, string equality, and array
 growth are runtime functions; growth doubles the capacity (at least 4).
 
+The rest of the standard library is Cooper source embedded in the compiler (`std/`, listed in
+`stdlib.rs`). `with_source_modules` adds the ones a project's `use` declarations reach, and
+those they reach in turn, as ordinary modules before checking, so they are checked, lowered, and
+reported on like user code, and the others cost nothing. Monomorphization starts from `main`
+and the module initializers rather than from every non-generic function, so a function nothing
+reaches is not compiled. A linked binary library with generated interface files is meant to
+replace building std from source.
+
 The standard library's `std.io` and `std.ffi` are compiler-provided: `stdlib.rs` supplies
 their interfaces (functions, and `std.ffi`'s `CString` struct) to the module graph, lowering
 turns their calls into intrinsics (`Print`, `CopyBytes`), and the runtime implements them.

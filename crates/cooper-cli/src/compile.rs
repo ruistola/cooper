@@ -71,6 +71,8 @@ pub fn build(project: &Project, native: &Native, build_dir: &Path, options: coop
     if project.manifest.kind == ProjectKind::Library {
         return Err(BuildError::Library);
     }
+    // The standard library modules the program uses compile with it.
+    let project = &cooper_frontend::stdlib::with_source_modules(project);
     let checked = cooper_frontend::check_project(project).map_err(BuildError::Diagnostics)?;
     let program = cooper_ir::lower_program(&checked).map_err(BuildError::Lower)?;
     let cc = std::env::var(CC_VAR).unwrap_or_else(|_| DEFAULT_CC.to_string());

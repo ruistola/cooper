@@ -22,7 +22,7 @@ mod ir;
 mod mono;
 
 pub use ir::*;
-pub use mono::{monomorphize, MonoError};
+pub use mono::{monomorphize, monomorphize_from, MonoError};
 
 use decision::{bool_patterns, compile_match};
 
@@ -172,7 +172,17 @@ pub fn lower_program(project: &CheckedProject) -> Result<Program, ProgramError> 
         }
     }
     let initializers = init::order(&variables, &functions)?;
-    let functions = monomorphize(&functions).map_err(ProgramError::Mono)?;
+    // The program is what `main` and the module initializers reach.
+    let roots: Vec<Callable> = functions
+        .iter()
+        .map(|f| &f.item)
+        .filter(|item| {
+            matches!(item, Callable::Initializer { .. })
+                || matches!(item, Callable::Func { module, name } if module == "main" && name == "main")
+        })
+        .cloned()
+        .collect();
+    let functions = monomorphize_from(&functions, &roots).map_err(ProgramError::Mono)?;
     Ok(Program {
         functions: format::expand_formatting(functions, &project.defs),
         externs,
@@ -2027,7 +2037,9 @@ fn standard_intrinsic(item: &Callable) -> Option<Intrinsic> {
         (stdlib::FFI_MODULE, "copyBytes") => Intrinsic::CopyBytes,
         // `format` of a finished string is that string.
         (stdlib::FMT_MODULE, "format") => return None,
-        (module, name) if module.starts_with("std.") => {
+        // The modules the runtime implements declare nothing else; the rest of `std` is
+        // Cooper source, called like any function.
+        (module @ (stdlib::IO_MODULE | stdlib::FMT_MODULE | stdlib::FFI_MODULE), name) => {
             unreachable!("`{module}.{name}` is not a standard function")
         }
         _ => return None,

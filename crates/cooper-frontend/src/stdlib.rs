@@ -9,6 +9,9 @@
 //! * `std.fmt`: `format(template: string): string`, the text of a template whose
 //!   positional holes `{}` its further arguments fill (`format("X is {}", x)`). `print`
 //!   and `println` take such arguments too.
+//! * Modules written in Cooper, embedded in the compiler (`std.strings`, from `std/`). A
+//!   program that reaches one through its `use` declarations, directly or through another
+//!   std module, has its source compiled with it; the others cost nothing.
 //! * The prelude, in scope in every module without a `use`: the sum types `Maybe T`
 //!   (`None`, `Some(T)`) and `Result T E` (`Ok(T)`, `Err(E)`). A module's own
 //!   declaration of either name shadows the prelude's.
@@ -16,7 +19,9 @@
 //!   converted from a string as `CString(s)` and back as `string(c)`, and
 //!   `copyBytes(p: u8^, n: i64): u8[]`, which copies C bytes into an array.
 
-use crate::project::ModulePath;
+use std::collections::HashSet;
+
+use crate::project::{Module, ModulePath, Project, SourceFile};
 use crate::resolve::{Callable, Globals, Signature};
 use crate::types::{OneofDef, StructDef, Type, TypeId};
 
@@ -55,6 +60,40 @@ pub(crate) fn prelude() -> Globals {
     oneof("Maybe", &["T"], vec![("None", vec![]), ("Some", vec![param("T")])]);
     oneof("Result", &["T", "E"], vec![("Ok", vec![param("T")]), ("Err", vec![param("E")])]);
     globals
+}
+
+/// The standard library modules written in Cooper: path, file name, and source.
+const SOURCE_MODULES: [(&str, &str, &str); 1] =
+    [("std.strings", "std/strings.coop", include_str!("../std/strings.coop"))];
+
+/// `project` with the embedded standard library modules its `use` declarations reach, and
+/// those they reach in turn, added as ordinary modules.
+pub fn with_source_modules(project: &Project) -> Project {
+    let mut project = project.clone();
+    let mut present: HashSet<String> = project.modules.iter().map(|m| m.path.to_string()).collect();
+    let mut pending: Vec<usize> = (0..project.modules.len()).collect();
+    while let Some(index) = pending.pop() {
+        let mut wanted = Vec::new();
+        for file in &project.modules[index].files {
+            let Ok(tokens) = crate::lexer::tokenize(&file.source) else { continue };
+            for spec in crate::parser::parse(tokens).uses {
+                // A binding names a module, or an item of one.
+                let full = spec.path.join(".");
+                let owner = spec.path[..spec.path.len().saturating_sub(1)].join(".");
+                wanted.extend([full, owner]);
+            }
+        }
+        for name in wanted {
+            let Some((path, file, source)) = SOURCE_MODULES.iter().find(|(path, ..)| *path == name) else {
+                continue;
+            };
+            if present.insert((*path).to_string()) {
+                project.modules.push(Module::new(path, vec![SourceFile::new(*file, *source)]));
+                pending.push(project.modules.len() - 1);
+            }
+        }
+    }
+    project
 }
 
 /// The interfaces of the compiler-provided modules, by path.

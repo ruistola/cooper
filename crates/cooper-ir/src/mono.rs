@@ -78,11 +78,24 @@ const MAX_TYPE_SIZE: usize = 256;
 /// in the order first reached. `functions` must hold the whole program: a reference
 /// to a function outside it is an error.
 pub fn monomorphize(functions: &[Function]) -> Result<Vec<Function>, MonoError> {
+    let roots: Vec<Callable> = functions
+        .iter()
+        .filter(|f| f.type_params.is_empty())
+        .map(|f| f.item.clone())
+        .collect();
+    monomorphize_from(functions, &roots)
+}
+
+/// [`monomorphize`] from the given root functions alone: only what they reach, directly
+/// or through the functions those call, is instantiated. A root that is not among
+/// `functions` is ignored.
+pub fn monomorphize_from(functions: &[Function], roots: &[Callable]) -> Result<Vec<Function>, MonoError> {
     let templates: HashMap<&Callable, &Function> =
         functions.iter().map(|f| (&f.item, f)).collect();
     // Each queued reference carries the file and span of the site that made it.
-    let mut queue: VecDeque<(Callable, Vec<Type>, String, Span)> = functions
+    let mut queue: VecDeque<(Callable, Vec<Type>, String, Span)> = roots
         .iter()
+        .filter_map(|root| templates.get(root))
         .filter(|f| f.type_params.is_empty())
         .map(|f| (f.item.clone(), Vec::new(), f.file.clone(), f.span))
         .collect();

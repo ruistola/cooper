@@ -61,6 +61,7 @@ pub struct CheckedProject {
 /// Analyze `project` as [`analyze`] does, returning its checked form when it is free
 /// of diagnostics — the input to lowering — and every diagnostic otherwise.
 pub fn check(project: &Project) -> Result<CheckedProject, Vec<Diagnostic>> {
+    let project = &crate::stdlib::with_source_modules(project);
     let mut parsed = parse_modules(project)?;
 
     let standard = crate::stdlib::interfaces();

@@ -1,0 +1,11 @@
+# The standard `strings` module: operations on strings written in Cooper.
+
+# The parts joined with `sep` between them.
+func join(parts: string[], sep: string): string {
+    out := ""
+    for (i, part) in parts do {
+        if i > 0 then out += sep
+        out += part
+    }
+    return out
+}

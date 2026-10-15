@@ -1,0 +1,38 @@
+# exit: 0
+# stdout: [Hello, Wörld! 日本] [Hello, Wörld! 日本  ] [  Hello, Wörld! 日本]
+# stdout: true false Some(9) None
+# stdout: true true false true
+# stdout: ["a", "b", "", "c"] ["a", "b", "c"] ["日", "本"] [""]
+# stdout: a--b--c abc
+# stdout: ababab []
+# stdout: hello, wÖrld HELLO, WöRLD
+# stdout: 3
+# stdout: é
+# stdout: Some("hé") None
+# stdout: x日 4
+# The methods of `string` declared in the standard library (`std.strings`, in scope for every
+# program without a `use`): searching, trimming, splitting, replacing, and ASCII case
+# mapping, all in byte offsets; `utf8()` reading bytes as text; and the `Builder`.
+use {
+    std.io.println,
+    std.strings.Builder,
+}
+func main() {
+  s := "  Hello, Wörld! 日本  "
+  println("[{s.trim()}] [{s.trimStart()}] [{s.trimEnd()}]")
+  println("{s.contains("Wör")} {s.contains("xyz")} {s.indexOf("Wör")} {s.indexOf("q")}")
+  println("{"abc".startsWith("ab")} {"abc".endsWith("bc")} {"abc".startsWith("abcd")} {"é".startsWith("é")}")
+  println("{"a,b,,c".split(",")} {"abc".split("")} {"日本".split("")} {"".split(",")}")
+  println("{"aXbXc".replace("X", "--")} {"abc".replace("", "z")}")
+  println("{"ab".times(3)} [{"ab".times(0)}]")
+  println("{"Hello, WÖRLD".toLower()} {"Hello, wörld".toUpper()}")
+  println("{["x", "y", "z"].length()}")
+  println("é".toUpper())
+  let ok: u8[3] = [104, 195, 169]
+  let bad: u8[2] = [104, 195]
+  println("{ok[..].utf8()} {bad[..].utf8()}")
+  let b: Builder
+  b.write("x")
+  b.writeRune('日')
+  println("{b.build()} {b.length()}")
+}

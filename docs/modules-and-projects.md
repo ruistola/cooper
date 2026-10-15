@@ -83,7 +83,8 @@ bindings of one name, or a binding colliding with a declaration, is an error rep
 
 1. A path starting with `std` names the standard library. The compiler provides `std.io`:
    `print(s: string)` writes `s` to standard output, and `println(s: string)` writes it
-   followed by a newline.
+   followed by a newline. Other modules, such as `std.strings`, are Cooper source the compiler
+   embeds and compiles with a program that uses them.
 2. A path naming a module of this project resolves under the module root
    (`server.auth` is `<root>/server/auth`).
 3. Otherwise the first segment names an external dependency in `project.toml`.

@@ -20,6 +20,8 @@
 //! byte buffer, so a slice shares its bytes safely). A string is always valid UTF-8, so a
 //! slice must start and end on a rune boundary.
 //!
+//! A `u8[]` also has `utf8()`, which reads the bytes as text.
+//!
 //! The only array type modelled today is the dynamic `T[]`, which carries the full set
 //! including `push`. A fixed-size static array `T[N]` — not yet a distinct type — would
 //! carry the static subset (everything but growth), realising the static- vs
@@ -54,6 +56,15 @@ pub(crate) fn array_method(name: &str, elem: &Type) -> Option<Type> {
         "copy" => Some(func(Vec::new(), Type::Array(Box::new(elem.clone())))),
         // Room for at least `n` more elements, by the same return-value idiom as `push`.
         "reserve" => Some(func(vec![index_type()], Type::Array(Box::new(elem.clone())))),
+        // A byte array read as UTF-8 text, copied: `None` unless every byte sequence is valid.
+        "utf8" if matches!(elem, Type::Primitive(name) if name == "u8") => {
+            let id = crate::types::TypeId {
+                module: crate::stdlib::PRELUDE_MODULE.to_string(),
+                name: "Maybe".to_string(),
+            };
+            let string = Type::Primitive("string".to_string());
+            Some(func(Vec::new(), Type::Oneof { id, type_args: vec![string] }))
+        }
         _ => None,
     }
 }

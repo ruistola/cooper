@@ -29,7 +29,7 @@ use decision::{bool_patterns, compile_match};
 use cooper_frontend::ast::{
     AssignOp, BinaryOp, Block, Expr, ExprKind, FormatSpec, FuncDecl, Pattern, PatternKind, Stmt, StmtKind,
     StrPart,
-    TypeExpr, TypedIdent, UnaryOp,
+    TypeExpr, TypeExprKind, TypedIdent, UnaryOp,
 };
 use cooper_frontend::diag::Span;
 use cooper_frontend::resolve::{
@@ -419,6 +419,10 @@ fn lower_function(
 fn signature_of<'g>(func: &FuncDecl, globals: &'g Globals) -> Option<&'g Signature> {
     match &func.receiver {
         None => globals.lookup_func(&func.name),
+        Some(receiver) if matches!(&receiver.ty.kind, TypeExprKind::Named(name) if name == "string") => {
+            let owner = cooper_frontend::stdlib::builtin_owner(&Type::Primitive("string".to_string()))?;
+            globals.lookup_method(&owner, &func.name)
+        }
         Some(receiver) => {
             let id = globals.structs.get(underlying_struct_name(&receiver.ty)?)?;
             globals.lookup_method(id, &func.name)
@@ -1795,7 +1799,7 @@ impl Lower<'_> {
         };
         match self.types.get(&target.span) {
             Some(Type::Array(_) | Type::StaticArray(..)) => {}
-            Some(ty) if is_string(ty) => {
+            Some(ty) if is_string(ty) && matches!(name.as_str(), "length" | "byteAt") => {
                 let mut lowered = vec![self.expr(target)?];
                 for arg in args {
                     lowered.push(self.expr(arg)?);
@@ -1812,6 +1816,7 @@ impl Lower<'_> {
             "push" => Intrinsic::ArrayPush,
             "copy" => Intrinsic::ArrayCopy,
             "reserve" => Intrinsic::ArrayReserve,
+            "utf8" => Intrinsic::ArrayUtf8,
             _ => unreachable!("a checked array method names a blessed method"),
         };
         let mut lowered = vec![self.expr(target)?];

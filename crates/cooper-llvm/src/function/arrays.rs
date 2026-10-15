@@ -218,6 +218,24 @@ impl Emitter<'_, '_> {
                 self.slice(&array, &elem, &start, end, span).map(Some)
             }
             Intrinsic::ArrayCopy => self.copy(&array, &elem, span).map(Some),
+            Intrinsic::ArrayUtf8 => {
+                let data = self.assign(&format!("extractvalue {ARRAY} {}, 0", array.operand));
+                let length = self.assign(&format!("extractvalue {ARRAY} {}, 1", array.operand));
+                self.module.declare("declare i32 @cooper_utf8_valid(ptr, i64)");
+                self.module.declare(COPY_BYTES_DECL);
+                let valid = self.assign(&format!("call i32 @cooper_utf8_valid(ptr {data}, i64 {length})"));
+                let valid = self.assign(&format!("icmp ne i32 {valid}, 0"));
+                let copy = self.assign(&format!("call ptr @cooper_copy_bytes(ptr {data}, i64 {length})"));
+                let fields = vec![
+                    Some(Value { ty: "ptr".to_string(), operand: copy }),
+                    Some(Value { ty: "i64".to_string(), operand: length }),
+                ];
+                let text = self.aggregate(STRING, fields);
+                let some = self.construct(result, "Some", vec![Some(text)], span)?;
+                let none = self.construct(result, "None", Vec::new(), span)?;
+                let operand = self.assign(&format!("select i1 {valid}, {} {}, {} {}", some.ty, some.operand, none.ty, none.operand));
+                Ok(Some(Value { ty: some.ty, operand }))
+            }
             Intrinsic::ArrayReserve => {
                 let count = self.expr(&args[1])?.expect("a count has a value");
                 self.reserve(&array, &elem, &count.operand, span).map(Some)

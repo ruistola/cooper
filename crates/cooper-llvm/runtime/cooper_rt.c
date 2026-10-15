@@ -101,6 +101,16 @@ static uint32_t utf8_valid(const unsigned char *p, uint64_t left) {
     return need;
 }
 
+/* Whether `len` bytes at `data` are valid UTF-8: 1 if so, 0 if not. */
+int32_t cooper_utf8_valid(const char *data, uint64_t len) {
+    for (uint64_t i = 0; i < len;) {
+        uint32_t n = utf8_valid((const unsigned char *)data + i, len - i);
+        if (n == 0) return 0;
+        i += n;
+    }
+    return 1;
+}
+
 /* A string copied from the C string `c` up to its NUL, written to `out`; empty when `c`
    is null. Bytes that are not valid UTF-8 become U+FFFD, so a string is always valid. */
 void cooper_from_cstring(const char *c, CooperString *out) {

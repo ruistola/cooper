@@ -415,6 +415,9 @@ pub enum Intrinsic {
     StringSlice { inclusive: bool },
     /// `copy(): T[]` — a fresh array holding a copy of the elements. Args: `[array]`.
     ArrayCopy,
+    /// `utf8(): Maybe string` — a `u8[]` copied into a string, `None` unless it is valid
+    /// UTF-8. Args: `[array]`.
+    ArrayUtf8,
     /// `reserve(n): T[]` — the array with room for at least `n` more elements,
     /// reallocated if it lacks it. Args: `[array, n]`.
     ArrayReserve,

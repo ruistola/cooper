@@ -159,6 +159,13 @@ impl<'g> TypeChecker<'g> {
             if let Some(method) = crate::builtins::string_method(field) {
                 return Some(method);
             }
+            // The rest are declared in the string's home module.
+            let owner = crate::stdlib::builtin_owner(&target_type).expect("string has a home");
+            if let Some(sig) = self.globals.lookup_method(&owner, field) {
+                let sig = sig.clone();
+                let label = format!("method {field}");
+                return self.reference(span, &sig, &label, Some(&target_type));
+            }
             self.err(span, format!("{field} is not a method of string"));
             return None;
         }

@@ -124,6 +124,27 @@ operates on the caller's value. Use a pointer receiver to mutate, or to avoid co
 struct. Methods may only be declared on types defined in the same module; behavior for a
 foreign type is a free function. A method name may not collide with a field name of its type.
 
+### Methods of built-in types
+
+A method is declared in the module that defines its type. A built-in type has a home module in
+the standard library, which declares its methods with the same syntax: `string`'s are in
+`std.strings` (`(s: string) func trim(): string { … }`). That module is part of every program, so
+the methods are available without a `use`. No other module can declare a method on `string`, and
+the few methods the compiler implements itself (`length()`, `byteAt(i)`) cannot be redeclared.
+Everything works in byte offsets, as slicing does:
+
+```
+s.contains("ab")        s.indexOf("ab")        # Maybe i64
+s.startsWith("a")       s.endsWith("z")
+s.trim()                s.trimStart()          s.trimEnd()      # ASCII whitespace
+s.split(",")            s.replace("a", "b")    s.times(3)
+s.toLower()             s.toUpper()                             # ASCII only
+```
+
+`std.strings` also has the `Builder` (`write`, `writeRune`, `build`) and `join(parts, sep)`.
+A `u8[]` has the built-in `utf8(): Maybe string`, which copies the bytes into a string when they
+are valid UTF-8.
+
 ## Method binding
 
 Accessing a method on a value without calling it yields a function value whose environment

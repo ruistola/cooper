@@ -1,11 +1,169 @@
-# The standard `strings` module: operations on strings written in Cooper.
+# The standard `strings` module: the methods of `string`, and string building, written in
+# Cooper. Everything works in byte offsets, which are the offsets slicing takes; a match of
+# valid UTF-8 text in valid UTF-8 text always starts on a rune boundary. Case mapping is
+# ASCII only for now.
+
+# A string under construction: bytes appended in amortized constant time.
+struct Builder {
+    bytes: u8[],
+}
+
+(b: Builder^) func write(s: string) {
+    for i in 0..s.length() do b.bytes = b.bytes.push(s.byteAt(i))
+}
+
+# Appends the UTF-8 encoding of a rune.
+(b: Builder^) func writeRune(r: rune) {
+    c := u32(r)
+    if c < 0x80 then {
+        b.bytes = b.bytes.push(u8(c))
+    } else if c < 0x800 then {
+        b.bytes = b.bytes.push(u8(0xC0 or c >> 6))
+        b.bytes = b.bytes.push(u8(0x80 or c and 0x3F))
+    } else if c < 0x10000 then {
+        b.bytes = b.bytes.push(u8(0xE0 or c >> 12))
+        b.bytes = b.bytes.push(u8(0x80 or c >> 6 and 0x3F))
+        b.bytes = b.bytes.push(u8(0x80 or c and 0x3F))
+    } else {
+        b.bytes = b.bytes.push(u8(0xF0 or c >> 18))
+        b.bytes = b.bytes.push(u8(0x80 or c >> 12 and 0x3F))
+        b.bytes = b.bytes.push(u8(0x80 or c >> 6 and 0x3F))
+        b.bytes = b.bytes.push(u8(0x80 or c and 0x3F))
+    }
+}
+
+(b: Builder) func length(): i64 {
+    return b.bytes.length()
+}
+
+# The text built so far.
+(b: Builder) func build(): string {
+    return if b.bytes.utf8() is Some(text) then text else ""
+}
 
 # The parts joined with `sep` between them.
 func join(parts: string[], sep: string): string {
-    out := ""
+    let out: Builder
     for (i, part) in parts do {
-        if i > 0 then out += sep
-        out += part
+        if i > 0 then out.write(sep)
+        out.write(part)
     }
-    return out
+    return out.build()
+}
+
+# The offset of the first occurrence of `sub` at or after `from`, or -1.
+func findFrom(s: string, sub: string, from: i64): i64 {
+    n := s.length()
+    m := sub.length()
+    i := from
+    while i + m <= n do {
+        j := 0
+        while j < m and s.byteAt(i + j) == sub.byteAt(j) do j += 1
+        if j == m then return i
+        i += 1
+    }
+    return -1
+}
+
+(s: string) func contains(sub: string): bool {
+    return findFrom(s, sub, 0) >= 0
+}
+
+# The offset of the first occurrence of `sub`, if any.
+(s: string) func indexOf(sub: string): Maybe i64 {
+    i := findFrom(s, sub, 0)
+    return if i >= 0 then Some(i) else None
+}
+
+(s: string) func startsWith(prefix: string): bool {
+    if prefix.length() > s.length() then return false
+    for i in 0..prefix.length() do if s.byteAt(i) != prefix.byteAt(i) then return false
+    return true
+}
+
+(s: string) func endsWith(suffix: string): bool {
+    skip := s.length() - suffix.length()
+    if skip < 0 then return false
+    for i in 0..suffix.length() do if s.byteAt(skip + i) != suffix.byteAt(i) then return false
+    return true
+}
+
+func isSpace(c: u8): bool {
+    return c == 32 or (c >= 9 and c <= 13)
+}
+
+# Without leading ASCII whitespace.
+(s: string) func trimStart(): string {
+    i := 0
+    while i < s.length() and isSpace(s.byteAt(i)) do i += 1
+    return s[i..]
+}
+
+# Without trailing ASCII whitespace.
+(s: string) func trimEnd(): string {
+    j := s.length()
+    while j > 0 and isSpace(s.byteAt(j - 1)) do j -= 1
+    return s[..j]
+}
+
+(s: string) func trim(): string {
+    return s.trimStart().trimEnd()
+}
+
+# The pieces of `s` between occurrences of `sep`; with an empty `sep`, its runes.
+(s: string) func split(sep: string): string[] {
+    let parts: string[]
+    if sep.length() == 0 then {
+        for (i, r) in s do {
+            let one: Builder
+            one.writeRune(r)
+            parts = parts.push(one.build())
+        }
+        return parts
+    }
+    start := 0
+    while true do {
+        i := findFrom(s, sep, start)
+        if i < 0 then break
+        parts = parts.push(s[start..i])
+        start = i + sep.length()
+    }
+    return parts.push(s[start..])
+}
+
+# `s` with every occurrence of `old` replaced by `new`; unchanged when `old` is empty.
+(s: string) func replace(old: string, new: string): string {
+    if old.length() == 0 then return s
+    let out: Builder
+    start := 0
+    while true do {
+        i := findFrom(s, old, start)
+        if i < 0 then break
+        out.write(s[start..i])
+        out.write(new)
+        start = i + old.length()
+    }
+    out.write(s[start..])
+    return out.build()
+}
+
+# `s` `n` times over (`repeat` is a keyword); empty when `n` is not positive.
+(s: string) func times(n: i64): string {
+    let out: Builder
+    for _ in 0..n do out.write(s)
+    return out.build()
+}
+
+# ASCII letters lowercased; everything else unchanged.
+(s: string) func toLower(): string {
+    let out: Builder
+    for r in s do out.writeRune(if r >= 'A' and r <= 'Z' then rune(u32(r) + 32) else r)
+    return out.build()
+}
+
+# ASCII letters uppercased; everything else unchanged.
+(s: string) func toUpper(): string {
+    let out: Builder
+    for r in s do out.writeRune(if r >= 'a' and r <= 'z' then rune(u32(r) - 32) else r)
+    return out.build()
 }

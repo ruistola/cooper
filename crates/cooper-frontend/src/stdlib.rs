@@ -62,6 +62,21 @@ pub(crate) fn prelude() -> Globals {
     globals
 }
 
+/// The built-in types whose methods a standard library module declares, with that module,
+/// its home. A home module is part of every program.
+pub(crate) const HOMES: [(&str, &str); 1] = [("string", "std.strings")];
+
+/// The identity a method on the built-in type `ty` is declared under, if `ty` has a home.
+pub fn builtin_owner(ty: &Type) -> Option<TypeId> {
+    let Type::Primitive(name) = ty else {
+        return None;
+    };
+    HOMES.iter().any(|(owner, _)| owner == name).then(|| TypeId {
+        module: PRELUDE_MODULE.to_string(),
+        name: name.clone(),
+    })
+}
+
 /// The standard library modules written in Cooper: path, file name, and source.
 const SOURCE_MODULES: [(&str, &str, &str); 1] =
     [("std.strings", "std/strings.coop", include_str!("../std/strings.coop"))];
@@ -71,6 +86,13 @@ const SOURCE_MODULES: [(&str, &str, &str); 1] =
 pub fn with_source_modules(project: &Project) -> Project {
     let mut project = project.clone();
     let mut present: HashSet<String> = project.modules.iter().map(|m| m.path.to_string()).collect();
+    for (_, home) in HOMES {
+        if let Some((path, file, source)) = SOURCE_MODULES.iter().find(|(path, ..)| *path == home) {
+            if present.insert((*path).to_string()) {
+                project.modules.push(Module::new(path, vec![SourceFile::new(*file, *source)]));
+            }
+        }
+    }
     let mut pending: Vec<usize> = (0..project.modules.len()).collect();
     while let Some(index) = pending.pop() {
         let mut wanted = Vec::new();

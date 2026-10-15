@@ -71,7 +71,16 @@ pub fn check(project: &Project) -> Result<CheckedProject, Vec<Diagnostic>> {
         .chain(standard.iter().map(|(path, _)| path.clone()))
         .collect();
 
-    let (edges, mut diags) = build_edges(&parsed, &known);
+    let (mut edges, mut diags) = build_edges(&parsed, &known);
+    // Every module sees the methods of the built-in types, so follows their home modules.
+    for (_, home) in crate::stdlib::HOMES {
+        let Some(home) = parsed.iter().position(|m| m.path.to_string() == home) else { continue };
+        for (i, module) in edges.iter_mut().enumerate() {
+            if i != home {
+                module.entry(home).or_insert((Span::new(0, 0), parsed[home].files[0].name.clone()));
+            }
+        }
+    }
     let order = match topological_order(&parsed, &edges) {
         Ok(order) => order,
         Err(cycle_diags) => {
@@ -363,11 +372,25 @@ fn analyze_module(
 ) -> (Vec<Diagnostic>, Globals, Vec<(Globals, typecheck::Typed)>) {
     let mut diags = Vec::new();
     let declared = declared_names(&module.files);
-    let file_imports: Vec<Imports> = module
+    let mut file_imports: Vec<Imports> = module
         .files
         .iter()
         .map(|file| build_file_imports(file, &declared, known, interfaces, &mut diags))
         .collect();
+    // The methods of the built-in types come from their home modules.
+    for (_, home) in crate::stdlib::HOMES {
+        let Some(interface) = interfaces.get(&ModulePath::parse(home)).filter(|_| module.path.to_string() != home)
+        else {
+            continue;
+        };
+        for imports in &mut file_imports {
+            for (owner, methods) in &interface.methods {
+                if owner.module == crate::stdlib::PRELUDE_MODULE {
+                    imports.methods.entry(owner.clone()).or_default().extend(methods.clone());
+                }
+            }
+        }
+    }
 
     // Resolve in phases, each across every file, accumulating one module-wide table
     // of the module's own declarations: all type names first, so any file's types

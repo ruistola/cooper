@@ -711,7 +711,27 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
         Some(t) => t,
         None => return,
     };
-    let Some(receiver_struct @ Type::Struct { id, .. }) = underlying_struct(&recv_type) else {
+    // A built-in type takes methods in its home module only.
+    let (id, receiver_struct) = if let Some(owner) = crate::stdlib::builtin_owner(&recv_type) {
+        let home = crate::stdlib::HOMES.iter().find(|(name, _)| *name == owner.name).map(|(_, home)| *home);
+        if home != Some(globals.module.as_str()) {
+            diags.push(Diagnostic::error(
+                receiver.span,
+                format!(
+                    "methods of {recv_type} are declared in {}, not here",
+                    home.unwrap_or("its home module")
+                ),
+            ));
+            return;
+        }
+        if crate::builtins::string_method(&func.name).is_some() {
+            diags.push(Diagnostic::error(func.span, format!("{} is a built-in method of {recv_type}", func.name)));
+            return;
+        }
+        (owner, recv_type.clone())
+    } else if let Some(receiver_struct @ Type::Struct { id, .. }) = underlying_struct(&recv_type) {
+        (id.clone(), receiver_struct.clone())
+    } else {
         diags.push(Diagnostic::error(
             receiver.span,
             format!(
@@ -721,8 +741,6 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
         ));
         return;
     };
-    let id = id.clone();
-    let receiver_struct = receiver_struct.clone();
     let struct_name = &id.name;
     if globals
         .defs

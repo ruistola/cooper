@@ -31,8 +31,8 @@ func main() {
   let ok: u8[3] = [104, 195, 169]
   let bad: u8[2] = [104, 195]
   println("{ok[..].utf8()} {bad[..].utf8()}")
-  let b: StringBuilder
-  b.write("x")
-  b.writeRune('日')
-  println("{b.build()} {b.length()}")
+  let sb: StringBuilder
+  sb.write("x")
+  sb.writeRune('日')
+  println("{sb.build()} {sb.length()}")
 }

@@ -618,7 +618,7 @@ fn resolve_extern_func(
 /// Whether the function type `ty` is a C function pointer: its parameters are integers,
 /// floats, `bool`, or pointers, and it returns one of these or nothing.
 fn c_callback(ty: &Type) -> bool {
-    let scalar = |ty: &Type| matches!(ty, Type::Primitive(name) if name != "string") || matches!(ty, Type::Pointer(_));
+    let scalar = |ty: &Type| matches!(ty, Type::Primitive(name) if name != "string" && name != "rune") || matches!(ty, Type::Pointer(_));
     match ty {
         Type::Func { return_type, param_types } => {
             param_types.iter().all(scalar) && (matches!(**return_type, Type::Unit) || scalar(return_type))
@@ -632,7 +632,7 @@ fn c_callback(ty: &Type) -> bool {
 /// struct of at least one member, every member such a value. A struct cannot contain itself by value, so the recursion ends.
 fn c_compatible(ty: &Type, defs: &TypeDefs) -> bool {
     match ty {
-        Type::Primitive(name) => name != "string",
+        Type::Primitive(name) => name != "string" && name != "rune",
         Type::Pointer(_) => true,
         Type::StaticArray(elem, len) => *len > 0 && c_compatible(elem, defs),
         Type::Struct { .. } => defs

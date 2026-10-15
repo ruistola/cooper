@@ -379,6 +379,9 @@ impl Emitter<'_, '_> {
         body: &[IrStmt],
         span: Span,
     ) -> Result<(), CodegenError> {
+        if is_string(&array.ty) {
+            return self.for_each_rune(array, index, elem, body, span);
+        }
         let array = self.array_view(array, false)?;
         let data = self.assign(&format!("extractvalue {ARRAY} {}, 0", array.operand));
         let length = self.assign(&format!("extractvalue {ARRAY} {}, 1", array.operand));
@@ -420,6 +423,61 @@ impl Emitter<'_, '_> {
         self.start_block(&step);
         let position = self.load(&counter).expect("a counter has a value");
         let next = self.assign(&format!("add nuw i64 {}, 1", position.operand));
+        self.store(&counter, Some(&Value { ty: "i64".to_string(), operand: next }));
+        self.terminate(&format!("br label %{head}"));
+        self.start_block(&exit);
+        Ok(())
+    }
+
+    /// `for r in s` and `for (i, r) in s` over a string: each rune, and the byte offset it
+    /// starts at. The offset advances by the width the runtime decoded.
+    fn for_each_rune(
+        &mut self,
+        string: &IrExpr,
+        index: Option<&Binder>,
+        elem: &Binder,
+        body: &[IrStmt],
+        span: Span,
+    ) -> Result<(), CodegenError> {
+        let value = self.expr(string)?.expect("a string has a value");
+        let (data, length) = self.string_parts(&value);
+        let counter = self.slot(None, &Type::Primitive("u64".to_string()), span)?;
+        self.store(&counter, Some(&Value { ty: "i64".to_string(), operand: "0".to_string() }));
+        let width = self.slot(None, &Type::Primitive("u32".to_string()), span)?;
+        let head = self.fresh("head");
+        let pass = self.fresh("body");
+        let step = self.fresh("step");
+        let exit = self.fresh("exit");
+        self.start_block(&head);
+        let position = self.load(&counter).expect("a counter has a value");
+        let more = self.assign(&format!("icmp ult i64 {}, {length}", position.operand));
+        self.terminate(&format!("br i1 {more}, label %{pass}, label %{exit}"));
+        self.start_block(&pass);
+        self.scoped(|e| -> Result<(), CodegenError> {
+            e.module.declare("declare i32 @cooper_decode_rune(ptr, i64, i64, ptr)");
+            let rune = e.assign(&format!(
+                "call i32 @cooper_decode_rune(ptr {data}, i64 {length}, i64 {}, ptr {})",
+                position.operand, width.ptr
+            ));
+            let bound = e.bind(&elem.name, &elem.ty, span)?;
+            e.store(&bound, Some(&Value { ty: "i32".to_string(), operand: rune }));
+            if let Some(index) = index {
+                let bound = e.bind(&index.name, &index.ty, span)?;
+                e.store(&bound, Some(&position));
+            }
+            e.loops.push(Loop {
+                continue_to: step.clone(),
+                break_to: exit.clone(),
+            });
+            let result = e.stmts(body);
+            e.loops.pop();
+            result
+        })?;
+        self.start_block(&step);
+        let position = self.load(&counter).expect("a counter has a value");
+        let advance = self.load(&width).expect("a width has a value");
+        let wide = self.assign(&format!("zext i32 {} to i64", advance.operand));
+        let next = self.assign(&format!("add nuw i64 {}, {wide}", position.operand));
         self.store(&counter, Some(&Value { ty: "i64".to_string(), operand: next }));
         self.terminate(&format!("br label %{head}"));
         self.start_block(&exit);

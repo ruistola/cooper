@@ -29,7 +29,7 @@ mod literals;
 mod patterns;
 mod solve;
 
-pub use literals::{decode_escapes, decode_number_literal, decode_string_literal, LiteralValue};
+pub use literals::{decode_escapes, decode_number_literal, decode_rune_literal, decode_string_literal, LiteralValue};
 use literals::{bare_number_text, is_signed_int, literal_is_float};
 use patterns::Coverage;
 
@@ -137,6 +137,8 @@ struct PendingRef {
 #[derive(Clone, Copy)]
 enum PredicateKind {
     Numeric,
+    /// A number or a `rune`: what `<` orders, and what converts to an integer.
+    Ordered,
     Addable,
     Integer,
     /// `bool` or an integer: the operand of `and`, `or`, `xor`, and `!`.
@@ -537,6 +539,18 @@ impl<'g> TypeChecker<'g> {
                             None
                         }
                     },
+                    // A string yields its runes, and the byte offset each starts at.
+                    None if self.is_string(&array) => {
+                        let rune = Type::Primitive("rune".to_string());
+                        match bindings.len() {
+                            1 => Some(vec![rune]),
+                            2 => Some(vec![crate::builtins::index_type(), rune]),
+                            _ => {
+                                self.err(span, "a string binds either one loop variable or an (offset, rune) pair");
+                                None
+                            }
+                        }
+                    }
                     None => {
                         let shown = self.shown_type(&array);
                         self.err(iterable.span, format!("cannot iterate over type {shown}"));
@@ -804,6 +818,7 @@ impl<'g> TypeChecker<'g> {
         let expected = self.expected.take();
         match &expr.kind {
             ExprKind::Number(text) => Some(self.number_type(text, expr.span, false)),
+            ExprKind::Rune(_) => Some(Type::Primitive("rune".to_string())),
             ExprKind::Str(text) => {
                 if let Err(escape) = decode_string_literal(text) {
                     self.err(expr.span, format!("unknown escape sequence `{escape}` in string literal"));
@@ -1131,7 +1146,7 @@ impl<'g> TypeChecker<'g> {
             BinaryOp::Add => PredicateKind::Addable,
             BinaryOp::Eq | BinaryOp::Ne => PredicateKind::Comparable,
             BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => PredicateKind::Numeric,
-            BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => PredicateKind::Numeric,
+            BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => PredicateKind::Ordered,
         };
         self.predicate(kind, left.clone(), span, PredicateSite::Binary(op, right));
         Some(if comparison { boolean } else { left })

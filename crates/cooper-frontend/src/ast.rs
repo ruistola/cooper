@@ -245,6 +245,8 @@ pub enum PatternKind {
     },
     /// A boolean literal pattern matching one constant of a `bool` scrutinee.
     Bool(bool),
+    /// A rune literal pattern matching one constant of a `rune` scrutinee.
+    Rune(char),
     /// An integer literal pattern matching one constant of an integer scrutinee.
     /// The magnitude keeps the source spelling (decoded once downstream) and the
     /// sign is held separately, since a literal carries no sign of its own.
@@ -300,6 +302,8 @@ pub enum ExprKind {
     Bool(bool),
     /// A string literal without holes, as written (quotes and escapes included).
     Str(String),
+    /// A rune literal: one Unicode scalar value.
+    Rune(char),
     /// A string literal with holes, `"X is {x}"` or `"X is {}"`: its text and holes in
     /// order.
     Interpolated(Vec<StrPart>),

@@ -21,6 +21,16 @@ impl Parser {
                     span: start,
                 });
             }
+            Char => {
+                let token = self.expect(Char)?;
+                let Ok(rune) = crate::typecheck::decode_rune_literal(&token.text) else {
+                    return Err(self.error(token.span, "unknown escape sequence in rune literal"));
+                };
+                return Ok(Pattern {
+                    kind: PatternKind::Rune(rune),
+                    span: start,
+                });
+            }
             Number => {
                 let magnitude = self.expect(Number)?.text;
                 return Ok(Pattern {

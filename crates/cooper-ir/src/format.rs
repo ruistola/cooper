@@ -73,7 +73,7 @@ impl Formatters<'_> {
     /// `value` formatted as `spec` asks: its digits in a radix, a float's to a
     /// precision, or `string(x)`, then padded to a width.
     fn format_spec(&mut self, value: IrExpr, spec: &FormatSpec, file: &str, span: Span) -> IrExpr {
-        let numeric = is_scalar(&value.ty) && !matches!(&value.ty, Type::Primitive(name) if name == "bool");
+        let numeric = is_scalar(&value.ty) && !matches!(&value.ty, Type::Primitive(name) if name == "bool" || name == "rune");
         let text = if let Some(radix) = spec.radix {
             intrinsic(Intrinsic::FormatRadix(radix), vec![value], string_type(), span)
         } else if let Some(precision) = spec.precision {
@@ -425,7 +425,7 @@ fn is_string(ty: &Type) -> bool {
 
 /// Whether the backend formats a value of type `ty` itself: a number or `bool`.
 fn is_scalar(ty: &Type) -> bool {
-    matches!(ty, Type::Primitive(name) if name == "bool" || is_numeric_name(name))
+    matches!(ty, Type::Primitive(name) if name == "bool" || name == "rune" || is_numeric_name(name))
 }
 
 fn unit(span: Span) -> IrExpr {

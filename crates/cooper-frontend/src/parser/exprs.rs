@@ -1,6 +1,7 @@
 //! Expressions: the Pratt parser, calls, fields, indexing, and value blocks.
 
 use super::*;
+use crate::typecheck::decode_rune_literal;
 
 impl Parser {
     pub(super) fn parse_expr(&mut self, min_bp: i32) -> PResult<Expr> {
@@ -26,6 +27,12 @@ impl Parser {
         let start = token.span;
         let kind = match token.kind {
             Number => ExprKind::Number(token.text),
+            Char => match decode_rune_literal(&token.text) {
+                Ok(rune) => ExprKind::Rune(rune),
+                Err(escape) => {
+                    return Err(self.error(start, format!("unknown escape sequence `{escape}` in rune literal")));
+                }
+            },
             Str => self.string_literal(&token)?,
             Identifier => ExprKind::Ident(token.text),
             True | False => ExprKind::Bool(token.kind == True),
@@ -95,7 +102,7 @@ impl Parser {
         let mut i = 0;
         while i < bytes.len() {
             match bytes[i] {
-                b'\\' => i += 2,
+                b'\\' => i += crate::lexer::escape_len(&bytes[i..]),
                 b'{' => {
                     let len = crate::lexer::hole_end(&bytes[i + 1..]).expect("the lexer closed every hole");
                     parts.push(StrPart::Text(inner[segment..i].to_string()));

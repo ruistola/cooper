@@ -238,7 +238,7 @@ pub const UNSIGNED_INTS: [&str; 4] = ["u8", "u16", "u32", "u64"];
 /// The floating-point types, narrowest to widest.
 pub const FLOATS: [&str; 2] = ["f32", "f64"];
 /// The non-numeric primitives.
-pub const OTHER_PRIMITIVES: [&str; 2] = ["bool", "string"];
+pub const OTHER_PRIMITIVES: [&str; 3] = ["bool", "string", "rune"];
 
 /// The integer type of array lengths and of the positions built-in iteration exposes.
 /// Signed, so `length - 1` on an empty array is -1 rather than a wrapped maximum; a

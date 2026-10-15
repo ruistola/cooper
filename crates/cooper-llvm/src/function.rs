@@ -704,6 +704,11 @@ impl Emitter<'_, '_> {
 
 }
 
+/// Whether `ty` is the built-in `rune`.
+fn is_rune(ty: &Type) -> bool {
+    matches!(ty, Type::Primitive(name) if name == "rune")
+}
+
 /// Whether `ty` is the built-in `string`.
 fn is_string(ty: &Type) -> bool {
     matches!(ty, Type::Primitive(name) if name == "string")

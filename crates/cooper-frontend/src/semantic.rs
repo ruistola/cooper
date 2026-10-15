@@ -140,6 +140,7 @@ impl SemanticAnalyzer<'_> {
         match &expr.kind {
             ExprKind::Number(_)
             | ExprKind::Str(_)
+            | ExprKind::Rune(_)
             | ExprKind::Bool(_)
             | ExprKind::Nil
             | ExprKind::Unit

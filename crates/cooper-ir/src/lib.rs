@@ -920,10 +920,12 @@ impl Lower<'_> {
                 // element; it binds either `[elem]` or `[index, elem]`.
                 _ => {
                     let array = self.expr(iterable)?;
-                    let (Type::Array(elem_ty) | Type::StaticArray(elem_ty, _)) = &array.ty else {
-                        unreachable!("a checked for-in iterates a range or an array");
+                    let elem_ty = match &array.ty {
+                        Type::Array(elem) | Type::StaticArray(elem, _) => (**elem).clone(),
+                        // A string yields its runes.
+                        ty if is_string(ty) => Type::Primitive("rune".to_string()),
+                        _ => unreachable!("a checked for-in iterates a range, an array, or a string"),
                     };
-                    let elem_ty = (**elem_ty).clone();
                     let (index, elem_name) = match bindings.as_slice() {
                         [elem] => (None, elem),
                         [idx, elem] => (
@@ -1074,6 +1076,7 @@ impl Lower<'_> {
                 None => return Err(LowerError::MalformedLiteral(expr.span)),
             },
             ExprKind::Bool(b) => IrExprKind::Bool(*b),
+            ExprKind::Rune(rune) => IrExprKind::Int(u128::from(u32::from(*rune))),
             ExprKind::Str(text) => IrExprKind::Str(
                 decode_string_literal(text).map_err(|_| LowerError::MalformedLiteral(expr.span))?,
             ),
@@ -1461,6 +1464,10 @@ impl Lower<'_> {
             PatternKind::Wildcard => IrPatternKind::Wildcard,
             PatternKind::Binding(name) => IrPatternKind::Binding(name.clone()),
             PatternKind::Bool(b) => IrPatternKind::Bool(*b),
+            PatternKind::Rune(rune) => IrPatternKind::Int {
+                value: u128::from(u32::from(*rune)),
+                negative: false,
+            },
             PatternKind::Int { negative, magnitude } => {
                 let Some(LiteralValue::Int(value)) = decode_number_literal(magnitude) else {
                     unreachable!("a checked integer pattern decodes to an in-range magnitude");
@@ -1587,7 +1594,7 @@ impl Lower<'_> {
         if let ExprKind::Ident(name) = &callee.kind {
             // A conversion to `string` of anything but a number or `bool` is expanded
             // after monomorphization, when its operand's type is concrete.
-            if is_numeric_name(name) || name == "string" {
+            if is_numeric_name(name) || name == "string" || name == "rune" {
                 return Ok(IrExprKind::Convert(Box::new(self.expr(&args[0])?)));
             }
         }

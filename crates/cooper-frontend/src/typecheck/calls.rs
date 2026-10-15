@@ -38,7 +38,7 @@ impl<'g> TypeChecker<'g> {
         // constructor-style conversion, as is `string(x)`, which formats a number or a
         // bool as text. The result is the named type.
         if let ExprKind::Ident(name) = &callee.kind {
-            if is_numeric_name(name) || name == "string" {
+            if is_numeric_name(name) || name == "string" || name == "rune" {
                 return self.check_conversion(name, args, span);
             }
         }
@@ -354,7 +354,10 @@ impl<'g> TypeChecker<'g> {
             "string" => PredicateKind::Formattable,
             // A pointer's address is a `u64`.
             "u64" => PredicateKind::Address,
-            _ => PredicateKind::Numeric,
+            // A rune is made from an integer and unmade into one.
+            "rune" => PredicateKind::Integer,
+            _ if crate::types::is_float_name(name) => PredicateKind::Numeric,
+            _ => PredicateKind::Ordered,
         };
         self.predicate(kind, arg_type, args[0].span, PredicateSite::Conversion(name.to_string()));
         Some(Type::Primitive(name.to_string()))

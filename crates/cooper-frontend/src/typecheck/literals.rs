@@ -112,6 +112,10 @@ pub fn decode_escapes(inner: &str) -> Result<String, String> {
             continue;
         }
         let escaped = chars.next().unwrap_or('\\');
+        if escaped == 'u' {
+            out.push(unicode_escape(&mut chars)?);
+            continue;
+        }
         out.push(match escaped {
             'n' => '\n',
             't' => '\t',
@@ -122,6 +126,39 @@ pub fn decode_escapes(inner: &str) -> Result<String, String> {
         });
     }
     Ok(out)
+}
+
+/// The scalar value of a `\u{HEX}` escape whose `\u` has been read, from `chars`.
+fn unicode_escape(chars: &mut std::str::Chars) -> Result<char, String> {
+    let mut digits = String::new();
+    if chars.next() != Some('{') {
+        return Err("\\u".to_string());
+    }
+    for c in chars.by_ref() {
+        if c == '}' {
+            return u32::from_str_radix(&digits, 16)
+                .ok()
+                .and_then(char::from_u32)
+                .ok_or_else(|| format!("\\u{{{digits}}}"));
+        }
+        digits.push(c);
+    }
+    Err(format!("\\u{{{digits}"))
+}
+
+/// The scalar value a rune literal (quotes included) denotes. On failure, the unknown
+/// escape as written.
+pub fn decode_rune_literal(text: &str) -> Result<char, String> {
+    let inner = text.strip_prefix('\'').and_then(|t| t.strip_suffix('\'')).unwrap_or(text);
+    if inner.starts_with('\\') {
+        let decoded = decode_escapes(inner)?;
+        // `\{` is an escape in strings only.
+        return match (decoded.chars().next(), inner) {
+            (Some(c), _) if inner != "\\{" => Ok(c),
+            _ => Err(inner.to_string()),
+        };
+    }
+    inner.chars().next().ok_or_else(|| inner.to_string())
 }
 
 /// Decode a numeric literal's source spelling into its value, classifying it by the

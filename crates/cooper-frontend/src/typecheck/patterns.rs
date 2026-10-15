@@ -60,7 +60,7 @@ impl<'g> TypeChecker<'g> {
         }
         match &ty {
             Type::Oneof { .. } | Type::Struct { .. } | Type::Tuple(_) => Some(ty),
-            Type::Primitive(n) if n == "bool" || is_integer_name(n) => Some(ty),
+            Type::Primitive(n) if n == "bool" || n == "rune" || is_integer_name(n) => Some(ty),
             _ => {
                 self.err(
                     span,
@@ -104,6 +104,12 @@ impl<'g> TypeChecker<'g> {
                 if self.infer.unify(ty, &Type::Primitive("bool".to_string())).is_err() {
                     let shown = self.shown_type(ty);
                     self.err(pattern.span, format!("boolean pattern cannot match a value of type {shown}"));
+                }
+            }
+            PatternKind::Rune(_) => {
+                if self.infer.unify(ty, &Type::Primitive("rune".to_string())).is_err() {
+                    let shown = self.shown_type(ty);
+                    self.err(pattern.span, format!("rune pattern cannot match a value of type {shown}"));
                 }
             }
             PatternKind::Int { negative, magnitude } => {
@@ -385,7 +391,7 @@ fn arm_cover(pattern: &Pattern) -> ArmCover {
         PatternKind::Wildcard | PatternKind::Binding(_) => ArmCover::Wildcard,
         PatternKind::Variant { variant, .. } => ArmCover::Variant(variant.clone()),
         PatternKind::Bool(b) => ArmCover::Bool(*b),
-        PatternKind::Int { .. } => ArmCover::Other,
+        PatternKind::Int { .. } | PatternKind::Rune(_) => ArmCover::Other,
         PatternKind::Tuple(_) | PatternKind::Struct { .. } => {
             if is_irrefutable(pattern) {
                 ArmCover::Wildcard
@@ -405,6 +411,6 @@ fn is_irrefutable(pattern: &Pattern) -> bool {
         PatternKind::Struct { fields, .. } => {
             fields.iter().all(|f| is_irrefutable(&f.pattern))
         }
-        PatternKind::Variant { .. } | PatternKind::Bool(_) | PatternKind::Int { .. } => false,
+        PatternKind::Variant { .. } | PatternKind::Bool(_) | PatternKind::Int { .. } | PatternKind::Rune(_) => false,
     }
 }

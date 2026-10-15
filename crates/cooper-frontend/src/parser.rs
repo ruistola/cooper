@@ -72,6 +72,7 @@ fn can_precede_semicolon(kind: TokenKind) -> bool {
         kind,
         Number
             | Str
+            | Char
             | Identifier
             | Comma
             | CloseBracket
@@ -95,6 +96,7 @@ fn can_follow_semicolon(kind: TokenKind) -> bool {
         kind,
         Eof | Number
             | Str
+            | Char
             | Identifier
             | Semicolon
             | OpenCurly

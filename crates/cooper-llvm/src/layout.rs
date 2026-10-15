@@ -29,6 +29,9 @@ impl Scalar {
         };
         if name == "bool" {
             Some(Scalar::Bool)
+        } else if name == "rune" {
+            // A Unicode scalar value, held as an unsigned 32-bit integer.
+            Some(Scalar::Int { bits: 32, signed: false })
         } else if is_integer_name(name) {
             Some(Scalar::Int {
                 bits: integer_bits(name),

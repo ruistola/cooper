@@ -391,6 +391,15 @@ impl Emitter<'_, '_> {
             return self.unsupported(&format!("converting {} to {target}", operand.ty), span);
         };
         let value = self.expr(operand)?.expect("a converted value is a number");
+        if is_rune(target) && !is_rune(&operand.ty) {
+            // Only a Unicode scalar value is a rune, whatever width it comes from.
+            let wide = self.widen_index(&value, &operand.ty);
+            let above = self.assign(&format!("icmp ugt i64 {wide}, 1114111"));
+            let shifted = self.assign(&format!("sub i64 {wide}, 55296"));
+            let surrogate = self.assign(&format!("icmp ult i64 {shifted}, 2048"));
+            let invalid = self.assign(&format!("or i1 {above}, {surrogate}"));
+            self.panic_if(&invalid, "invalid rune", span);
+        }
         let (source, dest) = (from.llvm(), to.llvm());
         let instruction = match (from, to) {
             _ if from == to => return Ok(Some(value)),
@@ -427,6 +436,12 @@ impl Emitter<'_, '_> {
     fn format(&mut self, operand: &IrExpr, span: Span) -> Result<Value, CodegenError> {
         let value = self.expr(operand)?.expect("a formatted value is a scalar");
         let string = Type::Primitive("string".to_string());
+        if is_rune(&operand.ty) {
+            self.module.declare("declare void @cooper_format_rune(i32, ptr)");
+            let out = self.slot(None, &string, span)?;
+            self.inst(&format!("call void @cooper_format_rune(i32 {}, ptr {})", value.operand, out.ptr));
+            return Ok(self.load(&out).expect("a string has a value"));
+        }
         match Scalar::of(&operand.ty) {
             Some(Scalar::Bool) => {
                 let yes = self.module.string("true");
@@ -517,6 +532,11 @@ impl Emitter<'_, '_> {
             }
             Intrinsic::FormatScalar => {
                 let value = self.expr(&args[0])?.expect("a scalar has a value");
+                if is_rune(&args[0].ty) {
+                    self.module.declare("declare void @cooper_format_append_rune(i32)");
+                    self.inst(&format!("call void @cooper_format_append_rune(i32 {})", value.operand));
+                    return Ok(None);
+                }
                 match Scalar::of(&args[0].ty) {
                     Some(Scalar::Bool) => {
                         let yes = self.module.string("true");

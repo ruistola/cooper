@@ -223,13 +223,14 @@ impl<'g> TypeChecker<'g> {
         }
         let valid = match predicate.kind {
             PredicateKind::Numeric => is_numeric(&ty),
+            PredicateKind::Ordered => is_numeric(&ty) || is_primitive(&ty, "rune"),
             PredicateKind::Addable => is_numeric(&ty) || is_primitive(&ty, "string"),
             PredicateKind::Integer => is_integer(&ty),
             PredicateKind::Logical => is_integer(&ty) || is_primitive(&ty, "bool"),
             PredicateKind::Comparable => incomparable_part(&ty, &self.globals.defs).is_none(),
             PredicateKind::Formattable => !matches!(ty, Type::Module(_)),
             PredicateKind::Float => crate::types::is_float(&ty),
-            PredicateKind::Address => is_numeric(&ty) || matches!(ty, Type::Pointer(_) | Type::Nil),
+            PredicateKind::Address => is_numeric(&ty) || is_primitive(&ty, "rune") || matches!(ty, Type::Pointer(_) | Type::Nil),
         };
         if !valid {
             let message = match predicate.kind {

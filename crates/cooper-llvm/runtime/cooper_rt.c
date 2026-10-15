@@ -350,6 +350,50 @@ static int utf8_encode(uint32_t c, char *buffer) {
     buffer[2] = (char)(0x80 | (c >> 6 & 0x3F)); buffer[3] = (char)(0x80 | (c & 0x3F)); return 4;
 }
 
+/* The text of a rune: its UTF-8 bytes. */
+void cooper_format_rune(uint32_t c, CooperString *out) {
+    char bytes[4];
+    int len = utf8_encode(c, bytes);
+    char *data = cooper_alloc((uint64_t)len);
+    memcpy(data, bytes, (size_t)len);
+    out->data = data;
+    out->len = (uint64_t)len;
+}
+
+/* Append a rune inside a formatted value as a quoted literal: `'a'`, with `'` and `\` and
+   the control characters Cooper literals spell escaped. */
+void cooper_format_append_rune(uint32_t c) {
+    const char *escape = c == '\'' ? "\\'" : c == '\\' ? "\\\\" : c == '\n' ? "\\n"
+                       : c == '\t' ? "\\t" : c == '\r' ? "\\r" : c == 0 ? "\\0" : NULL;
+    cooper_format_text("'", 1);
+    if (escape) {
+        cooper_format_text(escape, 2);
+    } else {
+        char bytes[4];
+        cooper_format_text(bytes, (uint64_t)utf8_encode(c, bytes));
+    }
+    cooper_format_text("'", 1);
+}
+
+/* The rune starting at byte `pos` of a string, and its width in bytes in `*width`. A
+   malformed sequence decodes as U+FFFD, one byte wide. */
+uint32_t cooper_decode_rune(const char *data, uint64_t len, uint64_t pos, uint32_t *width) {
+    const unsigned char *p = (const unsigned char *)data + pos;
+    uint64_t left = len - pos;
+    uint32_t c = p[0];
+    uint32_t need = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 0;
+    if (need == 0 || need > left) { *width = 1; return 0xFFFD; }
+    if (need > 1) {
+        c &= 0x7Fu >> need;
+        for (uint32_t i = 1; i < need; i++) {
+            if ((p[i] & 0xC0) != 0x80) { *width = 1; return 0xFFFD; }
+            c = c << 6 | (p[i] & 0x3F);
+        }
+    }
+    *width = need;
+    return c;
+}
+
 /* `text` padded to at least `width` characters (code points): with `fill` after it
    (`align` 0), before it (1), or around it, the odd one after (2); or, when `zero`, with
    zeros after a leading sign. */

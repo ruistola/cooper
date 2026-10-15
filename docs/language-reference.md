@@ -117,8 +117,8 @@ kind := match n with {               # integer, bool, tuple, struct, or sum-type
 
 ## Lexical structure
 
-* Comments run from `#` to the end of the line. Source is UTF-8; the lexer accepts an ASCII
-  subset.
+* Comments run from `#` to the end of the line. Source is UTF-8; only comments, strings, and
+  rune literals (`'x'`, `'\n'`, `'\u{1F600}'`) may hold non-ASCII text.
 * Identifiers are `[A-Za-z_][A-Za-z0-9_]*`. Types are PascalCase and everything else is
   camelCase. Casing matters to the compiler only in patterns (below).
 * A final parameter `vals: ...T` receives its arguments as a `T[]`; `f(xs...)` passes an array
@@ -229,7 +229,7 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
 
 ## Types
 
-* Primitives: `i8 i16 i32 i64`, `u8 u16 u32 u64`, `f32 f64`, `bool`, `string`. Unit is `()`.
+* Primitives: `i8 i16 i32 i64`, `u8 u16 u32 u64`, `f32 f64`, `bool`, `rune` (a Unicode scalar value), `string`. Unit is `()`.
 * Composites: tuple `(A, B)`, array `T[]`, static array `T[3]` (a copied value; `a[..]` slices
   it to a `T[]`), pointer `T^`, function `func(A, B): R`.
 * Declared types are nominal: `struct` and `oneof`, optionally generic (`Box T`, `Result T E`).
@@ -276,6 +276,7 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
 * A function literal or nested function captures the variables it names by reference: they
   are shared with the enclosing body, not copied. Each execution of a binding, including
   each pass's loop variable, is a fresh variable, so a closure made in a loop keeps its own.
+* `for r in s` and `for (i, r) in s` iterate a string by rune and byte offset.
 * A `string` is an immutable UTF-8 byte buffer: `s.length()` is its size in bytes, and
   `s[lo..hi]` (also `..=`, `s[lo..]`, `s[..hi]`) is a view of those bytes, with byte
   offsets that panic when out of range. Offsets are not checked against code point

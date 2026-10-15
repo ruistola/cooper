@@ -19,6 +19,9 @@ pub enum TokenKind {
     /// A string literal, holes included: `"X is {x}"` (see [`scan_string`]).
     #[token("\"", scan_string)]
     Str,
+    /// A rune literal: `'x'`, `'\n'`, `'\u{1F600}'` (see [`scan_rune`]).
+    #[token("'", scan_rune)]
+    Char,
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*")]
     Identifier,
 
@@ -174,6 +177,7 @@ impl std::fmt::Display for TokenKind {
             Number => "number",
             Str => "string",
             Identifier => "identifier",
+            Char => "rune literal",
             ColonEquals => "':='",
             FatArrow => "'=>'",
             DotDot => "'..'",
@@ -261,12 +265,51 @@ fn scan_string(lex: &mut logos::Lexer<TokenKind>) -> bool {
     }
 }
 
+/// Scan the rest of a rune literal whose opening quote `lex` has matched, through its
+/// closing quote.
+fn scan_rune(lex: &mut logos::Lexer<TokenKind>) -> bool {
+    match rune_end(lex.remainder().as_bytes()) {
+        Some(len) => {
+            lex.bump(len);
+            true
+        }
+        None => false,
+    }
+}
+
+/// The length of a rune literal's body starting at `rest[0]`, closing quote included: one
+/// character, or one escape.
+pub(crate) fn rune_end(rest: &[u8]) -> Option<usize> {
+    let body = match rest.first()? {
+        b'\\' => escape_len(rest),
+        b'\'' | b'\n' | b'\r' => return None,
+        first => match first {
+            0x00..=0x7F => 1,
+            0xC0..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            _ => 4,
+        },
+    };
+    (rest.get(body) == Some(&b'\'')).then_some(body + 1)
+}
+
+/// The length of the escape sequence starting at the backslash `rest[0]`: two bytes, or
+/// through the closing brace of a `\u{...}`.
+pub(crate) fn escape_len(rest: &[u8]) -> usize {
+    if rest.get(1) == Some(&b'u') && rest.get(2) == Some(&b'{') {
+        if let Some(close) = rest.iter().position(|&b| b == b'}') {
+            return close + 1;
+        }
+    }
+    2
+}
+
 /// The length of the literal body starting at `rest[0]`, closing quote included.
 fn string_end(rest: &[u8]) -> Option<usize> {
     let mut i = 0;
     loop {
         match rest.get(i)? {
-            b'\\' => i += 2,
+            b'\\' => i += escape_len(&rest[i..]),
             b'"' => return Some(i + 1),
             b'{' => i += 1 + hole_end(&rest[i + 1..])?,
             _ => i += 1,
@@ -281,6 +324,8 @@ pub(crate) fn hole_end(rest: &[u8]) -> Option<usize> {
     loop {
         match rest.get(i)? {
             b'"' => i += 1 + string_end(&rest[i + 1..])?,
+            // A rune literal may hold a quote or brace; a lone apostrophe is not one.
+            b'\'' => i += 1 + rune_end(&rest[i + 1..]).unwrap_or(0),
             b'{' => {
                 depth += 1;
                 i += 1;
@@ -320,7 +365,11 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, Diagnostic> {
     while let Some(result) = lex.next() {
         let span: Span = lex.span().into();
         let kind = result.map_err(|_| {
-            let message = if lex.slice().starts_with('"') { "unterminated string literal" } else { "unexpected character" };
+            let message = match lex.slice().chars().next() {
+                Some('"') => "unterminated string literal",
+                Some('\'') => "a rune literal holds exactly one character, as in 'a', '\\n', or '\\u{1F600}'",
+                _ => "unexpected character",
+            };
             Diagnostic::error(span, message)
         })?;
         // Collapse consecutive end-of-line tokens into a single one.

@@ -2,9 +2,36 @@
 
 ## Source encoding
 
-Sources and strings are UTF-8. The lexer currently accepts an ASCII subset. A type for a
-single code point or grapheme is still to be decided. A string literal is double-quoted and
-accepts the escapes `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\'`, and `\{`.
+A source file is UTF-8, and a file that is not valid UTF-8 is rejected. Comments, string
+literals, and rune literals may hold any text; identifiers and the rest of the syntax are
+ASCII. A string literal is double-quoted and accepts the escapes `\n`, `\t`, `\r`, `\0`,
+`\\`, `\"`, `\'`, `\{`, and `\u{HEX}` for a Unicode scalar value.
+
+## Runes
+
+A `rune` is a Unicode scalar value: a code point other than the surrogates, 0 to 0x10FFFF. It
+is a type of its own, not an integer. Its zero value is U+0000. A rune literal is single
+quoted and holds exactly one character or one escape (`\n`, `\t`, `\r`, `\0`, `\\`, `\'`,
+`\"`, `\u{HEX}`):
+
+```
+r := 'x'
+accent := 'é'
+smile := '\u{1F600}'
+```
+
+Runes compare with `==` and ordering (`'a' <= r <= 'z'`), and match against rune literal
+patterns. There is no arithmetic on them. `u32(r)` is the scalar value, and `rune(n)` makes a
+rune from any integer, stopping the program if `n` is not a scalar value. `string(r)` is the
+character as text; inside a printed value a rune is quoted, as a string is (`['a', 'b']`).
+
+A `for` loop over a string yields its runes, and with two variables the byte offset each one
+starts at, which is the offset slicing and searching use:
+
+```
+for r in s do …
+for (i, r) in s do …       # i is an i64 byte offset
+```
 
 ## String interpolation
 

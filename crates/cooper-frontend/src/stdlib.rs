@@ -1,21 +1,17 @@
 //! The standard library modules the compiler provides.
 //!
-//! A program reaches them with `use` like any module (`use { std.io }`). Their
-//! interfaces are supplied here; their functions are implemented by the runtime, and
-//! lowering turns each call into the matching IR intrinsic.
+//! A program reaches them with `use` like any module (`use { std.io }`).
 //!
-//! * `std.io`: `print(s: string)` writes `s` to standard output, and `println(s: string)`
-//!   writes it followed by a newline.
-//! * `std.fmt`: `format(template: string): string`, the text of a template whose
-//!   positional holes `{}` its further arguments fill (`format("X is {}", x)`). `print`
-//!   and `println` take such arguments too.
-//! * Modules written in Cooper, embedded in the compiler (`std.strings`, from `std/`). A
-//!   program that reaches one through its `use` declarations, directly or through another
-//!   std module, has its source compiled with it; the others cost nothing.
+//! * Modules written in Cooper, embedded in the compiler (`std/`): `std.io` (`print` and
+//!   `println`, over the C library's `write`), `std.fmt` (`format`, the text of a template
+//!   whose positional holes `{}` its further arguments fill), and `std.strings` (the
+//!   methods of `string`). A program that reaches one through its `use` declarations,
+//!   directly or through another std module, has its source compiled with it; the others cost
+//!   nothing. The compiler fills the holes of a template call (`println("x is {}", x)`).
 //! * The prelude, in scope in every module without a `use`: the sum types `Maybe T`
 //!   (`None`, `Some(T)`) and `Result T E` (`Ok(T)`, `Err(E)`). A module's own
 //!   declaration of either name shadows the prelude's.
-//! * `std.ffi`: `CString`, a NUL-terminated C string (`struct CString { data: u8^ }`),
+//! * `std.ffi`, interface only (the runtime implements it): `CString`, a NUL-terminated C string (`struct CString { data: u8^ }`),
 //!   converted from a string as `CString(s)` and back as `string(c)`, and
 //!   `copyBytes(p: u8^, n: i64): u8[]`, which copies C bytes into an array.
 
@@ -78,8 +74,11 @@ pub fn builtin_owner(ty: &Type) -> Option<TypeId> {
 }
 
 /// The standard library modules written in Cooper: path, file name, and source.
-const SOURCE_MODULES: [(&str, &str, &str); 1] =
-    [("std.strings", "std/strings.coop", include_str!("../std/strings.coop"))];
+const SOURCE_MODULES: [(&str, &str, &str); 3] = [
+    ("std.strings", "std/strings.coop", include_str!("../std/strings.coop")),
+    ("std.io", "std/io.coop", include_str!("../std/io.coop")),
+    ("std.fmt", "std/fmt.coop", include_str!("../std/fmt.coop")),
+];
 
 /// `project` with the embedded standard library modules its `use` declarations reach, and
 /// those they reach in turn, added as ordinary modules.
@@ -120,16 +119,7 @@ pub fn with_source_modules(project: &Project) -> Project {
 
 /// The interfaces of the compiler-provided modules, by path.
 pub(crate) fn interfaces() -> Vec<(ModulePath, Globals)> {
-    let string = || Type::Primitive("string".to_string());
     let byte_ptr = || Type::Pointer(Box::new(Type::Primitive("u8".to_string())));
-
-    let mut io = module(IO_MODULE);
-    for name in ["print", "println"] {
-        function(&mut io, name, vec![string()], Type::Unit);
-    }
-
-    let mut fmt = module(FMT_MODULE);
-    function(&mut fmt, "format", vec![string()], string());
 
     let mut ffi = module(FFI_MODULE);
     let id = TypeId {
@@ -148,10 +138,13 @@ pub(crate) fn interfaces() -> Vec<(ModulePath, Globals)> {
     function(&mut ffi, "copyBytes", vec![byte_ptr(), crate::builtins::index_type()], bytes);
 
     vec![
-        (ModulePath::parse(IO_MODULE), io),
-        (ModulePath::parse(FMT_MODULE), fmt),
         (ModulePath::parse(FFI_MODULE), ffi),
     ]
+}
+
+/// Whether `item` is `std.fmt.format`, which is the text of its template.
+pub fn is_format(item: &Callable) -> bool {
+    matches!(item, Callable::Func { module, name } if module == FMT_MODULE && name == "format")
 }
 
 /// Whether `item` takes a template, whose positional holes its further arguments fill:

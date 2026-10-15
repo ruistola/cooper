@@ -1047,7 +1047,7 @@ impl Lower<'_> {
             if let Some(op) = standard_intrinsic(&reference.item) {
                 return self.wrapper(ty, expr.span, |args| IrExprKind::Intrinsic { op, args });
             }
-            if stdlib::takes_template(&reference.item) {
+            if stdlib::is_format(&reference.item) {
                 return self.wrapper(ty, expr.span, |args| {
                     args.into_iter().next().expect("format takes its template").kind
                 });
@@ -1698,10 +1698,16 @@ impl Lower<'_> {
             ExprKind::Interpolated(parts) => self.interpolated(parts, &args[1..], &string, template.span)?,
             _ => self.expr(template)?,
         };
-        Ok(match standard_intrinsic(item) {
-            Some(op) => IrExprKind::Intrinsic { op, args: vec![text] },
-            None => text.kind,
-        })
+        if stdlib::is_format(item) {
+            return Ok(text.kind);
+        }
+        // `print` and `println` are ordinary functions of the template's text.
+        let callee = IrExpr {
+            kind: IrExprKind::FuncRef { item: item.clone(), type_args: Vec::new() },
+            ty: Type::Func { return_type: Box::new(Type::Unit), param_types: vec![string] },
+            span: template.span,
+        };
+        Ok(IrExprKind::Call { callee: Box::new(callee), args: vec![text] })
     }
 
     /// The intrinsic a call to a compiler-provided standard library function lowers to,
@@ -1799,12 +1805,16 @@ impl Lower<'_> {
         };
         match self.types.get(&target.span) {
             Some(Type::Array(_) | Type::StaticArray(..)) => {}
-            Some(ty) if is_string(ty) && matches!(name.as_str(), "length" | "byteAt") => {
+            Some(ty) if is_string(ty) && matches!(name.as_str(), "length" | "byteAt" | "data") => {
                 let mut lowered = vec![self.expr(target)?];
                 for arg in args {
                     lowered.push(self.expr(arg)?);
                 }
-                let op = if name == "byteAt" { Intrinsic::StringByteAt } else { Intrinsic::StringLength };
+                let op = match name.as_str() {
+                    "byteAt" => Intrinsic::StringByteAt,
+                    "data" => Intrinsic::StringData,
+                    _ => Intrinsic::StringLength,
+                };
                 return Ok(Some(IrExprKind::Intrinsic { op, args: lowered }));
             }
             _ => return Ok(None),
@@ -2037,14 +2047,10 @@ fn standard_intrinsic(item: &Callable) -> Option<Intrinsic> {
         return None;
     };
     Some(match (module.as_str(), name.as_str()) {
-        (stdlib::IO_MODULE, "print") => Intrinsic::Print { newline: false },
-        (stdlib::IO_MODULE, "println") => Intrinsic::Print { newline: true },
         (stdlib::FFI_MODULE, "copyBytes") => Intrinsic::CopyBytes,
-        // `format` of a finished string is that string.
-        (stdlib::FMT_MODULE, "format") => return None,
-        // The modules the runtime implements declare nothing else; the rest of `std` is
-        // Cooper source, called like any function.
-        (module @ (stdlib::IO_MODULE | stdlib::FMT_MODULE | stdlib::FFI_MODULE), name) => {
+        // `std.ffi` declares nothing else; the rest of `std` is Cooper source, called like
+        // any function.
+        (module @ stdlib::FFI_MODULE, name) => {
             unreachable!("`{module}.{name}` is not a standard function")
         }
         _ => return None,

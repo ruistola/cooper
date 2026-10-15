@@ -77,6 +77,11 @@ pub(crate) fn string_method(name: &str) -> Option<Type> {
             return_type: Box::new(index_type()),
             param_types: Vec::new(),
         }),
+        // A pointer to the first byte, for C. The bytes must not be written through it.
+        "data" => Some(Type::Func {
+            return_type: Box::new(Type::Pointer(Box::new(Type::Primitive("u8".to_string())))),
+            param_types: Vec::new(),
+        }),
         // The byte at an offset; the way to read bytes, since `s[i]` is not an index.
         "byteAt" => Some(Type::Func {
             return_type: Box::new(Type::Primitive("u8".to_string())),

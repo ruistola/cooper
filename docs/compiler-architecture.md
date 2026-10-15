@@ -184,9 +184,12 @@ a synthetic identity for the type, merged into every other module's method table
 like a struct's methods. A linked binary library with generated interface files is meant to
 replace building std from source.
 
-The standard library's `std.io` and `std.ffi` are compiler-provided: `stdlib.rs` supplies
-their interfaces (functions, and `std.ffi`'s `CString` struct) to the module graph, lowering
-turns their calls into intrinsics (`Print`, `CopyBytes`), and the runtime implements them.
+`std.io`, `std.fmt`, and `std.strings` are such source modules; `std.io` calls the C library's
+`write` (after `fflush(NULL)`, so output C code buffered stays in order). Only `std.ffi` is
+compiler-provided: `stdlib.rs` supplies its interface (`copyBytes`, and the `CString` struct) to
+the module graph, lowering turns its calls into the `CopyBytes` intrinsic, and the runtime
+implements it. A call to `print` or `println` with a template lowers the template to its text
+and calls the function; `format` is the text itself.
 The conversions `CString(s)` and `string(c)` lower to the intrinsics `ToCString` and
 `FromCString`; a callee of struct type can only be a type name, which is how `CString(s)`
 is recognized however the type is spelled. Used as a value, such a function lowers to a lifted function that calls the

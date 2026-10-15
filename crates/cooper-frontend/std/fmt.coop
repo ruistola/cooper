@@ -1,0 +1,8 @@
+# The standard `fmt` module.
+#
+# `format` is the text of its template, whose holes `{}` its further arguments fill
+# (`format("X is {}", x)`); the compiler fills them where the call is written.
+
+func format(template: string): string {
+    return template
+}

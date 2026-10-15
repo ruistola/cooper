@@ -407,6 +407,8 @@ pub enum Intrinsic {
     ArraySlice { inclusive: bool },
     /// `length(): u64` — the size of a string in bytes. Args: `[string]`.
     StringLength,
+    /// `data(): u8^` — a pointer to a string's first byte. Args: `[string]`.
+    StringData,
     /// `byteAt(i): u8` — the byte at an offset of a string. Args: `[string, index]`.
     StringByteAt,
     /// The bytes of a string from `start` up to `end` (exclusive, or inclusive when
@@ -421,9 +423,6 @@ pub enum Intrinsic {
     /// `reserve(n): T[]` — the array with room for at least `n` more elements,
     /// reallocated if it lacks it. Args: `[array, n]`.
     ArrayReserve,
-    /// `std.io.print(s)`, or `std.io.println(s)` when `newline`: write the string to
-    /// standard output. Args: `[string]`.
-    Print { newline: bool },
     /// The conversion `CString(s)`: a NUL-terminated heap copy of the string, as a
     /// `std.ffi.CString`. Args: `[string]`.
     ToCString,

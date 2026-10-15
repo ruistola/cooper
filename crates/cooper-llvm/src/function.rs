@@ -45,7 +45,6 @@ const ALLOC_DECL: &str = "declare ptr @cooper_alloc(i64)";
 const CONCAT_DECL: &str = "declare void @cooper_string_concat(ptr, i64, ptr, i64, ptr)";
 const STRING_EQ_DECL: &str = "declare i32 @cooper_string_eq(ptr, i64, ptr, i64)";
 const GROW_DECL: &str = "declare ptr @cooper_array_grow(ptr, i64, i64, i64)";
-const PRINT_DECL: &str = "declare void @cooper_print(ptr, i64, i32)";
 const FORMAT_INT_DECL: &str = "declare void @cooper_format_int(i64, i32, ptr)";
 const TO_CSTRING_DECL: &str = "declare ptr @cooper_to_cstring(ptr, i64)";
 const FROM_CSTRING_DECL: &str = "declare void @cooper_from_cstring(ptr, ptr)";

@@ -29,6 +29,9 @@ impl Emitter<'_, '_> {
         let string = self.expr(&args[0])?.expect("a string has a value");
         let (data, length) = self.string_parts(&string);
         let Intrinsic::StringSlice { inclusive } = op else {
+            if op == Intrinsic::StringData {
+                return Ok(Value { ty: "ptr".to_string(), operand: data });
+            }
             if op == Intrinsic::StringByteAt {
                 let index = self.expr(&args[1])?.expect("an index has a value");
                 let index = self.widen_index(&index, &args[1].ty);
@@ -97,16 +100,6 @@ impl Emitter<'_, '_> {
 
     /// A built-in array operation.
     pub(super) fn intrinsic(&mut self, op: Intrinsic, args: &[IrExpr], result: &Type, span: Span) -> Result<Option<Value>, CodegenError> {
-        if let Intrinsic::Print { newline } = op {
-            let text = self.expr(&args[0])?.expect("a string has a value");
-            let (data, length) = self.string_parts(&text);
-            self.module.declare(PRINT_DECL);
-            self.inst(&format!(
-                "call void @cooper_print(ptr {data}, i64 {length}, i32 {})",
-                i32::from(newline)
-            ));
-            return Ok(None);
-        }
         if matches!(op, Intrinsic::ToCString | Intrinsic::FromCString | Intrinsic::CopyBytes) {
             return self.ffi(op, args, result, span).map(Some);
         }
@@ -139,7 +132,7 @@ impl Emitter<'_, '_> {
                 _ => unreachable!("an array literal is an array"),
             };
         }
-        if matches!(op, Intrinsic::StringLength | Intrinsic::StringByteAt | Intrinsic::StringSlice { .. }) {
+        if matches!(op, Intrinsic::StringLength | Intrinsic::StringByteAt | Intrinsic::StringData | Intrinsic::StringSlice { .. }) {
             return self.string_intrinsic(op, args, span).map(Some);
         }
         let (Type::Array(elem) | Type::StaticArray(elem, _)) = &args[0].ty else {
@@ -150,7 +143,6 @@ impl Emitter<'_, '_> {
         let array = self.array_view(&args[0], writes)?;
         match op {
             Intrinsic::ArrayLiteral
-            | Intrinsic::Print { .. }
             | Intrinsic::ToCString
             | Intrinsic::FromCString
             | Intrinsic::CopyBytes
@@ -169,6 +161,7 @@ impl Emitter<'_, '_> {
             | Intrinsic::Pad { .. }
             | Intrinsic::StringLength
             | Intrinsic::StringByteAt
+            | Intrinsic::StringData
             | Intrinsic::StringSlice { .. } => unreachable!("handled above"),
             Intrinsic::Format(_) => unreachable!("expanded before code generation"),
             Intrinsic::ArrayLength => {

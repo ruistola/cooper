@@ -41,7 +41,9 @@ pointer: pass `&a[0]`.
 struct DivT { quot: i32, rem: i32 }
 extern func div(a: i32, b: i32): DivT     # the C library's div_t div(int, int)
 ``` A C buffer is a `u8^`, and `&xs[0]`
-points into an array's storage, so C can read or fill a Cooper buffer:
+points into an array's storage, so C can read or fill a Cooper buffer. A string's bytes are
+reached with `s.data()`, a `u8^` to the first byte (with no terminating NUL) that C must not
+write through:
 
 ```
 let bytes: u8[] = [104, 105, 0]

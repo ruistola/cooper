@@ -147,12 +147,6 @@ void *cooper_copy_bytes(const void *p, int64_t n) {
     return bytes;
 }
 
-/* Write a string to standard output, followed by a newline when `newline` is set. */
-void cooper_print(const char *data, uint64_t len, int32_t newline) {
-    if (len) fwrite(data, 1, len, stdout);
-    if (newline) fputc('\n', stdout);
-}
-
 /* A fresh string holding the `len` bytes at `text`. */
 static void string_of(const char *text, int len, CooperString *out) {
     char *data = cooper_alloc((size_t)len);

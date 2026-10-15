@@ -1,0 +1,35 @@
+# The standard `io` module: standard output, written over the C library's `write`.
+#
+# A call with a template (`println("x is {}", x)`) is the compiler's: it fills the template's
+# holes and passes the finished text to `print` or `println`.
+
+extern func write(fd: i32, buf: u8^, count: u64): i64
+extern func fflush(stream: u8^): i32
+
+# Writes all of `s` to the file descriptor `fd`, as far as the descriptor accepts it.
+func writeTo(fd: i32, s: string) {
+    # Whatever C code has buffered for standard output goes out first, in order.
+    fflush(nil)
+    n := s.length()
+    written := write(fd, s.data(), u64(n))
+    if written <= 0 or written == n then return
+    # A partial write is rare. The rest is copied out, since a string cannot be cut inside a rune.
+    let rest: u8[]
+    for i in written..n do rest = rest.push(s.byteAt(i))
+    offset := 0
+    while offset < rest.length() do {
+        more := write(fd, &rest[offset], u64(rest.length() - offset))
+        if more <= 0 then return
+        offset += more
+    }
+}
+
+# Writes `s` to standard output.
+func print(s: string) {
+    writeTo(1, s)
+}
+
+# Writes `s` and a newline to standard output.
+func println(s: string) {
+    writeTo(1, s + "\n")
+}

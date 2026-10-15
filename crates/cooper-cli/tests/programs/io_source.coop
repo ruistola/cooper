@@ -1,0 +1,26 @@
+# exit: 0
+# stdout: one
+# stdout: two
+# stdout: three 3
+# stdout: four
+# stdout: five
+# stdout: héllo, 日本
+# `std.io` and `std.fmt` are Cooper source over the C library's `write`. Output written by C
+# code and by `println` stays in order, and `print`, `println`, and `format` work as values.
+# `s.data()` is the pointer C wants for a string's bytes.
+use {
+    std.io.{ print, println },
+    std.fmt.format,
+}
+
+extern func puts(s: u8^): i32
+
+func main() {
+    println("one")
+    puts("two\0".data())
+    println(format("three {}", 3))
+    f := println
+    f("four")
+    print("five\n")
+    println("héllo, 日本")
+}

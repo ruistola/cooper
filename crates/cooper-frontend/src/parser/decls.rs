@@ -396,6 +396,7 @@ impl Parser {
     /// appending one flattened `UseSpec` per item.
     fn parse_use_group(&mut self, prefix: &[String], specs: &mut Vec<UseSpec>) -> PResult<()> {
         self.expect(OpenCurly)?;
+        self.paren_stack.push(OpenCurly);
         while self.peek().kind != CloseCurly {
             let item = self.expect(Identifier)?;
             let alias = self.parse_use_alias()?;

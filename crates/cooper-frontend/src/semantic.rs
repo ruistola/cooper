@@ -179,7 +179,7 @@ impl SemanticAnalyzer<'_> {
                 self.analyze_expr(target);
                 self.analyze_expr(value);
             }
-            ExprKind::Is { value, .. } => self.analyze_expr(value),
+            ExprKind::Is { value, .. } | ExprKind::Spread(value) => self.analyze_expr(value),
             ExprKind::Break | ExprKind::Continue => {}
             ExprKind::Return(value) => {
                 if let Some(value) = value {

@@ -1,0 +1,46 @@
+# exit: 0
+# stdout: 9 0 7
+# stdout: 8 8
+# stdout: a, b, c
+# stdout:
+# stdout: 3 1
+# stdout: 21
+# Variadic parameters: a final `...T` parameter receives its arguments as a `T[]`, empty
+# when there are none; `xs...` passes an array or slice as those arguments. Works with
+# generics and methods, and mixes with ordinary parameters.
+use {
+  std.io.println,
+}
+
+func max(vals: ...i32): i32 {
+  best := 0
+  for v in vals do if v > best then best = v
+  return best
+}
+
+func join(sep: string, parts: ...string): string {
+  out := ""
+  for (i, p) in parts do {
+    if i > 0 then out += sep
+    out += p
+  }
+  return out
+}
+
+func count T (xs: ...T): i64 { return xs.length() }
+
+struct Acc { total: i32 }
+(a: Acc^) func add(ns: ...i32) { for n in ns do a.total += n }
+
+func main() {
+  println("{max(3, 9, 4)} {max()} {max(7)}")
+  nums := [5, 2, 8]
+  println("{max(nums...)} {max(nums[1..]...)}")
+  println(join(", ", "a", "b", "c"))
+  println(join("-"))
+  println("{count(1, 2, 3)} {count("x")}")
+  let acc: Acc
+  acc.add(1, 2, 3)
+  acc.add(nums...)
+  println("{acc.total}")
+}

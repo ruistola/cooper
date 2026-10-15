@@ -223,7 +223,17 @@ impl Parser {
             let param_name = self.expect(Identifier)?.text;
             let param_type = if typed || self.peek().kind == Colon {
                 self.expect(Colon)?;
-                Some(self.parse_type_expr()?)
+                if typed && self.peek().kind == Ellipsis {
+                    let dots = self.expect(Ellipsis)?.span;
+                    let elem = self.parse_type_expr()?;
+                    if self.peek().kind != CloseParen {
+                        return Err(self.error(dots, "only the last parameter may be variadic"));
+                    }
+                    let span = dots.to(elem.span);
+                    Some(TypeExpr { kind: TypeExprKind::Variadic(Box::new(elem)), span })
+                } else {
+                    Some(self.parse_type_expr()?)
+                }
             } else {
                 None
             };

@@ -116,6 +116,9 @@ pub struct TypeExpr {
 pub enum TypeExprKind {
     Named(String),
     Array(Box<TypeExpr>),
+    /// `...T`, a function's final parameter: it takes any number of `T` arguments, which
+    /// the body receives as a `T[]`.
+    Variadic(Box<TypeExpr>),
     /// `T[N]`: a fixed-length array of `N` elements.
     StaticArray(Box<TypeExpr>, u64),
     /// Postfix `^` pointer, e.g. `T^`.
@@ -386,6 +389,9 @@ pub enum ExprKind {
     /// an `if` expression. They leave the enclosing function or loop, so they never
     /// produce a value, and fit any type.
     Return(Option<Box<Expr>>),
+    /// `xs...`, the last argument of a call of a variadic function: an array passed as the
+    /// variadic arguments themselves.
+    Spread(Box<Expr>),
     Break,
     Continue,
     Assign {

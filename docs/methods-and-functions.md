@@ -16,6 +16,26 @@ Parameters are `name: Type`, and the return type follows the parameter list as `
 omitted return type means unit. A function body leaves with a value only through `return`,
 even though other blocks evaluate to their trailing expression.
 
+### Variadic parameters
+
+The last parameter of a declared function or method may be written `name: ...T`. It takes any
+number of `T` arguments, and the body sees it as a `T[]`, empty when there are none. A call
+lists the arguments, or passes an array or slice as all of them with a trailing `...`:
+
+```
+func max(vals: ...i32): i32 { … }      # vals is an i32[]
+
+max(3, 9, 4)
+max()                                  # vals is empty
+max(nums...)                           # nums: i32[], shared as the argument array
+```
+
+It is sugar for passing an array: the arguments are packed into a fresh array, while `xs...`
+passes `xs` itself, so the function can see (and write through) the caller's elements. A
+spread is the only argument after the fixed ones. The function's type is an ordinary one taking
+an array (`func(i32[]): i32`), so a variadic function used as a value is called with an array.
+Function literals and nested functions cannot be variadic.
+
 ## Function literals and nested functions
 
 A function literal is an expression whose value is a function. Its parameters and return

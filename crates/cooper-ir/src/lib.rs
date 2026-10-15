@@ -294,6 +294,7 @@ fn lower_initializer(
         local_refs: &checked.local_refs,
         aliases: &checked.aliases,
         dispatch: &checked.dispatch,
+        packed: &checked.packed,
         defers: RefCell::new(Vec::new()),
         globals,
         type_params: RefCell::new(HashSet::new()),
@@ -363,6 +364,7 @@ fn lower_function(
         local_refs: &checked.local_refs,
         aliases: &checked.aliases,
         dispatch: &checked.dispatch,
+        packed: &checked.packed,
         defers: RefCell::new(Vec::new()),
         globals,
         type_params: RefCell::new(type_params),
@@ -426,6 +428,7 @@ pub fn lower_expr(expr: &Expr, globals: &Globals, checked: &Typed) -> Result<IrE
         local_refs: &checked.local_refs,
         aliases: &checked.aliases,
         dispatch: &checked.dispatch,
+        packed: &checked.packed,
         defers: RefCell::new(Vec::new()),
         globals,
         type_params: RefCell::new(HashSet::new()),
@@ -445,6 +448,7 @@ struct Lower<'a> {
     local_refs: &'a HashMap<Span, LocalRef>,
     aliases: &'a HashMap<Span, String>,
     dispatch: &'a HashMap<(Span, usize), ItemRef>,
+    packed: &'a HashMap<Span, usize>,
     /// The blocks being lowered, innermost last, with the deferred calls each has met.
     defers: RefCell<Vec<DeferScope>>,
     globals: &'a Globals,
@@ -1196,6 +1200,7 @@ impl Lower<'_> {
             | ExprKind::Func { .. }
             | ExprKind::Is { .. }
             | ExprKind::Return(_)
+            | ExprKind::Spread(_)
             | ExprKind::Break
             | ExprKind::Continue => unreachable!("lowered above"),
             ExprKind::Range { .. } => return unsupported(expr.span, "range"),
@@ -1635,8 +1640,32 @@ impl Lower<'_> {
         }
         Ok(IrExprKind::Call {
             callee: Box::new(self.expr(callee)?),
-            args: self.each(args)?,
+            args: self.call_args(callee, args)?,
         })
+    }
+
+    /// The arguments of a call. For a variadic function, the arguments after the declared ones
+    /// become one array, or are the array a final `xs...` passes.
+    fn call_args(&self, callee: &Expr, args: &[Expr]) -> Result<Vec<IrExpr>, LowerError> {
+        let callee = strip_group(callee);
+        let Some(&fixed) = self.packed.get(&callee.span) else {
+            return self.each(args);
+        };
+        let mut lowered = self.each(&args[..fixed])?;
+        let (rest, span) = (&args[fixed..], callee.span);
+        if let [Expr { kind: ExprKind::Spread(inner), .. }] = rest {
+            lowered.push(self.expr(inner)?);
+            return Ok(lowered);
+        }
+        let Some(Type::Func { param_types, .. }) = self.types.get(&span) else {
+            return Err(LowerError::MissingType(span));
+        };
+        lowered.push(IrExpr {
+            kind: IrExprKind::Intrinsic { op: Intrinsic::ArrayLiteral, args: self.each(rest)? },
+            ty: param_types[fixed].clone(),
+            span,
+        });
+        Ok(lowered)
     }
 
     /// A call to `format`, `print`, or `println`: the text of its template, its

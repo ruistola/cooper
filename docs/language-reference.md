@@ -121,6 +121,8 @@ kind := match n with {               # integer, bool, tuple, struct, or sum-type
   subset.
 * Identifiers are `[A-Za-z_][A-Za-z0-9_]*`. Types are PascalCase and everything else is
   camelCase. Casing matters to the compiler only in patterns (below).
+* A final parameter `vals: ...T` receives its arguments as a `T[]`; `f(xs...)` passes an array
+  as them ([Methods and Functions](./methods-and-functions.md#variadic-parameters)).
 * Reserved words: `and as break continue defer do else extern false for func if in is let match nil oneof or
   repeat return struct then true until use while with xor`.
 * Numbers: `42`, `1_000`, `0xFF`, `0b1010`, `3.14`, `1e9`, `2.5e-3`. A float needs digits on

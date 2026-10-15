@@ -257,6 +257,10 @@ impl Parser {
                 self.expect(Chevron)?;
                 ExprKind::Deref(Box::new(head))
             }
+            Ellipsis => {
+                self.expect(Ellipsis)?;
+                ExprKind::Spread(Box::new(head))
+            }
             other => {
                 let span = self.peek().span;
                 return Err(self.error(span, format!("{} cannot continue an expression", other)));
@@ -523,6 +527,7 @@ fn tail_bp(kind: TokenKind) -> (i32, i32) {
         OpenCurly => (STRUCT_LITERAL_BP, 0),
         OpenParen | OpenBracket => (CALL_BP, 0),
         Dot | Chevron => (MEMBER_BP, MEMBER_BP - 1),
+        Ellipsis => (MEMBER_BP, 0),
         _ => (0, 0),
     }
 }

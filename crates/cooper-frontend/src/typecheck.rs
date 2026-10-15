@@ -56,6 +56,9 @@ pub struct Typed {
     /// The method each variant of a sum type supplies to a call across its variants,
     /// keyed by the callee's span and the variant's position.
     pub dispatch: HashMap<(Span, usize), ItemRef>,
+    /// The calls of variadic Cooper functions, by callee span, with the number of
+    /// parameters before the variadic one.
+    pub packed: HashMap<Span, usize>,
 }
 
 /// A use of a module-level variable: the module that declares it and its name there.
@@ -227,6 +230,7 @@ pub fn check(
         local_refs: tc.local_refs,
         aliases: tc.aliases,
         dispatch: tc.dispatch,
+        packed: tc.packed,
     }
 }
 
@@ -270,7 +274,12 @@ struct TypeChecker<'g> {
     /// the span of the expression.
     tests: HashMap<Span, Vec<(String, Binding)>>,
     /// The references to variadic C functions, by span.
-    variadic: HashSet<Span>,
+    /// For each, whether it is a C function (extra arguments of any type) rather than a
+    /// Cooper one (extra arguments of the last parameter's element type).
+    variadic: HashMap<Span, bool>,
+    /// The calls of variadic Cooper functions, by callee span, with the number of
+    /// parameters before the variadic one: the lowering handoff.
+    packed: HashMap<Span, usize>,
     /// The variables and bindings used to instantiate generic references.
     infer: InferTable,
     body: BodyConstraints,
@@ -294,7 +303,8 @@ impl<'g> TypeChecker<'g> {
             captures: HashMap::new(),
             variables: HashMap::new(),
             local_refs: HashMap::new(),
-            variadic: HashSet::new(),
+            variadic: HashMap::new(),
+            packed: HashMap::new(),
             aliases: HashMap::new(),
             dispatch: HashMap::new(),
             tests: HashMap::new(),
@@ -638,6 +648,10 @@ impl<'g> TypeChecker<'g> {
             self.err(func.span, "a method must be declared at module level");
             return;
         }
+        if func.params.last().is_some_and(|p| matches!(p.ty.kind, TypeExprKind::Variadic(_))) {
+            self.err(func.span, "a nested function cannot be variadic");
+            return;
+        }
         let mut binders = func.type_params.clone();
         resolve::check_type_param_binders(&binders, func.span, self.globals, &mut self.diags);
         for binder in &binders {
@@ -827,6 +841,10 @@ impl<'g> TypeChecker<'g> {
             }
             ExprKind::Binary { op: BinaryOp::And, lhs, rhs } => self.check_and(lhs, rhs, expr.span),
             ExprKind::Is { value, pattern } => self.check_is(value, pattern, expr.span),
+            ExprKind::Spread(_) => {
+                self.err(expr.span, "`...` may only follow the last argument of a call of a variadic function");
+                None
+            }
             ExprKind::Return(value) => {
                 self.check_return(value.as_deref(), expr.span);
                 Some(self.diverging())

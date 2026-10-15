@@ -77,6 +77,7 @@ fn can_precede_semicolon(kind: TokenKind) -> bool {
             | CloseBracket
             | CloseParen
             | Chevron
+            | Ellipsis
             | Break
             | Continue
             | Else

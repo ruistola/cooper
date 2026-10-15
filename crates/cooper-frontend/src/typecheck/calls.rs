@@ -78,7 +78,11 @@ impl<'g> TypeChecker<'g> {
         while let ExprKind::Group(inner) = &head.kind {
             head = inner;
         }
-        let variadic = self.variadic.contains(&head.span);
+        let kind = self.variadic.get(&head.span).copied();
+        if kind == Some(false) {
+            return self.check_variadic_call(head.span, param_types, return_type, args, span);
+        }
+        let variadic = kind.is_some();
         if args.len() < param_types.len() || (args.len() > param_types.len() && !variadic) {
             self.err(
                 span,
@@ -123,6 +127,61 @@ impl<'g> TypeChecker<'g> {
         Some((**return_type).clone())
     }
 
+    /// A call of a variadic Cooper function, whose last parameter is an array: the
+    /// arguments after the others are its elements, or a final `xs...` is the array itself.
+    fn check_variadic_call(
+        &mut self,
+        callee: Span,
+        param_types: &[Type],
+        return_type: &Type,
+        args: &[Expr],
+        span: Span,
+    ) -> Option<Type> {
+        let fixed = param_types.len() - 1;
+        if args.len() < fixed {
+            self.err(span, format!("wrong number of arguments, expected at least {fixed}, found {}", args.len()));
+            return None;
+        }
+        let Type::Array(elem) = self.infer.resolve(&param_types[fixed]) else {
+            unreachable!("a variadic parameter is an array");
+        };
+        let mismatch = |this: &mut Self, arg: &Expr, expected: &Type, found: &Type, number: usize| {
+            let (expected, found) = this.shown_pair(expected, found);
+            this.err(arg.span, format!("argument {number} type mismatch: expected {expected}, found {found}"));
+        };
+        for (i, (arg, param)) in args.iter().zip(param_types).take(fixed).enumerate() {
+            self.expected = Some(param.clone());
+            let found = self.check_expr(arg)?;
+            if self.infer.unify(param, &found).is_err() {
+                mismatch(self, arg, param, &found, i + 1);
+                return None;
+            }
+        }
+        let spread = match args.get(fixed..) {
+            Some([Expr { kind: ExprKind::Spread(inner), .. }]) => Some(&**inner),
+            _ => None,
+        };
+        if let Some(inner) = spread {
+            self.expected = None;
+            let found = self.check_expr(inner)?;
+            if self.infer.unify(&param_types[fixed], &found).is_err() {
+                mismatch(self, inner, &param_types[fixed], &found, fixed + 1);
+                return None;
+            }
+        } else {
+            for (i, arg) in args.iter().enumerate().skip(fixed) {
+                self.expected = Some((*elem).clone());
+                let found = self.check_expr(arg)?;
+                if self.infer.unify(&elem, &found).is_err() {
+                    mismatch(self, arg, &elem, &found, i + 1);
+                    return None;
+                }
+            }
+        }
+        self.packed.insert(callee, fixed);
+        Some(return_type.clone())
+    }
+
     /// Instantiate a reference at `span` to the function or method `sig`, with one
     /// fresh variable per binder. Matching a method's receiver against the concrete
     /// `receiver` fixes its receiver-pattern variables.
@@ -145,7 +204,7 @@ impl<'g> TypeChecker<'g> {
         }
         let ty = self.infer.resolve(&sig.ty.substitute(&subst));
         if sig.variadic {
-            self.variadic.insert(span);
+            self.variadic.insert(span, matches!(sig.item, Callable::Extern { .. }));
         }
         let pending = PendingRef {
             span,

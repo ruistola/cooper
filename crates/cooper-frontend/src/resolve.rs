@@ -337,6 +337,12 @@ pub fn resolve_type(
             globals,
             diags,
         )?))),
+        TypeExprKind::Variadic(elem) => Some(Type::Array(Box::new(resolve_type(
+            elem,
+            type_params,
+            globals,
+            diags,
+        )?))),
         TypeExprKind::StaticArray(elem, len) => Some(Type::StaticArray(
             Box::new(resolve_type(elem, type_params, globals, diags)?),
             *len,
@@ -656,6 +662,7 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
         None => Type::Unit,
     };
 
+    let variadic = func.params.last().is_some_and(|p| matches!(p.ty.kind, TypeExprKind::Variadic(_)));
     let mut param_types = Vec::with_capacity(func.params.len());
     for param in &func.params {
         match resolve_type(&param.ty, &params, globals, diags) {
@@ -694,7 +701,7 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
                 receiver: None,
                 ty: func_type,
                 by_pointer: false,
-                variadic: false,
+                variadic,
             },
         );
         return;
@@ -748,7 +755,7 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
             receiver: Some(receiver_struct),
             ty: func_type,
             by_pointer: matches!(recv_type, Type::Pointer(_)),
-            variadic: false,
+            variadic,
         },
     );
 }

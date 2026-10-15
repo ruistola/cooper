@@ -178,7 +178,10 @@ The rest of the standard library is Cooper source embedded in the compiler (`std
 those they reach in turn, as ordinary modules before checking, so they are checked, lowered, and
 reported on like user code, and the others cost nothing. Monomorphization starts from `main`
 and the module initializers rather than from every non-generic function, so a function nothing
-reaches is not compiled. A linked binary library with generated interface files is meant to
+reaches is not compiled. A built-in type's home module (`std.strings` for `string`) is always
+added, and every other module follows it in the dependency order. Its methods are keyed under
+a synthetic identity for the type, merged into every other module's method table, and called
+like a struct's methods. A linked binary library with generated interface files is meant to
 replace building std from source.
 
 The standard library's `std.io` and `std.ffi` are compiler-provided: `stdlib.rs` supplies

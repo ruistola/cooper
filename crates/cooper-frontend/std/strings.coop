@@ -4,16 +4,16 @@
 # ASCII only for now.
 
 # A string under construction: bytes appended in amortized constant time.
-struct Builder {
+struct StringBuilder {
     bytes: u8[],
 }
 
-(b: Builder^) func write(s: string) {
+(b: StringBuilder^) func write(s: string) {
     for i in 0..s.length() do b.bytes = b.bytes.push(s.byteAt(i))
 }
 
 # Appends the UTF-8 encoding of a rune.
-(b: Builder^) func writeRune(r: rune) {
+(b: StringBuilder^) func writeRune(r: rune) {
     c := u32(r)
     if c < 0x80 then {
         b.bytes = b.bytes.push(u8(c))
@@ -32,18 +32,18 @@ struct Builder {
     }
 }
 
-(b: Builder) func length(): i64 {
+(b: StringBuilder) func length(): i64 {
     return b.bytes.length()
 }
 
 # The text built so far.
-(b: Builder) func build(): string {
+(b: StringBuilder) func build(): string {
     return if b.bytes.utf8() is Some(text) then text else ""
 }
 
 # The parts joined with `sep` between them.
 func join(parts: string[], sep: string): string {
-    let out: Builder
+    let out: StringBuilder
     for (i, part) in parts do {
         if i > 0 then out.write(sep)
         out.write(part)
@@ -51,10 +51,11 @@ func join(parts: string[], sep: string): string {
     return out.build()
 }
 
-# The offset of the first occurrence of `sub` at or after offset `from`, if any.
-(s: string) func indexFrom(sub: string, from: i64): Maybe i64 {
+# The offset of the first occurrence of `sub`, if any. To search on from an offset, slice:
+# `s[from..].find(sub)` is relative to the slice.
+(s: string) func find(sub: string): Maybe i64 {
     m := sub.length()
-    for i in from..=s.length() - m do {
+    for i in 0..=s.length() - m do {
         j := 0
         while j < m and s.byteAt(i + j) == sub.byteAt(j) do j += 1
         if j == m then return Some(i)
@@ -62,13 +63,8 @@ func join(parts: string[], sep: string): string {
     return None
 }
 
-# The offset of the first occurrence of `sub`, if any.
-(s: string) func indexOf(sub: string): Maybe i64 {
-    return s.indexFrom(sub, 0)
-}
-
 (s: string) func contains(sub: string): bool {
-    return s.indexOf(sub) is Some(_)
+    return s.find(sub) is Some(_)
 }
 
 (s: string) func startsWith(prefix: string): bool {
@@ -111,16 +107,16 @@ func isSpace(c: u8): bool {
     let parts: string[]
     if sep.length() == 0 then {
         for (i, r) in s do {
-            let one: Builder
+            let one: StringBuilder
             one.writeRune(r)
             parts = parts.push(one.build())
         }
         return parts
     }
     start := 0
-    while s.indexFrom(sep, start) is Some(i) do {
-        parts = parts.push(s[start..i])
-        start = i + sep.length()
+    while s[start..].find(sep) is Some(i) do {
+        parts = parts.push(s[start..start + i])
+        start += i + sep.length()
     }
     return parts.push(s[start..])
 }
@@ -128,34 +124,34 @@ func isSpace(c: u8): bool {
 # `s` with every occurrence of `old` replaced by `new`; unchanged when `old` is empty.
 (s: string) func replace(old: string, new: string): string {
     if old.length() == 0 then return s
-    let out: Builder
-    start := 0
-    while s.indexFrom(old, start) is Some(i) do {
-        out.write(s[start..i])
-        out.write(new)
-        start = i + old.length()
+    let result: StringBuilder
+    offset := 0
+    while s[offset..].find(old) is Some(idx) do {
+        result.write(s[offset..offset + idx])
+        result.write(new)
+        offset += idx + old.length()
     }
-    out.write(s[start..])
-    return out.build()
+    result.write(s[offset..])
+    return result.build()
 }
 
 # `s` `n` times over (`repeat` is a keyword); empty when `n` is not positive.
 (s: string) func times(n: i64): string {
-    let out: Builder
+    let out: StringBuilder
     for _ in 0..n do out.write(s)
     return out.build()
 }
 
 # ASCII letters lowercased; everything else unchanged.
 (s: string) func toLower(): string {
-    let out: Builder
+    let out: StringBuilder
     for r in s do out.writeRune(if 'A' <= r <= 'Z' then rune(u32(r) + 32) else r)
     return out.build()
 }
 
 # ASCII letters uppercased; everything else unchanged.
 (s: string) func toUpper(): string {
-    let out: Builder
+    let out: StringBuilder
     for r in s do out.writeRune(if 'a' <= r <= 'z' then rune(u32(r) - 32) else r)
     return out.build()
 }

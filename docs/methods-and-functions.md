@@ -134,14 +134,14 @@ the few methods the compiler implements itself (`length()`, `byteAt(i)`) cannot 
 Everything works in byte offsets, as slicing does:
 
 ```
-s.contains("ab")        s.indexOf("ab")        # Maybe i64
+s.contains("ab")        s.find("ab")        # Maybe i64
 s.startsWith("a")       s.endsWith("z")
 s.trim()                s.trimStart()          s.trimEnd()      # ASCII whitespace
 s.split(",")            s.replace("a", "b")    s.times(3)
 s.toLower()             s.toUpper()                             # ASCII only
 ```
 
-`std.strings` also has the `Builder` (`write`, `writeRune`, `build`) and `join(parts, sep)`.
+`std.strings` also has the `StringBuilder` (`write`, `writeRune`, `build`) and `join(parts, sep)`.
 A `u8[]` has the built-in `utf8(): Maybe string`, which copies the bytes into a string when they
 are valid UTF-8.
 

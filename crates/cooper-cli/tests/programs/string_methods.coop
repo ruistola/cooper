@@ -12,15 +12,15 @@
 # stdout: x日 4
 # The methods of `string` declared in the standard library (`std.strings`, in scope for every
 # program without a `use`): searching, trimming, splitting, replacing, and ASCII case
-# mapping, all in byte offsets; `utf8()` reading bytes as text; and the `Builder`.
+# mapping, all in byte offsets; `utf8()` reading bytes as text; and the `StringBuilder`.
 use {
     std.io.println,
-    std.strings.Builder,
+    std.strings.StringBuilder,
 }
 func main() {
   s := "  Hello, Wörld! 日本  "
   println("[{s.trim()}] [{s.trimStart()}] [{s.trimEnd()}]")
-  println("{s.contains("Wör")} {s.contains("xyz")} {s.indexOf("Wör")} {s.indexOf("q")}")
+  println("{s.contains("Wör")} {s.contains("xyz")} {s.find("Wör")} {s.find("q")}")
   println("{"abc".startsWith("ab")} {"abc".endsWith("bc")} {"abc".startsWith("abcd")} {"é".startsWith("é")}")
   println("{"a,b,,c".split(",")} {"abc".split("")} {"日本".split("")} {"".split(",")}")
   println("{"aXbXc".replace("X", "--")} {"abc".replace("", "z")}")
@@ -31,7 +31,7 @@ func main() {
   let ok: u8[3] = [104, 195, 169]
   let bad: u8[2] = [104, 195]
   println("{ok[..].utf8()} {bad[..].utf8()}")
-  let b: Builder
+  let b: StringBuilder
   b.write("x")
   b.writeRune('日')
   println("{b.build()} {b.length()}")

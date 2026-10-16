@@ -151,26 +151,18 @@ impl Parser {
         }
     }
 
+    /// The current token as the parser sees it (see [`Self::locate`]).
     fn current_token(&self) -> Token {
-        self.tokens
-            .get(self.pos)
-            .cloned()
-            .unwrap_or_else(|| self.eof_token())
+        self.locate().1
     }
 
+    /// The last token consumed. A consumed end-of-line was one that stood for a `;`.
     fn prev_token(&self) -> Token {
-        if self.pos > 0 {
-            self.tokens[self.pos - 1].clone()
-        } else {
-            self.eof_token()
+        match self.pos.checked_sub(1).map(|i| &self.tokens[i]) {
+            Some(token) if token.kind == Eol => Token { kind: Semicolon, text: ";".to_string(), span: token.span },
+            Some(token) => token.clone(),
+            None => self.eof_token(),
         }
-    }
-
-    fn next_token(&self) -> Token {
-        self.tokens
-            .get(self.pos + 1)
-            .cloned()
-            .unwrap_or_else(|| self.eof_token())
     }
 
     /// Read-only lookahead over the next `n` significant tokens (end-of-line tokens
@@ -193,46 +185,47 @@ impl Parser {
             && ahead[2].kind == Colon
     }
 
-    /// The current token, with end-of-line-to-semicolon inference applied: an
-    /// `Eol` is rewritten to a `Semicolon` where a statement may terminate, and
-    /// dropped as insignificant otherwise. This keeps the rest of the parser
-    /// whitespace-agnostic.
+    /// The current token, with end-of-line-to-semicolon inference applied: an `Eol` reads
+    /// as a `Semicolon` where a statement may terminate, and is skipped as insignificant
+    /// otherwise. The token list itself is never changed, so the decision is made afresh
+    /// in whatever context the parser is in, including after backtracking.
     fn peek(&mut self) -> Token {
-        let curr = self.current_token();
-        if curr.kind == Eol {
+        self.locate().1
+    }
+
+    /// The index of the current token in the list, and the token the parser sees there.
+    fn locate(&self) -> (usize, Token) {
+        let mut at = self.pos;
+        loop {
+            let Some(token) = self.tokens.get(at) else {
+                return (at, self.eof_token());
+            };
+            if token.kind != Eol {
+                return (at, token.clone());
+            }
+            let next = self.tokens[at + 1..].iter().find(|t| t.kind != Eol).map_or(Eof, |t| t.kind);
             // Never infer a terminator right before a closing brace: a block's
             // trailing value must survive unless an explicit `;` discards it.
-            if self.next_token().kind == CloseCurly {
-                self.tokens.remove(self.pos);
-                return self.peek();
-            }
             let outside_parens = self.paren_stack.is_empty() && self.header_depth == 0;
-            let can_terminate = can_precede_semicolon(self.prev_token().kind)
-                && can_follow_semicolon(self.next_token().kind);
-            if outside_parens && can_terminate && self.next_token().kind != Eof {
-                self.tokens[self.pos] = Token {
-                    kind: Semicolon,
-                    text: ";".to_string(),
-                    span: curr.span,
-                };
-            } else {
-                self.tokens.remove(self.pos);
-                return self.peek();
+            let before = self.tokens[..at].iter().rev().find(|t| t.kind != Eol).map(|t| t.kind);
+            let can_terminate = before.is_some_and(can_precede_semicolon) && can_follow_semicolon(next);
+            if next != CloseCurly && next != Eof && outside_parens && can_terminate {
+                return (at, Token { kind: Semicolon, text: ";".to_string(), span: token.span });
             }
+            at += 1;
         }
-        self.current_token()
     }
 
     /// Consume the current token unconditionally, maintaining the paren stack.
     fn advance(&mut self) -> Token {
-        let t = self.peek();
+        let (at, t) = self.locate();
         match t.kind {
             OpenParen | OpenBracket => self.paren_stack.push(t.kind),
             CloseParen | CloseBracket => self.pop_paren(t.kind),
             CloseCurly if self.paren_stack.last() == Some(&OpenCurly) => self.pop_paren(CloseCurly),
             _ => {}
         }
-        self.pos += 1;
+        self.pos = at + 1;
         t
     }
 

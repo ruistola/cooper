@@ -150,6 +150,15 @@ descriptor carries LLVM's own size beside the computed one, which the runtime ch
 allocation. A sum type's descriptor marks every word any variant uses as a pointer and says so in its
 flags. The collector itself does not exist yet.
 
+The heap allocator (`runtime/gc.c`) is Go's design: 64 MiB arenas of 8 KiB pages grouped into spans, a
+small object (up to 32 KiB) in a slot of one of Go's 67 size classes (separate spans for scannable and
+pointer-free objects), a larger object in a span of its own, an arena table that finds the span of any
+address, and per-span allocation bits with a free index. Where an object's pointers are is recorded
+as it is allocated: a bitmap at the end of the span for objects up to 512 bytes, a header word holding
+the type before objects up to 32 KiB, the type in the span for the rest. Memory is not reclaimed yet,
+and the allocator is single-threaded. `gc_test.c` (run by `tests/allocator.rs`) tests it on its own.
+The driver writes `cooper.h` and `cooper_gc.c` beside the program and compiles them with it.
+
 **Monomorphization** (`mono.rs`) is an IR-to-IR pass. Lowering keeps a generic function as a
 template. Starting from the non-generic functions, the pass instantiates each referenced
 declaration once per distinct set of type arguments and follows the references each instance

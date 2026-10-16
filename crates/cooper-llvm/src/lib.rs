@@ -30,6 +30,13 @@ use cooper_ir::{Function, Program};
 /// operations the IR's intrinsics lower to.
 pub const RUNTIME_C: &str = include_str!("../runtime/cooper_rt.c");
 
+/// The runtime's other C sources and its header, by file name, which the driver writes beside
+/// the program and compiles with it: the heap allocator (`gc.c`) and the shared declarations.
+pub const RUNTIME_FILES: [(&str, &str); 2] = [
+    ("cooper.h", include_str!("../runtime/cooper.h")),
+    ("cooper_gc.c", include_str!("../runtime/gc.c")),
+];
+
 /// The module and name of the function a program starts in.
 const ENTRY_MODULE: &str = "main";
 const ENTRY_NAME: &str = "main";

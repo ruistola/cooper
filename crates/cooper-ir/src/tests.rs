@@ -707,7 +707,7 @@ fn escapes_of(source: &str) -> std::collections::HashMap<String, (Vec<String>, u
         .map(|f| {
             let name = match &f.item {
                 Callable::Func { name, .. } | Callable::Method { name, .. } => name.clone(),
-                Callable::Closure { parent, index } => format!("closure{index}"),
+                Callable::Closure { index, .. } => format!("closure{index}"),
                 _ => "other".to_string(),
             };
             let mut heap: Vec<String> = f.escapes.heap_locals.iter().cloned().collect();

@@ -7,6 +7,7 @@
  */
 
 #include <inttypes.h>
+#include "cooper.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,31 +35,6 @@ _Noreturn void cooper_panic(const char *message) {
     fflush(stdout);
     fprintf(stderr, "panic: %s\n", message);
     exit(PANIC_STATUS);
-}
-
-/* How the collector sees a type: its size in bytes, flags (bit 0: the bitmap is a superset,
-   as for a sum type whose pointer words depend on the variant), the number of 8-byte words it
-   covers, and one bit per word that is set when the word holds a pointer. */
-typedef struct {
-    uint64_t size;
-    uint64_t layout_size; /* what the compiler computed; it must equal `size` */
-    uint64_t flags;
-    uint64_t words;
-    uint64_t bits[];
-} CooperType;
-
-/* Allocate `size` zeroed bytes on the heap. `type` describes one value of the type
-   allocated, and the allocation holds a whole number of them (an array's storage holds
-   several); null means it holds no pointers. Memory is not yet reclaimed. */
-void *cooper_alloc(size_t size, const CooperType *type) {
-    if (type && (type->size != type->layout_size || size % type->size != 0)) {
-        cooper_panic("internal error: an allocation's size does not match its type");
-    }
-    void *memory = calloc(1, size ? size : 1);
-    if (memory == NULL) {
-        cooper_panic("out of memory");
-    }
-    return memory;
 }
 
 /* A string as generated code lays it out: its bytes and their count. */

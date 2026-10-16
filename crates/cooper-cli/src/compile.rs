@@ -151,6 +151,14 @@ fn link(
     create_dir(build_dir)?;
     write(&ir_path, &emitted.ir)?;
     write(&runtime_path, cooper_llvm::RUNTIME_C)?;
+    let mut runtime_sources = Vec::new();
+    for (file, text) in cooper_llvm::RUNTIME_FILES {
+        let path = build_dir.join(file);
+        write(&path, text)?;
+        if file.ends_with(".c") {
+            runtime_sources.push(path);
+        }
+    }
     // Wrappers for C functions that pass structs by value, compiled with the program.
     let shims_path = build_dir.join(SHIMS_FILE);
     let shims = (!emitted.c_shims.is_empty()).then_some(&shims_path);
@@ -163,6 +171,7 @@ fn link(
         .arg(&executable)
         .arg(&ir_path)
         .arg(&runtime_path)
+        .args(&runtime_sources)
         .args(shims)
         .args(&native.sources)
         .args(native.libraries.iter().map(|library| format!("-l{library}")))

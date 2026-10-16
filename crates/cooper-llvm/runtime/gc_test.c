@@ -1,0 +1,150 @@
+/* A test of the heap allocator on its own (see tests/allocator.rs). */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "cooper.h"
+
+int cooper_heap_lookup(const void *address, void **slot, size_t *slot_size, int *noscan, size_t *value_offset);
+int cooper_heap_is_pointer_word(void *slot, size_t word);
+void cooper_heap_stats(size_t *bytes, size_t *spans);
+
+_Noreturn void cooper_panic(const char *message) {
+    fprintf(stderr, "panic: %s\n", message);
+    exit(101);
+}
+
+static int failures;
+#define CHECK(condition) do { if (!(condition)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #condition); failures++; } } while (0)
+
+typedef struct { uint64_t size, layout_size, flags, words, bits[2]; } Type;
+
+static void test_sizes_and_zeroing(void) {
+    static const size_t sizes[] = {1, 7, 8, 9, 16, 24, 100, 512, 513, 1024, 5000, 32000, 32760, 32761, 32768, 40000, 100000};
+    for (size_t i = 0; i < sizeof sizes / sizeof *sizes; i++) {
+        for (int noscan = 0; noscan < 2; noscan++) {
+            Type type = {8, 8, 0, 1, {1}};
+            size_t size = sizes[i] & ~(size_t)7 ? (sizes[i] + 7) & ~(size_t)7 : 8;
+            unsigned char *p = cooper_alloc(size, noscan ? NULL : (CooperType *)&type);
+            CHECK(p && ((uintptr_t)p & 7) == 0);
+            for (size_t b = 0; b < size; b++) if (p[b]) { CHECK(0 && "not zeroed"); break; }
+            memset(p, 0xAB, size);
+            void *slot; size_t slot_size; int ns; size_t offset;
+            CHECK(cooper_heap_lookup(p, &slot, &slot_size, &ns, &offset));
+            CHECK(ns == noscan);
+            CHECK((char *)p == (char *)slot + offset);
+            CHECK(slot_size >= size + offset);
+            /* Any interior address finds the same object. */
+            void *slot2; size_t size2; int ns2; size_t offset2;
+            CHECK(cooper_heap_lookup(p + size - 1, &slot2, &size2, &ns2, &offset2) && slot2 == slot);
+        }
+    }
+}
+
+static void test_distinct_objects(void) {
+    enum { N = 20000 };
+    static unsigned char *objects[N];
+    for (int i = 0; i < N; i++) {
+        size_t size = 8 + (size_t)(i % 97) * 8;
+        objects[i] = cooper_alloc(size, NULL);
+        memset(objects[i], i & 0xFF, size);
+    }
+    for (int i = 0; i < N; i++) {
+        size_t size = 8 + (size_t)(i % 97) * 8;
+        for (size_t b = 0; b < size; b++) if (objects[i][b] != (i & 0xFF)) { CHECK(0 && "objects overlap"); return; }
+    }
+}
+
+static void test_pointer_words(void) {
+    /* A 24-byte value with pointers in words 0 and 2. */
+    Type type = {24, 24, 0, 3, {0x5}};
+    for (size_t count = 1; count <= 400; count = count < 30 ? count + 1 : count * 3) {
+        size_t size = count * 24;
+        char *p = cooper_alloc(size, (CooperType *)&type);
+        void *slot; size_t slot_size; int ns; size_t offset;
+        CHECK(cooper_heap_lookup(p, &slot, &slot_size, &ns, &offset));
+        for (size_t word = 0; word < size / 8; word++) {
+            int expected = word % 3 != 1;
+            if (cooper_heap_is_pointer_word(slot, word) != expected) {
+                fprintf(stderr, "size %zu word %zu\n", size, word);
+                CHECK(0 && "pointer word");
+                break;
+            }
+        }
+        CHECK(!cooper_heap_is_pointer_word(slot, size / 8 + 1) || size / 8 + 1 >= slot_size / 8);
+    }
+    /* A value larger than a word of bitmap: 70 words, pointers at 0 and 69. */
+    Type wide = {560, 560, 0, 70, {1, 1 << 5}};
+    for (int copies = 1; copies <= 70; copies *= 7) {
+        char *p = cooper_alloc(560 * (size_t)copies, (CooperType *)&wide);
+        void *slot; size_t slot_size; int ns; size_t offset;
+        CHECK(cooper_heap_lookup(p, &slot, &slot_size, &ns, &offset));
+        for (size_t word = 0; word < 70 * (size_t)copies; word++) {
+            int expected = word % 70 == 0 || word % 70 == 69;
+            if (cooper_heap_is_pointer_word(slot, word) != expected) { CHECK(0 && "wide pointer word"); break; }
+        }
+    }
+}
+
+static void test_reuse_of_slots_clears_bits(void) {
+    Type type = {16, 16, 0, 2, {0x3}};
+    Type other = {16, 16, 0, 2, {0x2}};
+    void *a = cooper_alloc(16, (CooperType *)&type);
+    void *b = cooper_alloc(16, (CooperType *)&other);
+    void *slot; size_t slot_size; int ns; size_t offset;
+    CHECK(cooper_heap_lookup(a, &slot, &slot_size, &ns, &offset));
+    CHECK(cooper_heap_is_pointer_word(slot, 0) && cooper_heap_is_pointer_word(slot, 1));
+    CHECK(cooper_heap_lookup(b, &slot, &slot_size, &ns, &offset));
+    CHECK(!cooper_heap_is_pointer_word(slot, 0) && cooper_heap_is_pointer_word(slot, 1));
+}
+
+static void test_foreign_addresses(void) {
+    int local = 0;
+    static int global;
+    void *slot; size_t slot_size; int ns; size_t offset;
+    CHECK(!cooper_heap_lookup(NULL, &slot, &slot_size, &ns, &offset));
+    CHECK(!cooper_heap_lookup(&local, &slot, &slot_size, &ns, &offset));
+    CHECK(!cooper_heap_lookup(&global, &slot, &slot_size, &ns, &offset));
+    CHECK(!cooper_heap_lookup("text", &slot, &slot_size, &ns, &offset));
+    /* The part of a span past the last slot, and a free slot, are not objects. */
+    char *p = cooper_alloc(8, NULL);
+    CHECK(!cooper_heap_lookup(p + 4096, &slot, &slot_size, &ns, &offset) || (char *)slot != p);
+    CHECK(cooper_alloc(0, NULL) == cooper_alloc(0, NULL));
+}
+
+static void test_many_arenas(void) {
+    size_t before_bytes, before_spans;
+    cooper_heap_stats(&before_bytes, &before_spans);
+    char *last = NULL;
+    for (int i = 0; i < 90000; i++) {
+        last = cooper_alloc(1024, NULL);
+        last[0] = 1;
+    }
+    size_t bytes, spans;
+    cooper_heap_stats(&bytes, &spans);
+    CHECK(bytes - before_bytes >= 90000u * 1024 && spans > before_spans);
+    void *slot; size_t slot_size; int ns; size_t offset;
+    CHECK(cooper_heap_lookup(last + 1023, &slot, &slot_size, &ns, &offset) && slot == last);
+    /* An object larger than an arena, and its far end. */
+    size_t huge = 70u << 20;
+    char *big = cooper_alloc(huge, NULL);
+    big[huge - 1] = 7;
+    CHECK(cooper_heap_lookup(big + huge - 1, &slot, &slot_size, &ns, &offset) && slot == big && slot_size == huge);
+    CHECK(cooper_heap_lookup(big + (40u << 20), &slot, &slot_size, &ns, &offset) && slot == big);
+}
+
+int main(void) {
+    test_sizes_and_zeroing();
+    test_distinct_objects();
+    test_pointer_words();
+    test_reuse_of_slots_clears_bits();
+    test_foreign_addresses();
+    test_many_arenas();
+    if (failures) {
+        fprintf(stderr, "%d check(s) failed\n", failures);
+        return 1;
+    }
+    puts("ok");
+    return 0;
+}

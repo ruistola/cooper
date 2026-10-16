@@ -29,6 +29,8 @@ pub struct Function {
     pub return_type: Type,
     pub body: Vec<IrStmt>,
     pub span: Span,
+    /// What the backend may keep in the frame (see `escape`); empty until analyzed.
+    pub escapes: crate::escape::Escapes,
 }
 
 /// A module-level variable: its module, name, and type.

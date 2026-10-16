@@ -305,7 +305,8 @@ impl Emitter<'_, '_> {
         }
         let data = match self.value_type(elem, span)? {
             Some(llvm) => {
-                let storage = self.heap_alloc(&format!("[{count} x {llvm}]"));
+                let shape = format!("[{count} x {llvm}]");
+                let storage = if self.stack_arrays.contains(&span) { self.stack_alloc(&shape) } else { self.heap_alloc(&shape) };
                 for (index, value) in values.iter().enumerate() {
                     let value = value.as_ref().expect("an element has a value");
                     let slot = self.assign(&format!("getelementptr {llvm}, ptr {storage}, i64 {index}"));
@@ -493,6 +494,13 @@ impl Emitter<'_, '_> {
         }
         let longer = self.assign(&format!("add i64 {length}, 1"));
         Ok(self.array_value(storage, longer, room))
+    }
+
+    /// Frame storage for one value of LLVM type `llvm`, reserved in the entry block.
+    pub(super) fn stack_alloc(&mut self, llvm: &str) -> String {
+        let ptr = self.fresh("%s");
+        writeln!(self.allocas, "  {ptr} = alloca {llvm}").expect("writing to a String cannot fail");
+        ptr
     }
 
     /// A zeroed heap allocation for one value of LLVM type `llvm`.

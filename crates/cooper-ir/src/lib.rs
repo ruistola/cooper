@@ -16,11 +16,13 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 mod decision;
+mod escape;
 mod format;
 mod init;
 mod ir;
 mod mono;
 
+pub use escape::Escapes;
 pub use ir::*;
 pub use mono::{monomorphize, monomorphize_from, MonoError};
 
@@ -205,8 +207,10 @@ pub fn lower_program_for(project: &CheckedProject, entry: &Entry) -> Result<Prog
         .cloned()
         .collect();
     let functions = monomorphize_from(&functions, &roots).map_err(ProgramError::Mono)?;
+    let mut functions = format::expand_formatting(functions, &project.defs);
+    escape::analyze(&mut functions, &project.defs);
     Ok(Program {
-        functions: format::expand_formatting(functions, &project.defs),
+        functions,
         externs,
         globals: variables.into_iter().map(|v| v.global).collect(),
         initializers,
@@ -374,6 +378,7 @@ fn lower_initializer(
             span,
         }],
         span,
+        escapes: Escapes::default(),
     }];
     functions.extend(lower.lifting.expect("set above").lifted.into_inner());
     Ok(functions)
@@ -435,6 +440,7 @@ fn lower_function(
         return_type,
         body,
         span: func.span,
+        escapes: Escapes::default(),
     }];
     functions.extend(lower.lifting.expect("set above").lifted.into_inner());
     Ok(functions)
@@ -814,6 +820,7 @@ impl Lower<'_> {
             return_type,
             body,
             span,
+            escapes: Escapes::default(),
         });
         Ok(IrExpr {
             kind: IrExprKind::Closure {

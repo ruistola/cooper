@@ -691,3 +691,93 @@ fn a_negative_literal_lowers_to_a_typed_negation() {
     assert!(matches!(operand.kind, IrExprKind::Int(1)));
     assert!(is_primitive(&operand.ty, "i32"));
 }
+
+// --- escape analysis ---
+
+/// The variables each function of a program keeps on the heap, and how many closure
+/// environments and array literals stay in the frame, by function name. `main` is the root.
+fn escapes_of(source: &str) -> std::collections::HashMap<String, (Vec<String>, usize, usize)> {
+    let (decls, globals, checked) = check(source);
+    let functions = lower_module("main", &decls, &globals, &checked).expect("program lowers");
+    let roots: Vec<Callable> = functions.iter().map(|f| f.item.clone()).filter(|i| !matches!(i, Callable::Closure { .. })).collect();
+    let mut functions = monomorphize_from(&functions, &roots).expect("program monomorphizes");
+    escape::analyze(&mut functions, &Default::default());
+    functions
+        .iter()
+        .map(|f| {
+            let name = match &f.item {
+                Callable::Func { name, .. } | Callable::Method { name, .. } => name.clone(),
+                Callable::Closure { parent, index } => format!("closure{index}"),
+                _ => "other".to_string(),
+            };
+            let mut heap: Vec<String> = f.escapes.heap_locals.iter().cloned().collect();
+            heap.sort();
+            (name, (heap, f.escapes.stack_envs.len(), f.escapes.stack_arrays.len()))
+        })
+        .collect()
+}
+
+fn heap(source: &str, function: &str) -> Vec<String> {
+    escapes_of(source).remove(function).unwrap_or_else(|| panic!("no function {function}")).0
+}
+
+const POINT: &str = "struct Point { x: i32 }\n(p: Point^) func bump() { p.x += 1 }\nfunc read(p: Point^): i32 { return p.x }\nfunc keep(p: Point^): Point^ { return p }\n";
+
+#[test]
+fn an_address_used_only_for_a_call_that_keeps_nothing_stays_in_the_frame() {
+    let source = format!("{POINT}func main() {{ let a: Point\n a.bump()\n b := &a\n read(b) }}");
+    assert!(heap(&source, "main").is_empty());
+}
+
+#[test]
+fn an_address_that_is_returned_or_stored_escapes() {
+    let returned = format!("{POINT}func f(): Point^ {{ let a: Point\n return &a }}\nfunc main() {{ f() }}");
+    assert_eq!(heap(&returned, "f"), ["a"]);
+    // A callee that returns its parameter returns the caller's variable too.
+    let through = format!("{POINT}func f(): Point^ {{ let a: Point\n return keep(&a) }}\nfunc main() {{ f() }}");
+    assert_eq!(heap(&through, "f"), ["a"]);
+    let stored = format!("{POINT}struct Holder {{ p: Point^ }}\nfunc f(h: Holder^) {{ let a: Point\n h.p = &a }}\nfunc main() {{ f(nil) }}");
+    assert_eq!(heap(&stored, "f"), ["a"]);
+}
+
+#[test]
+fn a_callee_that_keeps_its_parameter_makes_the_argument_escape() {
+    let source = "struct Point { x: i32 }\nstruct Box { p: Point^ }\nfunc stash(b: Box^, p: Point^) { b.p = p }\nfunc f(b: Box^) { let a: Point\n stash(b, &a) }\nfunc main() { f(nil) }";
+    assert_eq!(heap(source, "f"), ["a"]);
+}
+
+#[test]
+fn a_closure_that_is_only_called_keeps_its_environment_and_variables_in_the_frame() {
+    let local = "func main() { n := 0\n add := func() { n += 1 }\n add()\n add() }";
+    let found = escapes_of(local);
+    assert!(found["main"].0.is_empty());
+    assert_eq!(found["main"].1, 1);
+    let escaping = "func make(): func(): i32 { n := 0\n return func(): i32 { n += 1\n return n } }\nfunc main() { make() }";
+    let found = escapes_of(escaping);
+    assert_eq!(found["make"].0, ["n"]);
+    assert_eq!(found["make"].1, 0);
+}
+
+#[test]
+fn a_closure_made_in_a_loop_and_kept_outside_it_escapes() {
+    let source = "func main() { let last: func(): i32\n for i in 0..3 do { last = func(): i32 { return i } }\n last() }";
+    assert_eq!(heap(source, "main"), ["i"]);
+    let inside = "func main() { for i in 0..3 do { f := func(): i32 { return i }\n f() } }";
+    assert!(heap(inside, "main").is_empty());
+}
+
+#[test]
+fn a_slice_of_a_static_array_follows_the_same_rules() {
+    let returned = "func f(): i32[] { let a: i32[3]\n return a[..] }\nfunc main() { f() }";
+    assert_eq!(heap(returned, "f"), ["a"]);
+    let local = "func main() { let a: i32[3]\n s := a[..]\n s[0] = 1 }";
+    assert!(heap(local, "main").is_empty());
+}
+
+#[test]
+fn array_literals_stay_in_the_frame_until_they_are_kept() {
+    let local = "func main() { xs := [1, 2, 3]\n xs[0] = 4 }";
+    assert_eq!(escapes_of(local)["main"].2, 1);
+    let returned = "func f(): i32[] { return [1, 2] }\nfunc main() { f() }";
+    assert_eq!(escapes_of(returned)["f"].2, 0);
+}

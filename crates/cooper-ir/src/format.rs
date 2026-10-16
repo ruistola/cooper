@@ -237,6 +237,7 @@ impl Formatters<'_> {
             return_type: Type::Unit,
             body,
             span,
+            escapes: Default::default(),
         }
     }
 

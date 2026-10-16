@@ -1,0 +1,123 @@
+# exit: 0
+# stdout: 7 3 6 5
+# stdout: 0 1 2
+# stdout: 30 31 32
+# stdout: 9 21 32
+# stdout: 4 5
+# stdout: 6 2
+# stdout: 3 3
+# Values whose address may outlive a frame stay valid: an address that is returned, stored
+# through a pointer, passed to a callee that keeps or returns it, captured by a closure that is
+# returned or kept past a loop pass, or taken of a static array that is then sliced and returned.
+# Values that do not outlive the frame are the same either way, which these also check.
+use {
+    std.io.println,
+}
+
+struct Point {
+    x: i32,
+}
+
+struct Box {
+    p: Point^,
+}
+
+(p: Point^) func bump() {
+    p.x += 1
+}
+
+func keep(p: Point^): Point^ {
+    return p
+}
+
+func stash(b: Box^, p: Point^) {
+    b.p = p
+}
+
+func fresh(n: i32): Point^ {
+    let a: Point
+    a.x = n
+    return &a
+}
+
+func viaCallee(n: i32): Point^ {
+    let a: Point
+    a.x = n
+    return keep(&a)
+}
+
+func stored(b: Box^, n: i32) {
+    let a: Point
+    a.x = n
+    stash(b, &a)
+}
+
+func counter(start: i32): func(): i32 {
+    n := start
+    return func(): i32 {
+        n += 1
+        return n
+    }
+}
+
+func kept(): func(): i32 {
+    let last: func(): i32
+    for i in 0..3 do {
+        last = func(): i32 { return i * 10 }
+    }
+    return last
+}
+
+func collect(): i32[] {
+    let fs: (func(): i32)[]
+    for i in 0..3 do fs = fs.push(func(): i32 { return i })
+    let out: i32[]
+    for f in fs do out = out.push(f())
+    return out
+}
+
+func slice(n: i32): i32[] {
+    let a: i32[3] = [n, n + 1, n + 2]
+    return a[..]
+}
+
+func pointerToPointer(): i32 {
+    let x: Point
+    x.x = 9
+    p := &x
+    pp := &p
+    return pp^.x
+}
+
+func localOnly(): i32 {
+    let a: Point
+    a.bump()
+    a.bump()
+    b := &a
+    b.bump()
+    total := 0
+    add := func() { total += a.x }
+    add()
+    add()
+    return total
+}
+
+func main() {
+    p := fresh(7)
+    q := viaCallee(3)
+    let b: Box
+    stored(&b, 6)
+    other := fresh(1)
+    other.x += 100
+    println("{p.x} {q.x} {b.p.x} {pointerToPointer() - 4}")
+    c := counter(-1)
+    println("{c()} {c()} {c()}")
+    k := kept()
+    println("{k() + 10} {k() + 11} {k() + 12}")
+    s := slice(9)
+    t := slice(20)
+    println("{s[0]} {t[1]} {t[2] + 10}")
+    println("{collect()[1] + 3} {collect()[2] + 3}")
+    println("{localOnly()} {collect().length() - 1}")
+    println("{[1, 2, 3].length()} {[p.x, q.x].length() + 1}")
+}

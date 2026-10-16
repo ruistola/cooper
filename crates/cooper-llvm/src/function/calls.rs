@@ -225,15 +225,16 @@ impl Emitter<'_, '_> {
     }
 
     /// A closure of the lifted literal `symbol`: its code, with an environment of
-    /// pointers to the storage of each captured variable (heap storage, since the
-    /// closure may outlive the frame). A literal capturing nothing has no environment.
+    /// pointers to the storage of each captured variable (in the frame when analysis shows the
+    /// closure does not outlive it, otherwise on the heap). A literal capturing nothing has no environment.
     /// Without a `symbol`, the closure has no code: it holds only the environment of a
     /// generic function, whose uses supply the code.
-    pub(super) fn closure(&mut self, symbol: Option<&str>, captures: &[String]) -> Result<Value, CodegenError> {
+    pub(super) fn closure(&mut self, symbol: Option<&str>, captures: &[String], span: Span) -> Result<Value, CodegenError> {
         let env = if captures.is_empty() {
             "null".to_string()
         } else {
-            let env = self.heap_alloc(&format!("[{} x ptr]", captures.len()));
+            let shape = format!("[{} x ptr]", captures.len());
+            let env = if self.stack_envs.contains(&span) { self.stack_alloc(&shape) } else { self.heap_alloc(&shape) };
             for (index, name) in captures.iter().enumerate() {
                 let place = self.lookup(name);
                 let ptr = if place.llvm.is_some() { place.ptr } else { "null".to_string() };

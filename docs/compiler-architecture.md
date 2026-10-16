@@ -128,6 +128,19 @@ take a `{ pointer, length, capacity }` view of their operand, which for a static
 over its storage (the variable, field, or element it is, or a temporary when it is none), so
 indexing, `for`, `length()`, and slicing share the code of dynamic arrays.
 
+**Escape analysis** (`escape.rs`) runs over the monomorphized program and decides, per function,
+which local variables must live on the heap (`Function::escapes`); the backend keeps every other
+local, closure environment, and array literal's storage in the frame. It is a flow-insensitive
+points-to analysis in the manner of Go's: each value is the set of storage whose address it may
+hold, and an address that reaches a `return`, a global, memory written through a pointer or into a
+heap array, an argument a callee may keep, or an unknown callee makes that storage escape, along
+with whatever it points to. Reads through a pointer yield what the pointed-to variables hold.
+Storage held by a variable declared outside the loop that made it escapes too, since a frame slot
+is shared by every iteration while each pass binds a fresh variable. Per-parameter summaries
+(escapes, flows to the result) let a call such as a pointer-receiver method keep its argument in
+the caller's frame; they are computed to a fixpoint over the whole program, so recursion is
+handled. A C function keeps no pointer it is passed, but may return one derived from an argument.
+
 **Monomorphization** (`mono.rs`) is an IR-to-IR pass. Lowering keeps a generic function as a
 template. Starting from the non-generic functions, the pass instantiates each referenced
 declaration once per distinct set of type arguments and follows the references each instance

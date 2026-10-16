@@ -2,7 +2,8 @@
 //!
 //! Every local — parameters included — lives in an `alloca` in the entry block, which
 //! an optimizing build promotes to registers, unless its address is taken: such a
-//! local may outlive its frame, so it is allocated on the heap where it is bound.
+//! local may outlive its frame (per the escape analysis in `cooper-ir`), so it is allocated on
+//! the heap where it is bound.
 //! Structs and tuples are first-class aggregate values; a *place* (a variable, a field
 //! of a place, or a dereference) is addressed by pointer, so fields can be assigned
 //! and addressed. Control flow becomes explicit basic blocks. Integer arithmetic is
@@ -64,13 +65,12 @@ pub(crate) fn emit(module: &mut Module, function: &Function) -> Result<String, C
         scopes: vec![HashMap::new()],
         loops: Vec::new(),
         heap: HashSet::new(),
+        stack_envs: HashSet::new(),
+        stack_arrays: HashSet::new(),
     };
-    let mut heap = HashSet::new();
-    function
-        .body
-        .iter()
-        .for_each(|s| walk_stmt(s, &mut |e| emitter.note_escape(e, &mut heap)));
-    emitter.heap = heap;
+    emitter.heap = function.escapes.heap_locals.clone();
+    emitter.stack_envs = function.escapes.stack_envs.clone();
+    emitter.stack_arrays = function.escapes.stack_arrays.clone();
     let ret = emitter.signature_type(&function.return_type, function.span)?;
     let mut params = Vec::new();
     if let Some(env) = &function.env {
@@ -170,6 +170,9 @@ struct Emitter<'m, 'p> {
     loops: Vec<Loop>,
     /// Names of locals whose address is taken, allocated on the heap.
     heap: HashSet<String>,
+    /// The closure environments and array literals (by span) kept in the frame.
+    stack_envs: HashSet<Span>,
+    stack_arrays: HashSet<Span>,
 }
 
 impl Emitter<'_, '_> {
@@ -425,33 +428,6 @@ impl Emitter<'_, '_> {
         }
     }
 
-    /// Record in `heap` the local whose address `expr` takes, explicitly with `&` or
-    /// implicitly as the value receiver of a pointer-receiver method, and every local
-    /// a closure captures.
-    fn note_escape(&self, expr: &IrExpr, heap: &mut HashSet<String>) {
-        let addressed = match &expr.kind {
-            IrExprKind::Closure { captures, .. } | IrExprKind::GenericClosure { captures } => {
-                heap.extend(captures.iter().cloned());
-                None
-            }
-            IrExprKind::AddressOf(operand) => Some(operand.as_ref()),
-            IrExprKind::Method {
-                receiver,
-                item,
-                type_args,
-            } => {
-                let symbol = mangle::symbol(item, type_args);
-                let wants_pointer =
-                    matches!(self.module.receivers.get(&symbol), Some(Type::Pointer(_)));
-                (wants_pointer && !matches!(receiver.ty, Type::Pointer(_))).then_some(receiver.as_ref())
-            }
-            _ => None,
-        };
-        if let Some(name) = addressed.and_then(root_local) {
-            heap.insert(name.to_string());
-        }
-    }
-
     /// Run `body` in a nested variable scope.
     fn scoped<T>(&mut self, body: impl FnOnce(&mut Self) -> T) -> T {
         self.scopes.push(HashMap::new());
@@ -586,8 +562,8 @@ impl Emitter<'_, '_> {
                 item,
                 type_args,
                 captures,
-            } => self.closure(Some(&mangle::symbol(item, type_args)), captures).map(Some),
-            IrExprKind::GenericClosure { captures } => self.closure(None, captures).map(Some),
+            } => self.closure(Some(&mangle::symbol(item, type_args)), captures, span).map(Some),
+            IrExprKind::GenericClosure { captures } => self.closure(None, captures, span).map(Some),
             IrExprKind::Instantiate {
                 closure,
                 item,
@@ -711,112 +687,6 @@ fn is_rune(ty: &Type) -> bool {
 /// Whether `ty` is the built-in `string`.
 fn is_string(ty: &Type) -> bool {
     matches!(ty, Type::Primitive(name) if name == "string")
-}
-
-/// The local variable a place expression is rooted in, if the place is stored in that
-/// local's own storage (not reached through a pointer).
-fn root_local(expr: &IrExpr) -> Option<&str> {
-    match &expr.kind {
-        IrExprKind::Var(name) => Some(name),
-        IrExprKind::Field { target, .. } if !matches!(target.ty, Type::Pointer(_)) => {
-            root_local(target)
-        }
-        _ => None,
-    }
-}
-
-/// Visit every expression in `stmt`, outermost first.
-fn walk_stmt(stmt: &IrStmt, visit: &mut impl FnMut(&IrExpr)) {
-    match &stmt.kind {
-        IrStmtKind::Var { init, .. } => init.iter().for_each(|e| walk_expr(e, visit)),
-        IrStmtKind::Expr(expr) => walk_expr(expr, visit),
-        IrStmtKind::Return(value) => value.iter().for_each(|e| walk_expr(e, visit)),
-        IrStmtKind::While { cond, body, .. } => {
-            walk_expr(cond, visit);
-            body.iter().for_each(|s| walk_stmt(s, visit));
-        }
-        IrStmtKind::ForRange {
-            start, end, body, ..
-        } => {
-            walk_expr(start, visit);
-            walk_expr(end, visit);
-            body.iter().for_each(|s| walk_stmt(s, visit));
-        }
-        IrStmtKind::ForEach { array, body, .. } => {
-            walk_expr(array, visit);
-            body.iter().for_each(|s| walk_stmt(s, visit));
-        }
-        IrStmtKind::Block(stmts) => stmts.iter().for_each(|s| walk_stmt(s, visit)),
-        IrStmtKind::Break | IrStmtKind::Continue => {}
-        IrStmtKind::Match {
-            scrutinee, actions, ..
-        } => {
-            walk_expr(scrutinee, visit);
-            actions.iter().for_each(|s| walk_stmt(s, visit));
-        }
-    }
-}
-
-/// Visit `expr` and every expression within it, outermost first.
-fn walk_expr(expr: &IrExpr, visit: &mut impl FnMut(&IrExpr)) {
-    visit(expr);
-    match &expr.kind {
-        IrExprKind::Int(_)
-        | IrExprKind::Float(_)
-        | IrExprKind::Bool(_)
-        | IrExprKind::Str(_)
-        | IrExprKind::Nil
-        | IrExprKind::Unit
-        | IrExprKind::Var(_)
-        | IrExprKind::Unreachable
-        | IrExprKind::Global { .. }
-        | IrExprKind::FuncRef { .. }
-        | IrExprKind::GenericClosure { .. }
-        | IrExprKind::Closure { .. } => {}
-        IrExprKind::Instantiate { closure: receiver, .. } | IrExprKind::Method { receiver, .. } => {
-            walk_expr(receiver, visit)
-        }
-        IrExprKind::Tuple(elems) | IrExprKind::Intrinsic { args: elems, .. } => walk_all(elems, visit),
-        IrExprKind::Variant { args, .. } => walk_all(args, visit),
-        IrExprKind::Unary { operand, .. }
-        | IrExprKind::Deref(operand)
-        | IrExprKind::AddressOf(operand)
-        | IrExprKind::Convert(operand)
-        | IrExprKind::Field {
-            target: operand, ..
-        }
-        | IrExprKind::Let { value: operand, .. }
-        | IrExprKind::LetTuple { value: operand, .. } => walk_expr(operand, visit),
-        IrExprKind::Binary { lhs, rhs, .. } => {
-            walk_expr(lhs, visit);
-            walk_expr(rhs, visit);
-        }
-        IrExprKind::Assign { target, value, .. } => {
-            walk_expr(target, visit);
-            walk_expr(value, visit);
-        }
-        IrExprKind::Call { callee, args } => {
-            walk_expr(callee, visit);
-            walk_all(args, visit);
-        }
-        IrExprKind::Block { stmts, result } => {
-            stmts.iter().for_each(|s| walk_stmt(s, visit));
-            walk_expr(result, visit);
-        }
-        IrExprKind::StructLiteral { members, .. } => {
-            members.iter().for_each(|(_, value)| walk_expr(value, visit));
-        }
-        IrExprKind::Match {
-            scrutinee, actions, ..
-        } => {
-            walk_expr(scrutinee, visit);
-            walk_all(actions, visit);
-        }
-    }
-}
-
-fn walk_all(exprs: &[IrExpr], visit: &mut impl FnMut(&IrExpr)) {
-    exprs.iter().for_each(|e| walk_expr(e, visit));
 }
 
 /// Each action's bindings, from every leaf of `tree` that reaches it.

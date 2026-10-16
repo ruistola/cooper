@@ -130,6 +130,8 @@ pub fn emit(program: &Program, triple: &str, project: &Project, options: Options
         })?;
     }
     let mut variables = String::new();
+    // The collector's roots: each module-level variable that can hold a pointer, with its type.
+    let mut roots = Vec::new();
     for global in &program.globals {
         let unsupported = |what| CodegenError::Unsupported {
             what,
@@ -140,8 +142,17 @@ pub fn emit(program: &Program, triple: &str, project: &Project, options: Options
         if let Some(llvm) = module.llvm_type(&global.ty).map_err(unsupported)? {
             let symbol = mangle::global_symbol(&global.module, &global.name);
             variables.push_str(&format!("@{symbol} = internal global {llvm} zeroinitializer\n"));
+            if let Some(desc) = module.type_descriptor(&global.ty) {
+                roots.push(format!("{{ ptr, ptr }} {{ ptr @{symbol}, ptr {desc} }}"));
+            }
         }
     }
+    variables.push_str(&format!(
+        "@cooper_root_count = constant i64 {}\n@cooper_roots = constant [{} x {{ ptr, ptr }}] {}\n",
+        roots.len(),
+        roots.len(),
+        if roots.is_empty() { "zeroinitializer".to_string() } else { format!("[{}]", roots.join(", ")) }
+    ));
     let mut functions = String::new();
     for function in &program.functions {
         functions.push('\n');

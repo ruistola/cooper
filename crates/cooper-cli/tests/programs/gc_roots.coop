@@ -1,0 +1,66 @@
+# exit: 0
+# stdout: alpha beta gamma 3
+# stdout: 10 45 3
+# stdout: 4999 480
+# stdout: kept
+# Memory is reclaimed without losing what is still reachable: a module-level variable is the only
+# reference to its array, string, and linked list while a lot of garbage is made and collected (the
+# test harness also runs this program collecting at every allocation), reachable data of many
+# shapes survives, and an interior view keeps the whole array alive.
+use {
+    std.io.println,
+}
+
+struct Node {
+    value: i32,
+    next: Node^,
+}
+
+let names: string[] = ["alpha", "beta"]
+let head: Node^
+let note: string = "kept"
+
+func build(n: i32): Node^ {
+    let first: Node^
+    for i in 0..n do {
+        let node: Node = Node{value: i, next: first}
+        first = &node
+    }
+    return first
+}
+
+func churn(rounds: i32): i64 {
+    let total: i64 = 0
+    for i in 0..rounds do {
+        let junk: string[]
+        for j in 0..20 do junk = junk.push("garbage number {i} and {j} padded out a little")
+        total += i64(junk.length())
+    }
+    return total
+}
+
+func sum(list: Node^): i32 {
+    total := 0
+    while list != nil do {
+        total += list.value
+        list = list.next
+    }
+    return total
+}
+
+func view(): i32[] {
+    let big: i32[] = []
+    for i in 0..5000 do big = big.push(i)
+    return big[4990..]
+}
+
+func main() {
+    names = names.push("gamma")
+    head = build(10)
+    tail := view()
+    made := churn(4000)
+    println("{names[0]} {names[1]} {names[2]} {names.length()}")
+    println("{head.value + 1} {sum(head)} {made / 26666}")
+    println("{tail[9]} {churn(20) + 80}")
+    println(note)
+}

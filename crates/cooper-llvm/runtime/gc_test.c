@@ -10,6 +10,10 @@ int cooper_heap_lookup(const void *address, void **slot, size_t *slot_size, int 
 int cooper_heap_is_pointer_word(void *slot, size_t word);
 void cooper_heap_stats(size_t *bytes, size_t *spans);
 
+/* The test has no module-level variables of its own. */
+const struct { const uint64_t *address; const CooperType *type; } cooper_roots[1] = {{0, 0}};
+const int64_t cooper_root_count = 0;
+
 _Noreturn void cooper_panic(const char *message) {
     fprintf(stderr, "panic: %s\n", message);
     exit(101);
@@ -134,13 +138,111 @@ static void test_many_arenas(void) {
     CHECK(cooper_heap_lookup(big + (40u << 20), &slot, &slot_size, &ns, &offset) && slot == big);
 }
 
+/* Overwrite the stack below the caller, so no stale pointer from an earlier test is left in
+   a slot a later frame does not initialize (a conservative collector keeps what such a word
+   points at). */
+static __attribute__((noinline)) void scrub_stack(void) {
+    volatile char buffer[1 << 20];
+    memset((void *)buffer, 0, sizeof buffer);
+}
+
+typedef struct Node { struct Node *next; uint64_t value; } Node;
+static Type node_type = {16, 16, 0, 2, {0x1, 0}};
+
+static size_t heap_size(void) {
+    size_t bytes, spans;
+    cooper_heap_stats(&bytes, &spans);
+    return bytes;
+}
+
+static void test_garbage_is_reclaimed(void) {
+    scrub_stack();
+    for (int i = 0; i < 3000000; i++) {
+        volatile char *p = cooper_alloc(64, NULL);
+        p[0] = 1;
+    }
+    /* Without reclamation these would be 192 MB. */
+    CHECK(heap_size() < (64u << 20));
+}
+
+static void test_reachable_objects_survive(void) {
+    Node *volatile head = NULL;
+    for (uint64_t i = 0; i < 100000; i++) {
+        Node *node = cooper_alloc(16, (CooperType *)&node_type);
+        node->value = i;
+        node->next = head;
+        head = node;
+    }
+    for (int i = 0; i < 2000000; i++) {
+        volatile char *p = cooper_alloc(48, NULL);
+        p[0] = 1;
+    }
+    cooper_gc_collect();
+    uint64_t expect = 99999;
+    for (Node *node = head; node; node = node->next, expect--) {
+        if (node->value != expect) { CHECK(0 && "a list node was lost or reused"); return; }
+    }
+    CHECK(expect == (uint64_t)-1);
+}
+
+static void test_interior_pointer_keeps_an_object(void) {
+    char *volatile inside;
+    {
+        char *p = cooper_alloc(1000, NULL);
+        memset(p, 0x5A, 1000);
+        inside = p + 500;
+    }
+    for (int i = 0; i < 1000000; i++) {
+        volatile char *q = cooper_alloc(1000, NULL);
+        q[0] = 1;
+    }
+    cooper_gc_collect();
+    CHECK(inside[-500] == 0x5A && inside[499] == 0x5A);
+}
+
+static void test_large_objects_are_reused(void) {
+    for (int i = 0; i < 60; i++) {
+        volatile char *p = cooper_alloc((size_t)10 << 20, NULL);
+        p[0] = 1;
+        p[((size_t)10 << 20) - 1] = 1;
+        cooper_gc_collect();
+    }
+    /* 600 MB were allocated in all, of which at most a few are live at once. */
+    CHECK(heap_size() < (200u << 20));
+}
+
+static void test_freed_memory_is_poisoned(void) {
+    volatile unsigned char *address;
+    {
+        address = cooper_alloc(256, NULL);
+        address[0] = 1;
+    }
+    for (int i = 0; i < 10; i++) cooper_alloc(256, NULL);
+    uintptr_t hidden = ~(uintptr_t)address;  /* not a pointer to the collector */
+    address = NULL;
+    scrub_stack();
+    cooper_gc_collect();
+    /* Nothing refers to it any more; the poison is what a stale pointer would find. */
+    unsigned char first = *(volatile unsigned char *)~hidden;
+    CHECK(first == 0xDB);
+}
+
 int main(void) {
+    int stack_base;
+    setenv("COOPER_GC", "poison", 1);
+    /* These keep their objects where the collector does not look, so it must not run yet. */
     test_sizes_and_zeroing();
     test_distinct_objects();
     test_pointer_words();
     test_reuse_of_slots_clears_bits();
     test_foreign_addresses();
     test_many_arenas();
+    cooper_gc_init(&stack_base);
+    test_garbage_is_reclaimed();
+    test_reachable_objects_survive();
+    test_interior_pointer_keeps_an_object();
+    test_large_objects_are_reused();
+    test_freed_memory_is_poisoned();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

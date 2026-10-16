@@ -11,12 +11,19 @@
  *   - a larger object up to 32 KiB has a word before it holding its type, tiled over the object;
  *   - an object with a span of its own has the type in the span.
  *
- * This file is single-threaded; a per-thread cache sits where `cache` is when threads arrive.
- * Memory is not reclaimed yet.
+ * The collector is stop-the-world mark and sweep, single-threaded. The heap is precise: an
+ * object's pointers are found from the record above. The roots are the module-level variables
+ * (a table the compiler emits, with their types), and the stack and registers, which are scanned
+ * conservatively: any word that points into an allocated object keeps it. Nothing moves, so an
+ * ambiguous word costs only the retention of what it appears to point at.
+ *
+ * COOPER_GC=stress collects at every allocation, and COOPER_GC=poison (or stress) fills freed
+ * memory with 0xDB, so that a missed root shows up as a crash rather than as silent reuse.
  */
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 
@@ -32,6 +39,7 @@
 #define MIN_SIZE_FOR_HEADER 512 /* exclusive: a larger scannable object has a header word */
 #define HEADER_SIZE 8
 #define TABLE_BITS 11
+#define MIN_HEAP ((size_t)4 << 20) /* the smallest heap that is worth collecting */
 
 enum { SPAN_FREE = 0, SPAN_IN_USE = 1 };
 
@@ -50,8 +58,13 @@ typedef struct Span {
     uint8_t needzero;    /* the span's memory may be dirty: zero a slot when it is handed out */
     uint64_t *alloc_bits; /* allocated as of the last collection */
     uint64_t *mark_bits;
+    size_t bits_words;    /* the capacity of the two bit arrays, in words */
     const CooperType *large_type;
     size_t large_size;
+    struct Arena *arena;
+    size_t first_page;    /* the span's first page within its arena */
+    struct Span *all_next;     /* every span in use */
+    struct Span *partial_next; /* spans of a class with free slots */
 } Span;
 
 typedef struct Arena {
@@ -112,6 +125,11 @@ static void init_classes(void) {
 static Arena **arena_table[1 << TABLE_BITS]; /* [address >> 26 >> 11][(address >> 26) & 2047] */
 static Arena *current_arena;
 static size_t heap_bytes, span_count;
+static size_t heap_used;  /* bytes in allocated slots: live as of the last collection, plus allocated since */
+static size_t next_gc;    /* collect when `heap_used` reaches this */
+static int stress, poison;
+static void *stack_base;
+static int collecting;
 
 static void register_arena(Arena *arena, size_t chunks) {
     for (size_t chunk = 0; chunk < chunks; chunk++) {
@@ -139,21 +157,116 @@ static Arena *new_arena(size_t pages_wanted) {
     return arena;
 }
 
-/* A new span of `npages` pages from fresh memory. */
-static Span *new_span(size_t npages) {
-    if (!current_arena || current_arena->npages - current_arena->next_page < npages) {
-        current_arena = new_arena(npages > ARENA_PAGES ? npages : ARENA_PAGES);
+/* Free runs of pages, in address order (arenas in the order they were made, then page). */
+typedef struct Run {
+    Arena *arena;
+    size_t first_page, npages;
+    struct Run *next;
+} Run;
+
+static Run *free_runs, *spare_runs;
+static Span *span_pool, *all_spans;
+
+static Run *new_run(void) {
+    Run *run = spare_runs;
+    if (run) spare_runs = run->next;
+    else run = meta_alloc(sizeof(Run));
+    return run;
+}
+
+/* Give a span's pages back to the page heap, merging with free neighbours. */
+static void free_pages(Arena *arena, size_t first_page, size_t npages) {
+    Run **link = &free_runs;
+    while (*link && ((*link)->arena != arena ? (*link)->arena->base < arena->base : (*link)->first_page < first_page)) {
+        link = &(*link)->next;
     }
-    Arena *arena = current_arena;
-    Span *span = meta_alloc(sizeof(Span));
-    span->start = arena->base + (arena->next_page << PAGE_SHIFT);
+    Run *run = new_run();
+    run->arena = arena;
+    run->first_page = first_page;
+    run->npages = npages;
+    run->next = *link;
+    *link = run;
+    /* Merge with the next run, then the one before. */
+    Run *after = run->next;
+    if (after && after->arena == arena && run->first_page + run->npages == after->first_page) {
+        run->npages += after->npages;
+        run->next = after->next;
+        after->next = spare_runs;
+        spare_runs = after;
+    }
+    for (Run *before = free_runs; before && before != run; before = before->next) {
+        if (before->next == run && before->arena == arena && before->first_page + before->npages == run->first_page) {
+            before->npages += run->npages;
+            before->next = run->next;
+            run->next = spare_runs;
+            spare_runs = run;
+            break;
+        }
+    }
+}
+
+/* A new span of `npages` pages: from a free run if one is big enough (its memory is dirty),
+   otherwise from fresh memory. */
+static Span *new_span(size_t npages) {
+    Arena *arena = NULL;
+    size_t first_page = 0;
+    int dirty = 0;
+    for (Run **link = &free_runs; *link; link = &(*link)->next) {
+        Run *run = *link;
+        if (run->npages < npages) continue;
+        arena = run->arena;
+        first_page = run->first_page;
+        dirty = 1;
+        run->first_page += npages;
+        run->npages -= npages;
+        if (run->npages == 0) {
+            *link = run->next;
+            run->next = spare_runs;
+            spare_runs = run;
+        }
+        break;
+    }
+    if (!arena) {
+        if (!current_arena || current_arena->npages - current_arena->next_page < npages) {
+            current_arena = new_arena(npages > ARENA_PAGES ? npages : ARENA_PAGES);
+        }
+        arena = current_arena;
+        first_page = arena->next_page;
+        arena->next_page += npages;
+    }
+    Span *span = span_pool;
+    if (span) span_pool = span->all_next;
+    else span = meta_alloc(sizeof(Span));
+    size_t words = span->bits_words;
+    uint64_t *alloc_bits = span->alloc_bits, *mark_bits = span->mark_bits;
+    memset(span, 0, sizeof *span);
+    span->bits_words = words;
+    span->alloc_bits = alloc_bits;
+    span->mark_bits = mark_bits;
+    span->arena = arena;
+    span->first_page = first_page;
+    span->start = arena->base + (first_page << PAGE_SHIFT);
     span->npages = npages;
     span->state = SPAN_IN_USE;
-    for (size_t page = 0; page < npages; page++) arena->spans[arena->next_page + page] = span;
-    arena->next_page += npages;
+    span->needzero = (uint8_t)dirty;
+    for (size_t page = 0; page < npages; page++) arena->spans[first_page + page] = span;
+    span->all_next = all_spans;
+    all_spans = span;
     heap_bytes += npages << PAGE_SHIFT;
     span_count++;
     return span;
+}
+
+/* Bit arrays for `words` words, reusing the span's if they are big enough. They start zeroed. */
+static void span_bits(Span *span, size_t words) {
+    if (span->bits_words >= words) {
+        memset(span->alloc_bits, 0, words * 8);
+        memset(span->mark_bits, 0, words * 8);
+        return;
+    }
+    span->alloc_bits = meta_alloc(words * 8);
+    span->mark_bits = meta_alloc(words * 8);
+    span->bits_words = words;
 }
 
 /* The span an address is in, or null if it is not in the heap. */
@@ -170,6 +283,7 @@ static Span *span_of(uintptr_t address) {
 /* --- spans of small objects --- */
 
 static Span *cache[NUM_CLASSES * 2];
+static Span *partial[NUM_CLASSES * 2];
 
 static Span *new_small_span(int class, int noscan) {
     Span *span = new_span(class_pages[class]);
@@ -181,9 +295,7 @@ static Span *new_small_span(int class, int noscan) {
     /* A bitmap of one bit per word takes the end of the span. */
     size_t bitmap = span->heap_bits_in_span ? bytes / 64 : 0;
     span->nelems = (uint32_t)((bytes - bitmap) / span->elemsize);
-    size_t words = (span->nelems + 63) / 64;
-    span->alloc_bits = meta_alloc(words * 8);
-    span->mark_bits = meta_alloc(words * 8);
+    span_bits(span, (span->nelems + 63) / 64);
     return span;
 }
 
@@ -247,9 +359,21 @@ static void *allocate_large(size_t size, const CooperType *type) {
     span->alloc_count = 1;
     span->large_type = type;
     span->large_size = size;
-    span->alloc_bits = meta_alloc(8);
-    span->mark_bits = meta_alloc(8);
+    span_bits(span, 1);
+    if (span->needzero) memset((void *)span->start, 0, size);
+    heap_used += span->elemsize;
     return (void *)span->start;
+}
+
+static void collect(void);
+
+static void init_heap(void) {
+    init_classes();
+    const char *mode = getenv("COOPER_GC");
+    stress = mode && strstr(mode, "stress");
+    poison = stress || (mode && strstr(mode, "poison"));
+    next_gc = MIN_HEAP;
+    ready = 1;
 }
 
 void *cooper_alloc(size_t size, const CooperType *type) {
@@ -257,22 +381,29 @@ void *cooper_alloc(size_t size, const CooperType *type) {
         cooper_panic("internal error: an allocation's size does not match its type");
     }
     if (size == 0) return &zerobase;
-    if (!ready) {
-        init_classes();
-        ready = 1;
-    }
+    if (!ready) init_heap();
+    if ((stress || heap_used >= next_gc) && stack_base && !collecting) collect();
     int noscan = type == NULL;
     size_t total = size;
     int header = !noscan && size > MIN_SIZE_FOR_HEADER;
     if (header) total += HEADER_SIZE;
     if (total < size || total > MAX_SMALL) return allocate_large(size, type);
     int class = size_to_class8[(total + 7) / 8];
-    Span *span = cache[class << 1 | noscan];
+    int spanclass = class << 1 | noscan;
+    Span *span = cache[spanclass];
     void *slot = span ? next_free(span) : NULL;
     while (!slot) {
-        span = cache[class << 1 | noscan] = new_small_span(class, noscan);
+        span = partial[spanclass];
+        if (span) {
+            partial[spanclass] = span->partial_next;
+            span->partial_next = NULL;
+        } else {
+            span = new_small_span(class, noscan);
+        }
+        cache[spanclass] = span;
         slot = next_free(span);
     }
+    heap_used += span->elemsize;
     if (span->needzero) memset(slot, 0, span->elemsize);
     if (noscan) return slot;
     if (span->heap_bits_in_span) {
@@ -330,4 +461,197 @@ int cooper_heap_is_pointer_word(void *slot, size_t word) {
 void cooper_heap_stats(size_t *bytes, size_t *spans) {
     *bytes = heap_bytes;
     *spans = span_count;
+}
+
+/* --- the collector --- */
+
+typedef struct {
+    uintptr_t slot;
+    Span *span;
+} Work;
+
+static Work *work;
+static size_t work_len, work_cap;
+
+static void push_work(uintptr_t slot, Span *span) {
+    if (work_len == work_cap) {
+        size_t cap = work_cap ? work_cap * 2 : 4096;
+        Work *grown = map_zeroed(cap * sizeof *grown);
+        if (work) {
+            memcpy(grown, work, work_len * sizeof *grown);
+            munmap(work, work_cap * sizeof *work);
+        }
+        work = grown;
+        work_cap = cap;
+    }
+    work[work_len].slot = slot;
+    work[work_len].span = span;
+    work_len++;
+}
+
+/* Mark the object `word` points into, if it points into an allocated one. */
+static void mark_word(uintptr_t word) {
+    Span *span = span_of(word);
+    if (!span || span->state != SPAN_IN_USE || word < span->start) return;
+    uint32_t index = span->large ? 0 : (uint32_t)((word - span->start) / span->elemsize);
+    if (index >= span->nelems) return;
+    uint64_t bit = (uint64_t)1 << (index % 64);
+    if (index >= span->freeindex && !(span->alloc_bits[index / 64] & bit)) return;
+    if (span->mark_bits[index / 64] & bit) return;
+    span->mark_bits[index / 64] |= bit;
+    if (!span->noscan) push_work(span->start + (size_t)index * span->elemsize, span);
+}
+
+/* The pointers among `bytes` bytes at `base`, which hold whole values of `type`. */
+static void scan_tiled(const uint64_t *base, size_t bytes, const CooperType *type) {
+    size_t stride = type->size / 8;
+    for (size_t copy = 0; copy < bytes / type->size; copy++) {
+        for (size_t chunk = 0; chunk < (type->words + 63) / 64; chunk++) {
+            uint64_t mask = type->bits[chunk];
+            while (mask) {
+                mark_word(base[copy * stride + chunk * 64 + (size_t)__builtin_ctzll(mask)]);
+                mask &= mask - 1;
+            }
+        }
+    }
+}
+
+static void scan_object(uintptr_t slot, const Span *span) {
+    if (span->large) {
+        scan_tiled((const uint64_t *)slot, span->large_size, span->large_type);
+    } else if (span->heap_bits_in_span) {
+        const uint64_t *bits = heap_bits(span);
+        size_t first = (slot - span->start) / 8;
+        for (size_t word = 0; word < span->elemsize / 8; word++) {
+            size_t at = first + word;
+            if (bits[at / 64] >> (at % 64) & 1) mark_word(((const uint64_t *)slot)[word]);
+        }
+    } else {
+        const CooperType *type = *(const CooperType **)slot;
+        scan_tiled((const uint64_t *)(slot + HEADER_SIZE), span->elemsize - HEADER_SIZE, type);
+    }
+}
+
+static void drain(void) {
+    while (work_len) {
+        Work item = work[--work_len];
+        scan_object(item.slot, item.span);
+    }
+}
+
+/* The module-level variables the compiler emitted: each one's address and type. */
+struct Root {
+    const uint64_t *address;
+    const CooperType *type;
+};
+extern const struct Root cooper_roots[];
+extern const int64_t cooper_root_count;
+
+static void mark_roots(void) {
+    for (int64_t i = 0; i < cooper_root_count; i++) {
+        scan_tiled(cooper_roots[i].address, cooper_roots[i].type->size, cooper_roots[i].type);
+    }
+    drain();
+}
+
+/* Every word of the stack from `here` up to its base, as a possible pointer. */
+static __attribute__((noinline)) void scan_stack(void) {
+    volatile uintptr_t here = 0;
+    uintptr_t low = (uintptr_t)&here & ~(uintptr_t)7;
+    for (const uintptr_t *word = (const uintptr_t *)low; (const void *)word < stack_base; word++) {
+        mark_word(*word);
+    }
+    drain();
+}
+
+static void fill(void *memory, size_t bytes) {
+    if (poison) memset(memory, 0xDB, bytes);
+}
+
+/* Free what is unmarked, and make the marked objects the allocated ones. */
+static void sweep(void) {
+    memset(cache, 0, sizeof cache);
+    memset(partial, 0, sizeof partial);
+    heap_used = 0;
+    Span **link = &all_spans;
+    while (*link) {
+        Span *span = *link;
+        if (span->large) {
+            if (span->mark_bits[0] & 1) {
+                span->mark_bits[0] = 0;
+                heap_used += span->elemsize;
+                link = &span->all_next;
+                continue;
+            }
+            fill((void *)span->start, span->elemsize);
+            *link = span->all_next;
+            span->state = SPAN_FREE;
+            for (size_t page = 0; page < span->npages; page++) span->arena->spans[span->first_page + page] = NULL;
+            free_pages(span->arena, span->first_page, span->npages);
+            heap_bytes -= span->npages << PAGE_SHIFT;
+            span_count--;
+            span->all_next = span_pool;
+            span_pool = span;
+            continue;
+        }
+        size_t words = (span->nelems + 63) / 64;
+        uint32_t live = 0;
+        for (size_t word = 0; word < words; word++) live += (uint32_t)__builtin_popcountll(span->mark_bits[word]);
+        if (poison) {
+            for (uint32_t index = 0; index < span->nelems; index++) {
+                int allocated = index < span->freeindex || (span->alloc_bits[index / 64] >> (index % 64) & 1);
+                if (allocated && !(span->mark_bits[index / 64] >> (index % 64) & 1)) {
+                    fill((void *)(span->start + (size_t)index * span->elemsize), span->elemsize);
+                }
+            }
+        }
+        if (live == 0) {
+            *link = span->all_next;
+            span->state = SPAN_FREE;
+            for (size_t page = 0; page < span->npages; page++) span->arena->spans[span->first_page + page] = NULL;
+            free_pages(span->arena, span->first_page, span->npages);
+            heap_bytes -= span->npages << PAGE_SHIFT;
+            span_count--;
+            span->all_next = span_pool;
+            span_pool = span;
+            continue;
+        }
+        memcpy(span->alloc_bits, span->mark_bits, words * 8);
+        memset(span->mark_bits, 0, words * 8);
+        span->freeindex = 0;
+        span->alloc_count = live;
+        span->needzero = 1;
+        heap_used += (size_t)live * span->elemsize;
+        if (live < span->nelems) {
+            span->partial_next = partial[span->spanclass];
+            partial[span->spanclass] = span;
+        }
+        link = &span->all_next;
+    }
+}
+
+static __attribute__((noinline)) void collect_with_registers(void) {
+    /* The callee-saved registers are spilled into this frame, which the scan covers. */
+    __builtin_unwind_init();
+    scan_stack();
+}
+
+static void collect(void) {
+    collecting = 1;
+    mark_roots();
+    collect_with_registers();
+    sweep();
+    next_gc = heap_used * 2 > MIN_HEAP ? heap_used * 2 : MIN_HEAP;
+    collecting = 0;
+}
+
+/* Tell the collector where the stack begins: the address of a local of `main`. */
+void cooper_gc_init(void *base) {
+    stack_base = base;
+}
+
+/* Collect now. */
+void cooper_gc_collect(void) {
+    if (!ready) init_heap();
+    if (stack_base && !collecting) collect();
 }

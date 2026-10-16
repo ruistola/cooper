@@ -44,6 +44,19 @@ fn check_program(path: &Path, build_root: &Path) -> Result<(), String> {
             other => other.to_string(),
         })?;
     let output = Command::new(&executable).output().map_err(|e| e.to_string())?;
+    // The same program collecting garbage at every allocation, with freed memory poisoned, must
+    // behave exactly as it does normally.
+    let stressed = Command::new(&executable).env("COOPER_GC", "stress").output().map_err(|e| e.to_string())?;
+    if stressed.status.code() != output.status.code() || stressed.stdout != output.stdout {
+        return Err(format!(
+            "under COOPER_GC=stress: exit {:?} (not {:?}); stdout {:?} (not {:?}); stderr: {}",
+            stressed.status.code(),
+            output.status.code(),
+            String::from_utf8_lossy(&stressed.stdout),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&stressed.stderr)
+        ));
+    }
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     if output.status.code() != Some(expected) {

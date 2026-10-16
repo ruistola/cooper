@@ -25,4 +25,10 @@ _Noreturn void cooper_panic(const char *message);
    several); null means it holds no pointers. */
 void *cooper_alloc(size_t size, const CooperType *type);
 
+/* Tell the collector where the stack begins: the address of a local of `main`. */
+void cooper_gc_init(void *stack_base);
+
+/* Collect garbage now. */
+void cooper_gc_collect(void);
+
 #endif

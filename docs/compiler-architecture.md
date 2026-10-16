@@ -155,8 +155,15 @@ small object (up to 32 KiB) in a slot of one of Go's 67 size classes (separate s
 pointer-free objects), a larger object in a span of its own, an arena table that finds the span of any
 address, and per-span allocation bits with a free index. Where an object's pointers are is recorded
 as it is allocated: a bitmap at the end of the span for objects up to 512 bytes, a header word holding
-the type before objects up to 32 KiB, the type in the span for the rest. Memory is not reclaimed yet,
-and the allocator is single-threaded. `gc_test.c` (run by `tests/allocator.rs`) tests it on its own.
+the type before objects up to 32 KiB, the type in the span for the rest. The collector is stop-the-world mark and sweep, started when the allocated bytes reach twice what
+survived the last collection (at least 4 MiB). The heap is scanned precisely, by the records above. The
+roots are the module-level variables (a table of their addresses and descriptors the compiler emits as
+`cooper_roots`) and the stack and registers, scanned conservatively word by word: nothing moves, so
+an ambiguous word only keeps alive what it appears to point into. Sweeping makes the marked objects the
+allocated ones, returns spans with nothing live to a page heap that merges neighbouring free runs, and
+builds per-class lists of spans with free slots. `COOPER_GC=stress` collects at every allocation and
+`COOPER_GC=poison` fills freed memory with 0xDB; the golden-program harness runs every program a second
+time under `stress`. The allocator and collector are single-threaded. `gc_test.c` (run by `tests/allocator.rs`) tests it on its own.
 The driver writes `cooper.h` and `cooper_gc.c` beside the program and compiles them with it.
 
 **Monomorphization** (`mono.rs`) is an IR-to-IR pass. Lowering keeps a generic function as a

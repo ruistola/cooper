@@ -19,6 +19,8 @@
 extern int cooper_main(void);
 
 int main(void) {
+    int stack_base;
+    cooper_gc_init(&stack_base);
     return cooper_main();
 }
 

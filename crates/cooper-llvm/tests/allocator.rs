@@ -9,7 +9,7 @@ fn the_allocator_passes_its_c_tests() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("gc_test");
     let cc = std::env::var("COOPER_CC").unwrap_or_else(|_| "clang".to_string());
     let build = Command::new(&cc)
-        .args(["-std=c11", "-Wall", "-Wextra", "-O1", "-I"])
+        .args(["-std=c11", "-Wall", "-Wextra", "-O0", "-I"])
         .arg(&runtime)
         .arg("-o")
         .arg(&out)

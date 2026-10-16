@@ -1,0 +1,86 @@
+# exit: 0
+# stdout: 1 hi 2 3 4 5 6 7
+# stdout: 5 3 2
+# stdout: 9 ok 9
+# Heap allocations of many shapes of value: the runtime checks each one's size against the
+# compiler's description of the type (where the garbage collector will find its pointers), so
+# these exercise mixed scalar and pointer fields, strings, tuples, static arrays of structs, sum
+# types with and without pointer payloads, function values, and arrays of each.
+use {
+    std.io.println,
+}
+
+struct Mixed {
+    flag: bool,
+    name: string,
+    small: i8,
+    next: Mixed^,
+    wide: i64,
+    half: f32,
+    rune: rune,
+}
+
+struct Pair {
+    a: i16,
+    b: (u8, string, bool),
+    cells: Mixed[2],
+}
+
+oneof Shape {
+    Dot,
+    Circle(i32),
+    Label(string, i64),
+    Link(Mixed^, bool),
+}
+
+func mixed(): Mixed^ {
+    let m: Mixed
+    m.flag = true
+    m.name = "hi"
+    m.small = 2
+    m.wide = 3
+    m.half = 4.0
+    m.rune = 'x'
+    return &m
+}
+
+func pair(): Pair^ {
+    let p: Pair
+    p.a = 5
+    p.b = (6, "tuple", true)
+    p.cells[1].wide = 7
+    return &p
+}
+
+func shape(n: i32): Shape^ {
+    let s: Shape = if n == 0 then Shape.Dot else if n == 1 then Shape.Circle(8) else Shape.Label("ok", 9)
+    return &s
+}
+
+func shapes(): Shape[] {
+    let out: Shape[]
+    out = out.push(Shape.Circle(1))
+    out = out.push(Shape.Link(mixed(), true))
+    out = out.push(Shape.Label("ok", 9))
+    return out
+}
+
+func callbacks(n: i32): (func(): i32)[] {
+    let out: (func(): i32)[]
+    for i in 0..n do out = out.push(func(): i32 { return i + n })
+    return out
+}
+
+func main() {
+    m := mixed()
+    p := pair()
+    (t0, t1, t2) := p.b
+    println("{if m.flag then 1 else 0} {m.name} {m.small} {m.wide} {i32(m.half)} {p.a} {t0} {p.cells[1].wide}")
+    s := shapes()
+    cs := callbacks(3)
+    println("{p.a} {cs.length()} {cs[0]() - 1}")
+    match shape(2)^ with {
+        Label(text, n) => println("{n} {text} {i32(s.length()) + cs[2]() + 1}")
+        _ => println("wrong")
+    }
+}

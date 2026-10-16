@@ -306,7 +306,8 @@ impl Emitter<'_, '_> {
         let data = match self.value_type(elem, span)? {
             Some(llvm) => {
                 let shape = format!("[{count} x {llvm}]");
-                let storage = if self.stack_arrays.contains(&span) { self.stack_alloc(&shape) } else { self.heap_alloc(&shape) };
+                let desc = self.module.type_descriptor(elem);
+                let storage = if self.stack_arrays.contains(&span) { self.stack_alloc(&shape) } else { self.heap_alloc(&shape, desc.as_deref()) };
                 for (index, value) in values.iter().enumerate() {
                     let value = value.as_ref().expect("an element has a value");
                     let slot = self.assign(&format!("getelementptr {llvm}, ptr {storage}, i64 {index}"));
@@ -401,7 +402,7 @@ impl Emitter<'_, '_> {
         let data = self.assign(&format!("extractvalue {ARRAY} {a}, 0"));
         let length = self.assign(&format!("extractvalue {ARRAY} {a}, 1"));
         let storage = match self.value_type(elem, span)? {
-            Some(llvm) => self.grown(&data, &length, &length, &llvm),
+            Some(llvm) => self.grown(&data, &length, &length, &llvm, elem),
             None => data,
         };
         Ok(self.array_value(storage, length.clone(), length))
@@ -431,7 +432,7 @@ impl Emitter<'_, '_> {
         let doubled = self.assign(&format!("shl i64 {capacity}, 1"));
         let more = self.assign(&format!("icmp ugt i64 {needed}, {doubled}"));
         let grown_capacity = self.assign(&format!("select i1 {more}, i64 {needed}, i64 {doubled}"));
-        let grown = self.grown(&data, &length, &grown_capacity, &llvm);
+        let grown = self.grown(&data, &length, &grown_capacity, &llvm, elem);
         let grown_from = self.current.clone();
         self.start_block(&ready);
         let storage = self.assign(&format!("phi ptr [ {data}, %{from} ], [ {grown}, %{grown_from} ]"));
@@ -443,11 +444,13 @@ impl Emitter<'_, '_> {
 
     /// Fresh storage for `capacity` elements of LLVM type `llvm`, holding a copy of the
     /// `length` elements at `data`.
-    fn grown(&mut self, data: &str, length: &str, capacity: &str, llvm: &str) -> String {
+    fn grown(&mut self, data: &str, length: &str, capacity: &str, llvm: &str, elem: &Type) -> String {
         self.module.declare(GROW_DECL);
         let size = self.size_of(llvm);
+        let desc = self.module.type_descriptor(elem);
         self.assign(&format!(
-            "call ptr @cooper_array_grow(ptr {data}, i64 {length}, i64 {capacity}, i64 {size})"
+            "call ptr @cooper_array_grow(ptr {data}, i64 {length}, i64 {capacity}, i64 {size}, ptr {})",
+            desc.as_deref().unwrap_or("null")
         ))
     }
 
@@ -481,7 +484,7 @@ impl Emitter<'_, '_> {
         let empty = self.assign(&format!("icmp eq i64 {capacity}, 0"));
         let doubled = self.assign(&format!("shl i64 {capacity}, 1"));
         let grown_capacity = self.assign(&format!("select i1 {empty}, i64 4, i64 {doubled}"));
-        let grown = self.grown(&data, &length, &grown_capacity, &llvm);
+        let grown = self.grown(&data, &length, &grown_capacity, &llvm, elem);
         let grown_from = self.current.clone();
         self.start_block(&ready);
         let storage = self.assign(&format!("phi ptr [ {data}, %{from} ], [ {grown}, %{grown_from} ]"));
@@ -504,9 +507,13 @@ impl Emitter<'_, '_> {
     }
 
     /// A zeroed heap allocation for one value of LLVM type `llvm`.
-    pub(super) fn heap_alloc(&mut self, llvm: &str) -> String {
+    ///
+    /// `desc` is the garbage collector's descriptor of one value of the type allocated, or
+    /// `None` when it holds no pointers (see `gc`). Storage of several values is allocated as
+    /// their array type with the descriptor of one.
+    pub(super) fn heap_alloc(&mut self, llvm: &str, desc: Option<&str>) -> String {
         self.module.declare(ALLOC_DECL);
         let size = self.size_of(llvm);
-        self.assign(&format!("call ptr @cooper_alloc(i64 {size})"))
+        self.assign(&format!("call ptr @cooper_alloc(i64 {size}, ptr {})", desc.unwrap_or("null")))
     }
 }

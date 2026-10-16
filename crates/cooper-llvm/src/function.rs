@@ -42,10 +42,10 @@ mod control;
 mod operators;
 
 const PANIC_DECL: &str = "declare void @cooper_panic(ptr) noreturn";
-const ALLOC_DECL: &str = "declare ptr @cooper_alloc(i64)";
+const ALLOC_DECL: &str = "declare ptr @cooper_alloc(i64, ptr)";
 const CONCAT_DECL: &str = "declare void @cooper_string_concat(ptr, i64, ptr, i64, ptr)";
 const STRING_EQ_DECL: &str = "declare i32 @cooper_string_eq(ptr, i64, ptr, i64)";
-const GROW_DECL: &str = "declare ptr @cooper_array_grow(ptr, i64, i64, i64)";
+const GROW_DECL: &str = "declare ptr @cooper_array_grow(ptr, i64, i64, i64, ptr)";
 const FORMAT_INT_DECL: &str = "declare void @cooper_format_int(i64, i32, ptr)";
 const TO_CSTRING_DECL: &str = "declare ptr @cooper_to_cstring(ptr, i64)";
 const FROM_CSTRING_DECL: &str = "declare void @cooper_from_cstring(ptr, ptr)";
@@ -260,7 +260,10 @@ impl Emitter<'_, '_> {
         let llvm = self.value_type(ty, span)?;
         let ptr = match &llvm {
             None => String::new(),
-            Some(llvm) if name.is_some_and(|n| self.heap.contains(n)) => self.heap_alloc(llvm),
+            Some(llvm) if name.is_some_and(|n| self.heap.contains(n)) => {
+                let desc = self.module.type_descriptor(ty);
+                self.heap_alloc(llvm, desc.as_deref())
+            }
             Some(llvm) => {
                 let ptr = self.fresh("%v");
                 writeln!(self.allocas, "  {ptr} = alloca {llvm}")

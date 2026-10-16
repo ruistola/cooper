@@ -13,6 +13,7 @@
 
 mod ffi;
 mod function;
+mod gc;
 mod layout;
 mod mangle;
 
@@ -109,6 +110,7 @@ pub fn emit(program: &Program, triple: &str, project: &Project, options: Options
         strings: Vec::new(),
         types: BTreeMap::new(),
         thunks: BTreeMap::new(),
+        descriptors: BTreeMap::new(),
         c_types: Vec::new(),
         shims: String::new(),
         nil_size: 0,
@@ -145,6 +147,10 @@ pub fn emit(program: &Program, triple: &str, project: &Project, options: Options
             out.push_str(t);
             out.push('\n');
         });
+    }
+    if !module.descriptors.is_empty() {
+        out.push('\n');
+        module.descriptors.values().for_each(|d| out.push_str(d));
     }
     if module.nil_size > 0 {
         // Loads through nil read the zero buffer; stores through nil land in the sink,
@@ -200,6 +206,8 @@ struct Module<'p> {
     /// Adapters giving functions and bound methods the function-value calling
     /// convention (a hidden environment argument first), by name.
     thunks: BTreeMap<String, String>,
+    /// The garbage collector's type descriptors, by name (see `gc`).
+    descriptors: BTreeMap<String, String>,
     /// The C definitions of the struct types C wrappers pass by value, in an order where
     /// each follows the types it contains, by mangled type name.
     c_types: Vec<(String, String)>,

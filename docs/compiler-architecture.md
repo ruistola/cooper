@@ -141,6 +141,15 @@ is shared by every iteration while each pass binds a fresh variable. Per-paramet
 the caller's frame; they are computed to a fixpoint over the whole program, so recursion is
 handled. A C function keeps no pointer it is passed, but may return one derived from an argument.
 
+**Type descriptors** (`gc.rs`, in the backend) prepare for the garbage collector. Every heap allocation
+goes through `cooper_alloc(size, type)`, where `type` is a constant descriptor of one value of the
+type allocated (its size, and a bitmap with a bit for each 8-byte word that holds a pointer), tiled
+for an array's storage; a null `type` marks an allocation with no pointers, which is never scanned
+(string bytes, arrays of numbers). The layout is computed exactly as LLVM lays the type out, and the
+descriptor carries LLVM's own size beside the computed one, which the runtime checks agree on every
+allocation. A sum type's descriptor marks every word any variant uses as a pointer and says so in its
+flags. The collector itself does not exist yet.
+
 **Monomorphization** (`mono.rs`) is an IR-to-IR pass. Lowering keeps a generic function as a
 template. Starting from the non-generic functions, the pass instantiates each referenced
 declaration once per distinct set of type arguments and follows the references each instance

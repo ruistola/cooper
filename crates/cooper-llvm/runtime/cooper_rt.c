@@ -36,8 +36,24 @@ _Noreturn void cooper_panic(const char *message) {
     exit(PANIC_STATUS);
 }
 
-/* Allocate `size` zeroed bytes on the heap. Memory is not yet reclaimed. */
-void *cooper_alloc(size_t size) {
+/* How the collector sees a type: its size in bytes, flags (bit 0: the bitmap is a superset,
+   as for a sum type whose pointer words depend on the variant), the number of 8-byte words it
+   covers, and one bit per word that is set when the word holds a pointer. */
+typedef struct {
+    uint64_t size;
+    uint64_t layout_size; /* what the compiler computed; it must equal `size` */
+    uint64_t flags;
+    uint64_t words;
+    uint64_t bits[];
+} CooperType;
+
+/* Allocate `size` zeroed bytes on the heap. `type` describes one value of the type
+   allocated, and the allocation holds a whole number of them (an array's storage holds
+   several); null means it holds no pointers. Memory is not yet reclaimed. */
+void *cooper_alloc(size_t size, const CooperType *type) {
+    if (type && (type->size != type->layout_size || size % type->size != 0)) {
+        cooper_panic("internal error: an allocation's size does not match its type");
+    }
     void *memory = calloc(1, size ? size : 1);
     if (memory == NULL) {
         cooper_panic("out of memory");
@@ -58,7 +74,7 @@ void cooper_string_concat(const char *a, uint64_t a_len, const char *b, uint64_t
     if (len < a_len) {
         cooper_panic("string too long");
     }
-    char *data = cooper_alloc(len);
+    char *data = cooper_alloc(len, NULL);
     if (a_len) memcpy(data, a, a_len);
     if (b_len) memcpy(data + a_len, b, b_len);
     out->data = data;
@@ -72,11 +88,12 @@ int32_t cooper_string_eq(const char *a, uint64_t a_len, const char *b, uint64_t 
 
 /* Fresh element storage of `capacity` elements of `size` bytes, holding a copy of the
    `len` elements at `data`. */
-void *cooper_array_grow(const void *data, uint64_t len, uint64_t capacity, uint64_t size) {
+void *cooper_array_grow(const void *data, uint64_t len, uint64_t capacity, uint64_t size,
+                        const CooperType *elem) {
     if (size && capacity > UINT64_MAX / size) {
         cooper_panic("array too large");
     }
-    void *grown = cooper_alloc(capacity * size);
+    void *grown = cooper_alloc(capacity * size, elem);
     if (len) memcpy(grown, data, len * size);
     return grown;
 }
@@ -86,7 +103,7 @@ char *cooper_to_cstring(const char *data, uint64_t len) {
     if (len == UINT64_MAX) {
         cooper_panic("string too long");
     }
-    char *c = cooper_alloc(len + 1);
+    char *c = cooper_alloc(len + 1, NULL);
     if (len) memcpy(c, data, len);
     return c;
 }
@@ -122,7 +139,7 @@ int32_t cooper_utf8_valid(const char *data, uint64_t len) {
    is null. Bytes that are not valid UTF-8 become U+FFFD, so a string is always valid. */
 void cooper_from_cstring(const char *c, CooperString *out) {
     uint64_t len = c ? strlen(c) : 0;
-    char *data = cooper_alloc(len * 3);
+    char *data = cooper_alloc(len * 3, NULL);
     uint64_t at = 0;
     for (uint64_t i = 0; i < len;) {
         uint32_t n = utf8_valid((const unsigned char *)c + i, len - i);
@@ -149,14 +166,14 @@ int32_t cooper_rune_boundary(const char *data, uint64_t len, uint64_t pos) {
 /* A copy of the `n` bytes at `p`, as array storage; generated code rejects a negative
    `n`. Bytes read through a null `p` are zero, as loads through nil are. */
 void *cooper_copy_bytes(const void *p, int64_t n) {
-    void *bytes = cooper_alloc((size_t)n);
+    void *bytes = cooper_alloc((size_t)n, NULL);
     if (p && n) memcpy(bytes, p, (size_t)n);
     return bytes;
 }
 
 /* A fresh string holding the `len` bytes at `text`. */
 static void string_of(const char *text, int len, CooperString *out) {
-    char *data = cooper_alloc((size_t)len);
+    char *data = cooper_alloc((size_t)len, NULL);
     memcpy(data, text, (size_t)len);
     out->data = data;
     out->len = (uint64_t)len;
@@ -266,7 +283,7 @@ void cooper_format_print(void) {
 
 /* The formatted text, as a fresh string. */
 void cooper_format_take(CooperString *out) {
-    char *data = cooper_alloc(format_len);
+    char *data = cooper_alloc(format_len, NULL);
     if (format_len) memcpy(data, format_text, format_len);
     out->data = data;
     out->len = format_len;
@@ -378,7 +395,7 @@ void cooper_format_radix(uint64_t value, int32_t bits, int32_t radix, int32_t up
 /* `value` with `precision` digits after the point. */
 void cooper_format_fixed(double value, int32_t precision, CooperString *out) {
     int len = snprintf(NULL, 0, "%.*f", precision, value);
-    char *text = cooper_alloc((size_t)len + 1);
+    char *text = cooper_alloc((size_t)len + 1, NULL);
     snprintf(text, (size_t)len + 1, "%.*f", precision, value);
     out->data = text;
     out->len = (uint64_t)len;
@@ -400,7 +417,7 @@ static int utf8_encode(uint32_t c, char *buffer) {
 void cooper_format_rune(uint32_t c, CooperString *out) {
     char bytes[4];
     int len = utf8_encode(c, bytes);
-    char *data = cooper_alloc((uint64_t)len);
+    char *data = cooper_alloc((uint64_t)len, NULL);
     memcpy(data, bytes, (size_t)len);
     out->data = data;
     out->len = (uint64_t)len;
@@ -456,7 +473,7 @@ void cooper_pad(const char *text, uint64_t len, int64_t width, int32_t align, in
     char fill_bytes[4];
     int fill_len = zero ? 1 : utf8_encode((uint32_t)fill, fill_bytes);
     if (zero) fill_bytes[0] = '0';
-    char *padded = cooper_alloc(len + (uint64_t)(missing * fill_len));
+    char *padded = cooper_alloc(len + (uint64_t)(missing * fill_len), NULL);
     uint64_t at = 0;
     int64_t before = zero || align == 1 ? missing : align == 2 ? missing / 2 : 0;
     uint64_t start = 0;

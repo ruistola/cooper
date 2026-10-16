@@ -234,7 +234,8 @@ impl Emitter<'_, '_> {
             "null".to_string()
         } else {
             let shape = format!("[{} x ptr]", captures.len());
-            let env = if self.stack_envs.contains(&span) { self.stack_alloc(&shape) } else { self.heap_alloc(&shape) };
+            let desc = self.module.pointers_descriptor(captures.len());
+            let env = if self.stack_envs.contains(&span) { self.stack_alloc(&shape) } else { self.heap_alloc(&shape, desc.as_deref()) };
             for (index, name) in captures.iter().enumerate() {
                 let place = self.lookup(name);
                 let ptr = if place.llvm.is_some() { place.ptr } else { "null".to_string() };
@@ -259,7 +260,8 @@ impl Emitter<'_, '_> {
         let env = if matches!(wanted, Type::Pointer(_)) {
             value.operand
         } else {
-            let copy = self.heap_alloc(&value.ty);
+            let desc = self.module.type_descriptor(&wanted);
+            let copy = self.heap_alloc(&value.ty, desc.as_deref());
             self.inst(&format!("store {} {}, ptr {copy}", value.ty, value.operand));
             copy
         };

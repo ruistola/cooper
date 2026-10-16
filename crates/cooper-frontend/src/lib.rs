@@ -14,6 +14,7 @@ pub mod ast;
 mod builtins;
 pub mod diag;
 mod infer;
+pub mod index;
 pub mod lexer;
 pub mod modules;
 pub mod parser;
@@ -25,7 +26,7 @@ pub mod typecheck;
 pub mod types;
 
 pub use diag::{Diagnostic, Span};
-pub use modules::{CheckedFile, CheckedProject};
+pub use modules::{analyze_lenient, Analysis, CheckedFile, CheckedProject};
 pub use project::{Module, Project, ProjectKind, ProjectManifest, SourceFile};
 
 /// Run the full frontend over a single source snippet and return all diagnostics.

@@ -239,9 +239,19 @@ checked against the exit status declared on its first line (`# exit: N`) and any
 
 ## AST, not CST
 
-The parser builds an AST. Every node keeps its full source span and the source text is
-retained, so a formatter or language server recovers comments and exact token extents by
-re-lexing a span.
+The parser builds an AST. Every node keeps its full source span, and declarations, members,
+variants, parameters, and field accesses also keep the span of their name. The lexer drops
+comments except the block directly above a token, which it records by the token's offset; the
+parser keeps those that sit above a declaration, member, or variant (`ParsedFile::docs`, and
+`CheckedFile::docs`). A formatter would also need the other comments, and would re-lex a span to
+recover them.
+
+**Tooling.** `analyze_lenient` runs the pipeline for a tool: a file that fails to parse still
+contributes the declarations the parser recovered, and the checked files of every module that
+resolved are returned whatever the diagnostics. `index::Index` answers from the checker's tables
+what a name at a position refers to (functions, methods, `extern`s, module-level variables), where
+it is declared, its type, and its documentation. Local variables, parameters, fields, and names in
+type annotations are not indexed yet, and type parameters have no name spans.
 
 [`analyze`]: ../crates/cooper-frontend/src/lib.rs
 [`analyze_project`]: ../crates/cooper-frontend/src/lib.rs

@@ -62,11 +62,47 @@ pub struct CheckedProject {
 }
 
 /// Analyze `project` as [`analyze`] does, returning its checked form when it is free
-/// of diagnostics — the input to lowering — and every diagnostic otherwise.
+/// of diagnostics — the input to lowering — and every diagnostic otherwise. A file that
+/// fails to lex or parse stops the analysis there, since a missing declaration would
+/// cascade into spurious errors elsewhere.
 pub fn check(project: &Project) -> Result<CheckedProject, Vec<Diagnostic>> {
     let project = &crate::stdlib::with_source_modules(project);
-    let mut parsed = parse_modules(project)?;
+    let (parsed, errors) = parse_modules(project);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let (diagnostics, checked) = analyze_parsed(parsed);
+    if diagnostics.is_empty() {
+        Ok(checked)
+    } else {
+        Err(diagnostics)
+    }
+}
 
+/// The result of [`analyze_lenient`]: every diagnostic, and whatever was checked.
+pub struct Analysis {
+    pub diagnostics: Vec<Diagnostic>,
+    /// The files of every module that resolved, with the checker's tables for what type
+    /// checked, even when other code has errors. A file that failed to parse is present
+    /// with the declarations that were recovered from it.
+    pub project: CheckedProject,
+}
+
+/// Analyze `project` for a tool that works on code as it is being written: parse errors
+/// do not stop the analysis, and the checked form is returned however many diagnostics
+/// there are, so that hover, go-to-definition, and documentation keep working in a file
+/// with an error in it. A module whose declarations do not resolve has no checked files.
+pub fn analyze_lenient(project: &Project) -> Analysis {
+    let project = &crate::stdlib::with_source_modules(project);
+    let (parsed, mut diagnostics) = parse_modules(project);
+    let (more, checked) = analyze_parsed(parsed);
+    diagnostics.extend(more);
+    Analysis { diagnostics, project: checked }
+}
+
+/// Analyze parsed modules: the checked files of every module that resolved, and the
+/// diagnostics of the dependency graph and each module.
+fn analyze_parsed(mut parsed: Vec<ParsedModule>) -> (Vec<Diagnostic>, CheckedProject) {
     let standard = crate::stdlib::interfaces();
     let known: HashSet<ModulePath> = parsed
         .iter()
@@ -88,7 +124,7 @@ pub fn check(project: &Project) -> Result<CheckedProject, Vec<Diagnostic>> {
         Ok(order) => order,
         Err(cycle_diags) => {
             diags.extend(cycle_diags);
-            return Err(diags);
+            return (diags, CheckedProject { files: Vec::new(), defs: TypeDefs::default() });
         }
     };
 
@@ -111,11 +147,10 @@ pub fn check(project: &Project) -> Result<CheckedProject, Vec<Diagnostic>> {
         interfaces.insert(module.path.clone(), interface);
         checked.push((index, files));
     }
-    if !diags.is_empty() {
-        return Err(diags);
-    }
+    let counts: Vec<usize> = parsed.iter().map(|m| m.files.len()).collect();
     let files = checked
         .into_iter()
+        .filter(|(index, files)| files.len() == counts[*index])
         .flat_map(|(index, files)| {
             let module = &mut parsed[index];
             let path = module.path.clone();
@@ -133,7 +168,7 @@ pub fn check(project: &Project) -> Result<CheckedProject, Vec<Diagnostic>> {
                 .collect::<Vec<_>>()
         })
         .collect();
-    Ok(CheckedProject { files, defs })
+    (diags, CheckedProject { files, defs })
 }
 
 /// A module whose files have been parsed. Top-level declarations unite across files
@@ -153,9 +188,9 @@ struct ParsedFile {
     docs: crate::lexer::Docs,
 }
 
-/// Parse every file of every module. Returns the parsed modules, or every lex and
-/// parse diagnostic (each tagged with its file) if any file was malformed.
-fn parse_modules(project: &Project) -> Result<Vec<ParsedModule>, Vec<Diagnostic>> {
+/// Parse every file of every module, returning the parsed modules and every lex and parse
+/// diagnostic (each tagged with its file). A file that fails to lex is an empty one.
+fn parse_modules(project: &Project) -> (Vec<ParsedModule>, Vec<Diagnostic>) {
     let mut parsed = Vec::with_capacity(project.modules.len());
     let mut errors = Vec::new();
     for module in &project.modules {
@@ -166,11 +201,7 @@ fn parse_modules(project: &Project) -> Result<Vec<ParsedModule>, Vec<Diagnostic>
             files,
         });
     }
-    if errors.is_empty() {
-        Ok(parsed)
-    } else {
-        Err(errors)
-    }
+    (parsed, errors)
 }
 
 /// Lex and parse each source file of `module`, keeping each file's `use` bindings and
@@ -184,6 +215,12 @@ fn parse_module_files(module: &Module) -> (Vec<ParsedFile>, Vec<Diagnostic>) {
             Ok(lexed) => lexed,
             Err(diag) => {
                 errors.push(diag.in_file(&file.name));
+                files.push(ParsedFile {
+                    name: file.name.clone(),
+                    uses: Vec::new(),
+                    decls: Vec::new(),
+                    docs: crate::lexer::Docs::new(),
+                });
                 continue;
             }
         };

@@ -1,5 +1,13 @@
 # Syntax Fundamentals
 
+## Comments and documentation
+
+A comment runs from `#` to the end of the line. A block of comment lines directly above a
+declaration (a `struct` and its members, a `oneof` and its variants, a function or method, an
+`extern`, a `type`, a module-level variable) documents it, as in Go: the lines are kept, without
+the `#` and the space after it, and a blank line between the comment and the declaration detaches
+it. Tools show it as the declaration's documentation. Any other comment is dropped.
+
 ## Source encoding
 
 A source file is UTF-8, and a file that is not valid UTF-8 is rejected. Comments, string
@@ -220,15 +228,36 @@ let x: i32 = p.value     # automatic dereference
 
 ## Function types
 
-A function type lists parameter types and the return type, without parameter names:
+A function type lists parameter types and the return type. Parameter names may be written as
+documentation; they are not part of the type and never need to match the names of the function
+passed in:
 
 ```
 func run(step: func(Request, Duration): Response) { … }
+func read(into: func(buf: u8[], limit: i32): i32) { … }
 ```
 
-Types are written where they are used. There is no alias declaration. A distinct nominal type
-backed by an existing one (e.g. `LengthMm` over `i32`) is a planned feature with its own
-keyword.
+### Type aliases
+
+`type Name = T` gives a type a name. An alias is transparent: it *is* the type, so any value of
+the aliased type fits and nothing about the type changes. Its purpose is documentation, with a doc
+comment on the alias, and shorter signatures. It is the way to document a tuple or a function type
+that a signature would otherwise have to spell out, since the elements of a tuple have no names:
+
+```
+# A rectangle: left, top, width, height.
+type Rect = (i32, i32, i32, i32)
+
+# Called for each token; reports errors seen, bytes used, and whether more pages remain.
+type TokenHandler = func(tok: u8, data: u8[], errIf: u8): (bool, i32, bool)
+
+func draw(r: Rect, handle: TokenHandler) { … }
+```
+
+An alias may name another alias but not itself, takes no type arguments, and is declared at module
+level, importable with `use { geometry.Rect }`. Messages show the type it stands for. When the
+parts of a value should be reached by name, declare a `struct`. A distinct nominal type backed by
+an existing one (e.g. `LengthMm` over `i32`) is a planned feature with its own keyword.
 
 ## Tuples
 

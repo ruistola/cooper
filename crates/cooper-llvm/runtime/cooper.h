@@ -6,16 +6,29 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* How the collector sees a type: its size in bytes, flags (bit 0: the bitmap is a superset,
-   as for a sum type whose pointer words depend on the variant), the number of 8-byte words it
-   covers, and one bit per word that is set when the word holds a pointer. */
+typedef struct CooperType CooperType;
+
+/* A sum type value whose pointer words depend on its variant: where its tag (a u32) and payload
+   are in the value, and a descriptor for the payload of each variant (null: it holds no pointers). */
 typedef struct {
+    uint64_t tag_offset;
+    uint64_t payload_offset;
+    uint64_t variants;
+    const CooperType *const *payloads;
+} CooperSite;
+
+/* How the collector sees a type: its size in bytes, flags, the number of 8-byte words it covers,
+   one bit per word that is set when the word holds a pointer whatever variant it holds, and the
+   sum type values in it (sites). */
+struct CooperType {
     uint64_t size;
     uint64_t layout_size; /* what the compiler computed; it must equal `size` */
     uint64_t flags;
     uint64_t words;
+    uint64_t nsites;
+    const CooperSite *sites;
     uint64_t bits[];
-} CooperType;
+};
 
 /* Stop the program on a runtime error. `message` names the error and its source location. */
 _Noreturn void cooper_panic(const char *message);

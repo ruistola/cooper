@@ -22,13 +22,13 @@ _Noreturn void cooper_panic(const char *message) {
 static int failures;
 #define CHECK(condition) do { if (!(condition)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #condition); failures++; } } while (0)
 
-typedef struct { uint64_t size, layout_size, flags, words, bits[2]; } Type;
+typedef struct { uint64_t size, layout_size, flags, words, nsites; const void *sites; uint64_t bits[2]; } Type;
 
 static void test_sizes_and_zeroing(void) {
     static const size_t sizes[] = {1, 7, 8, 9, 16, 24, 100, 512, 513, 1024, 5000, 32000, 32760, 32761, 32768, 40000, 100000};
     for (size_t i = 0; i < sizeof sizes / sizeof *sizes; i++) {
         for (int noscan = 0; noscan < 2; noscan++) {
-            Type type = {8, 8, 0, 1, {1}};
+            Type type = {8, 8, 0, 1, 0, 0, {1}};
             size_t size = sizes[i] & ~(size_t)7 ? (sizes[i] + 7) & ~(size_t)7 : 8;
             unsigned char *p = cooper_alloc(size, noscan ? NULL : (CooperType *)&type);
             CHECK(p && ((uintptr_t)p & 7) == 0);
@@ -62,7 +62,7 @@ static void test_distinct_objects(void) {
 
 static void test_pointer_words(void) {
     /* A 24-byte value with pointers in words 0 and 2. */
-    Type type = {24, 24, 0, 3, {0x5}};
+    Type type = {24, 24, 0, 3, 0, 0, {0x5}};
     for (size_t count = 1; count <= 400; count = count < 30 ? count + 1 : count * 3) {
         size_t size = count * 24;
         char *p = cooper_alloc(size, (CooperType *)&type);
@@ -79,7 +79,7 @@ static void test_pointer_words(void) {
         CHECK(!cooper_heap_is_pointer_word(slot, size / 8 + 1) || size / 8 + 1 >= slot_size / 8);
     }
     /* A value larger than a word of bitmap: 70 words, pointers at 0 and 69. */
-    Type wide = {560, 560, 0, 70, {1, 1 << 5}};
+    Type wide = {560, 560, 0, 70, 0, 0, {1, 1 << 5}};
     for (int copies = 1; copies <= 70; copies *= 7) {
         char *p = cooper_alloc(560 * (size_t)copies, (CooperType *)&wide);
         void *slot; size_t slot_size; int ns; size_t offset;
@@ -92,8 +92,8 @@ static void test_pointer_words(void) {
 }
 
 static void test_reuse_of_slots_clears_bits(void) {
-    Type type = {16, 16, 0, 2, {0x3}};
-    Type other = {16, 16, 0, 2, {0x2}};
+    Type type = {16, 16, 0, 2, 0, 0, {0x3}};
+    Type other = {16, 16, 0, 2, 0, 0, {0x2}};
     void *a = cooper_alloc(16, (CooperType *)&type);
     void *b = cooper_alloc(16, (CooperType *)&other);
     void *slot; size_t slot_size; int ns; size_t offset;
@@ -147,7 +147,7 @@ static __attribute__((noinline)) void scrub_stack(void) {
 }
 
 typedef struct Node { struct Node *next; uint64_t value; } Node;
-static Type node_type = {16, 16, 0, 2, {0x1, 0}};
+static Type node_type = {16, 16, 0, 2, 0, 0, {0x1, 0}};
 
 static size_t heap_size(void) {
     size_t bytes, spans;
@@ -227,6 +227,33 @@ static void test_freed_memory_is_poisoned(void) {
     CHECK(first == 0xDB);
 }
 
+/* A sum type { Num(u64), Ref(ptr) } as the compiler lays it out: a u32 tag, then the payload at byte 8. */
+typedef struct { uint32_t tag; uint64_t payload; } Sum;
+static const Type ref_payload = {8, 8, 0, 1, 0, 0, {1}};
+static const CooperType *const sum_variants[2] = {NULL, (const CooperType *)&ref_payload};
+static const CooperSite sum_site = {0, 8, 2, sum_variants};
+static const struct { uint64_t size, layout_size, flags, words, nsites; const CooperSite *sites; uint64_t bits[1]; }
+    sum_type = {16, 16, 0, 2, 1, &sum_site, {0}};
+
+static void test_sum_type_scans_only_the_live_variant(void) {
+    scrub_stack();
+    Sum *volatile holder = cooper_alloc(2 * sizeof(Sum), (const CooperType *)&sum_type);
+    unsigned char *kept = cooper_alloc(100, NULL);
+    unsigned char *dropped = cooper_alloc(100, NULL);
+    memset(kept, 0x11, 100);
+    memset(dropped, 0x22, 100);
+    holder[0].tag = 1;                      /* Ref: a pointer, which keeps its target */
+    holder[0].payload = (uintptr_t)kept;
+    holder[1].tag = 0;                      /* Num: an integer that happens to be an address */
+    holder[1].payload = (uintptr_t)dropped;
+    uintptr_t hidden_kept = ~(uintptr_t)kept, hidden_dropped = ~(uintptr_t)dropped;
+    kept = dropped = NULL;
+    scrub_stack();
+    cooper_gc_collect();
+    CHECK(((unsigned char *)~hidden_kept)[50] == 0x11);
+    CHECK(((unsigned char *)~hidden_dropped)[50] == 0xDB);
+}
+
 int main(void) {
     int stack_base;
     setenv("COOPER_GC", "poison", 1);
@@ -243,6 +270,7 @@ int main(void) {
     test_interior_pointer_keeps_an_object();
     test_large_objects_are_reused();
     test_freed_memory_is_poisoned();
+    test_sum_type_scans_only_the_live_variant();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

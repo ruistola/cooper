@@ -141,30 +141,8 @@ is shared by every iteration while each pass binds a fresh variable. Per-paramet
 the caller's frame; they are computed to a fixpoint over the whole program, so recursion is
 handled. A C function keeps no pointer it is passed, but may return one derived from an argument.
 
-**Type descriptors** (`gc.rs`, in the backend) prepare for the garbage collector. Every heap allocation
-goes through `cooper_alloc(size, type)`, where `type` is a constant descriptor of one value of the
-type allocated (its size, and a bitmap with a bit for each 8-byte word that holds a pointer), tiled
-for an array's storage; a null `type` marks an allocation with no pointers, which is never scanned
-(string bytes, arrays of numbers). The layout is computed exactly as LLVM lays the type out, and the
-descriptor carries LLVM's own size beside the computed one, which the runtime checks agree on every
-allocation. A sum type's descriptor marks every word any variant uses as a pointer and says so in its
-flags. The collector itself does not exist yet.
-
-The heap allocator (`runtime/gc.c`) is Go's design: 64 MiB arenas of 8 KiB pages grouped into spans, a
-small object (up to 32 KiB) in a slot of one of Go's 67 size classes (separate spans for scannable and
-pointer-free objects), a larger object in a span of its own, an arena table that finds the span of any
-address, and per-span allocation bits with a free index. Where an object's pointers are is recorded
-as it is allocated: a bitmap at the end of the span for objects up to 512 bytes, a header word holding
-the type before objects up to 32 KiB, the type in the span for the rest. The collector is stop-the-world mark and sweep, started when the allocated bytes reach twice what
-survived the last collection (at least 4 MiB). The heap is scanned precisely, by the records above. The
-roots are the module-level variables (a table of their addresses and descriptors the compiler emits as
-`cooper_roots`) and the stack and registers, scanned conservatively word by word: nothing moves, so
-an ambiguous word only keeps alive what it appears to point into. Sweeping makes the marked objects the
-allocated ones, returns spans with nothing live to a page heap that merges neighbouring free runs, and
-builds per-class lists of spans with free slots. `COOPER_GC=stress` collects at every allocation and
-`COOPER_GC=poison` fills freed memory with 0xDB; the golden-program harness runs every program a second
-time under `stress`. The allocator and collector are single-threaded. `gc_test.c` (run by `tests/allocator.rs`) tests it on its own.
-The driver writes `cooper.h` and `cooper_gc.c` beside the program and compiles them with it.
+**Garbage collection.** The backend gives every heap allocation a type descriptor (`gc.rs`) and the driver writes the
+runtime's `cooper.h` and `cooper_gc.c` beside the program; see [Garbage Collector](./garbage-collector.md).
 
 **Monomorphization** (`mono.rs`) is an IR-to-IR pass. Lowering keeps a generic function as a
 template. Starting from the non-generic functions, the pass instantiates each referenced

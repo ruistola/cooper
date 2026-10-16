@@ -51,7 +51,7 @@ typedef struct Span {
     uint32_t nelems;
     uint32_t freeindex;  /* slots below this are allocated; above it, allocated iff alloc_bits says so */
     uint32_t alloc_count;
-    uint16_t spanclass;  /* size class << 1 | noscan, or 0 for a large object */
+    uint16_t spanclass;  /* size class * 3 + kind, or 0 for a large object */
     uint8_t state;
     uint8_t noscan;
     uint8_t large;
@@ -316,16 +316,22 @@ static Span *span_of(uintptr_t address) {
 
 /* --- spans of small objects --- */
 
-static Span *cache[NUM_CLASSES * 2];
-static Span *partial[NUM_CLASSES * 2];
+/* The kinds of small-object span. A scannable object up to 512 bytes whose pointer words are the same
+   whatever it holds records them in a bitmap at the end of its span; any other scannable object has a
+   header word holding its type (which a sum type's variant sites need). */
+enum { KIND_BITS = 0, KIND_NOSCAN = 1, KIND_HEADER = 2, KINDS = 3 };
 
-static Span *new_small_span(int class, int noscan) {
+static Span *cache[NUM_CLASSES * KINDS];
+static Span *partial[NUM_CLASSES * KINDS];
+
+static Span *new_small_span(int class, int kind) {
+    int noscan = kind == KIND_NOSCAN;
     Span *span = new_span(class_pages[class]);
     size_t bytes = span->npages << PAGE_SHIFT;
     span->elemsize = class_size[class];
-    span->spanclass = (uint16_t)(class << 1 | noscan);
+    span->spanclass = (uint16_t)(class * KINDS + kind);
     span->noscan = (uint8_t)noscan;
-    span->heap_bits_in_span = !noscan && span->elemsize <= MIN_SIZE_FOR_HEADER;
+    span->heap_bits_in_span = kind == KIND_BITS;
     span->div_magic = UINT32_MAX / (uint32_t)span->elemsize + 1;
     /* A bitmap of one bit per word takes the end of the span. */
     size_t bitmap = span->heap_bits_in_span ? bytes / 64 : 0;
@@ -439,12 +445,12 @@ void *cooper_alloc(size_t size, const CooperType *type) {
     if (!ready) init_heap();
     if ((stress || (heap_used >= next_gc && !gc_off)) && stack_base && !collecting) collect();
     int noscan = type == NULL;
+    int kind = noscan ? KIND_NOSCAN : (type->nsites || size > MIN_SIZE_FOR_HEADER) ? KIND_HEADER : KIND_BITS;
     size_t total = size;
-    int header = !noscan && size > MIN_SIZE_FOR_HEADER;
-    if (header) total += HEADER_SIZE;
+    if (kind == KIND_HEADER) total += HEADER_SIZE;
     if (total < size || total > MAX_SMALL) return allocate_large(size, type);
     int class = size_to_class8[(total + 7) / 8];
-    int spanclass = class << 1 | noscan;
+    int spanclass = class * KINDS + kind;
     Span *span = cache[spanclass];
     void *slot = span ? next_free(span) : NULL;
     while (!slot) {
@@ -453,7 +459,7 @@ void *cooper_alloc(size_t size, const CooperType *type) {
             partial[spanclass] = span->partial_next;
             span->partial_next = NULL;
         } else {
-            span = new_small_span(class, noscan);
+            span = new_small_span(class, kind);
         }
         cache[spanclass] = span;
         slot = next_free(span);
@@ -591,18 +597,29 @@ static void mark_word(uintptr_t word) {
     push_work(span->start + (size_t)index * span->elemsize, span);
 }
 
+/* The pointers in one value of `type` at `base`: the words its bitmap names, and the payload of the
+   variant each sum type in it holds. */
+static void scan_value(const uint64_t *base, const CooperType *type) {
+    for (size_t chunk = 0; chunk < (type->words + 63) / 64; chunk++) {
+        uint64_t mask = type->bits[chunk];
+        while (mask) {
+            mark_word(base[chunk * 64 + (size_t)__builtin_ctzll(mask)]);
+            mask &= mask - 1;
+        }
+    }
+    for (uint64_t i = 0; i < type->nsites; i++) {
+        const CooperSite *site = &type->sites[i];
+        uint32_t tag = *(const uint32_t *)((const char *)base + site->tag_offset);
+        if (tag < site->variants && site->payloads[tag]) {
+            scan_value((const uint64_t *)((const char *)base + site->payload_offset), site->payloads[tag]);
+        }
+    }
+}
+
 /* The pointers among `bytes` bytes at `base`, which hold whole values of `type`. */
 static void scan_tiled(const uint64_t *base, size_t bytes, const CooperType *type) {
     size_t stride = type->size / 8;
-    for (size_t copy = 0; copy < bytes / type->size; copy++) {
-        for (size_t chunk = 0; chunk < (type->words + 63) / 64; chunk++) {
-            uint64_t mask = type->bits[chunk];
-            while (mask) {
-                mark_word(base[copy * stride + chunk * 64 + (size_t)__builtin_ctzll(mask)]);
-                mask &= mask - 1;
-            }
-        }
-    }
+    for (size_t copy = 0; copy < bytes / type->size; copy++) scan_value(base + copy * stride, type);
 }
 
 static void scan_object(uintptr_t slot, const Span *span) {
@@ -652,6 +669,13 @@ static void drain(void) {
             queue_head = (queue_head + 1) % queue_cap;
             queue_len--;
             span->queued = 0;
+            /* The span after this one will be scanned soon: start bringing in what that takes. */
+            if (queue_len) {
+                const Span *next = queue[queue_head];
+                __builtin_prefetch(next->mark_bits);
+                __builtin_prefetch(next->scan_bits);
+                __builtin_prefetch((const void *)next->start);
+            }
             scan_span(span);
         }
     }

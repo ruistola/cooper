@@ -1,0 +1,73 @@
+# exit: 0
+# stdout: 6 ab-cd12 6 many 3 kept
+# stdout: 5 30000
+# Sum types whose pointer words depend on the variant (a number, a string, a pointer, a nested sum
+# type, an array) stay intact while garbage is collected around them: the collector follows only the
+# variant a value holds (the harness also runs this collecting at every allocation).
+use {
+    std.io.println,
+}
+
+struct Node {
+    value: i32,
+    next: Item,
+}
+
+oneof Item {
+    Empty,
+    Num(i64),
+    Text(string),
+    Link(Node^),
+    Pair(Maybe string, i32),
+    Many(i32[]),
+}
+
+let items: Item[]
+
+func chain(n: i32): Item {
+    let item: Item = Item.Empty
+    for i in 0..n do {
+        let node: Node = Node{value: i, next: item}
+        item = Item.Link(&node)
+    }
+    return item
+}
+
+func depth(item: Item): i32 {
+    return match item with {
+        Link(node) => 1 + depth(node.next)
+        _ => 0
+    }
+}
+
+func churn(): i64 {
+    let total: i64 = 0
+    for i in 0..3000 do {
+        let junk: Item[]
+        for j in 0..10 do junk = junk.push(Item.Text("garbage {i} {j} and some padding text"))
+        total += junk.length()
+    }
+    return total
+}
+
+func describe(item: Item): string {
+    return match item with {
+        Empty => "-"
+        Num(n) => "{n}"
+        Text(s) => s
+        Link(node) => "link {node.value}"
+        Pair(m, n) => (if m is Some(s) then s else "none") + "{n}"
+        Many(xs) => "many {xs.length()}"
+    }
+}
+
+func main() {
+    items = items.push(Item.Num(6))
+    items = items.push(Item.Pair(Some("ab-cd"), 12))
+    items = items.push(chain(6))
+    items = items.push(Item.Many([1, 2, 3]))
+    items = items.push(Item.Text("kept"))
+    churn()
+    println("{describe(items[0])} {describe(items[1])} {depth(items[2])} {describe(items[3])} {describe(items[4])}")
+    println("{items.length()} {churn()}")
+}

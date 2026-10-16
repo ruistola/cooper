@@ -58,6 +58,23 @@ select(
 A channel or mutex is used through its address and must outlive the tasks using it, which `&` on a local
 arranges as for any escaping variable.
 
+## Task groups
+
+A `TaskGroup` owns the tasks started through it, so none outlives the code that waits for the group:
+
+```
+let group: TaskGroup
+for url in urls do group.start(func() { fetch(url, &group) })
+match group.wait() with {       # returns when every task has finished
+    Some(message) => println("failed: {message}")
+    None => {}
+}
+```
+
+`group.fail(message)` records the first failure and cancels the group; `group.cancel()` cancels without one.
+Cancellation is cooperative: tasks are never stopped from outside, they check `group.cancelled()` where they
+can stop (a loop, between steps). Plain `co` remains for fire-and-forget work.
+
 ## Stacks
 
 Every task has a stack of its own: 8 MiB of reserved address space with a guard page at the low end, which
@@ -78,5 +95,4 @@ with the primitives in `std.sync`.
 
 ## Not yet
 
-Running tasks on several threads, `RWMutex`, `Once`, atomics, task groups with cancellation and error
-propagation, preemption, timers beyond `sleep`, and handing a blocking C call's thread to other tasks.
+Running tasks on several threads, `RWMutex`, `Once`, atomics, nested groups that cancel their children, preemption, timers beyond `sleep`, and handing a blocking C call's thread to other tasks.

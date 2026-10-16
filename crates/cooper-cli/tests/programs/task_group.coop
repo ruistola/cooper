@@ -1,0 +1,50 @@
+# exit: 0
+# stdout: all 5 done
+# stdout: error: disk full
+# stdout: stopped early: true
+# stdout: error: none
+use {
+    std.io.println,
+    std.sync.{ Mutex, TaskGroup },
+    std.task.{ sleep, yield },
+}
+
+func report(e: Maybe string) {
+    match e with {
+        Some(m) => println("error: {m}")
+        None => println("error: none")
+    }
+}
+
+func main() {
+    # every task finishes before wait returns
+    let group: TaskGroup
+    finished := 0
+    for i in 0..5 do group.start(func() {
+        sleep(2 * i)
+        finished += 1
+    })
+    group.wait()
+    println("all {finished} done")
+
+    # a failure cancels the rest, which check and stop
+    let failing: TaskGroup
+    steps := 0
+    failing.start(func() {
+        sleep(3)
+        failing.fail("disk full")
+    })
+    for i in 0..3 do failing.start(func() {
+        while !failing.cancelled() do {
+            steps += 1
+            sleep(1)
+        }
+    })
+    report(failing.wait())
+    println("stopped early: {steps < 100}")
+
+    # a group with no failure
+    let quiet: TaskGroup
+    quiet.start(func() { yield() })
+    report(quiet.wait())
+}

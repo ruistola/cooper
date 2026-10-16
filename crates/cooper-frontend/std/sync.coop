@@ -215,3 +215,46 @@ func select(cases: ...Case) {
         for c in cases do c.unwatch()
     }
 }
+
+# Tasks started together and waited for together. `wait` returns only when every task started with `start`
+# has finished, so no task outlives the code that owns the group. A task that fails calls `fail`, which records
+# the first message and cancels the group; the others learn of it by checking `cancelled`, since tasks are
+# never stopped from outside.
+struct TaskGroup {
+    running: WaitGroup,
+    stopped: bool,
+    error: Maybe string,
+}
+
+func run_in_group(group: TaskGroup^, f: func()) {
+    f()
+    group.running.done()
+}
+
+# Runs `f` as a task of the group.
+(group: TaskGroup^) func start(f: func()) {
+    group.running.add(1)
+    co run_in_group(group, f)
+}
+
+# Asks the group's tasks to stop.
+(group: TaskGroup^) func cancel() {
+    group.stopped = true
+}
+
+# Whether the group was cancelled, by `cancel` or by a failure.
+(group: TaskGroup^) func cancelled(): bool {
+    return group.stopped
+}
+
+# Records `message` as the group's error unless one is already recorded, and cancels the group.
+(group: TaskGroup^) func fail(message: string) {
+    if group.error is None then group.error = Some(message)
+    group.stopped = true
+}
+
+# Blocks until every task of the group has finished, then gives the first error, if any.
+(group: TaskGroup^) func wait(): Maybe string {
+    group.running.wait()
+    return group.error
+}

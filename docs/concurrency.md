@@ -2,8 +2,8 @@
 
 Work runs in **tasks**, lightweight coroutines started with `co`. The design follows Go's: many cheap
 tasks multiplexed by a scheduler onto threads, no function colors (any function can run as a task), and
-shared memory with explicit synchronization. Today the scheduler runs all tasks on one thread; threads,
-channels, and preemption are planned.
+shared memory with explicit synchronization. Today the scheduler runs all tasks on one thread; threads
+and preemption are planned.
 
 ## Starting a task
 
@@ -28,6 +28,36 @@ If every task is blocked (and none is sleeping) the program stops with a deadloc
 `std.sync.WaitGroup` waits for tasks: `add(n)` before starting them, `done()` as each finishes, `wait()` to
 block until all have.
 
+## Mutexes and channels
+
+`Mutex` (`lock`, `try_lock`, `unlock`) guards data used across a blocking call. `Channel T` passes values between
+tasks; `channel(n)` makes one holding up to `n` values, and `channel(0)` is unbuffered (a send completes when a
+receiver is waiting):
+
+```
+ch: Channel i32 = channel(4)
+co produce(&ch)
+match ch.recv() with {          # blocks; None once closed and empty
+    Some(v) => use(v)
+    None => done()
+}
+ch.send(5)                      # blocks while full; sending on a closed channel is fatal
+ch.close()
+```
+
+`select` waits for whichever of its cases can complete first (the earliest listed wins a tie) and runs that
+case's function. The cases are `recv(&ch, f)`, `send(&ch, value, f)` and `timeout(ms, f)`:
+
+```
+select(
+    recv(&results, func(r: Maybe i32) { handle(r) }),
+    timeout(500, func() { println("gave up") }),
+)
+```
+
+A channel or mutex is used through its address and must outlive the tasks using it, which `&` on a local
+arranges as for any escaping variable.
+
 ## Stacks
 
 Every task has a stack of its own: 8 MiB of reserved address space with a guard page at the low end, which
@@ -48,5 +78,5 @@ with the primitives in `std.sync`.
 
 ## Not yet
 
-Running tasks on several threads, `Mutex`, `Channel T`, `select`, task groups with cancellation and error
+Running tasks on several threads, `RWMutex`, `Once`, atomics, task groups with cancellation and error
 propagation, preemption, timers beyond `sleep`, and handing a blocking C call's thread to other tasks.

@@ -47,6 +47,8 @@ void *cooper_current_task(void);
 /* Stop the current task until cooper_ready is called on its handle. */
 void cooper_park(void);
 void cooper_ready(void *task);
+/* Monotonic time in nanoseconds. */
+int64_t cooper_now(void);
 /* Set up the scheduler; the address is a local of `main`, the top of the main task's stack. */
 void cooper_sched_init(void *stack_base);
 /* For the collector: the top of the running task's stack, and the other tasks' stacks. */

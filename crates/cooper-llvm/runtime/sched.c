@@ -295,6 +295,10 @@ void cooper_park(void) {
 }
 
 /* Make a parked task runnable. */
+int64_t cooper_now(void) {
+    return now_ns();
+}
+
 void cooper_ready(void *handle) {
     Task *task = handle;
     if (task->state == PARKED) enqueue(task);

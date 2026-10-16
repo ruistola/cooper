@@ -4,6 +4,8 @@ extern func cooper_current_task(): u8^
 extern func cooper_park()
 extern func cooper_ready(task: u8^)
 extern func cooper_fail(message: u8^)
+extern func cooper_now(): i64
+extern func cooper_sleep(nanoseconds: i64)
 
 # Waits for a number of tasks to finish: `add` before starting them, `done` as each ends, `wait` to
 # block until all have.
@@ -33,5 +35,183 @@ struct WaitGroup {
     while wg.count > 0 do {
         wg.waiters = wg.waiters.push(cooper_current_task())
         cooper_park()
+    }
+}
+
+# Wakes every task in `waiters` and empties it. Waiting loops re-check their condition, so waking
+# more tasks than needed is harmless.
+func wake_all(waiters: (u8^[])^) {
+    for task in waiters^ do cooper_ready(task)
+    waiters^ = []
+}
+
+# Mutual exclusion between tasks. Tasks switch only where they block, so a lock matters for data that is
+# used across a blocking call; the same rule will hold when tasks run on several threads.
+struct Mutex {
+    locked: bool,
+    waiters: u8^[],
+}
+
+# Blocks until the mutex is free, then holds it.
+(m: Mutex^) func lock() {
+    while m.locked do {
+        m.waiters = m.waiters.push(cooper_current_task())
+        cooper_park()
+    }
+    m.locked = true
+}
+
+# Holds the mutex if it is free, and says whether it did.
+(m: Mutex^) func try_lock(): bool {
+    if m.locked then return false
+    m.locked = true
+    return true
+}
+
+# Releases the mutex, waking tasks waiting for it.
+(m: Mutex^) func unlock() {
+    if !m.locked then cooper_fail("unlock of unlocked Mutex\0".data())
+    m.locked = false
+    wake_all(&m.waiters)
+}
+
+# A queue of values passed between tasks. With capacity 0 a send completes when a receiver is waiting
+# for the value; with capacity n up to n values wait in the channel, and a send blocks only while it is full.
+# `recv` returns `None` once the channel is closed and empty.
+struct Channel T {
+    items: T[],
+    head: i64,
+    capacity: i64,
+    receiving: i64,
+    closed: bool,
+    waiters: u8^[],
+}
+
+# A channel holding up to `capacity` values.
+func channel T (capacity: i64): Channel T {
+    let ch: Channel T = Channel{items: [], head: 0, capacity: capacity, receiving: 0, closed: false, waiters: []}
+    return ch
+}
+
+(ch: (Channel T)^) func pending(): i64 {
+    return ch.items.length() - ch.head
+}
+
+(ch: (Channel T)^) func can_send(): bool {
+    if ch.closed then cooper_fail("send on closed Channel\0".data())
+    return ch.pending() < ch.capacity or (ch.capacity == 0 and ch.pending() < ch.receiving)
+}
+
+(ch: (Channel T)^) func can_recv(): bool {
+    return ch.pending() > 0 or ch.closed
+}
+
+(ch: (Channel T)^) func put(value: T) {
+    ch.items = ch.items.push(value)
+    wake_all(&ch.waiters)
+}
+
+(ch: (Channel T)^) func take(): Maybe T {
+    if ch.pending() == 0 then return None
+    value := ch.items[ch.head]
+    ch.head += 1
+    if ch.head == ch.items.length() then {
+        ch.items = []
+        ch.head = 0
+    }
+    wake_all(&ch.waiters)
+    return Some(value)
+}
+
+# Blocks until the value can be sent. Sending on a closed channel is a fatal error.
+(ch: (Channel T)^) func send(value: T) {
+    while !ch.can_send() do {
+        ch.waiters = ch.waiters.push(cooper_current_task())
+        cooper_park()
+    }
+    ch.put(value)
+}
+
+# Blocks until a value arrives, or the channel is closed and empty, which gives `None`.
+(ch: (Channel T)^) func recv(): Maybe T {
+    ch.receiving += 1
+    wake_all(&ch.waiters)
+    while !ch.can_recv() do {
+        ch.waiters = ch.waiters.push(cooper_current_task())
+        cooper_park()
+    }
+    ch.receiving -= 1
+    return ch.take()
+}
+
+# Ends the channel: values still in it can be received, then receives give `None`.
+(ch: (Channel T)^) func close() {
+    ch.closed = true
+    wake_all(&ch.waiters)
+}
+
+# One alternative of a `select`: `attempt` does the operation and runs the case's function if the
+# operation can complete now; `watch` arranges for `task` to be woken when it may; `unwatch` undoes `watch`.
+struct Case{
+    attempt: func(): bool,
+    watch: func(u8^),
+    unwatch: func(),
+}
+
+# Runs the function with the next value of `ch` (`None` once it is closed and empty).
+func recv T (ch: (Channel T)^, f: func(Maybe T)): Case {
+    attempt := func(): bool {
+        if !ch.can_recv() then return false
+        f(ch.take())
+        return true
+    }
+    watch := func(task: u8^) {
+        ch.receiving += 1
+        ch.waiters = ch.waiters.push(task)
+        wake_all(&ch.waiters)
+    }
+    unwatch := func() { ch.receiving -= 1 }
+    return Case{attempt: attempt, watch: watch, unwatch: unwatch}
+}
+
+# Sends `value`, then runs the function.
+func send T (ch: (Channel T)^, value: T, f: func()): Case {
+    attempt := func(): bool {
+        if !ch.can_send() then return false
+        ch.put(value)
+        f()
+        return true
+    }
+    watch := func(task: u8^) { ch.waiters = ch.waiters.push(task) }
+    unwatch := func() {}
+    return Case{attempt: attempt, watch: watch, unwatch: unwatch}
+}
+
+# Runs the function if no other case has completed within `ms` milliseconds of this call.
+func timeout(ms: i64, f: func()): Case {
+    deadline := cooper_now() + ms * 1000000
+    attempt := func(): bool {
+        if cooper_now() < deadline then return false
+        f()
+        return true
+    }
+    watch := func(task: u8^) { co wake_at(task, deadline) }
+    unwatch := func() {}
+    return Case{attempt: attempt, watch: watch, unwatch: unwatch}
+}
+
+func wake_at(task: u8^, deadline: i64) {
+    cooper_sleep(deadline - cooper_now())
+    cooper_ready(task)
+}
+
+# Waits until one of the cases can complete, and completes it; the first of them in argument order when
+# several can.
+func select(cases: ...Case) {
+    while true do {
+        for c in cases do if c.attempt() then return
+        for c in cases do c.watch(cooper_current_task())
+        cooper_park()
+        for c in cases do c.unwatch()
     }
 }

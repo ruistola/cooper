@@ -1,0 +1,106 @@
+# exit: 0
+# stdout: sum 4950
+# stdout: ping pong 3
+# stdout: closed after 5, got 10
+# stdout: counter 400
+# stdout: first ready: a
+# stdout: timed out
+# stdout: sent 7
+use {
+    std.io.println,
+    std.sync.{ Channel, Mutex, WaitGroup, channel, recv, send, select, timeout },
+    std.task.{ sleep, yield },
+}
+
+func produce(ch: (Channel i32)^, from: i32, to: i32) {
+    for i in from..to do ch.send(i)
+}
+
+func bump(m: Mutex^, counter: i64^, wg: WaitGroup^) {
+    for i in 0..100 do {
+        m.lock()
+        let seen = counter^
+        yield()
+        counter^ = seen + 1
+        m.unlock()
+    }
+    wg.done()
+}
+
+func value(m: Maybe i32): i32 {
+    return match m with {
+        Some(v) => v
+        None => 0
+    }
+}
+
+func relay(ping: (Channel i32)^, pong: (Channel i32)^) {
+    for i in 0..3 do pong.send(value(ping.recv()) + 1)
+}
+
+func late(out: (Channel i32)^) {
+    sleep(5)
+    println("sent {value(out.recv())}")
+}
+
+func main() {
+    # unbuffered channel, two producers, one consumer
+    numbers := channel(0)
+    co produce(&numbers, 0, 50)
+    co produce(&numbers, 50, 100)
+    total := 0
+    for i in 0..100 do match numbers.recv() with {
+        Some(v) => total += v
+        None => println("unexpected close")
+    }
+    println("sum {total}")
+
+    # two tasks taking turns over a pair of channels
+    ping := channel(0)
+    pong := channel(0)
+    co relay(&ping, &pong)
+    r := 0
+    for i in 0..3 do {
+        ping.send(r)
+        r = value(pong.recv())
+    }
+    println("ping pong {r}")
+
+    # buffered channel, closed
+    buf := channel(8)
+    for i in 0..5 do buf.send(i)
+    buf.close()
+    n := 0
+    sum := 0
+    while true do match buf.recv() with {
+        Some(v) => { n += 1; sum += v }
+        None => break
+    }
+    println("closed after {n}, got {sum}")
+
+    # a mutex around a read-yield-write
+    let m: Mutex
+    counter := 0
+    let wg: WaitGroup
+    wg.add(4)
+    for i in 0..4 do co bump(&m, &counter, &wg)
+    wg.wait()
+    println("counter {counter}")
+
+    # select
+    a := channel(1)
+    b := channel(1)
+    a.send("a")
+    select(
+        recv(&b, func(v: Maybe string) { println("first ready: b") }),
+        recv(&a, func(v: Maybe string) { println("first ready: a") }),
+    )
+    select(
+        recv(&b, func(v: Maybe string) { println("got b") }),
+        timeout(20, func() { println("timed out") }),
+    )
+    out := channel(0)
+    co late(&out)
+    select(send(&out, 7, func() {}))
+    sleep(10)
+}

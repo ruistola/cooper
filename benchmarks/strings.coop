@@ -1,0 +1,18 @@
+# Strings and arrays: building many small strings, joining, and growing arrays.
+use {
+    std.io.println,
+    std.strings.join,
+}
+
+func main() {
+    total := 0
+    for round in 0..60 do {
+        let parts: string[]
+        for i in 0..20000 do parts = parts.push("item {i} of round {round}")
+        text := join(parts, ",")
+        total += text.length()
+        pieces := text.split(",")
+        total += pieces.length()
+    }
+    println("{total}")
+}

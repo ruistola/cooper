@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <time.h>
 
 #include "cooper.h"
 
@@ -130,6 +131,25 @@ static size_t next_gc;    /* collect when `heap_used` reaches this */
 static int stress, poison;
 static void *stack_base;
 static int collecting;
+static unsigned gogc = 100;   /* the heap may grow to this percent over what survived: COOPER_GOGC */
+static int gc_off;
+static size_t root_bytes;      /* stack and module-level variables scanned by the last collection */
+
+/* --- measurements: COOPER_GC=trace prints a line per collection, COOPER_GC_STATS=1 a summary at exit --- */
+
+static struct {
+    uint64_t collections, allocations, bytes_allocated;
+    uint64_t mark_ns, sweep_ns, max_pause_ns;
+    size_t peak_heap, last_live;
+} stats;
+static int trace;
+static size_t released_bytes; /* memory returned to the operating system, in all */
+
+static uint64_t now_ns(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (uint64_t)t.tv_sec * 1000000000u + (uint64_t)t.tv_nsec;
+}
 
 static void register_arena(Arena *arena, size_t chunks) {
     for (size_t chunk = 0; chunk < chunks; chunk++) {
@@ -161,6 +181,7 @@ static Arena *new_arena(size_t pages_wanted) {
 typedef struct Run {
     Arena *arena;
     size_t first_page, npages;
+    int released; /* the memory has been given back to the operating system */
     struct Run *next;
 } Run;
 
@@ -184,12 +205,14 @@ static void free_pages(Arena *arena, size_t first_page, size_t npages) {
     run->arena = arena;
     run->first_page = first_page;
     run->npages = npages;
+    run->released = 0;
     run->next = *link;
     *link = run;
     /* Merge with the next run, then the one before. */
     Run *after = run->next;
     if (after && after->arena == arena && run->first_page + run->npages == after->first_page) {
         run->npages += after->npages;
+        run->released = 0;
         run->next = after->next;
         after->next = spare_runs;
         spare_runs = after;
@@ -197,6 +220,7 @@ static void free_pages(Arena *arena, size_t first_page, size_t npages) {
     for (Run *before = free_runs; before && before != run; before = before->next) {
         if (before->next == run && before->arena == arena && before->first_page + before->npages == run->first_page) {
             before->npages += run->npages;
+            before->released = 0;
             before->next = run->next;
             run->next = spare_runs;
             spare_runs = run;
@@ -217,6 +241,10 @@ static Span *new_span(size_t npages) {
         arena = run->arena;
         first_page = run->first_page;
         dirty = 1;
+#ifdef MADV_FREE_REUSE
+        /* Tell the system the pages are in use again (it accounts for them that way). */
+        if (run->released) madvise((void *)(arena->base + (first_page << PAGE_SHIFT)), npages << PAGE_SHIFT, MADV_FREE_REUSE);
+#endif
         run->first_page += npages;
         run->npages -= npages;
         if (run->npages == 0) {
@@ -362,17 +390,35 @@ static void *allocate_large(size_t size, const CooperType *type) {
     span_bits(span, 1);
     if (span->needzero) memset((void *)span->start, 0, size);
     heap_used += span->elemsize;
+    stats.allocations++;
+    stats.bytes_allocated += span->elemsize;
+    if (heap_bytes > stats.peak_heap) stats.peak_heap = heap_bytes;
     return (void *)span->start;
 }
 
 static void collect(void);
 
+static void print_stats(void) {
+    uint64_t pause = stats.mark_ns + stats.sweep_ns;
+    fprintf(stderr,
+            "gc: %llu collections, %.1f ms collecting (mark %.1f, sweep %.1f), longest pause %.2f ms\n"
+            "gc: %llu allocations, %.1f MiB allocated, peak heap %.1f MiB, %.1f MiB live after the last collection, %.1f MiB returned to the system\n",
+            (unsigned long long)stats.collections, pause / 1e6, stats.mark_ns / 1e6, stats.sweep_ns / 1e6,
+            stats.max_pause_ns / 1e6, (unsigned long long)stats.allocations, stats.bytes_allocated / 1048576.0,
+            stats.peak_heap / 1048576.0, stats.last_live / 1048576.0, released_bytes / 1048576.0);
+}
+
 static void init_heap(void) {
     init_classes();
     const char *mode = getenv("COOPER_GC");
+    trace = mode && strstr(mode, "trace");
+    if (getenv("COOPER_GC_STATS")) atexit(print_stats);
+    const char *percent = getenv("COOPER_GOGC");
+    if (percent && !strcmp(percent, "off")) gc_off = 1;
+    else if (percent && atoi(percent) > 0) gogc = (unsigned)atoi(percent);
     stress = mode && strstr(mode, "stress");
     poison = stress || (mode && strstr(mode, "poison"));
-    next_gc = MIN_HEAP;
+    next_gc = MIN_HEAP * gogc / 100;
     ready = 1;
 }
 
@@ -382,7 +428,7 @@ void *cooper_alloc(size_t size, const CooperType *type) {
     }
     if (size == 0) return &zerobase;
     if (!ready) init_heap();
-    if ((stress || heap_used >= next_gc) && stack_base && !collecting) collect();
+    if ((stress || (heap_used >= next_gc && !gc_off)) && stack_base && !collecting) collect();
     int noscan = type == NULL;
     size_t total = size;
     int header = !noscan && size > MIN_SIZE_FOR_HEADER;
@@ -404,6 +450,8 @@ void *cooper_alloc(size_t size, const CooperType *type) {
         slot = next_free(span);
     }
     heap_used += span->elemsize;
+    stats.allocations++;
+    stats.bytes_allocated += span->elemsize;
     if (span->needzero) memset(slot, 0, span->elemsize);
     if (noscan) return slot;
     if (span->heap_bits_in_span) {
@@ -548,7 +596,9 @@ extern const struct Root cooper_roots[];
 extern const int64_t cooper_root_count;
 
 static void mark_roots(void) {
+    root_bytes = 0;
     for (int64_t i = 0; i < cooper_root_count; i++) {
+        root_bytes += cooper_roots[i].type->size;
         scan_tiled(cooper_roots[i].address, cooper_roots[i].type->size, cooper_roots[i].type);
     }
     drain();
@@ -558,6 +608,7 @@ static void mark_roots(void) {
 static __attribute__((noinline)) void scan_stack(void) {
     volatile uintptr_t here = 0;
     uintptr_t low = (uintptr_t)&here & ~(uintptr_t)7;
+    root_bytes += (size_t)((uintptr_t)stack_base - low);
     for (const uintptr_t *word = (const uintptr_t *)low; (const void *)word < stack_base; word++) {
         mark_word(*word);
     }
@@ -630,6 +681,28 @@ static void sweep(void) {
     }
 }
 
+/* Give the memory of large free runs back to the operating system, once each. The runs are dirty
+   anyway (allocation zeroes what it hands out), so whatever the system leaves in them does not matter. */
+#define SCAVENGE_MIN_PAGES 16
+
+
+static void scavenge(void) {
+    for (Run *run = free_runs; run; run = run->next) {
+        if (run->released || run->npages < SCAVENGE_MIN_PAGES) continue;
+        void *start = (void *)(run->arena->base + (run->first_page << PAGE_SHIFT));
+        size_t bytes = run->npages << PAGE_SHIFT;
+#ifdef MADV_FREE_REUSABLE
+        madvise(start, bytes, MADV_FREE_REUSABLE);
+#elif defined(MADV_FREE)
+        madvise(start, bytes, MADV_FREE);
+#else
+        madvise(start, bytes, MADV_DONTNEED);
+#endif
+        run->released = 1;
+        released_bytes += bytes;
+    }
+}
+
 static __attribute__((noinline)) void collect_with_registers(void) {
     /* The callee-saved registers are spilled into this frame, which the scan covers. */
     __builtin_unwind_init();
@@ -638,10 +711,27 @@ static __attribute__((noinline)) void collect_with_registers(void) {
 
 static void collect(void) {
     collecting = 1;
+    if (heap_bytes > stats.peak_heap) stats.peak_heap = heap_bytes;
+    uint64_t start = now_ns();
     mark_roots();
     collect_with_registers();
+    uint64_t marked = now_ns();
     sweep();
-    next_gc = heap_used * 2 > MIN_HEAP ? heap_used * 2 : MIN_HEAP;
+    uint64_t done = now_ns();
+    /* Go's goal: what survived, plus a percentage of it and of the roots, but at least a minimum. */
+    next_gc = heap_used + (heap_used + root_bytes) / 100 * gogc;
+    if (next_gc < MIN_HEAP / 100 * gogc) next_gc = MIN_HEAP / 100 * gogc;
+    scavenge();
+    stats.collections++;
+    stats.mark_ns += marked - start;
+    stats.sweep_ns += done - marked;
+    if (done - start > stats.max_pause_ns) stats.max_pause_ns = done - start;
+    stats.last_live = heap_used;
+    if (trace) {
+        fprintf(stderr, "gc %llu: mark %.2f ms, sweep %.2f ms, live %.1f MiB, next at %.1f MiB, heap %.1f MiB\n",
+                (unsigned long long)stats.collections, (marked - start) / 1e6, (done - marked) / 1e6,
+                heap_used / 1048576.0, next_gc / 1048576.0, heap_bytes / 1048576.0);
+    }
     collecting = 0;
 }
 

@@ -1,0 +1,31 @@
+# A large live heap that every collection must mark, with steady short-lived garbage on top.
+use {
+    std.io.println,
+}
+
+struct Tree {
+    left: Tree^,
+    right: Tree^,
+}
+
+func make(depth: i32): Tree^ {
+    let t: Tree
+    if depth > 0 then {
+        t.left = make(depth - 1)
+        t.right = make(depth - 1)
+    }
+    return &t
+}
+
+func check(t: Tree^): i32 {
+    if t.left == nil then return 1
+    return 1 + check(t.left) + check(t.right)
+}
+
+func main() {
+    long := make(22)
+    sum := 0
+    for i in 0..20000 do sum += check(make(10))
+    println("short lived: {sum}")
+    println("long lived: {check(long)}")
+}

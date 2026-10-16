@@ -1,0 +1,37 @@
+# Allocation-heavy: many short-lived trees of several depths, and one long-lived tree.
+use {
+    std.io.println,
+}
+
+struct Tree {
+    left: Tree^,
+    right: Tree^,
+}
+
+func make(depth: i32): Tree^ {
+    let t: Tree
+    if depth > 0 then {
+        t.left = make(depth - 1)
+        t.right = make(depth - 1)
+    }
+    return &t
+}
+
+func check(t: Tree^): i32 {
+    if t.left == nil then return 1
+    return 1 + check(t.left) + check(t.right)
+}
+
+func main() {
+    maxDepth := 18
+    long := make(maxDepth)
+    d := 4
+    while d <= maxDepth do {
+        iters := 1 << (maxDepth - d + 4)
+        sum := 0
+        for i in 0..iters do sum += check(make(d))
+        println("{iters} trees of depth {d}: {sum}")
+        d += 4
+    }
+    println("long lived: {check(long)}")
+}

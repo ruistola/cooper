@@ -409,6 +409,8 @@ pub enum Intrinsic {
     StringLength,
     /// `data(): u8^` — a pointer to a string's first byte. Args: `[string]`.
     StringData,
+    /// The source location (`file:line:column`) of the node it is on, as a string.
+    SourceLocation,
     /// `byteAt(i): u8` — the byte at an offset of a string. Args: `[string, index]`.
     StringByteAt,
     /// The bytes of a string from `start` up to `end` (exclusive, or inclusive when

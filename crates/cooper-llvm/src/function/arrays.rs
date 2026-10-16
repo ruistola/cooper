@@ -132,6 +132,14 @@ impl Emitter<'_, '_> {
                 _ => unreachable!("an array literal is an array"),
             };
         }
+        if op == Intrinsic::SourceLocation {
+            let text = self.module.locate(&self.file, span);
+            let bytes = self.module.string(&text);
+            return Ok(Some(Value {
+                ty: STRING.to_string(),
+                operand: format!("{{ ptr {bytes}, i64 {} }}", text.len()),
+            }));
+        }
         if matches!(op, Intrinsic::StringLength | Intrinsic::StringByteAt | Intrinsic::StringData | Intrinsic::StringSlice { .. }) {
             return self.string_intrinsic(op, args, span).map(Some);
         }
@@ -162,6 +170,7 @@ impl Emitter<'_, '_> {
             | Intrinsic::StringLength
             | Intrinsic::StringByteAt
             | Intrinsic::StringData
+            | Intrinsic::SourceLocation
             | Intrinsic::StringSlice { .. } => unreachable!("handled above"),
             Intrinsic::Format(_) => unreachable!("expanded before code generation"),
             Intrinsic::ArrayLength => {

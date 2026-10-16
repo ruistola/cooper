@@ -1161,7 +1161,30 @@ impl Lower<'_> {
                 let operands = self.each(operands)?;
                 return Ok(chain(operands, ops, &ty, expr.span));
             }
-            ExprKind::Call { callee, args } => self.lower_call(callee, args, &ty)?,
+            ExprKind::Call { callee, args } => match self.located_callee(callee) {
+                // A call that reports where it was written passes its own location on.
+                Some(at_item) => {
+                    let string = Type::Primitive("string".to_string());
+                    let mut lowered = self.each(args)?;
+                    lowered.push(IrExpr {
+                        kind: IrExprKind::Intrinsic { op: Intrinsic::SourceLocation, args: Vec::new() },
+                        ty: string.clone(),
+                        span: expr.span,
+                    });
+                    let mut param_types: Vec<Type> = lowered.iter().map(|a| a.ty.clone()).collect();
+                    param_types.truncate(lowered.len());
+                    let callee_ty = Type::Func { return_type: Box::new(ty.clone()), param_types };
+                    IrExprKind::Call {
+                        callee: Box::new(IrExpr {
+                            kind: IrExprKind::FuncRef { item: at_item, type_args: Vec::new() },
+                            ty: callee_ty,
+                            span: callee.span,
+                        }),
+                        args: lowered,
+                    }
+                }
+                None => self.lower_call(callee, args, &ty)?,
+            },
             ExprKind::Field { .. } if self.dispatch.contains_key(&(expr.span, 0)) => {
                 return unsupported(expr.span, "a method of a sum type used as a value");
             }
@@ -1861,6 +1884,16 @@ impl Lower<'_> {
             lowered.push(self.expr(arg)?);
         }
         Ok(Some(IrExprKind::Intrinsic { op, args: lowered }))
+    }
+
+    /// The function that takes the place of the callee when it names one of the standard
+    /// library functions that report where they were called from (`std.testing.check` and
+    /// `fail`): the same function with the call's location as a final argument.
+    fn located_callee(&self, callee: &Expr) -> Option<Callable> {
+        let reference = self.refs.get(&strip_group(callee).span)?;
+        let Callable::Func { module, name } = &reference.item else { return None };
+        (module == "std.testing" && matches!(name.as_str(), "check" | "fail"))
+            .then(|| Callable::Func { module: module.clone(), name: format!("{name}At") })
     }
 
     /// A call `value.method(args)` of a method across the variants of a sum type: the receiver

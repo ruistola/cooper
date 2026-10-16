@@ -34,7 +34,9 @@ fn tests_run_one_at_a_time_and_report_their_own_status() {
     assert!(run(0).status.success());
     let failing = run(1);
     assert_eq!(failing.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&failing.stderr).contains("FAIL: wrong sum"));
+    let stderr = String::from_utf8_lossy(&failing.stderr);
+    assert!(stderr.contains("FAIL: wrong sum"));
+    assert!(stderr.contains("main_test.coop:3:"), "the failure says where: {stderr}");
 
     // An ordinary load leaves the test sources out.
     let plain = cooper_cli::load(&root).unwrap();

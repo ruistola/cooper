@@ -46,5 +46,9 @@ need no `main`.
 
 ## Not yet
 
-Failure messages do not say where in the test they came from, tests run one after another, and
+A failing `check` or `fail` reports the file, line, and column it was written at: the compiler
+passes that location to `std.testing` for those two functions alone (a general mechanism is not
+designed). Used as a value (`f := check`) they report no location.
+
+Tests run one after another, and
 there is no timeout, set-up and tear-down, or benchmark support.

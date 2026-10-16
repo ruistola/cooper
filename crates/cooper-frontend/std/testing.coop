@@ -10,13 +10,24 @@ use {
 
 extern func exit(status: i32)
 
-# Fails the test, saying `message`.
+# Fails the test, saying `message`. A call to `fail` or `check` also reports where it was
+# written: the compiler passes that location to `failAt` and `checkAt`.
 func fail(message: string) {
-    eprintln("FAIL: " + message)
-    exit(1)
+    failAt(message, "unknown location")
 }
 
 # Fails the test with `message` unless `ok` holds.
 func check(ok: bool, message: string) {
-    if !ok then fail(message)
+    checkAt(ok, message, "unknown location")
+}
+
+# `fail`, told where it was called from.
+func failAt(message: string, at: string) {
+    eprintln("FAIL: " + message + "\n      at " + at)
+    exit(1)
+}
+
+# `check`, told where it was called from.
+func checkAt(ok: bool, message: string, at: string) {
+    if !ok then failAt(message, at)
 }

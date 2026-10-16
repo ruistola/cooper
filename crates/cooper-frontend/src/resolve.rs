@@ -121,6 +121,30 @@ impl Globals {
         })
     }
 
+    /// The identity of the struct `name` names: a struct, or an alias of one.
+    pub fn struct_id(&self, name: &str) -> Option<TypeId> {
+        match self.aliases.get(name) {
+            Some(Type::Struct { id, .. }) => Some(id.clone()),
+            _ => self.structs.get(name).cloned(),
+        }
+    }
+
+    /// The identity of the sum type `name` names: a sum type, or an alias of one.
+    pub fn oneof_id(&self, name: &str) -> Option<TypeId> {
+        match self.aliases.get(name) {
+            Some(Type::Oneof { id, .. }) => Some(id.clone()),
+            _ => self.oneofs.get(name).cloned(),
+        }
+    }
+
+    /// The struct or sum type `name` names as a value in an expression (`Point{…}`,
+    /// `Maybe.Some`): the declaration, or the type an alias of one stands for.
+    pub fn lookup_type_value(&self, name: &str) -> Option<Type> {
+        self.lookup_struct(name)
+            .or_else(|| self.lookup_oneof(name))
+            .or_else(|| self.aliases.get(name).filter(|t| matches!(t, Type::Struct { .. } | Type::Oneof { .. })).cloned())
+    }
+
     pub fn lookup_func(&self, name: &str) -> Option<&Signature> {
         self.funcs.get(name)
     }

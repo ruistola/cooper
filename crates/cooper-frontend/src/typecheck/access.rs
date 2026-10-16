@@ -109,7 +109,7 @@ impl<'g> TypeChecker<'g> {
         // A type name (`Shape.Circle`) names a variant; a value (`shape.area()`) may call a
         // method across its variants.
         let type_name = matches!(&target.kind, ExprKind::Ident(name)
-            if self.lookup_var(name).is_none() && self.globals.lookup_oneof(name).is_some());
+            if self.lookup_var(name).is_none() && self.globals.oneof_id(name).is_some());
         self.resolve_field(target_type, field, span, target.span, type_name)
     }
 

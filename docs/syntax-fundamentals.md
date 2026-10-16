@@ -254,7 +254,7 @@ type TokenHandler = func(tok: u8, data: u8[], errIf: u8): (bool, i32, bool)
 func draw(r: Rect, handle: TokenHandler) { … }
 ```
 
-An alias may name another alias but not itself, takes no type arguments, and is declared at module
+An alias of a struct or sum type works wherever that type's name does: `Pt{x: 1, y: 2}`, `Fig.Circle(3)`, patterns, and method receivers. An alias may name another alias but not itself, takes no type arguments, and is declared at module
 level, importable with `use { geometry.Rect }`. Messages show the type it stands for. When the
 parts of a value should be reached by name, declare a `struct`. A distinct nominal type backed by
 an existing one (e.g. `LengthMm` over `i32`) is a planned feature with its own keyword.

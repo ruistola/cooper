@@ -427,8 +427,8 @@ fn signature_of<'g>(func: &FuncDecl, globals: &'g Globals) -> Option<&'g Signatu
             globals.lookup_method(&owner, &func.name)
         }
         Some(receiver) => {
-            let id = globals.structs.get(underlying_struct_name(&receiver.ty)?)?;
-            globals.lookup_method(id, &func.name)
+            let id = globals.struct_id(underlying_struct_name(&receiver.ty)?)?;
+            globals.lookup_method(&id, &func.name)
         }
     }
 }

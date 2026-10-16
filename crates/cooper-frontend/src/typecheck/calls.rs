@@ -8,8 +8,7 @@ impl<'g> TypeChecker<'g> {
     pub(super) fn is_bare_variant(&self, name: &str) -> bool {
         self.lookup_var(name).is_none()
             && self.globals.lookup_func(name).is_none()
-            && self.globals.lookup_struct(name).is_none()
-            && self.globals.lookup_oneof(name).is_none()
+            && self.globals.lookup_type_value(name).is_none()
             && self.globals.defs.oneofs.values().any(|def| def.variants.contains_key(name))
     }
 

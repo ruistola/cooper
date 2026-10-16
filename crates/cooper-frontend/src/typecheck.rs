@@ -980,10 +980,7 @@ impl<'g> TypeChecker<'g> {
             self.variables.insert(span, VarRef { module, name: name.to_string() });
             return Some(ty);
         }
-        if let Some(t) = self.globals.lookup_struct(name) {
-            return Some(t);
-        }
-        if let Some(t) = self.globals.lookup_oneof(name) {
+        if let Some(t) = self.globals.lookup_type_value(name) {
             return Some(t);
         }
         if let Some(sig) = self.globals.lookup_func(name) {
@@ -1028,7 +1025,7 @@ impl<'g> TypeChecker<'g> {
             return Some(Type::Module(candidate));
         }
         if let Some(interface) = self.modules.get(prefix) {
-            if let Some(ty) = interface.lookup_struct(field).or_else(|| interface.lookup_oneof(field)) {
+            if let Some(ty) = interface.lookup_type_value(field) {
                 return Some(ty);
             }
             if let Some(sig) = interface.lookup_func(field) {

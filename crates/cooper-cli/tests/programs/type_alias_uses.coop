@@ -1,0 +1,39 @@
+# exit: 0
+# stdout: 3 5 Some(4) circle 3 dot
+# stdout: 1
+# stdout: 4
+# stdout: Point{x: 0, y: 0}
+# An alias of a struct or sum type works wherever the type's own name does: struct literals,
+# variant construction and patterns, struct patterns, method receivers, and annotations.
+use {
+  std.io.println,
+}
+struct Point { x: i32, y: i32 }
+struct Box T { v: T }
+oneof Shape { Dot, Circle(i32) }
+
+type Pt = Point
+type IntBox = Box i32
+type Fig = Shape
+type MaybeInt = Maybe i32
+
+(p: Pt) func sum(): i32 { return p.x + p.y }
+
+func describe(f: Fig): string {
+  return match f with {
+    Fig.Dot => "dot"
+    Fig.Circle(r) => "circle {r}"
+  }
+}
+
+func main() {
+  p := Pt{x: 1, y: 2}
+  b := IntBox{v: 5}
+  m := MaybeInt.Some(4)
+  c := Fig.Circle(3)
+  println("{p.sum()} {b.v} {m} {describe(c)} {describe(Fig.Dot)}")
+  if p is Pt{x: a, y: _} then println("{a}")
+  if m is MaybeInt.Some(n) then println("{n}")
+  let z: Pt
+  println("{z}")
+}

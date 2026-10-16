@@ -188,8 +188,8 @@ impl<'g> TypeChecker<'g> {
         };
         let struct_name = id.name.clone();
         let members = self.globals.defs.struct_members(ty).unwrap_or_default();
-        if self.globals.structs.get(name) != Some(id) {
-            let named = self.globals.lookup_struct(name);
+        if self.globals.struct_id(name).as_ref() != Some(id) {
+            let named = self.globals.lookup_type_value(name);
             let (name_shown, ty_shown) = match &named {
                 Some(named) => display_pair(named, ty),
                 None => (name.to_string(), ty.to_string()),
@@ -239,8 +239,8 @@ impl<'g> TypeChecker<'g> {
         };
         let oneof_name = id.name.clone();
         if let Some(type_name) = type_name {
-            if self.globals.oneofs.get(type_name) != Some(id) {
-                let named = self.globals.lookup_oneof(type_name);
+            if self.globals.oneof_id(type_name).as_ref() != Some(id) {
+                let named = self.globals.lookup_type_value(type_name);
                 let (name_shown, ty_shown) = match &named {
                     Some(named) => display_pair(named, ty),
                     None => (type_name.to_string(), ty.to_string()),

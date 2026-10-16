@@ -264,7 +264,10 @@ pub fn lower_module(
             StmtKind::FuncDecl(func) => {
                 functions.extend(lower_function(file, func, globals, checked)?);
             }
-            StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } | StmtKind::ExternFunc { .. } => {}
+            StmtKind::StructDecl { .. }
+            | StmtKind::OneofDecl { .. }
+            | StmtKind::TypeAlias { .. }
+            | StmtKind::ExternFunc { .. } => {}
             StmtKind::VarDecl { init: None, .. } => {}
             StmtKind::VarDecl { name, init: Some(init), .. } => {
                 functions.extend(lower_initializer(file, decl.span, name, init, globals, checked)?);
@@ -804,7 +807,7 @@ impl Lower<'_> {
         let kind = match &stmt.kind {
             StmtKind::Block(stmts) => IrStmtKind::Block(self.block(stmts)?),
             StmtKind::Expression(expr) => IrStmtKind::Expr(self.expr(expr)?),
-            StmtKind::VarDecl { name, ty, init } => {
+            StmtKind::VarDecl { name, ty, init, .. } => {
                 let init = init.as_ref().map(|e| self.expr(e)).transpose()?;
                 let resolved = match (ty, &init) {
                     (Some(annot), _) => self.resolve(annot)?,
@@ -967,6 +970,7 @@ impl Lower<'_> {
                 return unsupported_stmt(stmt.span, "local type declaration");
             }
             StmtKind::ExternFunc { .. } => unreachable!("the checker rejects a local extern"),
+            StmtKind::TypeAlias { .. } => unreachable!("the checker rejects a local type alias"),
         };
         Ok(IrStmt {
             kind,
@@ -1138,7 +1142,7 @@ impl Lower<'_> {
             ExprKind::Field { .. } if self.dispatch.contains_key(&(expr.span, 0)) => {
                 return unsupported(expr.span, "a method of a sum type used as a value");
             }
-            ExprKind::Field { target, name } => match self.types.get(&target.span) {
+            ExprKind::Field { target, name, .. } => match self.types.get(&target.span) {
                 // `Oneof.Variant` reads as a payload-free variant value, not a
                 // field access on a runtime target.
                 Some(Type::Oneof { .. }) => IrExprKind::Variant {
@@ -1800,7 +1804,7 @@ impl Lower<'_> {
         callee: &Expr,
         args: &[Expr],
     ) -> Result<Option<IrExprKind>, LowerError> {
-        let ExprKind::Field { target, name } = &callee.kind else {
+        let ExprKind::Field { target, name, .. } = &callee.kind else {
             return Ok(None);
         };
         match self.types.get(&target.span) {
@@ -1920,7 +1924,7 @@ impl Lower<'_> {
     /// variant and whose name is not a known function.
     fn variant_callee(&self, callee: &Expr, result: &Type) -> Option<String> {
         match &callee.kind {
-            ExprKind::Field { target, name } => match self.types.get(&target.span) {
+            ExprKind::Field { target, name, .. } => match self.types.get(&target.span) {
                 Some(oneof @ Type::Oneof { .. }) if self.globals.defs.payload(oneof, name).is_some() => {
                     Some(name.clone())
                 }

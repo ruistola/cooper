@@ -37,6 +37,7 @@ impl Parser {
             Return => self.parse_return_stmt(),
             Defer => self.parse_defer_stmt(),
             Struct => self.parse_struct_decl_stmt(),
+            Type => self.parse_type_alias(),
             Oneof => self.parse_oneof_decl_stmt(),
             _ => self.parse_expression_stmt(),
         }
@@ -92,7 +93,8 @@ impl Parser {
                 span,
             });
         }
-        let name = self.expect(Identifier)?.text;
+        let name_token = self.expect(Identifier)?;
+        let (name, name_span) = (name_token.text, name_token.span);
         let ty = if self.peek().kind == Colon {
             self.expect(Colon)?;
             Some(self.parse_type_expr()?)
@@ -107,7 +109,7 @@ impl Parser {
         };
         self.consume_statement_terminator()?;
         Ok(Stmt {
-            kind: StmtKind::VarDecl { name, ty, init },
+            kind: StmtKind::VarDecl { name, name_span, ty, init },
             span: start.to(self.prev_token().span),
         })
     }

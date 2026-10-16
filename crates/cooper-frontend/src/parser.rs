@@ -27,16 +27,36 @@ pub struct ParsedFile {
     pub uses: Vec<UseSpec>,
     pub decls: Vec<Stmt>,
     pub errors: Vec<Diagnostic>,
+    /// The documentation comment of each declaration, member, and variant that has one, by
+    /// the byte offset where the declaration (or its name) starts.
+    pub docs: crate::lexer::Docs,
 }
 
 /// Parse a token stream into a source file.
 pub fn parse(tokens: Vec<Token>) -> ParsedFile {
+    parse_with_docs(tokens, crate::lexer::Docs::new())
+}
+
+/// [`parse`], keeping the documentation comments `docs` that sit above declarations.
+pub fn parse_with_docs(tokens: Vec<Token>, mut docs: crate::lexer::Docs) -> ParsedFile {
     let mut parser = Parser::new(tokens);
     let (uses, decls) = parser.parse_file();
+    // Only what documents a declaration, a member, or a variant is kept.
+    let mut starts = std::collections::HashSet::new();
+    for decl in &decls {
+        starts.insert(decl.span.start);
+        match &decl.kind {
+            StmtKind::StructDecl { members, .. } => starts.extend(members.iter().map(|m| m.span.start)),
+            StmtKind::OneofDecl { variants, .. } => starts.extend(variants.iter().map(|v| v.span.start)),
+            _ => {}
+        }
+    }
+    docs.retain(|start, _| starts.contains(start));
     ParsedFile {
         uses,
         decls,
         errors: parser.errors,
+        docs,
     }
 }
 
@@ -121,6 +141,7 @@ fn can_follow_semicolon(kind: TokenKind) -> bool {
             | Return
             | Struct
             | Oneof
+            | Type
             | True
             | Until
             | Use
@@ -272,7 +293,7 @@ impl Parser {
                     self.advance();
                     return;
                 }
-                For | Func | Extern | If | Let | Match | Return | Struct | Oneof | Use | While
+                For | Func | Extern | If | Let | Match | Return | Struct | Oneof | Type | Use | While
                 | Until | Do | Repeat | Break | Continue | Defer
                     if depth == 0 =>
                 {
@@ -390,6 +411,7 @@ impl Parser {
             Extern => self.parse_extern_func(),
             Struct => self.parse_struct_decl_stmt(),
             Oneof => self.parse_oneof_decl_stmt(),
+            Type => self.parse_type_alias(),
             Let => self.parse_var_decl_stmt(),
             _ => {
                 let token = self.peek();

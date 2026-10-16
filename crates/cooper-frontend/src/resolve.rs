@@ -93,6 +93,12 @@ pub struct Globals {
     /// predecessor — the module namespace is an unordered union across a module's
     /// files, so a repeated name is a redeclaration, never a shadow.
     pub vars: HashMap<String, GlobalVar>,
+    /// Type aliases in scope, by local spelling, to the type each names. An alias is
+    /// transparent: it is the type itself, so nothing after resolution sees it.
+    pub aliases: HashMap<String, Type>,
+    /// The aliases this module declares, by name, to the span of the declaration, whether
+    /// resolved yet or not.
+    alias_spans: HashMap<String, Span>,
     /// Types registered by [`declare_types`] whose bodies [`define_types`] has not yet
     /// resolved. A redeclared name is never registered, so its body is skipped.
     pending: HashSet<TypeId>,
@@ -124,7 +130,10 @@ impl Globals {
     }
 
     fn type_name_taken(&self, name: &str) -> bool {
-        self.structs.contains_key(name) || self.oneofs.contains_key(name)
+        self.structs.contains_key(name)
+            || self.oneofs.contains_key(name)
+            || self.aliases.contains_key(name)
+            || self.alias_spans.contains_key(name)
     }
 }
 
@@ -147,6 +156,14 @@ pub fn resolve_into(mut globals: Globals, module: &str, decls: &[Stmt]) -> (Glob
 /// shadowing one of the module's own declarations is rejected at its `use`.
 pub fn declare_types(globals: &mut Globals, decls: &[Stmt], diags: &mut Vec<Diagnostic>) {
     for stmt in decls {
+        if let StmtKind::TypeAlias { name, .. } = &stmt.kind {
+            if globals.type_name_taken(name) {
+                diags.push(Diagnostic::error(stmt.span, format!("redeclared type {name} in the same scope")));
+            } else {
+                globals.alias_spans.insert(name.clone(), stmt.span);
+            }
+            continue;
+        }
         let (name, type_params, is_struct) = match &stmt.kind {
             StmtKind::StructDecl { name, type_params, .. } => (name, type_params, true),
             StmtKind::OneofDecl { name, type_params, .. } => (name, type_params, false),
@@ -175,6 +192,68 @@ pub fn declare_types(globals: &mut Globals, decls: &[Stmt], diags: &mut Vec<Diag
     }
 }
 
+/// Resolve each alias `decls` declares whose type is now known. Aliases may refer to one
+/// another in any order, so this repeats until nothing more resolves. It reports nothing:
+/// [`resolve_aliases`], which runs once every file has had this pass, does.
+pub fn resolve_known_aliases(globals: &mut Globals, decls: &[Stmt], _diags: &mut Vec<Diagnostic>) {
+    loop {
+        let mut progress = false;
+        for stmt in decls {
+            let StmtKind::TypeAlias { name, ty, .. } = &stmt.kind else { continue };
+            if globals.alias_spans.get(name) != Some(&stmt.span) || globals.aliases.contains_key(name) {
+                continue;
+            }
+            if let Some(resolved) = resolve_type(ty, &HashSet::new(), globals, &mut Vec::new()) {
+                globals.aliases.insert(name.clone(), resolved);
+                progress = true;
+            }
+        }
+        if !progress {
+            return;
+        }
+    }
+}
+
+/// Report each alias of `decls` that could not be resolved: an undefined type, or a cycle of
+/// aliases.
+pub fn resolve_aliases(globals: &mut Globals, decls: &[Stmt], diags: &mut Vec<Diagnostic>) {
+    resolve_known_aliases(globals, decls, diags);
+    for stmt in decls {
+        let StmtKind::TypeAlias { name, ty, .. } = &stmt.kind else { continue };
+        if globals.alias_spans.get(name) != Some(&stmt.span) || globals.aliases.contains_key(name) {
+            continue;
+        }
+        let mut mentioned = Vec::new();
+        named_in(ty, &mut mentioned);
+        if mentioned.iter().any(|n| globals.alias_spans.contains_key(n) && !globals.aliases.contains_key(n)) {
+            diags.push(Diagnostic::error(stmt.span, format!("type alias {name} refers to itself, directly or through other aliases")));
+        } else {
+            resolve_type(ty, &HashSet::new(), globals, diags);
+        }
+    }
+}
+
+/// The names a type expression mentions.
+fn named_in(ty: &TypeExpr, out: &mut Vec<String>) {
+    match &ty.kind {
+        TypeExprKind::Named(name) => out.push(name.clone()),
+        TypeExprKind::Array(elem)
+        | TypeExprKind::StaticArray(elem, _)
+        | TypeExprKind::Variadic(elem)
+        | TypeExprKind::Pointer(elem) => named_in(elem, out),
+        TypeExprKind::Func { params, ret } => {
+            params.iter().for_each(|p| named_in(p, out));
+            named_in(ret, out);
+        }
+        TypeExprKind::Application { constructor, args } => {
+            named_in(constructor, out);
+            args.iter().for_each(|a| named_in(a, out));
+        }
+        TypeExprKind::Tuple(elems) => elems.iter().for_each(|e| named_in(e, out)),
+        TypeExprKind::Unit => {}
+    }
+}
+
 /// Phase two: resolve the members and variants of the types `decls` declares. Every
 /// type of the module is already registered, so a body may name any of them.
 pub fn define_types(globals: &mut Globals, decls: &[Stmt], diags: &mut Vec<Diagnostic>) {
@@ -184,11 +263,13 @@ pub fn define_types(globals: &mut Globals, decls: &[Stmt], diags: &mut Vec<Diagn
                 name,
                 type_params,
                 members,
+                ..
             } => define_struct(globals, diags, name, type_params, members, stmt.span),
             StmtKind::OneofDecl {
                 name,
                 type_params,
                 variants,
+                ..
             } => define_oneof(globals, diags, name, type_params, variants, stmt.span),
             _ => {}
         }
@@ -206,6 +287,7 @@ pub fn resolve_signatures(globals: &mut Globals, decls: &[Stmt], diags: &mut Vec
                 params,
                 variadic,
                 return_type,
+                ..
             } => resolve_extern_func(globals, diags, name, params, *variadic, return_type, stmt.span),
             StmtKind::VarDecl { name, ty, .. } => resolve_var_decl(globals, diags, name, ty.as_ref(), stmt.span),
             _ => {}
@@ -311,6 +393,9 @@ pub fn resolve_type(
             if is_primitive_name(name) {
                 return Some(Type::Primitive(name.clone()));
             }
+            if let Some(alias) = globals.aliases.get(name) {
+                return Some(alias.clone());
+            }
             if let Some(ty) = globals.lookup_struct(name).or_else(|| globals.lookup_oneof(name)) {
                 let arity = globals.defs.type_params(&ty).len();
                 if arity > 0 {
@@ -393,6 +478,10 @@ fn resolve_type_application(
         return None;
     };
 
+    if globals.aliases.contains_key(name) {
+        diags.push(Diagnostic::error(span, format!("type alias {name} takes no type arguments")));
+        return None;
+    }
     let Some(template) = globals.lookup_struct(name).or_else(|| globals.lookup_oneof(name)) else {
         diags.push(Diagnostic::error(
             span,

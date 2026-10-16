@@ -137,12 +137,13 @@ impl Parser {
         let receiver = if self.peek().kind == OpenParen {
             let rstart = self.peek().span;
             self.expect(OpenParen)?;
-            let name = self.expect(Identifier)?.text;
+            let name = self.expect(Identifier)?;
             self.expect(Colon)?;
             let ty = self.parse_type_expr()?;
             self.expect(CloseParen)?;
             Some(TypedIdent {
-                name,
+                name: name.text,
+                name_span: name.span,
                 ty,
                 span: rstart.to(self.prev_token().span),
             })
@@ -150,7 +151,8 @@ impl Parser {
             None
         };
         self.expect(Func)?;
-        let name = self.expect(Identifier)?.text;
+        let name_token = self.expect(Identifier)?;
+        let (name, name_span) = (name_token.text, name_token.span);
         let mut type_params = Vec::new();
         while self.peek().kind == Identifier {
             type_params.push(self.expect(Identifier)?.text);
@@ -160,10 +162,25 @@ impl Parser {
         Ok(FuncDecl {
             receiver,
             name,
+            name_span,
             type_params,
             params,
             return_type,
             body,
+            span: start.to(self.prev_token().span),
+        })
+    }
+
+    /// `type Name = T`.
+    pub(super) fn parse_type_alias(&mut self) -> PResult<Stmt> {
+        let start = self.peek().span;
+        self.expect(Type)?;
+        let name_token = self.expect(Identifier)?;
+        self.expect(Equals)?;
+        let ty = self.parse_type_expr()?;
+        self.consume_statement_terminator()?;
+        Ok(Stmt {
+            kind: StmtKind::TypeAlias { name: name_token.text, name_span: name_token.span, ty },
             span: start.to(self.prev_token().span),
         })
     }
@@ -173,13 +190,14 @@ impl Parser {
         let start = self.peek().span;
         self.expect(Extern)?;
         self.expect(Func)?;
-        let name = self.expect(Identifier)?.text;
+        let name_token = self.expect(Identifier)?;
         let (params, variadic) = self.parse_params_variadic(true, true)?;
         let params = typed_params(params);
         let return_type = self.parse_return_type()?;
         Ok(Stmt {
             kind: StmtKind::ExternFunc {
-                name,
+                name: name_token.text,
+                name_span: name_token.span,
                 params,
                 variadic,
                 return_type,
@@ -220,7 +238,8 @@ impl Parser {
                 break;
             }
             let pstart = self.peek().span;
-            let param_name = self.expect(Identifier)?.text;
+            let param_token = self.expect(Identifier)?;
+            let param_name = param_token.text;
             let param_type = if typed || self.peek().kind == Colon {
                 self.expect(Colon)?;
                 if typed && self.peek().kind == Ellipsis {
@@ -239,6 +258,7 @@ impl Parser {
             };
             params.push(LiteralParam {
                 name: param_name,
+                name_span: param_token.span,
                 ty: param_type,
                 span: pstart.to(self.prev_token().span),
             });
@@ -264,7 +284,8 @@ impl Parser {
     pub(super) fn parse_struct_decl_stmt(&mut self) -> PResult<Stmt> {
         let start = self.peek().span;
         self.expect(Struct)?;
-        let name = self.expect(Identifier)?.text;
+        let name_token = self.expect(Identifier)?;
+        let (name, name_span) = (name_token.text, name_token.span);
         let mut type_params = Vec::new();
         while self.peek().kind == Identifier {
             type_params.push(self.expect(Identifier)?.text);
@@ -274,11 +295,12 @@ impl Parser {
         let mut members = Vec::new();
         while self.peek().kind != CloseCurly {
             let mstart = self.peek().span;
-            let member_name = self.expect(Identifier)?.text;
+            let member_token = self.expect(Identifier)?;
             self.expect(Colon)?;
             let member_type = self.parse_type_expr()?;
             members.push(TypedIdent {
-                name: member_name,
+                name: member_token.text,
+                name_span: member_token.span,
                 ty: member_type,
                 span: mstart.to(self.prev_token().span),
             });
@@ -292,6 +314,7 @@ impl Parser {
         Ok(Stmt {
             kind: StmtKind::StructDecl {
                 name,
+                name_span,
                 type_params,
                 members,
             },
@@ -302,7 +325,8 @@ impl Parser {
     pub(super) fn parse_oneof_decl_stmt(&mut self) -> PResult<Stmt> {
         let start = self.peek().span;
         self.expect(Oneof)?;
-        let name = self.expect(Identifier)?.text;
+        let name_token = self.expect(Identifier)?;
+        let (name, name_span) = (name_token.text, name_token.span);
         let mut type_params = Vec::new();
         while self.peek().kind == Identifier {
             type_params.push(self.expect(Identifier)?.text);
@@ -312,7 +336,7 @@ impl Parser {
         let mut variants = Vec::new();
         while self.peek().kind != CloseCurly {
             let vstart = self.peek().span;
-            let variant_name = self.expect(Identifier)?.text;
+            let variant_token = self.expect(Identifier)?;
             let mut payload = Vec::new();
             if self.peek().kind == OpenParen {
                 self.expect(OpenParen)?;
@@ -327,7 +351,8 @@ impl Parser {
                 self.expect(CloseParen)?;
             }
             variants.push(VariantDef {
-                name: variant_name,
+                name: variant_token.text,
+                name_span: variant_token.span,
                 payload,
                 span: vstart.to(self.prev_token().span),
             });
@@ -341,6 +366,7 @@ impl Parser {
         Ok(Stmt {
             kind: StmtKind::OneofDecl {
                 name,
+                name_span,
                 type_params,
                 variants,
             },
@@ -431,6 +457,7 @@ fn typed_params(params: Vec<LiteralParam>) -> Vec<TypedIdent> {
         .into_iter()
         .map(|p| TypedIdent {
             name: p.name,
+            name_span: p.name_span,
             ty: p.ty.expect("parsed with types required"),
             span: p.span,
         })

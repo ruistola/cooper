@@ -141,6 +141,8 @@ pub enum TypeExprKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedIdent {
     pub name: String,
+    /// The span of the name alone; `span` covers the whole `name: type`.
+    pub name_span: Span,
     pub ty: TypeExpr,
     pub span: Span,
 }
@@ -193,6 +195,7 @@ pub struct Radix {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiteralParam {
     pub name: String,
+    pub name_span: Span,
     pub ty: Option<TypeExpr>,
     pub span: Span,
 }
@@ -201,6 +204,7 @@ pub struct LiteralParam {
 #[derive(Debug, Clone, PartialEq)]
 pub struct VariantDef {
     pub name: String,
+    pub name_span: Span,
     pub payload: Vec<TypeExpr>,
     pub span: Span,
 }
@@ -369,6 +373,7 @@ pub enum ExprKind {
     Field {
         target: Box<Expr>,
         name: String,
+        name_span: Span,
     },
     Index {
         array: Box<Expr>,
@@ -422,6 +427,7 @@ pub struct FuncDecl {
     /// `None` for free functions, `Some` for methods.
     pub receiver: Option<TypedIdent>,
     pub name: String,
+    pub name_span: Span,
     pub type_params: Vec<String>,
     pub params: Vec<TypedIdent>,
     pub return_type: Option<TypeExpr>,
@@ -470,13 +476,21 @@ pub enum StmtKind {
     Expression(Expr),
     VarDecl {
         name: String,
+        name_span: Span,
         ty: Option<TypeExpr>,
         init: Option<Expr>,
     },
     FuncDecl(FuncDecl),
+    /// `type Name = T`: a transparent alias, a name for a type.
+    TypeAlias {
+        name: String,
+        name_span: Span,
+        ty: TypeExpr,
+    },
     /// `extern func name(params): R`, a module-level declaration of a C function with
     /// no body, linked under the symbol `name`.
     ExternFunc {
+        name_span: Span,
         name: String,
         params: Vec<TypedIdent>,
         /// Whether the C function takes further arguments after `params` (`...`).
@@ -485,11 +499,13 @@ pub enum StmtKind {
     },
     StructDecl {
         name: String,
+        name_span: Span,
         type_params: Vec<String>,
         members: Vec<TypedIdent>,
     },
     OneofDecl {
         name: String,
+        name_span: Span,
         type_params: Vec<String>,
         variants: Vec<VariantDef>,
     },

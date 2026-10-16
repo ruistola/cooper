@@ -49,6 +49,9 @@ pub struct CheckedFile {
     pub decls: Vec<Stmt>,
     pub globals: Globals,
     pub typed: typecheck::Typed,
+    /// The documentation comment of each declaration, member, and variant that has one,
+    /// by the byte offset where it starts.
+    pub docs: crate::lexer::Docs,
 }
 
 /// A whole type-checked project: every file, its modules in dependency order, and
@@ -123,6 +126,7 @@ pub fn check(project: &Project) -> Result<CheckedProject, Vec<Diagnostic>> {
                     module: path.clone(),
                     name: file.name,
                     decls: file.decls,
+                    docs: file.docs,
                     globals,
                     typed,
                 })
@@ -146,6 +150,7 @@ struct ParsedFile {
     name: String,
     uses: Vec<UseSpec>,
     decls: Vec<Stmt>,
+    docs: crate::lexer::Docs,
 }
 
 /// Parse every file of every module. Returns the parsed modules, or every lex and
@@ -175,19 +180,20 @@ fn parse_module_files(module: &Module) -> (Vec<ParsedFile>, Vec<Diagnostic>) {
     let mut files = Vec::new();
     let mut errors = Vec::new();
     for file in &module.files {
-        let tokens = match lexer::tokenize(&file.source) {
-            Ok(tokens) => tokens,
+        let (tokens, docs) = match lexer::tokenize_with_docs(&file.source) {
+            Ok(lexed) => lexed,
             Err(diag) => {
                 errors.push(diag.in_file(&file.name));
                 continue;
             }
         };
-        let parsed = parser::parse(tokens);
+        let parsed = parser::parse_with_docs(tokens, docs);
         errors.extend(parsed.errors.into_iter().map(|d| d.in_file(&file.name)));
         files.push(ParsedFile {
             name: file.name.clone(),
             uses: parsed.uses,
             decls: parsed.decls,
+            docs: parsed.docs,
         });
     }
     (files, errors)
@@ -324,6 +330,7 @@ fn topological_order(
 struct Imports {
     structs: HashMap<String, TypeId>,
     oneofs: HashMap<String, TypeId>,
+    aliases: HashMap<String, crate::types::Type>,
     funcs: HashMap<String, Signature>,
     vars: HashMap<String, GlobalVar>,
     methods: HashMap<TypeId, HashMap<String, Signature>>,
@@ -345,6 +352,7 @@ impl Imports {
         }
         globals.structs.extend(self.structs.clone());
         globals.oneofs.extend(self.oneofs.clone());
+        globals.aliases.extend(self.aliases.clone());
         globals.funcs.extend(self.funcs.clone());
         globals.vars.extend(self.vars.clone());
         for (owner, methods) in &self.methods {
@@ -408,7 +416,13 @@ fn analyze_module(
     }
     type Phase = fn(&mut Globals, &[Stmt], &mut Vec<Diagnostic>);
     let size_check: Phase = |globals, decls, diags| resolve::check_type_sizes(globals, decls, diags);
-    let phases: [Phase; 3] = [resolve::define_types, size_check, resolve::resolve_signatures];
+    let phases: [Phase; 5] = [
+        resolve::resolve_known_aliases,
+        resolve::resolve_aliases,
+        resolve::define_types,
+        size_check,
+        resolve::resolve_signatures,
+    ];
     for phase in phases {
         for (file, imports) in module.files.iter().zip(&file_imports) {
             let mut globals = imports.overlay(&interface);
@@ -454,6 +468,7 @@ fn declared_names(files: &[ParsedFile]) -> HashSet<String> {
                 StmtKind::StructDecl { name, .. }
                 | StmtKind::OneofDecl { name, .. }
                 | StmtKind::VarDecl { name, .. }
+                | StmtKind::TypeAlias { name, .. }
                 | StmtKind::ExternFunc { name, .. } => {
                     names.insert(name.clone());
                 }
@@ -527,6 +542,8 @@ fn build_file_imports(
                     if let Some(methods) = interface.methods.get(id) {
                         imports.methods.insert(id.clone(), methods.clone());
                     }
+                } else if let Some(ty) = interface.aliases.get(&item) {
+                    imports.aliases.insert(local, ty.clone());
                 } else if let Some(id) = interface.oneofs.get(&item) {
                     imports.oneofs.insert(local, id.clone());
                 } else if let Some(sig) = interface.lookup_func(&item) {
@@ -557,6 +574,9 @@ fn strip_imports(mut globals: Globals, imports: &Imports) -> Globals {
     }
     for name in imports.oneofs.keys() {
         globals.oneofs.remove(name);
+    }
+    for name in imports.aliases.keys() {
+        globals.aliases.remove(name);
     }
     for name in imports.funcs.keys() {
         globals.funcs.remove(name);

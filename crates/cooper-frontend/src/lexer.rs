@@ -8,8 +8,12 @@ use crate::diag::{Diagnostic, Span};
 /// is kept as a token because semicolon inference in the parser depends on it.
 #[derive(Logos, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[logos(skip r"[ \t\f]+")]
-#[logos(skip r"#[^\n\r]*")]
 pub enum TokenKind {
+    /// A `#` comment to the end of the line. It never reaches the parser: [`tokenize`]
+    /// drops it, keeping a comment block that documents the token after it (see [`Docs`]).
+    #[regex(r"#[^\n\r]*")]
+    Comment,
+
     #[regex(r"\r\n|\n|\r")]
     Eol,
 
@@ -116,6 +120,8 @@ pub enum TokenKind {
     Continue,
     #[token("defer")]
     Defer,
+    #[token("type")]
+    Type,
     #[token("do")]
     Do,
     #[token("else")]
@@ -221,6 +227,8 @@ impl std::fmt::Display for TokenKind {
             Break => "'break'",
             Continue => "'continue'",
             Defer => "'defer'",
+            Type => "'type'",
+            Comment => "comment",
             Do => "'do'",
             Else => "'else'",
             Extern => "'extern'",
@@ -360,7 +368,26 @@ pub struct Token {
 /// number whose text ends in `.` is unambiguously this case: the trailing dot is
 /// peeled off into its own token and adjacent dots are merged into `..`.
 pub fn tokenize(src: &str) -> Result<Vec<Token>, Diagnostic> {
+    tokenize_with_docs(src).map(|(tokens, _)| tokens)
+}
+
+/// The documentation comments of a source file: the text of each comment block that sits
+/// directly above a token (no blank line between), by the byte offset where that token
+/// starts. The `#` and one following space are removed from each line. A comment that
+/// follows code on its own line documents nothing.
+pub type Docs = std::collections::HashMap<usize, String>;
+
+/// How many line breaks `src[from..to]` holds.
+fn breaks(src: &str, from: usize, to: usize) -> usize {
+    src[from..to].chars().filter(|&c| c == '\n').count()
+}
+
+/// [`tokenize`], also returning the documentation comments.
+pub fn tokenize_with_docs(src: &str) -> Result<(Vec<Token>, Docs), Diagnostic> {
     let mut tokens: Vec<Token> = Vec::new();
+    let mut docs = Docs::new();
+    // The comment lines of the block just read: each line's end offset and text.
+    let mut block: Vec<(usize, String)> = Vec::new();
     let mut lex = TokenKind::lexer(src);
     while let Some(result) = lex.next() {
         let span: Span = lex.span().into();
@@ -372,6 +399,27 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, Diagnostic> {
             };
             Diagnostic::error(span, message)
         })?;
+        if kind == TokenKind::Comment {
+            let alone = tokens.last().map_or(true, |t| t.kind == TokenKind::Eol);
+            let contiguous = block.last().is_some_and(|(end, _)| breaks(src, *end, span.start) == 1);
+            if !alone || !contiguous {
+                block.clear();
+            }
+            if alone {
+                let text = lex.slice().trim_start_matches('#');
+                block.push((span.end, text.strip_prefix(' ').unwrap_or(text).to_string()));
+            }
+            continue;
+        }
+        if kind != TokenKind::Eol {
+            if let Some((end, _)) = block.last() {
+                if breaks(src, *end, span.start) == 1 {
+                    let lines: Vec<&str> = block.iter().map(|(_, line)| line.as_str()).collect();
+                    docs.insert(span.start, lines.join("\n"));
+                }
+            }
+            block.clear();
+        }
         // Collapse consecutive end-of-line tokens into a single one.
         if kind == TokenKind::Eol && matches!(tokens.last(), Some(t) if t.kind == TokenKind::Eol) {
             continue;
@@ -416,7 +464,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, Diagnostic> {
         text: String::new(),
         span: Span::new(end, end),
     });
-    Ok(tokens)
+    Ok((tokens, docs))
 }
 
 /// Push a `.` token, merging it with an immediately preceding `.` into a `..`.

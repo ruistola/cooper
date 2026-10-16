@@ -18,7 +18,7 @@ impl<'g> TypeChecker<'g> {
         // A call whose callee is a variant access (`Maybe.Some(5)`) is sum-type
         // construction, not an ordinary call: its type arguments are inferred by
         // unifying the payload slots against the arguments.
-        if let ExprKind::Field { target, name } = &callee.kind {
+        if let ExprKind::Field { target, name, .. } = &callee.kind {
             if let Some(oneof @ Type::Oneof { .. }) = self.check_expr(target) {
                 // A call of a name that is not a variant is a method called across them.
                 if self.globals.defs.payload(&oneof, name).is_some() {

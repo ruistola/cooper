@@ -435,7 +435,12 @@ impl<'g> TypeChecker<'g> {
                 }
                 self.scopes.pop();
             }
-            StmtKind::VarDecl { name, ty, init } => self.check_var_decl(name, ty, init, stmt.span),
+            StmtKind::VarDecl { name, ty, init, .. } => self.check_var_decl(name, ty, init, stmt.span),
+            StmtKind::TypeAlias { .. } => {
+                if self.current_return.is_some() {
+                    self.err(stmt.span, "a type alias must be declared at module level");
+                }
+            }
             StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } => {}
             StmtKind::FuncDecl(func) if self.current_return.is_some() => self.check_nested_func(func),
             StmtKind::FuncDecl(func) => self.check_func_decl(func),
@@ -891,7 +896,7 @@ impl<'g> TypeChecker<'g> {
             ExprKind::StructLiteral { target, members } => {
                 self.check_struct_literal(target, members)
             }
-            ExprKind::Field { target, name } => self.check_field(target, name, expr.span),
+            ExprKind::Field { target, name, .. } => self.check_field(target, name, expr.span),
             ExprKind::Index { array, index } => self.check_index(array, index),
             ExprKind::Slice {
                 array, start, end, ..

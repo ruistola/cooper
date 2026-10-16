@@ -1,0 +1,36 @@
+# exit: 0
+# stdout: 12 30 8
+# Type aliases are transparent names for types: a tuple or function type given a name (and a
+# doc comment) that signatures use, an alias of an alias, and one in an array type. Any value of
+# the aliased type fits, and function parameter names in a function type are documentation only.
+use {
+    std.io.println,
+}
+
+# A rectangle: left, top, width, height.
+type Rect = (i32, i32, i32, i32)
+
+# Called per token: whether there were errors, bytes used, and whether more pages remain.
+type Handler = func(tok: u8, data: u8[]): (bool, i32, bool)
+
+type Handlers = Handler[]
+type Area = Rect
+
+func area(r: Rect): i32 {
+    (l, t, w, h) := r
+    return w * h
+}
+
+func run(h: Handler, hs: Handlers): i32 {
+    (e, n, m) := h(1, [])
+    return n + i32(hs.length())
+}
+
+func mine(a: u8, b: u8[]): (bool, i32, bool) {
+    return (false, 7, true)
+}
+
+func main() {
+    let l: Area = (1, 2, 3, 4)
+    println("{area(l)} {area((0, 0, 5, 6))} {run(mine, [mine])}")
+}

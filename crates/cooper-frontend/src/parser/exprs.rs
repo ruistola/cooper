@@ -417,10 +417,11 @@ impl Parser {
 
     fn parse_field(&mut self, target: Expr) -> PResult<ExprKind> {
         self.expect(Dot)?;
-        let name = self.expect(Identifier)?.text;
+        let name_token = self.expect(Identifier)?;
         Ok(ExprKind::Field {
             target: Box::new(target),
-            name,
+            name: name_token.text,
+            name_span: name_token.span,
         })
     }
 

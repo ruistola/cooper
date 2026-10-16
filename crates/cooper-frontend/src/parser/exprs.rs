@@ -329,6 +329,11 @@ impl Parser {
     pub(super) fn parse_header_expr(&mut self) -> PResult<Expr> {
         self.header_depth += 1;
         let result = self.parse_expr(0);
+        // The delimiter keyword may sit on a later line: the newlines before it are not
+        // statement ends, whatever follows the header.
+        while self.tokens.get(self.pos).is_some_and(|t| t.kind == Eol) {
+            self.pos += 1;
+        }
         self.header_depth -= 1;
         result
     }

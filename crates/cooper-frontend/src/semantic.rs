@@ -80,6 +80,7 @@ impl SemanticAnalyzer<'_> {
                 self.analyze_block(body);
             }
             StmtKind::Break | StmtKind::Continue => {}
+            StmtKind::Co(call) => self.analyze_expr(call),
             StmtKind::Defer(body) => {
                 self.analyze_literal(&None, true, std::slice::from_ref(&**body), stmt.span, "deferred statement")
             }

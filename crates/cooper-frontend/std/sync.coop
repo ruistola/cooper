@@ -1,0 +1,37 @@
+# The standard `sync` module: synchronization between tasks.
+
+extern func cooper_current_task(): u8^
+extern func cooper_park()
+extern func cooper_ready(task: u8^)
+extern func cooper_fail(message: u8^)
+
+# Waits for a number of tasks to finish: `add` before starting them, `done` as each ends, `wait` to
+# block until all have.
+struct WaitGroup {
+    count: i64,
+    waiters: u8^[],
+}
+
+# Adds `n` (negative to subtract) to the number of tasks being waited for. When it reaches zero, the
+# tasks waiting are woken.
+(wg: WaitGroup^) func add(n: i64) {
+    wg.count += n
+    if wg.count < 0 then cooper_fail("negative WaitGroup count\0".data())
+    if wg.count == 0 then {
+        for task in wg.waiters do cooper_ready(task)
+        wg.waiters = []
+    }
+}
+
+# One of the tasks being waited for has finished.
+(wg: WaitGroup^) func done() {
+    wg.add(-1)
+}
+
+# Blocks the running task until the count is zero.
+(wg: WaitGroup^) func wait() {
+    while wg.count > 0 do {
+        wg.waiters = wg.waiters.push(cooper_current_task())
+        cooper_park()
+    }
+}

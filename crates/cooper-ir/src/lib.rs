@@ -925,6 +925,7 @@ impl Lower<'_> {
             StmtKind::Break => return Ok(self.leave(IrStmtKind::Break, stmt.span)),
             StmtKind::Continue => return Ok(self.leave(IrStmtKind::Continue, stmt.span)),
             StmtKind::Defer(_) => unreachable!("a deferred statement is lowered with its block"),
+            StmtKind::Co(call) => return self.spawn(call, stmt.span),
             StmtKind::Match { scrutinee, arms } => {
                 let scrutinee = self.expr(scrutinee)?;
                 let patterns = arms
@@ -1814,6 +1815,66 @@ impl Lower<'_> {
             span,
         }];
         self.lift(params, (**return_type).clone(), body, Vec::new(), ty, span)
+    }
+
+    /// `co call`: the callee and arguments are evaluated now, into temporaries, and a closure over
+    /// them that makes the call is handed to the scheduler. The temporaries are captured, so they
+    /// live as long as the task needs them (escape analysis puts them on the heap).
+    fn spawn(&self, call: &Expr, span: Span) -> Result<IrStmt, LowerError> {
+        let lowered = self.expr(call)?;
+        let IrExprKind::Call { callee, args } = lowered.kind else {
+            return unsupported_stmt(span, "a `co` that does not call a function or method");
+        };
+        let mut stmts = Vec::new();
+        let mut env = Vec::new();
+        let mut bind = |value: IrExpr| {
+            let name = format!("co.{}.{}", span.start, env.len());
+            let var = IrExpr { kind: IrExprKind::Var(name.clone()), ty: value.ty.clone(), span };
+            env.push(Param { name: name.clone(), ty: value.ty.clone(), span });
+            stmts.push(IrStmt { kind: IrStmtKind::Var { name, ty: value.ty.clone(), init: Some(value) }, span });
+            var
+        };
+        let callee = *callee;
+        let callee = match callee.kind {
+            IrExprKind::FuncRef { .. } => callee,
+            IrExprKind::Method { receiver, item, type_args } => {
+                let by_pointer = match &item {
+                    Callable::Method { receiver: owner, name } => {
+                        self.globals.lookup_method(owner, name).is_some_and(|s| s.by_pointer)
+                    }
+                    _ => false,
+                };
+                let receiver = if by_pointer && !matches!(receiver.ty, Type::Pointer(_)) {
+                    let ty = Type::Pointer(Box::new(receiver.ty.clone()));
+                    IrExpr { kind: IrExprKind::AddressOf(receiver), ty, span }
+                } else {
+                    *receiver
+                };
+                let receiver = bind(receiver);
+                IrExpr {
+                    kind: IrExprKind::Method { receiver: Box::new(receiver), item, type_args },
+                    ty: callee.ty,
+                    span: callee.span,
+                }
+            }
+            _ => bind(callee),
+        };
+        let args: Vec<IrExpr> = args.into_iter().map(&mut bind).collect();
+        let body = vec![IrStmt {
+            kind: IrStmtKind::Expr(IrExpr { kind: IrExprKind::Call { callee: Box::new(callee), args }, ty: lowered.ty, span }),
+            span,
+        }];
+        let ty = Type::Func { return_type: Box::new(Type::Unit), param_types: Vec::new() };
+        let task = self.lift(Vec::new(), Type::Unit, body, env, ty, span)?;
+        stmts.push(IrStmt {
+            kind: IrStmtKind::Expr(IrExpr {
+                kind: IrExprKind::Intrinsic { op: Intrinsic::Spawn, args: vec![task] },
+                ty: Type::Unit,
+                span,
+            }),
+            span,
+        });
+        Ok(IrStmt { kind: IrStmtKind::Block(stmts), span })
     }
 
     /// Lower a slice `array[start..end]` to the slice intrinsic. An omitted start is

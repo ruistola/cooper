@@ -36,6 +36,7 @@ impl Parser {
             Match => self.parse_match_stmt(),
             Return => self.parse_return_stmt(),
             Defer => self.parse_defer_stmt(),
+            Co => self.parse_co_stmt(),
             Struct => self.parse_struct_decl_stmt(),
             Type => self.parse_type_alias(),
             Oneof => self.parse_oneof_decl_stmt(),
@@ -293,6 +294,20 @@ impl Parser {
             self.reject_lone_defer()?;
             Ok(vec![self.parse_stmt()?])
         }
+    }
+
+    /// `co CALL`: the expression must be a call of a function or method.
+    fn parse_co_stmt(&mut self) -> PResult<Stmt> {
+        let start = self.expect(Co)?.span;
+        let call = self.parse_expr(0)?;
+        if !matches!(call.kind, ExprKind::Call { .. }) {
+            return Err(self.error(call.span, "`co` must be followed by a call of a function or method"));
+        }
+        self.consume_statement_terminator()?;
+        Ok(Stmt {
+            kind: StmtKind::Co(call),
+            span: start.to(self.prev_token().span),
+        })
     }
 
     /// `defer STMT`. Only a statement of a `{ }` block may defer, since the deferred

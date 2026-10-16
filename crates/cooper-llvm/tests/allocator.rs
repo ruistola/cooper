@@ -14,6 +14,7 @@ fn the_allocator_passes_its_c_tests() {
         .arg("-o")
         .arg(&out)
         .arg(runtime.join("gc.c"))
+        .arg(runtime.join("sched.c"))
         .arg(runtime.join("gc_test.c"))
         .output()
         .expect("the C compiler runs");

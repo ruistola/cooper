@@ -35,7 +35,8 @@ Stop-the-world mark and sweep, started by the pacer when the allocated bytes rea
 percentage of the live bytes and roots (default 100%, at least 4 MiB).
 
 - **Roots.** Module-level variables, precisely, from a table of addresses and descriptors the compiler emits
-  (`cooper_roots`). The stack and registers, conservatively, word by word: nothing moves, so an ambiguous word
+  (`cooper_roots`). The stacks of every task and the registers, conservatively, word by word (a suspended
+  task's registers are saved on its stack, and a task that has not started is reached through its closure): nothing moves, so an ambiguous word
   only keeps alive what it appears to point into. Cooper never turns an integer back into a pointer.
 - **Mark.** Green Tea: reaching a small object marks it and queues its span, first in first out; a span's
   marked-but-unscanned objects are scanned together from its mark and scan bits. Larger objects use an object
@@ -55,4 +56,4 @@ poisoning, and that a sum type retains only the variant it holds.
 
 Conservative scanning can retain what a stale stack word points at. Optimized builds may keep only a derived
 pointer (one past an object's end), which a stack scan would miss: not yet validated. The page heap is a
-first-fit list. Nothing is thread-safe yet.
+first-fit list. Nothing is thread-safe yet, and the collector stops the world on the one thread tasks run on.

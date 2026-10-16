@@ -21,6 +21,7 @@ reference before writing Cooper source:
 * [Sum Types](docs/sum-types.md) — `oneof`, variant construction, `match` and patterns
 * [Type System](docs/type-system.md) — nominal/structural types, HM(X) inference, operators, equality and hashing
 * [Numeric Types](docs/numeric-types.md) — primitive grid, literal inference, same-type arithmetic, conversions
+* [Concurrency](docs/concurrency.md) — tasks, `co`, the scheduler, stacks, the memory model
 * [Garbage Collector](docs/garbage-collector.md) — typed allocation, allocator, collection
 * [Performance](docs/performance.md) — collector controls and statistics, benchmarks against Go
 * [Testing](docs/testing.md) — writing and running tests with `cooper test`

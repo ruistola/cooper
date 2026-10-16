@@ -38,6 +38,21 @@ _Noreturn void cooper_panic(const char *message);
    several); null means it holds no pointers. */
 void *cooper_alloc(size_t size, const CooperType *type);
 
+/* The scheduler (sched.c). Start a task running `code(env)`: a function taking its environment, as a
+   closure's code does. It first runs when the current task blocks or yields. */
+void cooper_co(void *code, void *env);
+void cooper_yield(void);
+void cooper_sleep(int64_t nanoseconds);
+void *cooper_current_task(void);
+/* Stop the current task until cooper_ready is called on its handle. */
+void cooper_park(void);
+void cooper_ready(void *task);
+/* Set up the scheduler; the address is a local of `main`, the top of the main task's stack. */
+void cooper_sched_init(void *stack_base);
+/* For the collector: the top of the running task's stack, and the other tasks' stacks. */
+uintptr_t cooper_current_stack_top(void);
+void cooper_scan_tasks(void (*scan)(uintptr_t low, uintptr_t high));
+
 /* Tell the collector where the stack begins: the address of a local of `main`. */
 void cooper_gc_init(void *stack_base);
 

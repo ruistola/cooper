@@ -1,0 +1,11 @@
+# exit: 101
+# stderr: panic: all tasks are blocked: deadlock
+use {
+    std.sync.WaitGroup,
+}
+
+func main() {
+    let wg: WaitGroup
+    wg.add(1)
+    wg.wait()
+}

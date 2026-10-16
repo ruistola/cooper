@@ -132,6 +132,14 @@ impl Emitter<'_, '_> {
                 _ => unreachable!("an array literal is an array"),
             };
         }
+        if op == Intrinsic::Spawn {
+            let task = self.expr(&args[0])?.expect("a function value has a value");
+            let code = self.assign(&format!("extractvalue {FUNC_VALUE} {}, 0", task.operand));
+            let env = self.assign(&format!("extractvalue {FUNC_VALUE} {}, 1", task.operand));
+            self.module.declare("declare void @cooper_co(ptr, ptr)");
+            self.inst(&format!("call void @cooper_co(ptr {code}, ptr {env})"));
+            return Ok(None);
+        }
         if op == Intrinsic::SourceLocation {
             let text = self.module.locate(&self.file, span);
             let bytes = self.module.string(&text);
@@ -171,6 +179,7 @@ impl Emitter<'_, '_> {
             | Intrinsic::StringByteAt
             | Intrinsic::StringData
             | Intrinsic::SourceLocation
+            | Intrinsic::Spawn
             | Intrinsic::StringSlice { .. } => unreachable!("handled above"),
             Intrinsic::Format(_) => unreachable!("expanded before code generation"),
             Intrinsic::ArrayLength => {

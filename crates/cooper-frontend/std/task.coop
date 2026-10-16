@@ -1,0 +1,17 @@
+# The standard `task` module: operations on the running task. A task is started with `co f(args)`.
+#
+# Tasks run one at a time and switch only where they block: here, or in `std.sync`. A task that
+# never blocks keeps the others from running.
+
+extern func cooper_yield()
+extern func cooper_sleep(nanoseconds: i64)
+
+# Lets the other tasks that are ready run, then continues.
+func yield() {
+    cooper_yield()
+}
+
+# Suspends the running task for at least `ms` milliseconds, during which the others run.
+func sleep(ms: i64) {
+    cooper_sleep(ms * 1000000)
+}

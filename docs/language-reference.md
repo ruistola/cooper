@@ -124,8 +124,9 @@ kind := match n with {               # integer, bool, tuple, struct, or sum-type
   camelCase. Casing matters to the compiler only in patterns (below).
 * A final parameter `vals: ...T` receives its arguments as a `T[]`; `f(xs...)` passes an array
   as them ([Methods and Functions](./methods-and-functions.md#variadic-parameters)).
-* Reserved words: `and as break continue defer do else extern false for func if in is let match nil oneof or
+* Reserved words: `and as break co continue defer do else extern false for func if in is let match nil oneof or
   repeat return struct then true type until use while with xor`.
+* `co f(args)` starts a task running the call ([Concurrency](./concurrency.md)).
 * `type Name = T` names a type, transparently ([Syntax Fundamentals](./syntax-fundamentals.md#type-aliases)). A comment block directly above a declaration is its documentation.
 * Numbers: `42`, `1_000`, `0xFF`, `0b1010`, `3.14`, `1e9`, `2.5e-3`. A float needs digits on
   both sides of the point. Strings are `"…"` with the escapes `\n \t \r \0 \\ \" \' \{`, and interpolate:

@@ -461,6 +461,13 @@ impl<'g> TypeChecker<'g> {
                     self.check_stmt(els);
                 }
             }
+            StmtKind::Co(call) => {
+                if self.current_return.is_none() {
+                    self.err(stmt.span, "`co` outside of a function");
+                    return;
+                }
+                self.check_expr(call);
+            }
             StmtKind::Defer(body) => {
                 if self.current_return.is_none() {
                     self.err(stmt.span, "`defer` outside of a function");

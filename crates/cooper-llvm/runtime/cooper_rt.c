@@ -39,6 +39,12 @@ _Noreturn void cooper_panic(const char *message) {
     exit(PANIC_STATUS);
 }
 
+/* Stop the program with a runtime error, for the standard library's own checks (generated code
+   declares cooper_panic itself, as noreturn). */
+void cooper_fail(const char *message) {
+    cooper_panic(message);
+}
+
 /* A string as generated code lays it out: its bytes and their count. */
 typedef struct {
     const char *data;

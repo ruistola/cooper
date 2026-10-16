@@ -1,8 +1,8 @@
 //! Golden programs: every `tests/programs/*.coop` file is built with the system C
 //! toolchain and run, and its exit status compared with the `# exit: N` comment on
 //! its first line. The header lines that follow may give `# stdout: text`, one line of
-//! the exact standard output each, and `# stderr: text`, text its standard error must
-//! contain. Requires `clang` (or `COOPER_CC`).
+//! the exact standard output each, `# stderr: text`, text its standard error must
+//! contain, and `# env: NAME=value`, a variable to run it with. Requires `clang` (or `COOPER_CC`).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -23,7 +23,7 @@ fn header<'s>(source: &'s str, prefix: &str) -> Vec<&'s str> {
     source
         .lines()
         .skip(1)
-        .take_while(|line| line.starts_with("# stdout:") || line.starts_with("# stderr:"))
+        .take_while(|line| ["# stdout:", "# stderr:", "# env:"].iter().any(|p| line.starts_with(p)))
         .filter_map(|line| line.strip_prefix(prefix))
         .map(|rest| rest.strip_prefix(' ').unwrap_or(rest))
         .collect()
@@ -43,10 +43,11 @@ fn check_program(path: &Path, build_root: &Path) -> Result<(), String> {
             ),
             other => other.to_string(),
         })?;
-    let output = Command::new(&executable).output().map_err(|e| e.to_string())?;
+    let variables: Vec<(&str, &str)> = header(&source, "# env:").into_iter().filter_map(|v| v.split_once('=')).collect();
+    let output = Command::new(&executable).envs(variables.clone()).output().map_err(|e| e.to_string())?;
     // The same program collecting garbage at every allocation, with freed memory poisoned, must
     // behave exactly as it does normally.
-    let stressed = Command::new(&executable).env("COOPER_GC", "stress").output().map_err(|e| e.to_string())?;
+    let stressed = Command::new(&executable).envs(variables).env("COOPER_GC", "stress").output().map_err(|e| e.to_string())?;
     if stressed.status.code() != output.status.code() || stressed.stdout != output.stdout {
         return Err(format!(
             "under COOPER_GC=stress: exit {:?} (not {:?}); stdout {:?} (not {:?}); stderr: {}",

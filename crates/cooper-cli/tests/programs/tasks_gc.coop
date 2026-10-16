@@ -1,0 +1,70 @@
+# exit: 0
+# stdout: 8 tasks hold 120 strings and 8 lists
+# stdout: lists sum 696
+# Each task keeps its data only on its own stack (a local array of strings and a linked list) while
+# it is suspended and the others allocate a great deal. The collector must scan every task's stack,
+# not just the running one's: the data must come back intact. (The harness also runs this collecting
+# at every allocation.)
+use {
+    std.io.println,
+    std.task.yield,
+    std.sync.WaitGroup,
+}
+
+struct Node {
+    value: i64,
+    next: Node^,
+}
+
+func build(n: i64): Node^ {
+    let first: Node^
+    for i in 0..n do {
+        let node: Node = Node{value: i, next: first}
+        first = &node
+    }
+    return first
+}
+
+func total(list: Node^): i64 {
+    let sum: i64 = 0
+    while list != nil do {
+        sum += list.value
+        list = list.next
+    }
+    return sum
+}
+
+func holder(id: i32, wg: WaitGroup^, strings: i64^, sums: i64^) {
+    let mine: string[]
+    for i in 0..15 do mine = mine.push("task {id} holds string number {i} of its own")
+    let list = build(10 + i64(id))
+    for round in 0..6 do yield()
+    for (i, s) in mine do {
+        if s != "task {id} holds string number {i} of its own" then strings^ = -1000000
+    }
+    strings^ += i64(mine.length())
+    sums^ += total(list)
+    wg.done()
+}
+
+func churn(wg: WaitGroup^) {
+    for round in 0..300 do {
+        let junk: string[]
+        for j in 0..20 do junk = junk.push("garbage {round} {j} padded out to a reasonable length")
+        yield()
+    }
+    wg.done()
+}
+
+func main() {
+    let wg: WaitGroup
+    let strings: i64
+    let sums: i64
+    wg.add(10)
+    for id in 0..8 do co holder(id, &wg, &strings, &sums)
+    co churn(&wg)
+    co churn(&wg)
+    wg.wait()
+    println("8 tasks hold {strings} strings and 8 lists")
+    println("lists sum {sums}")
+}

@@ -1,0 +1,25 @@
+# exit: 101
+# stderr: panic: stack overflow in task
+# A local array larger than the guard page must not step over it: the frame is probed a page at a
+# time, so the overflow is caught instead of corrupting whatever lies below the stack.
+use {
+    std.sync.WaitGroup,
+}
+
+func big(): i64 {
+    let a: i64[3000000]
+    a[2999999] = 7
+    return a[2999999]
+}
+
+func run(wg: WaitGroup^) {
+    big()
+    wg.done()
+}
+
+func main() {
+    let wg: WaitGroup
+    wg.add(1)
+    co run(&wg)
+    wg.wait()
+}

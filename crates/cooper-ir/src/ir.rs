@@ -413,6 +413,9 @@ pub enum Intrinsic {
     StringData,
     /// The source location (`file:line:column`) of the node it is on, as a string.
     SourceLocation,
+    /// Start a task running a function value taking no arguments (a `co` statement lowers to a
+    /// closure over the call's already evaluated parts). Args: `[function]`.
+    Spawn,
     /// `byteAt(i): u8` — the byte at an offset of a string. Args: `[string, index]`.
     StringByteAt,
     /// The bytes of a string from `start` up to `end` (exclusive, or inclusive when

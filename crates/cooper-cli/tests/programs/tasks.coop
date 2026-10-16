@@ -1,0 +1,115 @@
+# exit: 0
+# stdout: main waits
+# stdout: a0 b0 c0 a1 b1 c1 a2 c2
+# stdout: arguments are evaluated at the co: 5 7 x
+# stdout: slow after fast
+# stdout: 1000 tasks counted 2000
+# stdout: 50000
+# stdout: 3 5 ab
+# Tasks started with `co`: they run one at a time, switching where they block (`yield`, `sleep`, a
+# `WaitGroup`), in the order they became ready. A `co` evaluates its function and arguments at once,
+# and works with functions, methods (a pointer receiver on a local variable keeps that variable),
+# function values, and generic functions. A task's stack is its own, as large as a thread's (8 MiB,
+# committed as used): here one recurses 50000 frames deep, and a thousand tasks exist at once.
+use {
+    std.io.println,
+    std.task.{ sleep, yield },
+    std.sync.WaitGroup,
+}
+
+struct Counter {
+    total: i64,
+}
+
+(c: Counter^) func add(n: i64) {
+    c.total += n
+}
+
+func worker(name: string, rounds: i32, wg: WaitGroup^, log: string[]^) {
+    for i in 0..rounds do {
+        log^ = log^.push("{name}{i}")
+        yield()
+    }
+    wg.done()
+}
+
+func show(label: string, a: i32, b: i32, wg: WaitGroup^) {
+    println("{label}: {a} {b} x")
+    wg.done()
+}
+
+func nap(label: string, ms: i64, wg: WaitGroup^, order: string[]^) {
+    sleep(ms)
+    order^ = order^.push(label)
+    wg.done()
+}
+
+func count(counter: Counter^, wg: WaitGroup^) {
+    counter.add(1)
+    yield()
+    counter.add(1)
+    wg.done()
+}
+
+func depth(n: i64): i64 {
+    if n == 0 then return 0
+    return depth(n - 1) + 1
+}
+
+func recurse(result: i64^, wg: WaitGroup^) {
+    result^ = depth(50000)
+    wg.done()
+}
+
+func echo T (value: T, out: T[]^, wg: WaitGroup^) {
+    out^ = out^.push(value)
+    wg.done()
+}
+
+func main() {
+    let wg: WaitGroup
+    let log: string[]
+    wg.add(3)
+    co worker("a", 3, &wg, &log)
+    co worker("b", 2, &wg, &log)
+    co worker("c", 3, &wg, &log)
+    println("main waits")
+    wg.wait()
+    let joined = ""
+    for (i, entry) in log do joined += (if i > 0 then " " else "") + entry
+    println(joined)
+
+    x := 5
+    wg.add(1)
+    co show("arguments are evaluated at the co", x, x + 2, &wg)
+    x = 99
+    wg.wait()
+
+    let order: string[]
+    wg.add(2)
+    co nap("slow", 40, &wg, &order)
+    co nap("fast", 10, &wg, &order)
+    wg.wait()
+    println("{order[1]} after {order[0]}")
+
+    let counter: Counter
+    wg.add(1000)
+    for i in 0..1000 do co count(&counter, &wg)
+    wg.wait()
+    println("1000 tasks counted {counter.total}")
+
+    let deep: i64
+    wg.add(1)
+    co recurse(&deep, &wg)
+    wg.wait()
+    println("{deep}")
+
+    let numbers: i32[]
+    let words: string[]
+    wg.add(3)
+    co echo(3, &numbers, &wg)
+    co echo(5, &numbers, &wg)
+    co echo("ab", &words, &wg)
+    wg.wait()
+    println("{numbers[0]} {numbers[1]} {words[0]}")
+}

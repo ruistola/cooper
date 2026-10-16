@@ -11,6 +11,7 @@ Environment variables read by every Cooper program's runtime:
 | `COOPER_GC=stress` | Collect at every allocation and poison freed memory (the test harness runs every golden program this way) |
 | `COOPER_GC=poison` | Fill freed memory with `0xDB`, so a missed root crashes instead of silently reusing memory |
 | `COOPER_HEAP_GROWTH=n` or `off` | The heap may grow to `n` percent over what survived the last collection (default 100); `off` disables automatic collection |
+| `COOPER_STACK_KIB=n` | Reserve `n` KiB of stack for each task (default 8192) |
 | `COOPER_GC=objects` | Mark object by object as they are reached, instead of a span at a time: for comparing the two |
 
 The pacer follows Go's goal: the next collection starts at the live bytes plus the growth percentage of the live
@@ -50,3 +51,18 @@ Where the time goes (`COOPER_GC_STATS=1`, `-O2`): in `binary_trees` 63 collectio
 all of it marking; in `live_heap` 10 collections take 330 ms, marking 8.4M live objects at about 6 ns each, the
 cost of chasing pointers across a heap bigger than the cache. Sweeping is
 under 1% of collection time, so lazy sweeping would gain nothing yet.
+
+## Tasks
+
+`benchmarks/tasks.coop` (with a Go version, run with one thread) measures the scheduler. Cooper `-O2`, Go 1.27,
+Apple M5:
+
+| Measure | Cooper | Go |
+|---|---|---|
+| 5M switches between two tasks | 0.38 s (76 ns each) | included below |
+| 1M short-lived tasks, in bursts of 1000 | 0.41 s (0.4 µs each) | included below |
+| 100k tasks alive at once, each holding a stack | 0.6 s, 1.65 GB | included below |
+| All three | 1.0 s | 0.52 s |
+
+The memory is the cost of the design: a stack is at least one page, 16 KiB on this machine, against Go's 2 KiB.
+Time is mostly the kernel zero-filling those pages.

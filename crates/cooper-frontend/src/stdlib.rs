@@ -74,10 +74,12 @@ pub fn builtin_owner(ty: &Type) -> Option<TypeId> {
 }
 
 /// The standard library modules written in Cooper: path, file name, and source.
-const SOURCE_MODULES: [(&str, &str, &str); 4] = [
+const SOURCE_MODULES: [(&str, &str, &str); 6] = [
     ("std.strings", "std/strings.coop", include_str!("../std/strings.coop")),
     ("std.io", "std/io.coop", include_str!("../std/io.coop")),
     ("std.fmt", "std/fmt.coop", include_str!("../std/fmt.coop")),
+    ("std.task", "std/task.coop", include_str!("../std/task.coop")),
+    ("std.sync", "std/sync.coop", include_str!("../std/sync.coop")),
     ("std.testing", "std/testing.coop", include_str!("../std/testing.coop")),
 ];
 

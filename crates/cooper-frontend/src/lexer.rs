@@ -118,6 +118,8 @@ pub enum TokenKind {
     Break,
     #[token("continue")]
     Continue,
+    #[token("co")]
+    Co,
     #[token("defer")]
     Defer,
     #[token("type")]
@@ -226,6 +228,7 @@ impl std::fmt::Display for TokenKind {
             As => "'as'",
             Break => "'break'",
             Continue => "'continue'",
+            Co => "'co'",
             Defer => "'defer'",
             Type => "'type'",
             Comment => "comment",

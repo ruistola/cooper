@@ -538,6 +538,9 @@ pub enum StmtKind {
     },
     Break,
     Continue,
+    /// `co CALL`: start a task running the call, with its arguments evaluated now. The task runs
+    /// concurrently; nothing waits for it or receives its result.
+    Co(Expr),
     /// `defer STMT`: run `STMT` when the enclosing block is left, after the statements
     /// deferred later. It is the body of a function literal created here and called there.
     Defer(Box<Stmt>),

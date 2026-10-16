@@ -1,0 +1,22 @@
+# exit: 101
+# stderr: panic: stack overflow in task
+use {
+    std.task.yield,
+    std.sync.WaitGroup,
+}
+
+func forever(n: i64): i64 {
+    return forever(n + 1) + 1
+}
+
+func run(wg: WaitGroup^) {
+    forever(0)
+    wg.done()
+}
+
+func main() {
+    let wg: WaitGroup
+    wg.add(1)
+    co run(&wg)
+    wg.wait()
+}

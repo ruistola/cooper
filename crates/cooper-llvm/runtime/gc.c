@@ -699,14 +699,21 @@ static void mark_roots(void) {
     drain();
 }
 
-/* Every word of the stack from `here` up to its base, as a possible pointer. */
+/* Every word in [low, high) as a possible pointer. */
+static void scan_range(uintptr_t low, uintptr_t high) {
+    for (const uintptr_t *word = (const uintptr_t *)((low + 7) & ~(uintptr_t)7); (uintptr_t)word + 8 <= high; word++) {
+        mark_word(*word);
+    }
+}
+
+/* Every word of the running task's stack from `here` up to its top, and the other tasks' stacks. */
 static __attribute__((noinline)) void scan_stack(void) {
     volatile uintptr_t here = 0;
     uintptr_t low = (uintptr_t)&here & ~(uintptr_t)7;
-    root_bytes += (size_t)((uintptr_t)stack_base - low);
-    for (const uintptr_t *word = (const uintptr_t *)low; (const void *)word < stack_base; word++) {
-        mark_word(*word);
-    }
+    uintptr_t high = cooper_current_stack_top();
+    root_bytes += (size_t)(high - low);
+    scan_range(low, high);
+    cooper_scan_tasks(scan_range);
     drain();
 }
 
@@ -839,6 +846,7 @@ static void collect(void) {
 /* Tell the collector where the stack begins: the address of a local of `main`. */
 void cooper_gc_init(void *base) {
     stack_base = base;
+    cooper_sched_init(base);
 }
 
 /* Collect now. */

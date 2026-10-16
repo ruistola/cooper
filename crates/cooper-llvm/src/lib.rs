@@ -31,10 +31,11 @@ use cooper_ir::{Function, Program};
 pub const RUNTIME_C: &str = include_str!("../runtime/cooper_rt.c");
 
 /// The runtime's other C sources and its header, by file name, which the driver writes beside
-/// the program and compiles with it: the heap allocator (`gc.c`) and the shared declarations.
-pub const RUNTIME_FILES: [(&str, &str); 2] = [
+/// the program and compiles with it: the heap allocator and collector (`gc.c`), the scheduler (`sched.c`), and the shared declarations.
+pub const RUNTIME_FILES: [(&str, &str); 3] = [
     ("cooper.h", include_str!("../runtime/cooper.h")),
     ("cooper_gc.c", include_str!("../runtime/gc.c")),
+    ("cooper_sched.c", include_str!("../runtime/sched.c")),
 ];
 
 /// The module and name of the function a program starts in.
@@ -194,6 +195,8 @@ pub fn emit(program: &Program, triple: &str, project: &Project, options: Options
             out.push('\n');
         });
     }
+    // A frame larger than the guard page below a task's stack must not step over it: probe it a page at a time.
+    out.push_str("\nattributes #0 = { \"probe-stack\"=\"inline-asm\" }\n");
     out.push_str(&functions);
     module.thunks.values().for_each(|t| {
         out.push('\n');

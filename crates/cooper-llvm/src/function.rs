@@ -114,7 +114,7 @@ pub(crate) fn emit(module: &mut Module, function: &Function) -> Result<String, C
     }
     let linkage = if function.env.is_some() { "private " } else { "" };
     Ok(format!(
-        "define {linkage}{ret} @{}({}) {{\nentry:\n{}{}}}\n",
+        "define {linkage}{ret} @{}({}) #0 {{\nentry:\n{}{}}}\n",
         mangle::symbol(&function.item, &function.type_args),
         params.join(", "),
         emitter.allocas,

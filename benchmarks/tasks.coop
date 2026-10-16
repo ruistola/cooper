@@ -1,0 +1,42 @@
+# Scheduler costs: two tasks switching back and forth, a million short-lived tasks, and a large
+# number of tasks alive at once, each holding a stack.
+use {
+    std.io.println,
+    std.task.{ sleep, yield },
+    std.sync.WaitGroup,
+}
+
+func ping(n: i32, wg: WaitGroup^) {
+    for i in 0..n do yield()
+    wg.done()
+}
+
+func noop(wg: WaitGroup^) {
+    wg.done()
+}
+
+func hold(wg: WaitGroup^) {
+    sleep(200)
+    wg.done()
+}
+
+func main() {
+    let wg: WaitGroup
+    wg.add(2)
+    co ping(2500000, &wg)
+    co ping(2500000, &wg)
+    wg.wait()
+    println("5M switches")
+
+    for round in 0..1000 do {
+        wg.add(1000)
+        for i in 0..1000 do co noop(&wg)
+        wg.wait()
+    }
+    println("1M tasks")
+
+    wg.add(100000)
+    for i in 0..100000 do co hold(&wg)
+    wg.wait()
+    println("100k tasks alive at once")
+}

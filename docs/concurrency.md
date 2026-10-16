@@ -75,6 +75,9 @@ match group.wait() with {       # returns when every task has finished
 Cancellation is cooperative: tasks are never stopped from outside, they check `group.cancelled()` where they
 can stop (a loop, between steps). Plain `co` remains for fire-and-forget work.
 
+Nothing checks that a group is waited for, so write `defer group.wait()` right after declaring it (or call `wait`
+before every return) to keep the guarantee.
+
 ## Stacks
 
 Every task has a stack of its own: 8 MiB of reserved address space with a guard page at the low end, which

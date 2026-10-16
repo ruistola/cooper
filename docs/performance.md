@@ -10,10 +10,13 @@ Environment variables read by every Cooper program's runtime:
 | `COOPER_GC=trace` | Print one line per collection: mark and sweep time, live bytes, the next collection's trigger, heap size |
 | `COOPER_GC=stress` | Collect at every allocation and poison freed memory (the test harness runs every golden program this way) |
 | `COOPER_GC=poison` | Fill freed memory with `0xDB`, so a missed root crashes instead of silently reusing memory |
-| `COOPER_GOGC=n` or `off` | The heap may grow to `n` percent over what survived the last collection (default 100, as in Go); `off` disables automatic collection |
+| `COOPER_HEAP_GROWTH=n` or `off` | The heap may grow to `n` percent over what survived the last collection (default 100); `off` disables automatic collection |
+| `COOPER_GC=objects` | Mark object by object as they are reached, instead of a span at a time: for comparing the two |
 
-The pacer follows Go's goal: the next collection starts at the live bytes plus `GOGC` percent of the live
-bytes and the roots (stack and module-level variables), but at least 4 MiB scaled by `GOGC`. After each
+The pacer follows Go's goal: the next collection starts at the live bytes plus the growth percentage of the live
+bytes and the roots (stack and module-level variables), but at least 4 MiB scaled by the percentage.
+Statistics cost nothing while allocating: bytes allocated are derived at each collection, and the clock is
+read only when statistics or tracing are on. After each
 collection, free runs of 128 KiB or more are returned to the operating system (`madvise`).
 
 ## Benchmarks
@@ -31,7 +34,19 @@ and single-threaded:
 | `live_heap`: 128 MB live tree, 50M short-lived allocations | 1.94 s, 269 MiB | 0.65 s, 269 MiB | 0.43 s, 275 MiB |
 | `strings`: building, joining, and splitting 1.2M small strings | 0.43 s, 8 MiB | 0.15 s, 7 MiB | 0.08 s, 10 MiB |
 
+Marking works a span at a time, after Go's Green Tea collector: reaching a small object marks it and queues its
+span (first in, first out), and a span's marked-but-unscanned objects are scanned together from the span's bit
+arrays. On `scattered`, a random graph of 3M nodes where tracing jumps around memory, this makes marking 2.6x
+faster than scanning object by object (7.2 s against 18.7 s over 105 collections). On the tree benchmarks,
+whose nodes are allocated in the order they are traced, it makes no difference, since a collection already
+costs about 6 ns per object there. Cooper's mark is single-threaded; Go's runs on other cores concurrently
+(on `scattered` Go takes 4.2 s of wall time and 29 s of CPU, Cooper 8.0 s of wall time and CPU).
+
+| Benchmark | Cooper (`-O2`) | Go |
+|---|---|---|
+| `scattered`: 3M-node random graph, 120M short-lived allocations | 8.03 s, 173 MiB | 4.21 s, 249 MiB |
+
 Where the time goes (`COOPER_GC_STATS=1`, `-O2`): in `binary_trees` 63 collections take 227 ms of 440 ms, almost
-all of it marking; in `live_heap` 10 collections take 330 ms, marking 8.4M live objects at about 40 ns each, the
-cost of chasing pointers across the heap that Green Tea's span-at-a-time scanning is meant to reduce. Sweeping is
+all of it marking; in `live_heap` 10 collections take 330 ms, marking 8.4M live objects at about 6 ns each, the
+cost of chasing pointers across a heap bigger than the cache. Sweeping is
 under 1% of collection time, so lazy sweeping would gain nothing yet.

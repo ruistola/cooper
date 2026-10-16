@@ -58,7 +58,10 @@ typedef struct Span {
     uint8_t heap_bits_in_span;
     uint8_t needzero;    /* the span's memory may be dirty: zero a slot when it is handed out */
     uint64_t *alloc_bits; /* allocated as of the last collection */
-    uint64_t *mark_bits;
+    uint64_t *mark_bits;  /* reached by the collector */
+    uint64_t *scan_bits;  /* already scanned (scannable small objects only) */
+    uint8_t queued;       /* on the collector's span queue */
+    uint32_t div_magic;   /* index = offset * div_magic >> 32, as Go's size classes do: no divide */
     size_t bits_words;    /* the capacity of the two bit arrays, in words */
     const CooperType *large_type;
     size_t large_size;
@@ -128,21 +131,21 @@ static Arena *current_arena;
 static size_t heap_bytes, span_count;
 static size_t heap_used;  /* bytes in allocated slots: live as of the last collection, plus allocated since */
 static size_t next_gc;    /* collect when `heap_used` reaches this */
-static int stress, poison;
+static int stress, poison, object_mark; /* object_mark: scan objects as reached, not a span at a time */
 static void *stack_base;
 static int collecting;
-static unsigned gogc = 100;   /* the heap may grow to this percent over what survived: COOPER_GOGC */
+static unsigned growth = 100;  /* the heap may grow to this percent over what survived: COOPER_HEAP_GROWTH */
 static int gc_off;
 static size_t root_bytes;      /* stack and module-level variables scanned by the last collection */
 
 /* --- measurements: COOPER_GC=trace prints a line per collection, COOPER_GC_STATS=1 a summary at exit --- */
 
 static struct {
-    uint64_t collections, allocations, bytes_allocated;
+    uint64_t collections, bytes_allocated;
     uint64_t mark_ns, sweep_ns, max_pause_ns;
     size_t peak_heap, last_live;
 } stats;
-static int trace;
+static int trace, instrument; /* instrument: trace or statistics are on */
 static size_t released_bytes; /* memory returned to the operating system, in all */
 
 static uint64_t now_ns(void) {
@@ -266,11 +269,12 @@ static Span *new_span(size_t npages) {
     if (span) span_pool = span->all_next;
     else span = meta_alloc(sizeof(Span));
     size_t words = span->bits_words;
-    uint64_t *alloc_bits = span->alloc_bits, *mark_bits = span->mark_bits;
+    uint64_t *alloc_bits = span->alloc_bits, *mark_bits = span->mark_bits, *scan_bits = span->scan_bits;
     memset(span, 0, sizeof *span);
     span->bits_words = words;
     span->alloc_bits = alloc_bits;
     span->mark_bits = mark_bits;
+    span->scan_bits = scan_bits;
     span->arena = arena;
     span->first_page = first_page;
     span->start = arena->base + (first_page << PAGE_SHIFT);
@@ -290,10 +294,12 @@ static void span_bits(Span *span, size_t words) {
     if (span->bits_words >= words) {
         memset(span->alloc_bits, 0, words * 8);
         memset(span->mark_bits, 0, words * 8);
+        memset(span->scan_bits, 0, words * 8);
         return;
     }
     span->alloc_bits = meta_alloc(words * 8);
     span->mark_bits = meta_alloc(words * 8);
+    span->scan_bits = meta_alloc(words * 8);
     span->bits_words = words;
 }
 
@@ -320,6 +326,7 @@ static Span *new_small_span(int class, int noscan) {
     span->spanclass = (uint16_t)(class << 1 | noscan);
     span->noscan = (uint8_t)noscan;
     span->heap_bits_in_span = !noscan && span->elemsize <= MIN_SIZE_FOR_HEADER;
+    span->div_magic = UINT32_MAX / (uint32_t)span->elemsize + 1;
     /* A bitmap of one bit per word takes the end of the span. */
     size_t bitmap = span->heap_bits_in_span ? bytes / 64 : 0;
     span->nelems = (uint32_t)((bytes - bitmap) / span->elemsize);
@@ -390,9 +397,6 @@ static void *allocate_large(size_t size, const CooperType *type) {
     span_bits(span, 1);
     if (span->needzero) memset((void *)span->start, 0, size);
     heap_used += span->elemsize;
-    stats.allocations++;
-    stats.bytes_allocated += span->elemsize;
-    if (heap_bytes > stats.peak_heap) stats.peak_heap = heap_bytes;
     return (void *)span->start;
 }
 
@@ -402,9 +406,9 @@ static void print_stats(void) {
     uint64_t pause = stats.mark_ns + stats.sweep_ns;
     fprintf(stderr,
             "gc: %llu collections, %.1f ms collecting (mark %.1f, sweep %.1f), longest pause %.2f ms\n"
-            "gc: %llu allocations, %.1f MiB allocated, peak heap %.1f MiB, %.1f MiB live after the last collection, %.1f MiB returned to the system\n",
+            "gc: %.1f MiB allocated, peak heap %.1f MiB, %.1f MiB live after the last collection, %.1f MiB returned to the system\n",
             (unsigned long long)stats.collections, pause / 1e6, stats.mark_ns / 1e6, stats.sweep_ns / 1e6,
-            stats.max_pause_ns / 1e6, (unsigned long long)stats.allocations, stats.bytes_allocated / 1048576.0,
+            stats.max_pause_ns / 1e6, stats.bytes_allocated / 1048576.0,
             stats.peak_heap / 1048576.0, stats.last_live / 1048576.0, released_bytes / 1048576.0);
 }
 
@@ -412,13 +416,18 @@ static void init_heap(void) {
     init_classes();
     const char *mode = getenv("COOPER_GC");
     trace = mode && strstr(mode, "trace");
-    if (getenv("COOPER_GC_STATS")) atexit(print_stats);
-    const char *percent = getenv("COOPER_GOGC");
+    if (getenv("COOPER_GC_STATS")) {
+        atexit(print_stats);
+        instrument = 1;
+    }
+    instrument |= trace;
+    const char *percent = getenv("COOPER_HEAP_GROWTH");
     if (percent && !strcmp(percent, "off")) gc_off = 1;
-    else if (percent && atoi(percent) > 0) gogc = (unsigned)atoi(percent);
+    else if (percent && atoi(percent) > 0) growth = (unsigned)atoi(percent);
     stress = mode && strstr(mode, "stress");
+    object_mark = mode && strstr(mode, "objects");
     poison = stress || (mode && strstr(mode, "poison"));
-    next_gc = MIN_HEAP * gogc / 100;
+    next_gc = MIN_HEAP * growth / 100;
     ready = 1;
 }
 
@@ -450,8 +459,6 @@ void *cooper_alloc(size_t size, const CooperType *type) {
         slot = next_free(span);
     }
     heap_used += span->elemsize;
-    stats.allocations++;
-    stats.bytes_allocated += span->elemsize;
     if (span->needzero) memset(slot, 0, span->elemsize);
     if (noscan) return slot;
     if (span->heap_bits_in_span) {
@@ -537,17 +544,51 @@ static void push_work(uintptr_t slot, Span *span) {
     work_len++;
 }
 
+/* The spans with objects waiting to be scanned, first in first out: the longer a span waits, the more
+   of its objects have been reached by the time it is scanned. */
+static Span **queue;
+static size_t queue_head, queue_len, queue_cap;
+
+static void queue_span(Span *span) {
+    if (queue_len == queue_cap) {
+        size_t cap = queue_cap ? queue_cap * 2 : 1024;
+        Span **grown = map_zeroed(cap * sizeof *grown);
+        for (size_t i = 0; i < queue_len; i++) grown[i] = queue[(queue_head + i) % queue_cap];
+        if (queue) munmap(queue, queue_cap * sizeof *queue);
+        queue = grown;
+        queue_head = 0;
+        queue_cap = cap;
+    }
+    queue[(queue_head + queue_len++) % queue_cap] = span;
+}
+
 /* Mark the object `word` points into, if it points into an allocated one. */
+static Span *last_span; /* the span the previous word pointed into: the next often does too */
+
 static void mark_word(uintptr_t word) {
-    Span *span = span_of(word);
+    Span *span = last_span;
+    if (!span || word - span->start >= span->npages << PAGE_SHIFT || span->state != SPAN_IN_USE) {
+        span = span_of(word);
+        if (span) last_span = span;
+    }
     if (!span || span->state != SPAN_IN_USE || word < span->start) return;
-    uint32_t index = span->large ? 0 : (uint32_t)((word - span->start) / span->elemsize);
+    uint32_t index = span->large ? 0 : (uint32_t)(((word - span->start) * span->div_magic) >> 32);
     if (index >= span->nelems) return;
     uint64_t bit = (uint64_t)1 << (index % 64);
     if (index >= span->freeindex && !(span->alloc_bits[index / 64] & bit)) return;
     if (span->mark_bits[index / 64] & bit) return;
     span->mark_bits[index / 64] |= bit;
-    if (!span->noscan) push_work(span->start + (size_t)index * span->elemsize, span);
+    if (span->noscan) return;
+    if (span->heap_bits_in_span && !object_mark) {
+        /* Green Tea: do not scan the object now. Queue its span, so that the objects reached
+           meanwhile in the same span are scanned together, a span at a time. */
+        if (!span->queued) {
+            span->queued = 1;
+            queue_span(span);
+        }
+        return;
+    }
+    push_work(span->start + (size_t)index * span->elemsize, span);
 }
 
 /* The pointers among `bytes` bytes at `base`, which hold whole values of `type`. */
@@ -568,11 +609,16 @@ static void scan_object(uintptr_t slot, const Span *span) {
     if (span->large) {
         scan_tiled((const uint64_t *)slot, span->large_size, span->large_type);
     } else if (span->heap_bits_in_span) {
+        /* The slot's pointer words, as one mask taken from the span's bitmap, and only those visited. */
         const uint64_t *bits = heap_bits(span);
-        size_t first = (slot - span->start) / 8;
-        for (size_t word = 0; word < span->elemsize / 8; word++) {
-            size_t at = first + word;
-            if (bits[at / 64] >> (at % 64) & 1) mark_word(((const uint64_t *)slot)[word]);
+        size_t first = (slot - span->start) / 8, slot_words = span->elemsize / 8;
+        size_t at = first / 64, shift = first % 64;
+        uint64_t mask = bits[at] >> shift;
+        if (shift && shift + slot_words > 64) mask |= bits[at + 1] << (64 - shift);
+        if (slot_words < 64) mask &= ((uint64_t)1 << slot_words) - 1;
+        while (mask) {
+            mark_word(((const uint64_t *)slot)[__builtin_ctzll(mask)]);
+            mask &= mask - 1;
         }
     } else {
         const CooperType *type = *(const CooperType **)slot;
@@ -580,10 +626,34 @@ static void scan_object(uintptr_t slot, const Span *span) {
     }
 }
 
+/* Scan the objects of a small span that were marked and not yet scanned. Scanning may mark more of
+   them (and requeue the span), which a later turn picks up. */
+static void scan_span(Span *span) {
+    size_t words = (span->nelems + 63) / 64;
+    for (size_t word = 0; word < words; word++) {
+        uint64_t pending = span->mark_bits[word] & ~span->scan_bits[word];
+        span->scan_bits[word] |= pending;
+        while (pending) {
+            size_t index = word * 64 + (size_t)__builtin_ctzll(pending);
+            pending &= pending - 1;
+            scan_object(span->start + index * span->elemsize, span);
+        }
+    }
+}
+
 static void drain(void) {
-    while (work_len) {
-        Work item = work[--work_len];
-        scan_object(item.slot, item.span);
+    while (work_len || queue_len) {
+        while (work_len) {
+            Work item = work[--work_len];
+            scan_object(item.slot, item.span);
+        }
+        if (queue_len) {
+            Span *span = queue[queue_head];
+            queue_head = (queue_head + 1) % queue_cap;
+            queue_len--;
+            span->queued = 0;
+            scan_span(span);
+        }
     }
 }
 
@@ -597,6 +667,7 @@ extern const int64_t cooper_root_count;
 
 static void mark_roots(void) {
     root_bytes = 0;
+    last_span = NULL;
     for (int64_t i = 0; i < cooper_root_count; i++) {
         root_bytes += cooper_roots[i].type->size;
         scan_tiled(cooper_roots[i].address, cooper_roots[i].type->size, cooper_roots[i].type);
@@ -669,6 +740,8 @@ static void sweep(void) {
         }
         memcpy(span->alloc_bits, span->mark_bits, words * 8);
         memset(span->mark_bits, 0, words * 8);
+        memset(span->scan_bits, 0, words * 8);
+        span->queued = 0;
         span->freeindex = 0;
         span->alloc_count = live;
         span->needzero = 1;
@@ -712,21 +785,25 @@ static __attribute__((noinline)) void collect_with_registers(void) {
 static void collect(void) {
     collecting = 1;
     if (heap_bytes > stats.peak_heap) stats.peak_heap = heap_bytes;
-    uint64_t start = now_ns();
+    size_t before = heap_used;
+    uint64_t start = instrument ? now_ns() : 0;
     mark_roots();
     collect_with_registers();
-    uint64_t marked = now_ns();
+    uint64_t marked = instrument ? now_ns() : 0;
     sweep();
-    uint64_t done = now_ns();
+    uint64_t done = instrument ? now_ns() : 0;
     /* Go's goal: what survived, plus a percentage of it and of the roots, but at least a minimum. */
-    next_gc = heap_used + (heap_used + root_bytes) / 100 * gogc;
-    if (next_gc < MIN_HEAP / 100 * gogc) next_gc = MIN_HEAP / 100 * gogc;
+    next_gc = heap_used + (heap_used + root_bytes) / 100 * growth;
+    if (next_gc < MIN_HEAP / 100 * growth) next_gc = MIN_HEAP / 100 * growth;
     scavenge();
     stats.collections++;
-    stats.mark_ns += marked - start;
-    stats.sweep_ns += done - marked;
-    if (done - start > stats.max_pause_ns) stats.max_pause_ns = done - start;
+    stats.bytes_allocated += before > stats.last_live ? before - stats.last_live : 0;
     stats.last_live = heap_used;
+    if (instrument) {
+        stats.mark_ns += marked - start;
+        stats.sweep_ns += done - marked;
+        if (done - start > stats.max_pause_ns) stats.max_pause_ns = done - start;
+    }
     if (trace) {
         fprintf(stderr, "gc %llu: mark %.2f ms, sweep %.2f ms, live %.1f MiB, next at %.1f MiB, heap %.1f MiB\n",
                 (unsigned long long)stats.collections, (marked - start) / 1e6, (done - marked) / 1e6,

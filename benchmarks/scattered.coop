@@ -1,0 +1,46 @@
+# A live heap with poor locality: a random graph, each node pointing at two others chosen by a
+# pseudo-random sequence, so that tracing it jumps all over memory. Garbage churns on top.
+use {
+    std.io.println,
+}
+
+struct Node {
+    a: Node^,
+    b: Node^,
+    id: i64,
+}
+
+let all: Node^[]
+
+func main() {
+    n := 3000000
+    for i in 0..n do {
+        let node: Node
+        node.id = i64(i)
+        all = all.push(&node)
+    }
+    let seed: u64 = 12345
+    for i in 0..n do {
+        seed = seed xor (seed << 13)
+        seed = seed xor (seed >> 7)
+        seed = seed xor (seed << 17)
+        all[i].a = all[i64(seed % u64(n))]
+        seed = seed xor (seed << 13)
+        seed = seed xor (seed >> 7)
+        seed = seed xor (seed << 17)
+        all[i].b = all[i64(seed % u64(n))]
+    }
+    head := all[0]
+    all = []
+    let sum: i64 = 0
+    for round in 0..400 do {
+        let junk: Node^[]
+        for i in 0..300000 do {
+            let g: Node
+            g.id = i64(i)
+            junk = junk.push(&g)
+        }
+        sum += i64(junk.length())
+    }
+    println("{sum} {head.id}")
+}

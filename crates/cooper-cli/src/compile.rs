@@ -75,11 +75,76 @@ pub fn build(project: &Project, native: &Native, build_dir: &Path, options: coop
     let project = &cooper_frontend::stdlib::with_source_modules(project);
     let checked = cooper_frontend::check_project(project).map_err(BuildError::Diagnostics)?;
     let program = cooper_ir::lower_program(&checked).map_err(BuildError::Lower)?;
+    link(project, &program, native, build_dir, options, &project.manifest.name)
+}
+
+/// A built test program: the executable, and the name of each test, in the order the
+/// executable numbers them (`COOPER_TEST=n` runs the `n`th).
+pub struct TestBuild {
+    pub executable: PathBuf,
+    pub tests: Vec<String>,
+}
+
+/// Build the test program of `project`, which holds its `*_test.coop` sources: every function
+/// `testName()` of those files is a test. The executable runs one test, chosen by the
+/// `COOPER_TEST` environment variable, and exits with status 0 if it returns.
+pub fn build_tests(project: &Project, native: &Native, build_dir: &Path, options: cooper_llvm::Options) -> Result<TestBuild, BuildError> {
+    let project = &cooper_frontend::stdlib::with_source_modules(project);
+    let checked = cooper_frontend::check_project(project).map_err(BuildError::Diagnostics)?;
+    let tests = discover_tests(&checked)?;
+    let names = tests.iter().map(|t| match t {
+        cooper_frontend::resolve::Callable::Func { module, name } => format!("{module}.{name}"),
+        _ => unreachable!("a test is a function"),
+    });
+    let names: Vec<String> = names.collect();
+    if tests.is_empty() {
+        return Ok(TestBuild { executable: PathBuf::new(), tests: names });
+    }
+    let program = cooper_ir::lower_program_for(&checked, &cooper_ir::Entry::Tests(tests)).map_err(BuildError::Lower)?;
+    let name = format!("{}-test", project.manifest.name);
+    let executable = link(project, &program, native, build_dir, options, &name)?;
+    Ok(TestBuild { executable, tests: names })
+}
+
+/// The tests of a checked project: the functions named `test` and a capital letter or digit
+/// (`testParse`) in its `*_test.coop` files, which take nothing and return nothing.
+fn discover_tests(checked: &cooper_frontend::CheckedProject) -> Result<Vec<cooper_frontend::resolve::Callable>, BuildError> {
+    use cooper_frontend::ast::StmtKind;
+    let mut tests = Vec::new();
+    let mut errors = Vec::new();
+    for file in checked.files.iter().filter(|f| f.name.ends_with(crate::loader::TEST_SUFFIX)) {
+        for decl in &file.decls {
+            let StmtKind::FuncDecl(func) = &decl.kind else { continue };
+            let named = func.name.strip_prefix("test").and_then(|rest| rest.chars().next());
+            if func.receiver.is_some() || !named.is_some_and(|c| c.is_uppercase() || c.is_ascii_digit()) {
+                continue;
+            }
+            if !func.params.is_empty() || func.return_type.is_some() || !func.type_params.is_empty() {
+                errors.push(
+                    Diagnostic::error(func.name_span, "a test function takes no parameters, has no type parameters, and returns nothing")
+                        .in_file(&file.name),
+                );
+                continue;
+            }
+            tests.push(cooper_frontend::resolve::Callable::Func { module: file.module.to_string(), name: func.name.clone() });
+        }
+    }
+    if errors.is_empty() { Ok(tests) } else { Err(BuildError::Diagnostics(errors)) }
+}
+
+/// Compile and link `program` into the executable `name` in `build_dir`.
+fn link(
+    project: &Project,
+    program: &cooper_ir::Program,
+    native: &Native,
+    build_dir: &Path,
+    options: cooper_llvm::Options,
+    name: &str,
+) -> Result<PathBuf, BuildError> {
     let cc = std::env::var(CC_VAR).unwrap_or_else(|_| DEFAULT_CC.to_string());
     let triple = target_triple(&cc)?;
-    let emitted = cooper_llvm::emit(&program, &triple, project, options).map_err(BuildError::Codegen)?;
+    let emitted = cooper_llvm::emit(program, &triple, project, options).map_err(BuildError::Codegen)?;
 
-    let name = &project.manifest.name;
     let ir_path = build_dir.join(format!("{name}.ll"));
     let runtime_path = build_dir.join(RUNTIME_FILE);
     let executable = build_dir.join(name);

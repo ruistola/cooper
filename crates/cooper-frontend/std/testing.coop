@@ -1,0 +1,22 @@
+# The standard `testing` module: assertions for the tests `cooper test` runs.
+#
+# A test is a function `testName()` in a `*_test.coop` file. It passes if it returns and fails if
+# it calls `fail`, or a `check` that does not hold, or panics. Each test runs in a process of its
+# own, so a failure stops that test and no other.
+
+use {
+    std.io.eprintln,
+}
+
+extern func exit(status: i32)
+
+# Fails the test, saying `message`.
+func fail(message: string) {
+    eprintln("FAIL: " + message)
+    exit(1)
+}
+
+# Fails the test with `message` unless `ok` holds.
+func check(ok: bool, message: string) {
+    if !ok then fail(message)
+}

@@ -8,8 +8,9 @@ other documents in this directory give the design and its reasons, and the progr
 **Cooper is its own language.** It resembles Go, Rust, and Kotlin in places, and those
 resemblances mislead. Keywords delimit headers and bodies (`if … then`, `while … do`,
 `match … with`), and curly braces mean a block of several statements or a data declaration,
-never a single branch. `cooper run file.coop` builds and runs a file, and `cooper check`
-only reports diagnostics.
+never a single branch. `cooper run file.coop` builds and runs a file, `cooper check`
+only reports diagnostics, and `cooper test dir` runs the tests of a project
+([Testing](./testing.md)).
 
 ## Not Rust, not Go
 

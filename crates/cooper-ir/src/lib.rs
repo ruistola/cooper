@@ -113,6 +113,9 @@ pub struct Program {
     /// The initializer functions to run, in order, before `main`: each module's after
     /// those of the modules it depends on.
     pub initializers: Vec<Callable>,
+    /// The test functions of a test program, in the order they are numbered. A test program
+    /// runs the one test its environment selects instead of `main`.
+    pub tests: Vec<Callable>,
     pub defs: TypeDefs,
 }
 
@@ -145,9 +148,22 @@ impl fmt::Display for ProgramError {
 
 impl std::error::Error for ProgramError {}
 
+/// What a program runs: its `main`, or one of a set of test functions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Entry {
+    Main,
+    Tests(Vec<Callable>),
+}
+
 /// Lower every file of a checked project and monomorphize the whole: the IR a
 /// backend consumes.
 pub fn lower_program(project: &CheckedProject) -> Result<Program, ProgramError> {
+    lower_program_for(project, &Entry::Main)
+}
+
+/// [`lower_program`] for the given entry: only what it and the module initializers reach
+/// is compiled.
+pub fn lower_program_for(project: &CheckedProject, entry: &Entry) -> Result<Program, ProgramError> {
     let mut functions = Vec::new();
     let mut externs: Vec<Extern> = Vec::new();
     let mut variables = Vec::new();
@@ -172,13 +188,19 @@ pub fn lower_program(project: &CheckedProject) -> Result<Program, ProgramError> 
         }
     }
     let initializers = init::order(&variables, &functions)?;
-    // The program is what `main` and the module initializers reach.
+    // The program is what its entry and the module initializers reach.
+    let tests = match entry {
+        Entry::Main => Vec::new(),
+        Entry::Tests(tests) => tests.clone(),
+    };
     let roots: Vec<Callable> = functions
         .iter()
         .map(|f| &f.item)
         .filter(|item| {
             matches!(item, Callable::Initializer { .. })
-                || matches!(item, Callable::Func { module, name } if module == "main" && name == "main")
+                || tests.contains(item)
+                || (*entry == Entry::Main
+                    && matches!(item, Callable::Func { module, name } if module == "main" && name == "main"))
         })
         .cloned()
         .collect();
@@ -188,6 +210,7 @@ pub fn lower_program(project: &CheckedProject) -> Result<Program, ProgramError> 
         externs,
         globals: variables.into_iter().map(|v| v.global).collect(),
         initializers,
+        tests,
         defs: project.defs.clone(),
     })
 }

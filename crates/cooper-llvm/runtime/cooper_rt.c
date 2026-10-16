@@ -21,6 +21,13 @@ int main(void) {
     return cooper_main();
 }
 
+/* Which test a test program runs: the number in the environment variable COOPER_TEST,
+   or -1 when it is not set. */
+int32_t cooper_test_index(void) {
+    const char *which = getenv("COOPER_TEST");
+    return which ? (int32_t)atoi(which) : -1;
+}
+
 /* Stop the program on a runtime error (overflow, division by zero, ...). `message`
    names the error and its source location. */
 _Noreturn void cooper_panic(const char *message) {

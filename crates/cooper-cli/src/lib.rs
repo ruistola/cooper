@@ -10,6 +10,6 @@
 mod compile;
 mod loader;
 
-pub use compile::{build, BuildError};
+pub use compile::{build, build_tests, BuildError, TestBuild};
 pub use cooper_llvm::Options;
-pub use loader::{load, load_project, LoadError, Loaded, Native};
+pub use loader::{load, load_project, load_with_tests, LoadError, Loaded, Native};

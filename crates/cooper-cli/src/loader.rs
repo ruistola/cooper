@@ -19,6 +19,8 @@ use cooper_frontend::{Module, Project, ProjectKind, SourceFile};
 const MANIFEST: &str = "project.toml";
 const SOURCE_EXT: &str = "coop";
 const MAIN_FILE: &str = "main.coop";
+/// The file name suffix of test sources, which only `cooper test` compiles.
+pub const TEST_SUFFIX: &str = "_test.coop";
 /// The directory, beside the project or file, that build outputs are written to.
 const BUILD_DIR: &str = "build";
 
@@ -48,7 +50,7 @@ impl std::error::Error for LoadError {}
 
 /// Load the project rooted at `root`, reading its manifest and every module's source.
 pub fn load_project(root: &Path) -> Result<Project, LoadError> {
-    load_with_native(root).map(|(project, _)| project)
+    load_with_native(root, false).map(|(project, _)| project)
 }
 
 /// The C code a program links with, from its manifest's `[c]` table: libraries
@@ -61,7 +63,7 @@ pub struct Native {
 }
 
 /// Load the project rooted at `root` and the C code its manifest names.
-fn load_with_native(root: &Path) -> Result<(Project, Native), LoadError> {
+fn load_with_native(root: &Path, tests: bool) -> Result<(Project, Native), LoadError> {
     let manifest_path = root.join(MANIFEST);
     let manifest = read(&manifest_path)?;
     let (name, module_root, mut native) = parse_manifest(&manifest_path, &manifest)?;
@@ -79,7 +81,7 @@ fn load_with_native(root: &Path) -> Result<(Project, Native), LoadError> {
     };
 
     let mut modules = Vec::new();
-    collect_modules(&module_root_dir, &[], &mut modules)?;
+    collect_modules(&module_root_dir, &[], tests, &mut modules)?;
     Ok((Project::new(name, kind, modules), native))
 }
 
@@ -95,8 +97,17 @@ pub struct Loaded {
 /// source file as a one-module program named after the file, its outputs in a
 /// `build/` directory beside it.
 pub fn load(path: &Path) -> Result<Loaded, LoadError> {
+    load_path(path, false)
+}
+
+/// [`load`], also reading the test sources (`*_test.coop`) of a project.
+pub fn load_with_tests(path: &Path) -> Result<Loaded, LoadError> {
+    load_path(path, true)
+}
+
+fn load_path(path: &Path, tests: bool) -> Result<Loaded, LoadError> {
     if path.is_dir() {
-        let (project, native) = load_with_native(path)?;
+        let (project, native) = load_with_native(path, tests)?;
         return Ok(Loaded {
             project,
             native,
@@ -171,6 +182,7 @@ fn parse_manifest(path: &Path, source: &str) -> Result<(String, Option<String>, 
 fn collect_modules(
     dir: &Path,
     segments: &[String],
+    tests: bool,
     modules: &mut Vec<Module>,
 ) -> Result<(), LoadError> {
     let mut source_files = Vec::new();
@@ -179,7 +191,9 @@ fn collect_modules(
         let path = entry.path();
         if path.is_dir() {
             subdirs.push(path);
-        } else if path.extension().is_some_and(|ext| ext == SOURCE_EXT) {
+        } else if path.extension().is_some_and(|ext| ext == SOURCE_EXT)
+            && (tests || !path.to_string_lossy().ends_with(TEST_SUFFIX))
+        {
             source_files.push(path);
         }
     }
@@ -212,7 +226,7 @@ fn collect_modules(
             .into_owned();
         let mut child_segments = segments.to_vec();
         child_segments.push(name);
-        collect_modules(&subdir, &child_segments, modules)?;
+        collect_modules(&subdir, &child_segments, tests, modules)?;
     }
     Ok(())
 }

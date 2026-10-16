@@ -176,7 +176,7 @@ pub fn emit(program: &Program, triple: &str, project: &Project, options: Options
         out.push_str(t);
     });
     out.push('\n');
-    out.push_str(&entry(&program.functions, &program.initializers)?);
+    out.push_str(&entry(&program.functions, &program.initializers, &program.tests)?);
     let c_shims = module.c_source();
     Ok(Emitted { ir: out, c_shims })
 }
@@ -250,7 +250,23 @@ impl Module<'_> {
 
 /// The `cooper_main` export the runtime calls: the module-level variable initializers,
 /// then the program's `main`, with a unit result turned into exit status 0.
-fn entry(functions: &[Function], initializers: &[Callable]) -> Result<String, CodegenError> {
+fn entry(functions: &[Function], initializers: &[Callable], tests: &[Callable]) -> Result<String, CodegenError> {
+    let initializations: String = initializers
+        .iter()
+        .map(|item| format!("  call void @{}()\n", mangle::symbol(item, &[])))
+        .collect();
+    if !tests.is_empty() {
+        // A test program runs the one test the runtime's `COOPER_TEST` selects.
+        let labels: String = (0..tests.len()).map(|i| format!(" i32 {i}, label %test{i}")).collect();
+        let mut body = format!(
+            "{initializations}  %which = call i32 @cooper_test_index()\n  switch i32 %which, label %none [{labels} ]\n"
+        );
+        for (index, test) in tests.iter().enumerate() {
+            body.push_str(&format!("test{index}:\n  call void @{}()\n  ret i32 0\n", mangle::symbol(test, &[])));
+        }
+        body.push_str("none:\n  ret i32 2\n");
+        return Ok(format!("declare i32 @cooper_test_index()\n\ndefine i32 @cooper_main() {{\n{body}}}\n"));
+    }
     let main = functions
         .iter()
         .find(|f| {
@@ -271,10 +287,6 @@ fn entry(functions: &[Function], initializers: &[Callable]) -> Result<String, Co
         file: main.file.clone(),
         span: main.span,
     })?;
-    let initializations: String = initializers
-        .iter()
-        .map(|item| format!("  call void @{}()\n", mangle::symbol(item, &[])))
-        .collect();
     let body = format!("{initializations}{body}");
     Ok(format!("define i32 @cooper_main() {{\n{body}}}\n"))
 }

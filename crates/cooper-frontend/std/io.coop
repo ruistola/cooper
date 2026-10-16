@@ -24,6 +24,16 @@ func writeTo(fd: i32, s: string) {
     }
 }
 
+# Writes `s` to standard error.
+func eprint(s: string) {
+    writeTo(2, s)
+}
+
+# Writes `s` and a newline to standard error.
+func eprintln(s: string) {
+    writeTo(2, s + "\n")
+}
+
 # Writes `s` to standard output.
 func print(s: string) {
     writeTo(1, s)

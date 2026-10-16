@@ -3,7 +3,7 @@
 //! A program reaches them with `use` like any module (`use { std.io }`).
 //!
 //! * Modules written in Cooper, embedded in the compiler (`std/`): `std.io` (`print` and
-//!   `println`, over the C library's `write`), `std.fmt` (`format`, the text of a template
+//!   `println`, over the C library's `write`), `std.testing` (assertions for `cooper test`), `std.fmt` (`format`, the text of a template
 //!   whose positional holes `{}` its further arguments fill), and `std.strings` (the
 //!   methods of `string`). A program that reaches one through its `use` declarations,
 //!   directly or through another std module, has its source compiled with it; the others cost
@@ -74,10 +74,11 @@ pub fn builtin_owner(ty: &Type) -> Option<TypeId> {
 }
 
 /// The standard library modules written in Cooper: path, file name, and source.
-const SOURCE_MODULES: [(&str, &str, &str); 3] = [
+const SOURCE_MODULES: [(&str, &str, &str); 4] = [
     ("std.strings", "std/strings.coop", include_str!("../std/strings.coop")),
     ("std.io", "std/io.coop", include_str!("../std/io.coop")),
     ("std.fmt", "std/fmt.coop", include_str!("../std/fmt.coop")),
+    ("std.testing", "std/testing.coop", include_str!("../std/testing.coop")),
 ];
 
 /// `project` with the embedded standard library modules its `use` declarations reach, and

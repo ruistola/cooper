@@ -1,0 +1,24 @@
+# exit: 0
+# stdout: b
+# stdout: true
+# A struct literal may span lines with function literals as multi-line field values.
+use { std.io.println }
+struct C {
+    a: func(): bool,
+    b: func(),
+}
+func mk(): C {
+    return C{
+        a: func(): bool {
+            return true
+        },
+        b: func() {
+            println("b")
+        },
+    }
+}
+func main() {
+    c := mk()
+    c.b()
+    println("{c.a()}")
+}

@@ -173,8 +173,7 @@ impl Parser {
         if self.peek().kind == OpenCurly {
             let start = self.peek().span;
             self.expect(OpenCurly)?;
-            let body = self.parse_block_stmt();
-            self.expect(CloseCurly)?;
+            let body = self.parse_block_stmt()?;
             Ok(Stmt {
                 kind: StmtKind::Block(body),
                 span: start.to(self.prev_token().span),
@@ -287,9 +286,7 @@ impl Parser {
     fn parse_loop_body(&mut self) -> PResult<Vec<Stmt>> {
         if self.peek().kind == OpenCurly {
             self.expect(OpenCurly)?;
-            let body = self.parse_block_stmt();
-            self.expect(CloseCurly)?;
-            Ok(body)
+            self.parse_block_stmt()
         } else {
             self.reject_lone_defer()?;
             Ok(vec![self.parse_stmt()?])
@@ -364,7 +361,9 @@ impl Parser {
     /// failed statement so the block still yields as much as possible. A braced block
     /// is a statement context even inside a header expression, so header
     /// newline-insignificance is suspended for its extent.
-    pub(super) fn parse_block_stmt(&mut self) -> Vec<Stmt> {
+    /// The block's closing brace is consumed here, while the enclosing context is still
+    /// stashed, so it cannot be mistaken for the close of an enclosing brace pair.
+    pub(super) fn parse_block_stmt(&mut self) -> PResult<Vec<Stmt>> {
         let saved_header_depth = self.header_depth;
         self.header_depth = 0;
         // Likewise for enclosing parentheses: a function literal's body passed as an
@@ -384,9 +383,11 @@ impl Parser {
                 },
             }
         }
+        let closed = self.expect(CloseCurly);
         self.header_depth = saved_header_depth;
         self.paren_stack = saved_parens;
         self.closers = saved_closers;
-        statements
+        closed?;
+        Ok(statements)
     }
 }

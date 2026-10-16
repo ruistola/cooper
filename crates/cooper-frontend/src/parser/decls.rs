@@ -215,8 +215,7 @@ impl Parser {
         let params = self.parse_params(typed)?;
         let return_type = self.parse_return_type()?;
         self.expect(OpenCurly)?;
-        let body = self.parse_block_stmt();
-        self.expect(CloseCurly)?;
+        let body = self.parse_block_stmt()?;
         Ok((params, return_type, body))
     }
 

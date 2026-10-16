@@ -76,8 +76,7 @@ impl Parser {
                 }
             }
             OpenCurly => {
-                let block = self.parse_block_expr();
-                self.expect(CloseCurly)?;
+                let block = self.parse_block_expr()?;
                 ExprKind::Block(block)
             }
             other => {
@@ -359,8 +358,7 @@ impl Parser {
         if self.peek().kind == OpenCurly {
             let start = self.peek().span;
             self.expect(OpenCurly)?;
-            let block = self.parse_block_expr();
-            self.expect(CloseCurly)?;
+            let block = self.parse_block_expr()?;
             Ok(Expr {
                 kind: ExprKind::Block(block),
                 span: start.to(self.prev_token().span),
@@ -465,8 +463,8 @@ impl Parser {
 
     /// A value block: a trailing expression statement becomes the result;
     /// otherwise the block yields unit.
-    fn parse_block_expr(&mut self) -> Block {
-        let mut statements = self.parse_block_stmt();
+    fn parse_block_expr(&mut self) -> PResult<Block> {
+        let mut statements = self.parse_block_stmt()?;
         let result = match statements.last() {
             Some(Stmt {
                 kind: StmtKind::Expression(_),
@@ -486,10 +484,10 @@ impl Parser {
                 }
             }
         };
-        Block {
+        Ok(Block {
             statements,
             result: Box::new(result),
-        }
+        })
     }
 }
 

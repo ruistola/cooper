@@ -136,9 +136,9 @@ impl Emitter<'_, '_> {
             let task = self.expr(&args[0])?.expect("a function value has a value");
             let code = self.assign(&format!("extractvalue {FUNC_VALUE} {}, 0", task.operand));
             let env = self.assign(&format!("extractvalue {FUNC_VALUE} {}, 1", task.operand));
-            self.module.declare("declare void @cooper_co(ptr, ptr)");
-            self.inst(&format!("call void @cooper_co(ptr {code}, ptr {env})"));
-            return Ok(None);
+            self.module.declare("declare i64 @cooper_spawn(ptr, ptr)");
+            let id = self.assign(&format!("call i64 @cooper_spawn(ptr {code}, ptr {env})"));
+            return Ok(Some(Value { operand: id, ty: "i64".to_string() }));
         }
         if op == Intrinsic::SourceLocation {
             let text = self.module.locate(&self.file, span);

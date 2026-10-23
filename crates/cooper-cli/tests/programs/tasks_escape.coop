@@ -12,8 +12,8 @@ func start(wg: WaitGroup^) {
     let n: i64 = 42
     let arr: i64[3] = [1, 2, 3]
     f := func() { println("arr {arr[2]}") }
-    co work(&n, wg)
-    co f()
+    thread work(&n, wg)
+    thread f()
 }
 func main() {
     let wg: WaitGroup

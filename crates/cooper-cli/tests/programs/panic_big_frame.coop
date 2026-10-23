@@ -1,5 +1,5 @@
 # exit: 101
-# stderr: panic: stack overflow in task
+# stderr: panic: stack overflow in thread
 # A local array larger than the guard page must not step over it: the frame is probed a page at a
 # time, so the overflow is caught instead of corrupting whatever lies below the stack.
 use {
@@ -20,6 +20,6 @@ func run(wg: WaitGroup^) {
 func main() {
     let wg: WaitGroup
     wg.add(1)
-    co run(&wg)
+    thread run(&wg)
     wg.wait()
 }

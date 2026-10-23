@@ -132,7 +132,9 @@ fn analyze_parsed(mut parsed: Vec<ParsedModule>) -> (Vec<Diagnostic>, CheckedPro
     // a type whose members name types the dependent never imports, so every module
     // is analyzed against all definitions resolved before it.
     let mut defs = TypeDefs::default();
-    defs.oneofs.extend(crate::stdlib::prelude().defs.oneofs);
+    let prelude = crate::stdlib::prelude();
+    defs.oneofs.extend(prelude.defs.oneofs);
+    defs.structs.extend(prelude.defs.structs);
     for (_, interface) in &standard {
         defs.structs.extend(interface.defs.structs.clone());
         defs.oneofs.extend(interface.defs.oneofs.clone());
@@ -384,8 +386,12 @@ impl Imports {
     /// struct's methods merge under its identity.
     fn overlay(&self, base: &Globals) -> Globals {
         let mut globals = base.clone();
-        for (name, id) in crate::stdlib::prelude().oneofs {
+        let prelude = crate::stdlib::prelude();
+        for (name, id) in prelude.oneofs {
             globals.oneofs.entry(name).or_insert(id);
+        }
+        for (name, id) in prelude.structs {
+            globals.structs.entry(name).or_insert(id);
         }
         globals.structs.extend(self.structs.clone());
         globals.oneofs.extend(self.oneofs.clone());

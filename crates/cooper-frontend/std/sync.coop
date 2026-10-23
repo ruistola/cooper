@@ -195,7 +195,7 @@ func timeout(ms: i64, f: func()): Case {
         f()
         return true
     }
-    watch := func(task: u8^) { co wake_at(task, deadline) }
+    watch := func(task: u8^) { thread wake_at(task, deadline) }
     unwatch := func() {}
     return Case{attempt: attempt, watch: watch, unwatch: unwatch}
 }
@@ -234,7 +234,7 @@ func run_in_group(group: TaskGroup^, f: func()) {
 # Runs `f` as a task of the group.
 (group: TaskGroup^) func start(f: func()) {
     group.running.add(1)
-    co run_in_group(group, f)
+    thread run_in_group(group, f)
 }
 
 # Asks the group's tasks to stop.

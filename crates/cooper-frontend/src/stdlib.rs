@@ -9,8 +9,9 @@
 //!   directly or through another std module, has its source compiled with it; the others cost
 //!   nothing. The compiler fills the holes of a template call (`println("x is {}", x)`).
 //! * The prelude, in scope in every module without a `use`: the sum types `Maybe T`
-//!   (`None`, `Some(T)`) and `Result T E` (`Ok(T)`, `Err(E)`). A module's own
-//!   declaration of either name shadows the prelude's.
+//!   (`None`, `Some(T)`) and `Result T E` (`Ok(T)`, `Err(E)`), and `Thread`, the handle a
+//!   `thread` expression gives (`struct Thread { id: i64 }`). A module's own declaration of
+//!   one of these names shadows the prelude's.
 //! * `std.ffi`, interface only (the runtime implements it): `CString`, a NUL-terminated C string (`struct CString { data: u8^ }`),
 //!   converted from a string as `CString(s)` and back as `string(c)`, and
 //!   `copyBytes(p: u8^, n: i64): u8[]`, which copies C bytes into an array.
@@ -33,8 +34,13 @@ pub const C_STRING: &str = "CString";
 /// The module the prelude's types belong to. It is not a module a program can `use`.
 pub const PRELUDE_MODULE: &str = "std.prelude";
 
-/// The declarations every module sees without a `use`: `Maybe` and `Result`. The first
-/// variant of each is the one a zero value takes.
+/// The handle of a thread, the type of a `thread` expression.
+pub fn thread_type() -> Type {
+    Type::Struct { id: TypeId { module: PRELUDE_MODULE.to_string(), name: "Thread".to_string() }, type_args: Vec::new() }
+}
+
+/// The declarations every module sees without a `use`: `Maybe`, `Result`, and `Thread`. The
+/// first variant of each sum type is the one a zero value takes.
 pub(crate) fn prelude() -> Globals {
     let param = |name: &str| Type::TypeParam(name.to_string());
     let mut globals = module(PRELUDE_MODULE);
@@ -55,6 +61,12 @@ pub(crate) fn prelude() -> Globals {
     };
     oneof("Maybe", &["T"], vec![("None", vec![]), ("Some", vec![param("T")])]);
     oneof("Result", &["T", "E"], vec![("Ok", vec![param("T")]), ("Err", vec![param("E")])]);
+    let Type::Struct { id, .. } = thread_type() else { unreachable!() };
+    globals.structs.insert(id.name.clone(), id.clone());
+    globals.defs.structs.insert(
+        id,
+        StructDef { type_params: Vec::new(), members: vec![("id".to_string(), Type::Primitive("i64".to_string()))] },
+    );
     globals
 }
 

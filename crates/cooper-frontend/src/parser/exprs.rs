@@ -52,6 +52,13 @@ impl Parser {
                 let operand = self.parse_expr(prefix_bp(token.kind))?;
                 ExprKind::AddressOf(Box::new(operand))
             }
+            Thread => {
+                let call = self.parse_expr(prefix_bp(token.kind))?;
+                if !matches!(call.kind, ExprKind::Call { .. }) {
+                    return Err(self.error(call.span, "`thread` must be followed by a call of a function or method"));
+                }
+                ExprKind::Thread(Box::new(call))
+            }
             Nil => ExprKind::Nil,
             Break => ExprKind::Break,
             Continue => ExprKind::Continue,
@@ -511,7 +518,7 @@ const MEMBER_BP: i32 = 26;
 /// is `(-a) * b` while `-a.b` is `-(a.b)`.
 fn prefix_bp(kind: TokenKind) -> i32 {
     match kind {
-        Plus | Dash | Not | Ampersand => MULTIPLICATIVE_BP,
+        Plus | Dash | Not | Ampersand | Thread => MULTIPLICATIVE_BP,
         _ => 0,
     }
 }

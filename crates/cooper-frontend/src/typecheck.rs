@@ -461,13 +461,6 @@ impl<'g> TypeChecker<'g> {
                     self.check_stmt(els);
                 }
             }
-            StmtKind::Co(call) => {
-                if self.current_return.is_none() {
-                    self.err(stmt.span, "`co` outside of a function");
-                    return;
-                }
-                self.check_expr(call);
-            }
             StmtKind::Defer(body) => {
                 if self.current_return.is_none() {
                     self.err(stmt.span, "`defer` outside of a function");
@@ -909,6 +902,14 @@ impl<'g> TypeChecker<'g> {
                 array, start, end, ..
             } => self.check_slice(array, start.as_deref(), end.as_deref()),
             ExprKind::AddressOf(operand) => self.check_address_of(operand, expr.span),
+            ExprKind::Thread(call) => {
+                if self.current_return.is_none() {
+                    self.err(expr.span, "`thread` outside of a function");
+                    return None;
+                }
+                self.check_expr(call)?;
+                Some(crate::stdlib::thread_type())
+            }
             ExprKind::Deref(operand) => self.check_deref(operand),
             ExprKind::Assign { op, target, value } => self.check_assign(*op, target, value),
             ExprKind::Let { name, value } => {

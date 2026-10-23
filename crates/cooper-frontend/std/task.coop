@@ -1,4 +1,4 @@
-# The standard `task` module: operations on the running task. A task is started with `co f(args)`.
+# The standard `task` module: operations on the running task. A task is started with `thread f(args)`.
 #
 # Tasks run one at a time and switch only where they block: here, or in `std.sync`. A task that
 # never blocks keeps the others from running.

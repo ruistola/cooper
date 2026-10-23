@@ -21,18 +21,13 @@ reference before writing Cooper source:
 * [Sum Types](docs/sum-types.md) — `oneof`, variant construction, `match` and patterns
 * [Type System](docs/type-system.md) — nominal/structural types, HM(X) inference, operators, equality and hashing
 * [Numeric Types](docs/numeric-types.md) — primitive grid, literal inference, same-type arithmetic, conversions
-* [Concurrency](docs/concurrency.md) — tasks, `co`, the scheduler, stacks, the memory model
+* [Concurrency](docs/concurrency.md) — threads, `thread`, the scheduler, stacks, the memory model
 * [Garbage Collector](docs/garbage-collector.md) — typed allocation, allocator, collection
 * [Performance](docs/performance.md) — collector controls and statistics, benchmarks against Go
 * [Testing](docs/testing.md) — writing and running tests with `cooper test`
 * [C Interop](docs/c-interop.md) — `extern func`, types at the boundary, linking C libraries and sources
 
 ## Coding guidelines
-
-Do **not** proactively author tests with each coding task; the user will explicitly ask for tests as a separate task,
-when new code reaches sufficient maturity to become a permanent addition to the project.
-
-### Testing philosophy
 
 Agents have **autonomy within reason**. Lean on Rust's type system to make whole categories of error unrepresentable
 (exhaustive `match`, `Option`/`Result`, newtypes, non-optional fields) rather than writing tests to police what the
@@ -50,9 +45,7 @@ Prefer concise code, modifying existing modules by appending them with new funct
 module remains cohesive. Only establish new modules, functions and structures, when it is worth the added complexity
 or "glue code" required in order to make new components communicate with the rest of the system.
 
-Do not leave breadcrumbs in comments or docs; always describe the implementation in absolute terms instead of as a
-delta. By default, when existing behavior changes, do not leave the old implementation in the codebase for "backwards
-compatibility" unless explicitly requested.
+Only add code comments when it is not obvious **why** something must be done, or must be done in the particular way chosen.
 
 Don't expose module items (`pub`) by default. Only expose the minimum public API. Prefer white-box (same-module) unit
 tests for verification of a module's core functionality. Black-box testing across the crate boundary (in `tests/`) should

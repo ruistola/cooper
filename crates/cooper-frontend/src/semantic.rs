@@ -80,7 +80,6 @@ impl SemanticAnalyzer<'_> {
                 self.analyze_block(body);
             }
             StmtKind::Break | StmtKind::Continue => {}
-            StmtKind::Co(call) => self.analyze_expr(call),
             StmtKind::Defer(body) => {
                 self.analyze_literal(&None, true, std::slice::from_ref(&**body), stmt.span, "deferred statement")
             }
@@ -149,7 +148,9 @@ impl SemanticAnalyzer<'_> {
             | ExprKind::Nil
             | ExprKind::Unit
             | ExprKind::Ident(_) => {}
-            ExprKind::AddressOf(operand) | ExprKind::Deref(operand) => self.analyze_expr(operand),
+            ExprKind::AddressOf(operand) | ExprKind::Deref(operand) | ExprKind::Thread(operand) => {
+                self.analyze_expr(operand)
+            }
             ExprKind::Unary { operand, .. } => self.analyze_expr(operand),
             ExprKind::Binary { lhs, rhs, .. } => {
                 self.analyze_expr(lhs);

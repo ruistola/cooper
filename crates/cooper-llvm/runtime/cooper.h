@@ -38,9 +38,10 @@ _Noreturn void cooper_panic(const char *message);
    several); null means it holds no pointers. */
 void *cooper_alloc(size_t size, const CooperType *type);
 
-/* The scheduler (sched.c). Start a task running `code(env)`: a function taking its environment, as a
-   closure's code does. It first runs when the current task blocks or yields. */
-void cooper_co(void *code, void *env);
+/* The scheduler (sched.c), whose tasks are the language's threads. Start a task running `code(env)`: a
+   function taking its environment, as a closure's code does. It first runs when the current task blocks or
+   yields. Gives the task's id. */
+int64_t cooper_spawn(void *code, void *env);
 void cooper_yield(void);
 void cooper_sleep(int64_t nanoseconds);
 void *cooper_current_task(void);

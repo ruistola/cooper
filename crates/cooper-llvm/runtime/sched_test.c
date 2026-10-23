@@ -36,9 +36,9 @@ static void worker(void *env) {
 static void test_yield_interleaves_in_order(void) {
     log_buffer[0] = 0;
     Worker a = {"a", 3}, b = {"b", 2}, c = {"c", 3};
-    cooper_co(worker, &a);
-    cooper_co(worker, &b);
-    cooper_co(worker, &c);
+    cooper_spawn(worker, &a);
+    cooper_spawn(worker, &b);
+    cooper_spawn(worker, &c);
     for (int i = 0; i < 10; i++) cooper_yield();
     CHECK(strcmp(log_buffer, "a0 b0 c0 a1 b1 c1 a2 c2 ") == 0);
 }
@@ -58,9 +58,9 @@ static void parker(void *env) {
 
 static void test_sleep_and_park(void) {
     log_buffer[0] = 0;
-    cooper_co(sleeper_a, NULL);
-    cooper_co(sleeper_b, NULL);
-    cooper_co(parker, NULL);
+    cooper_spawn(sleeper_a, NULL);
+    cooper_spawn(sleeper_b, NULL);
+    cooper_spawn(parker, NULL);
     cooper_sleep(60000000);
     CHECK(strcmp(log_buffer, "fast slow ") == 0);
     CHECK(parked && !woke);
@@ -75,7 +75,7 @@ static void count(void *env) { (void)env; counter++; cooper_yield(); counter++; 
 static void test_many_tasks_and_stack_reuse(void) {
     counter = 0;
     for (int round = 0; round < 3; round++) {
-        for (int i = 0; i < 2000; i++) cooper_co(count, NULL);
+        for (int i = 0; i < 2000; i++) cooper_spawn(count, NULL);
         for (int i = 0; i < 4; i++) cooper_yield();
     }
     CHECK(counter == 3 * 2000 * 2);
@@ -92,7 +92,7 @@ static void deep(void *env) { depth_reached = recurse((long)env); }
 
 static void test_deep_recursion_on_a_task_stack(void) {
     /* About 60000 frames of over 100 bytes: several MiB, well inside the 8 MiB reservation. */
-    cooper_co(deep, (void *)60000);
+    cooper_spawn(deep, (void *)60000);
     for (int i = 0; i < 3; i++) cooper_yield();
     CHECK(depth_reached >= 0);
 }
@@ -106,7 +106,7 @@ static void inspect(uintptr_t low, uintptr_t high) {
 
 static void test_scan_visits_other_stacks(void) {
     Worker z = {"z", 1};
-    cooper_co(worker, &z);
+    cooper_spawn(worker, &z);
     cooper_scan_tasks(inspect);
     /* The new task's stack (its prepared frame), and each of the two tasks' code and environment
        words. The running task's own stack is the collector's to scan, and is not offered. */

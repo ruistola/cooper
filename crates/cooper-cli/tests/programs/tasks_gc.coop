@@ -61,9 +61,9 @@ func main() {
     let strings: i64
     let sums: i64
     wg.add(10)
-    for id in 0..8 do co holder(id, &wg, &strings, &sums)
-    co churn(&wg)
-    co churn(&wg)
+    for id in 0..8 do thread holder(id, &wg, &strings, &sums)
+    thread churn(&wg)
+    thread churn(&wg)
     wg.wait()
     println("8 tasks hold {strings} strings and 8 lists")
     println("lists sum {sums}")

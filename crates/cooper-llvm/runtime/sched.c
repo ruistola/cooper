@@ -137,8 +137,8 @@ static size_t pooled;
 static uintptr_t stack_alloc(void) {
     if (pooled) return pool[--pooled];
     void *memory = mmap(NULL, stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
-    if (memory == MAP_FAILED) cooper_panic("out of memory for a task stack");
-    if (mprotect(memory, guard_size, PROT_NONE) != 0) cooper_panic("cannot protect a task stack");
+    if (memory == MAP_FAILED) cooper_panic("out of memory for a thread stack");
+    if (mprotect(memory, guard_size, PROT_NONE) != 0) cooper_panic("cannot protect a thread stack");
     return (uintptr_t)memory;
 }
 
@@ -222,7 +222,7 @@ static Task *pick_next(void) {
             if (!run_head) run_tail = NULL;
             return task;
         }
-        if (!timer_count) cooper_panic("all tasks are blocked: deadlock");
+        if (!timer_count) cooper_panic("all threads are blocked: deadlock");
         int64_t wait = timers[0]->wake - now_ns();
         if (wait > 0) {
             struct timespec t = {wait / 1000000000, wait % 1000000000};
@@ -254,7 +254,7 @@ static void task_entry(void) {
     __builtin_trap(); /* a dead task is never resumed */
 }
 
-void cooper_co(void *code, void *env) {
+int64_t cooper_spawn(void *code, void *env) {
     Task *task = free_tasks;
     if (task) free_tasks = task->next;
     else {
@@ -275,6 +275,7 @@ void cooper_co(void *code, void *env) {
     main_task.all_next->all_prev = task;
     main_task.all_next = task;
     enqueue(task);
+    return (int64_t)task->id;
 }
 
 void cooper_yield(void) {
@@ -358,9 +359,9 @@ static void on_fault(int signal_number, siginfo_t *info, void *context) {
         do number[length++] = (char)('0' + id % 10); while (id /= 10);
         write_text("panic: stack overflow in ");
         if (current == &main_task) {
-            write_text("the main task");
+            write_text("the main thread");
         } else {
-            write_text("task ");
+            write_text("thread ");
             while (length) if (write(2, &number[--length], 1) < 0) break;
         }
         write_text("\n");

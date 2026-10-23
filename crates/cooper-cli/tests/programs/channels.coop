@@ -46,8 +46,8 @@ func late(out: (Channel i32)^) {
 func main() {
     # unbuffered channel, two producers, one consumer
     numbers := channel(0)
-    co produce(&numbers, 0, 50)
-    co produce(&numbers, 50, 100)
+    thread produce(&numbers, 0, 50)
+    thread produce(&numbers, 50, 100)
     total := 0
     for i in 0..100 do match numbers.recv() with {
         Some(v) => total += v
@@ -58,7 +58,7 @@ func main() {
     # two tasks taking turns over a pair of channels
     ping := channel(0)
     pong := channel(0)
-    co relay(&ping, &pong)
+    thread relay(&ping, &pong)
     r := 0
     for i in 0..3 do {
         ping.send(r)
@@ -83,7 +83,7 @@ func main() {
     counter := 0
     let wg: WaitGroup
     wg.add(4)
-    for i in 0..4 do co bump(&m, &counter, &wg)
+    for i in 0..4 do thread bump(&m, &counter, &wg)
     wg.wait()
     println("counter {counter}")
 
@@ -100,7 +100,7 @@ func main() {
         timeout(20, func() { println("timed out") }),
     )
     out := channel(0)
-    co late(&out)
+    thread late(&out)
     select(send(&out, 7, func() {}))
     sleep(10)
 }

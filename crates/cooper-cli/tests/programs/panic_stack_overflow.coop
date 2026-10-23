@@ -1,5 +1,5 @@
 # exit: 101
-# stderr: panic: stack overflow in task
+# stderr: panic: stack overflow in thread
 use {
     std.task.yield,
     std.sync.WaitGroup,
@@ -17,6 +17,6 @@ func run(wg: WaitGroup^) {
 func main() {
     let wg: WaitGroup
     wg.add(1)
-    co run(&wg)
+    thread run(&wg)
     wg.wait()
 }

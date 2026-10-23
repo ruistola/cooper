@@ -23,20 +23,20 @@ func hold(wg: WaitGroup^) {
 func main() {
     let wg: WaitGroup
     wg.add(2)
-    co ping(2500000, &wg)
-    co ping(2500000, &wg)
+    thread ping(2500000, &wg)
+    thread ping(2500000, &wg)
     wg.wait()
     println("5M switches")
 
     for round in 0..1000 do {
         wg.add(1000)
-        for i in 0..1000 do co noop(&wg)
+        for i in 0..1000 do thread noop(&wg)
         wg.wait()
     }
     println("1M tasks")
 
     wg.add(100000)
-    for i in 0..100000 do co hold(&wg)
+    for i in 0..100000 do thread hold(&wg)
     wg.wait()
     println("100k tasks alive at once")
 }

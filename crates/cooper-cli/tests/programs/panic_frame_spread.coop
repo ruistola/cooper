@@ -1,5 +1,5 @@
 # exit: 101
-# stderr: panic: stack overflow in task
+# stderr: panic: stack overflow in thread
 # env: COOPER_STACK_KIB=96
 # A frame of several large locals, bigger than the whole stack, must be caught as a stack overflow:
 # without probing the frame a page at a time, the first access could land beyond the guard page, in
@@ -27,6 +27,6 @@ func run(wg: WaitGroup^) {
 func main() {
     let wg: WaitGroup
     wg.add(1)
-    co run(&wg)
+    thread run(&wg)
     wg.wait()
 }

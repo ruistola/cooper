@@ -925,7 +925,6 @@ impl Lower<'_> {
             StmtKind::Break => return Ok(self.leave(IrStmtKind::Break, stmt.span)),
             StmtKind::Continue => return Ok(self.leave(IrStmtKind::Continue, stmt.span)),
             StmtKind::Defer(_) => unreachable!("a deferred statement is lowered with its block"),
-            StmtKind::Co(call) => return self.spawn(call, stmt.span),
             StmtKind::Match { scrutinee, arms } => {
                 let scrutinee = self.expr(scrutinee)?;
                 let patterns = arms
@@ -1259,6 +1258,7 @@ impl Lower<'_> {
                 return Ok(with_variables(declared, branch));
             }
             ExprKind::Block(block) => self.value_block(block, &ty)?,
+            ExprKind::Thread(call) => return self.spawn(call, ty, expr.span),
             ExprKind::StructLiteral { members, .. } => {
                 let Type::Struct { id, .. } = &ty else {
                     return Err(LowerError::MissingType(expr.span));
@@ -1817,18 +1817,19 @@ impl Lower<'_> {
         self.lift(params, (**return_type).clone(), body, Vec::new(), ty, span)
     }
 
-    /// `co call`: the callee and arguments are evaluated now, into temporaries, and a closure over
-    /// them that makes the call is handed to the scheduler. The temporaries are captured, so they
-    /// live as long as the task needs them (escape analysis puts them on the heap).
-    fn spawn(&self, call: &Expr, span: Span) -> Result<IrStmt, LowerError> {
+    /// `thread call`: the callee and arguments are evaluated now, into temporaries, and a closure
+    /// over them that makes the call is handed to the scheduler, which gives the new thread's id
+    /// for the `Thread` handle (`ty`). The temporaries are captured, so they live as long as the
+    /// thread needs them (escape analysis puts them on the heap).
+    fn spawn(&self, call: &Expr, ty: Type, span: Span) -> Result<IrExpr, LowerError> {
         let lowered = self.expr(call)?;
         let IrExprKind::Call { callee, args } = lowered.kind else {
-            return unsupported_stmt(span, "a `co` that does not call a function or method");
+            return Err(LowerError::Unsupported { span, what: "a `thread` that does not call a function or method" });
         };
         let mut stmts = Vec::new();
         let mut env = Vec::new();
         let mut bind = |value: IrExpr| {
-            let name = format!("co.{}.{}", span.start, env.len());
+            let name = format!("thread.{}.{}", span.start, env.len());
             let var = IrExpr { kind: IrExprKind::Var(name.clone()), ty: value.ty.clone(), span };
             env.push(Param { name: name.clone(), ty: value.ty.clone(), span });
             stmts.push(IrStmt { kind: IrStmtKind::Var { name, ty: value.ty.clone(), init: Some(value) }, span });
@@ -1864,17 +1865,22 @@ impl Lower<'_> {
             kind: IrStmtKind::Expr(IrExpr { kind: IrExprKind::Call { callee: Box::new(callee), args }, ty: lowered.ty, span }),
             span,
         }];
-        let ty = Type::Func { return_type: Box::new(Type::Unit), param_types: Vec::new() };
-        let task = self.lift(Vec::new(), Type::Unit, body, env, ty, span)?;
-        stmts.push(IrStmt {
-            kind: IrStmtKind::Expr(IrExpr {
-                kind: IrExprKind::Intrinsic { op: Intrinsic::Spawn, args: vec![task] },
-                ty: Type::Unit,
-                span,
-            }),
+        let func = Type::Func { return_type: Box::new(Type::Unit), param_types: Vec::new() };
+        let task = self.lift(Vec::new(), Type::Unit, body, env, func, span)?;
+        let id = IrExpr {
+            kind: IrExprKind::Intrinsic { op: Intrinsic::Spawn, args: vec![task] },
+            ty: Type::Primitive("i64".to_string()),
             span,
-        });
-        Ok(IrStmt { kind: IrStmtKind::Block(stmts), span })
+        };
+        let Type::Struct { id: handle, .. } = &ty else {
+            return Err(LowerError::MissingType(span));
+        };
+        let result = IrExpr {
+            kind: IrExprKind::StructLiteral { name: handle.name.clone(), members: vec![("id".to_string(), id)] },
+            ty: ty.clone(),
+            span,
+        };
+        Ok(IrExpr { kind: IrExprKind::Block { stmts, result: Box::new(result) }, ty, span })
     }
 
     /// Lower a slice `array[start..end]` to the slice intrinsic. An omitted start is

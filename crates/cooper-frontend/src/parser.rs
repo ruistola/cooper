@@ -128,7 +128,7 @@ fn can_follow_semicolon(kind: TokenKind) -> bool {
             | Dash
             | Break
             | Continue
-            | Co
+            | Thread
             | Defer
             | Do
             | False
@@ -295,7 +295,7 @@ impl Parser {
                     return;
                 }
                 For | Func | Extern | If | Let | Match | Return | Struct | Oneof | Type | Use | While
-                | Until | Do | Repeat | Break | Continue | Defer | Co
+                | Until | Do | Repeat | Break | Continue | Defer
                     if depth == 0 =>
                 {
                     return

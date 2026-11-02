@@ -109,6 +109,16 @@ static void test_many_threads_and_stack_reuse(void) {
     CHECK(counter == 3 * 2000 * 2);
 }
 
+static int order_next, order_wrong;
+static void ordered(void *env) { if ((int)(long)env != order_next++) order_wrong++; }
+
+static void test_queue_overflow_keeps_first_in_first_out(void) {
+    order_next = order_wrong = 0;
+    for (long i = 0; i < 1000; i++) cooper_spawn(ordered, (void *)i); /* more than the local queue holds */
+    for (int i = 0; i < 4; i++) cooper_yield();
+    CHECK(order_next == 1000 && order_wrong == 0);
+}
+
 static long depth_reached;
 static long recurse(long n) {
     volatile char pad[96];
@@ -143,14 +153,13 @@ static void test_scan_visits_other_stacks(void) {
     for (int i = 0; i < 3; i++) cooper_yield();
 }
 
-int main(void) {
-    int base;
-    cooper_sched_init(&base);
+static int run_tests(void) {
     test_yield_interleaves_in_order();
     test_sleep_and_park();
     test_ready_before_park_leaves_a_permit();
     test_timers_commit_waiters();
     test_many_threads_and_stack_reuse();
+    test_queue_overflow_keeps_first_in_first_out();
     test_deep_recursion_on_a_thread_stack();
     test_scan_visits_other_stacks();
     if (failures) {
@@ -159,4 +168,9 @@ int main(void) {
     }
     puts("ok");
     return 0;
+}
+
+int main(void) {
+    cooper_sched_init();
+    cooper_run_main(run_tests);
 }

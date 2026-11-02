@@ -77,14 +77,17 @@ void cooper_unlock(int64_t *word);
 int64_t cooper_random(int64_t n);
 /* Monotonic time in nanoseconds. */
 int64_t cooper_now(void);
-/* Set up the scheduler; the address is a local of `main`, the top of the main thread's stack. */
-void cooper_sched_init(void *stack_base);
+/* Set up the scheduler. */
+void cooper_sched_init(void);
+/* Run `entry` as the main thread (thread 0) on a stack of its own, and the scheduler on the caller's stack.
+   The process exits with `entry`'s result when it returns. */
+_Noreturn void cooper_run_main(int (*entry)(void));
 /* For the collector: the top of the running thread's stack, and the other threads' stacks. */
 uintptr_t cooper_current_stack_top(void);
 void cooper_scan_threads(void (*scan)(uintptr_t low, uintptr_t high));
 
-/* Tell the collector where the stack begins: the address of a local of `main`. */
-void cooper_gc_init(void *stack_base);
+/* Start collecting: allocation may collect from now on, and the caller is on a thread of the scheduler. */
+void cooper_gc_init(void);
 
 /* Collect garbage now. */
 void cooper_gc_collect(void);

@@ -254,17 +254,7 @@ static void test_sum_type_scans_only_the_live_variant(void) {
     CHECK(((unsigned char *)~hidden_dropped)[50] == 0xDB);
 }
 
-int main(void) {
-    int stack_base;
-    setenv("COOPER_GC", "poison", 1);
-    /* These keep their objects where the collector does not look, so it must not run yet. */
-    test_sizes_and_zeroing();
-    test_distinct_objects();
-    test_pointer_words();
-    test_reuse_of_slots_clears_bits();
-    test_foreign_addresses();
-    test_many_arenas();
-    cooper_gc_init(&stack_base);
+static int run_collector_tests(void) {
     test_garbage_is_reclaimed();
     test_reachable_objects_survive();
     test_interior_pointer_keeps_an_object();
@@ -277,4 +267,17 @@ int main(void) {
     }
     puts("ok");
     return 0;
+}
+
+int main(void) {
+    setenv("COOPER_GC", "poison", 1);
+    /* These keep their objects where the collector does not look, so it must not run yet. */
+    test_sizes_and_zeroing();
+    test_distinct_objects();
+    test_pointer_words();
+    test_reuse_of_slots_clears_bits();
+    test_foreign_addresses();
+    test_many_arenas();
+    cooper_gc_init();
+    cooper_run_main(run_collector_tests);
 }

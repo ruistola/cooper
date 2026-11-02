@@ -126,13 +126,21 @@ static void init_classes(void) {
 
 /* --- arenas and the page heap --- */
 
+/* Every global of the allocator and collector, by who may touch it once Ms run in parallel. All of them are
+   global under one heap lock (to be added with parallel threads; until then a single M owns them), except:
+     immutable after init:  class_size, class_pages, size_to_class8, stress, poison, object_mark, growth,
+                            gc_off, trace, instrument, zerobase, started
+     per-P (allocation caches, planned): cache, partial
+     collector only (the stopped world): collecting, work, queue, last_span, root_bytes, stats
+   The unmarked ones below (arena table, current_arena, heap_bytes, span_count, heap_used, next_gc, free_runs,
+   spare_runs, span_pool, all_spans, ready, meta_next, meta_end, released_bytes) are the heap lock's. */
 static Arena **arena_table[1 << TABLE_BITS]; /* [address >> 26 >> 11][(address >> 26) & 2047] */
 static Arena *current_arena;
 static size_t heap_bytes, span_count;
 static size_t heap_used;  /* bytes in allocated slots: live as of the last collection, plus allocated since */
 static size_t next_gc;    /* collect when `heap_used` reaches this */
 static int stress, poison, object_mark; /* object_mark: scan objects as reached, not a span at a time */
-static void *stack_base;
+static int started;            /* cooper_gc_init has run: collections may begin */
 static int collecting;
 static unsigned growth = 100;  /* the heap may grow to this percent over what survived: COOPER_HEAP_GROWTH */
 static int gc_off;
@@ -443,7 +451,7 @@ void *cooper_alloc(size_t size, const CooperType *type) {
     }
     if (size == 0) return &zerobase;
     if (!ready) init_heap();
-    if ((stress || (heap_used >= next_gc && !gc_off)) && stack_base && !collecting) collect();
+    if ((stress || (heap_used >= next_gc && !gc_off)) && started && !collecting) collect();
     int noscan = type == NULL;
     int kind = noscan ? KIND_NOSCAN : (type->nsites || size > MIN_SIZE_FOR_HEADER) ? KIND_HEADER : KIND_BITS;
     size_t total = size;
@@ -843,14 +851,13 @@ static void collect(void) {
     collecting = 0;
 }
 
-/* Tell the collector where the stack begins: the address of a local of `main`. */
-void cooper_gc_init(void *base) {
-    stack_base = base;
-    cooper_sched_init(base);
+void cooper_gc_init(void) {
+    started = 1;
+    cooper_sched_init();
 }
 
 /* Collect now. */
 void cooper_gc_collect(void) {
     if (!ready) init_heap();
-    if (stack_base && !collecting) collect();
+    if (started && !collecting) collect();
 }

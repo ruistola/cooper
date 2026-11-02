@@ -19,9 +19,8 @@
 extern int cooper_main(void);
 
 int main(void) {
-    int stack_base;
-    cooper_gc_init(&stack_base);
-    return cooper_main();
+    cooper_gc_init();
+    cooper_run_main(cooper_main);
 }
 
 /* Which test a test program runs: the number in the environment variable COOPER_TEST,
@@ -209,15 +208,17 @@ typedef struct {
     int32_t printed; /* expanded in the printing pass */
 } FormatEntry;
 
-static FormatEntry *format_entries;
-static uint64_t format_capacity;
-static uint64_t format_count;
-static int format_depth;
-static int format_printing;
-static int32_t format_labels;
-static char *format_text;
-static uint64_t format_len;
-static uint64_t format_room;
+/* Per-M state (every global of this file): a formatting runs on one M start to end, as no thread switches in
+   the middle of one. */
+static _Thread_local FormatEntry *format_entries;
+static _Thread_local uint64_t format_capacity;
+static _Thread_local uint64_t format_count;
+static _Thread_local int format_depth;
+static _Thread_local int format_printing;
+static _Thread_local int32_t format_labels;
+static _Thread_local char *format_text;
+static _Thread_local uint64_t format_len;
+static _Thread_local uint64_t format_room;
 
 static FormatEntry *format_find(const void *p) {
     if (format_capacity == 0) return NULL;

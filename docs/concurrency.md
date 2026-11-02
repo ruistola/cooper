@@ -24,6 +24,12 @@ values escape to).
 
 ## Scheduling
 
+The runtime follows Go's structure: a processor (P) owns a run queue (256 slots, overflowing to a global queue),
+timers and a stack pool, and a machine (M, an OS thread) runs threads while it has a P. Each M has a scheduler on
+the OS thread's own stack: a thread that blocks, yields, sleeps or finishes switches to it, and it completes the
+request and switches to the next thread. The main thread is thread 0 and runs on a stack like the others. There
+is one M and one P so far.
+
 Threads run one at a time, in the order they became ready, and switch where they block: `std.threads.yield()`,
 `std.threads.sleep(ms)`, and waiting in `std.sync`. A thread that never blocks keeps the others from running, since
 nothing preempts it yet. When the main function returns the program ends, whatever the other threads are doing.

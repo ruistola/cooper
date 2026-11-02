@@ -5,9 +5,16 @@
 
 extern func write(fd: i32, buf: u8^, count: u64): i64
 extern func fflush(stream: u8^): i32
+extern func cooper_lock(word: i64^)
+extern func cooper_unlock(word: i64^)
+
+# Held while writing, so that the text of one call is never interleaved with another thread's.
+let writing: i64 = 0
 
 # Writes all of `s` to the file descriptor `fd`, as far as the descriptor accepts it.
 func writeTo(fd: i32, s: string) {
+    cooper_lock(&writing)
+    defer cooper_unlock(&writing)
     # Whatever C code has buffered for standard output goes out first, in order.
     fflush(nil)
     n := s.length()

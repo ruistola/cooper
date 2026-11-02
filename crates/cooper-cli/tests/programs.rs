@@ -45,18 +45,30 @@ fn check_program(path: &Path, build_root: &Path) -> Result<(), String> {
         })?;
     let variables: Vec<(&str, &str)> = header(&source, "# env:").into_iter().filter_map(|v| v.split_once('=')).collect();
     let output = Command::new(&executable).envs(variables.clone()).output().map_err(|e| e.to_string())?;
-    // The same program collecting garbage at every allocation, with freed memory poisoned, must
-    // behave exactly as it does normally.
-    let stressed = Command::new(&executable).envs(variables).env("COOPER_GC", "stress").output().map_err(|e| e.to_string())?;
-    if stressed.status.code() != output.status.code() || stressed.stdout != output.stdout {
-        return Err(format!(
-            "under COOPER_GC=stress: exit {:?} (not {:?}); stdout {:?} (not {:?}); stderr: {}",
-            stressed.status.code(),
-            output.status.code(),
-            String::from_utf8_lossy(&stressed.stdout),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&stressed.stderr)
-        ));
+    // The same program collecting garbage at every allocation, with freed memory poisoned, and on four
+    // processors (the default is one per core), must behave exactly as it does normally. A program's own
+    // `# env:` lines take precedence.
+    let reruns: [&[(&str, &str)]; 3] = [
+        &[("COOPER_GC", "stress")],
+        &[("COOPER_THREADS", "4")],
+        &[("COOPER_THREADS", "4"), ("COOPER_GC", "stress")],
+    ];
+    for rerun in reruns {
+        let again = Command::new(&executable)
+            .envs(rerun.iter().copied())
+            .envs(variables.iter().copied())
+            .output()
+            .map_err(|e| e.to_string())?;
+        if again.status.code() != output.status.code() || again.stdout != output.stdout {
+            return Err(format!(
+                "with {rerun:?}: exit {:?} (not {:?}); stdout {:?} (not {:?}); stderr: {}",
+                again.status.code(),
+                output.status.code(),
+                String::from_utf8_lossy(&again.stdout),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&again.stderr)
+            ));
+        }
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -90,13 +102,20 @@ fn golden_programs_run_with_their_expected_exit_status() {
         .collect();
     programs.sort();
     assert!(!programs.is_empty(), "no programs in {}", dir.display());
-    let failures: Vec<String> = programs
-        .iter()
-        .filter_map(|path| {
-            check_program(path, &build_root)
-                .err()
-                .map(|why| format!("{}: {why}", path.display()))
-        })
-        .collect();
+    // The programs run a few at a time; each may itself use several OS threads.
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let failures = std::sync::Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| {
+                while let Some(path) = programs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
+                    if let Err(why) = check_program(path, &build_root) {
+                        failures.lock().unwrap().push(format!("{}: {why}", path.display()));
+                    }
+                }
+            });
+        }
+    });
+    let failures = failures.into_inner().unwrap();
     assert!(failures.is_empty(), "failing programs:\n{}", failures.join("\n"));
 }

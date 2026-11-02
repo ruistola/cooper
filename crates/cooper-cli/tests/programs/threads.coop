@@ -1,14 +1,14 @@
 # exit: 0
 # stdout: main waits
-# stdout: a0 b0 c0 a1 b1 c1 a2 c2
+# stdout: 8 turns logged, a2 after a0
 # stdout: arguments are evaluated at the thread: 5 7 x
 # stdout: slow after fast
 # stdout: handles 1 2 ok
 # stdout: 1000 threads counted 2000
 # stdout: 50000
 # stdout: 3 5 ab
-# Threads started with `thread`: they run one at a time, switching where they block (`yield`, `sleep`, a
-# `WaitGroup`), in the order they became ready. A `thread` evaluates its function and arguments at once,
+# Threads started with `thread`: they run in parallel, and data they share is guarded (a `Mutex`) or atomic.
+# A `thread` evaluates its function and arguments at once,
 # works with functions, methods (a pointer receiver on a local variable keeps that variable), function
 # values, and generic functions, and gives a `Thread` handle. A thread's stack is its own, as large as an
 # OS thread's (8 MiB, committed as used): here one recurses 50000 frames deep, and a thousand threads exist
@@ -16,20 +16,22 @@
 use {
     std.io.println,
     std.threads.{ sleep, yield },
-    std.sync.WaitGroup,
+    std.sync.{ Atomic, Mutex, WaitGroup },
 }
 
 struct Counter {
-    total: i64,
+    total: Atomic,
 }
 
 (c: Counter^) func add(n: i64) {
-    c.total += n
+    c.total.add(n)
 }
 
-func worker(name: string, rounds: i32, wg: WaitGroup^, log: string[]^) {
+func worker(name: string, rounds: i32, wg: WaitGroup^, m: Mutex^, log: string[]^) {
     for i in 0..rounds do {
+        m.lock()
         log^ = log^.push("{name}{i}")
+        m.unlock()
         yield()
     }
     wg.done()
@@ -40,9 +42,11 @@ func show(label: string, a: i32, b: i32, wg: WaitGroup^) {
     wg.done()
 }
 
-func nap(label: string, ms: i64, wg: WaitGroup^, order: string[]^) {
+func nap(label: string, ms: i64, wg: WaitGroup^, m: Mutex^, order: string[]^) {
     sleep(ms)
+    m.lock()
     order^ = order^.push(label)
+    m.unlock()
     wg.done()
 }
 
@@ -63,23 +67,28 @@ func recurse(result: i64^, wg: WaitGroup^) {
     wg.done()
 }
 
-func echo T (value: T, out: T[]^, wg: WaitGroup^) {
-    out^ = out^.push(value)
+func echo T (value: T, out: T^, wg: WaitGroup^) {
+    out^ = value
     wg.done()
 }
 
 func main() {
     let wg: WaitGroup
+    let m: Mutex
     let log: string[]
     wg.add(3)
-    thread worker("a", 3, &wg, &log)
-    thread worker("b", 2, &wg, &log)
-    thread worker("c", 3, &wg, &log)
+    thread worker("a", 3, &wg, &m, &log)
+    thread worker("b", 2, &wg, &m, &log)
+    thread worker("c", 3, &wg, &m, &log)
     println("main waits")
     wg.wait()
-    let joined = ""
-    for (i, entry) in log do joined += (if i > 0 then " " else "") + entry
-    println(joined)
+    let a0 = -1
+    let a2 = -1
+    for (i, entry) in log do {
+        if entry == "a0" then a0 = i
+        if entry == "a2" then a2 = i
+    }
+    println("{log.length()} turns logged, {if a2 > a0 then "a2 after a0" else "out of order"}")
 
     x := 5
     wg.add(1)
@@ -89,15 +98,15 @@ func main() {
 
     let order: string[]
     wg.add(2)
-    thread nap("slow", 40, &wg, &order)
-    thread nap("fast", 10, &wg, &order)
+    thread nap("slow", 40, &wg, &m, &order)
+    thread nap("fast", 10, &wg, &m, &order)
     wg.wait()
     println("{order[1]} after {order[0]}")
 
     # each thread has its own handle, with an id that grows
     wg.add(2)
-    first := thread nap("one", 0, &wg, &order)
-    second := thread nap("two", 0, &wg, &order)
+    first := thread nap("one", 0, &wg, &m, &order)
+    second := thread nap("two", 0, &wg, &m, &order)
     wg.wait()
     println("handles 1 2 {if second.id == first.id + 1 and first.id > 0 then "ok" else "wrong"}")
 
@@ -105,7 +114,7 @@ func main() {
     wg.add(1000)
     for i in 0..1000 do thread count(&counter, &wg)
     wg.wait()
-    println("1000 threads counted {counter.total}")
+    println("1000 threads counted {counter.total.load()}")
 
     let deep: i64
     wg.add(1)
@@ -113,12 +122,13 @@ func main() {
     wg.wait()
     println("{deep}")
 
-    let numbers: i32[]
-    let words: string[]
+    let three: i32
+    let five: i32
+    let word: string
     wg.add(3)
-    thread echo(3, &numbers, &wg)
-    thread echo(5, &numbers, &wg)
-    thread echo("ab", &words, &wg)
+    thread echo(3, &three, &wg)
+    thread echo(5, &five, &wg)
+    thread echo("ab", &word, &wg)
     wg.wait()
-    println("{numbers[0]} {numbers[1]} {words[0]}")
+    println("{three} {five} {word}")
 }

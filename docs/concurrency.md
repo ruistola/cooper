@@ -4,7 +4,7 @@ Work runs in **threads**: lightweight green threads started with the `thread` ex
 schedules onto OS threads of its own. The design follows Go's: threads are cheap enough to start by the
 thousand, no function colors (any function can run as a thread), and shared memory with explicit
 synchronization. `thread` is the only concurrency construct in the language; everything else is the standard
-library. Today the scheduler runs all threads on one OS thread; parallelism and preemption are planned.
+library. Threads run in parallel, one OS thread per core by default; preemption is planned.
 
 ## Starting a thread
 
@@ -24,24 +24,33 @@ values escape to).
 
 ## Scheduling
 
-The runtime follows Go's structure: a processor (P) owns a run queue (256 slots, overflowing to a global queue),
-timers and a stack pool, and a machine (M, an OS thread) runs threads while it has a P. Each M has a scheduler on
-the OS thread's own stack: a thread that blocks, yields, sleeps or finishes switches to it, and it completes the
-request and switches to the next thread. The main thread is thread 0 and runs on a stack like the others. There
-is one M and one P so far.
+The runtime follows Go's structure. A processor (P) is the right to run threads; there are `COOPER_THREADS` of
+them, by default one per core. Each P owns a run queue of 256 slots (overflowing to a global queue), and a machine
+(M, an OS thread) runs threads while it holds a P. Each M has a scheduler on the OS thread's own stack: a thread
+that blocks, yields, sleeps or finishes switches to it, and it completes the request and switches to the next
+thread. The main thread is thread 0 and runs on a stack like the others.
 
-Threads run one at a time, in the order they became ready, and switch where they block: `std.threads.yield()`,
-`std.threads.sleep(ms)`, and waiting in `std.sync`. A thread that never blocks keeps the others from running, since
-nothing preempts it yet. When the main function returns the program ends, whatever the other threads are doing.
-If every thread is blocked (and none is sleeping or waiting on `after`) the program stops with a deadlock error.
+A P runs a thread that was just readied next (so a reply is handled at once), then its queue in the order threads
+became ready, then the global queue; an M whose P has nothing steals half of another P's queue. Ms start as work
+appears: making a thread runnable wakes an idle M only when a P is free and no M is already looking for work, and
+an M that finds nothing sleeps. A thread switches where it blocks: `std.threads.yield()`, `std.threads.sleep(ms)`,
+and waiting in `std.sync`. A thread that never blocks keeps its OS thread, since nothing preempts it yet; with
+`COOPER_THREADS=1` it keeps the others from running at all. When the main function returns the program ends,
+whatever the other threads are doing. If every thread is blocked (and none is sleeping or waiting on `after`) the
+program stops with a deadlock error.
+
+The collector stops every thread before it collects: generated code checks a flag at each function entry and loop
+iteration, as do the allocator and the scheduler, and a thread that sees it pauses until the collection is over.
+A thread inside a long C call delays a collection until it returns.
 
 `std.sync.WaitGroup` waits for threads: `add(n)` before starting them, `done()` as each finishes, `wait()` to
 block until all have.
 
 ## Mutexes and channels
 
-`Mutex` (`lock`, `tryLock`, `unlock`) guards data used across a blocking call. `Channel T` passes values between
-threads; `channel(n)` makes one holding up to `n` values, and `channel(0)` is unbuffered: a send and a receive
+`Mutex` (`lock`, `tryLock`, `unlock`) guards data that threads share. `Atomic` is an integer threads update
+without a lock: `load`, `store`, `add` (giving the new value) and `compareAndSwap(old, new)`. `Channel T` passes
+values between threads; `channel(n)` makes one holding up to `n` values, and `channel(0)` is unbuffered: a send and a receive
 complete together.
 
 ```
@@ -139,11 +148,11 @@ Finished threads' stacks are kept for reuse (up to 4096), so starting a thread c
 Threads share memory. A data race, two threads accessing the same variable with at least one writing and no
 synchronization, is a bug the language does not prevent or detect. On multiword values (strings, arrays, sum
 types) a race can tear a value, as in Go, and a torn sum type can break memory safety. Protect shared data
-with the primitives in `std.sync`.
+with the primitives in `std.sync`. Each `print` and `println` writes its text whole, so lines from different
+threads never mix.
 
 ## Not yet
 
-Running threads in parallel on several OS threads, `RWMutex`, `Once`, atomics, an event form of `Mutex.lock`,
-nested groups that cancel their children, preemption, timers beyond `sleep` and `after`, and handing a blocked C
-call's OS thread to other threads. A thread blocked forever on an event nothing can commit stays blocked; only
+`RWMutex`, `Once`, an event form of `Mutex.lock`, nested groups that cancel their children, preemption, timers
+beyond `sleep` and `after`, and handing a blocked C call's OS thread to other threads. A thread blocked forever on an event nothing can commit stays blocked; only
 when every thread is blocked does the program stop with the deadlock error.

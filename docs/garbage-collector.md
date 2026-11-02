@@ -2,8 +2,8 @@
 
 Memory is reclaimed by a tracing collector modelled on Go's: a span-based allocator, a precise heap,
 conservative stacks, and Green Tea marking. It lives in the C runtime (`runtime/gc.c`, with the
-descriptor generation in `crates/cooper-llvm/src/gc.rs`). It is single-threaded and stops the world;
-concurrency is planned. Controls and measurements are in [Performance](./performance.md).
+descriptor generation in `crates/cooper-llvm/src/gc.rs`). It stops the world and then marks and sweeps on
+one OS thread; parallel and concurrent marking are planned. Controls and measurements are in [Performance](./performance.md).
 
 ## Typed allocation
 
@@ -34,6 +34,9 @@ the span.
 Stop-the-world mark and sweep, started by the pacer when the allocated bytes reach the live bytes plus a growth
 percentage of the live bytes and roots (default 100%, at least 4 MiB).
 
+- **Stopping.** The allocating thread that reaches the heap goal stops every other thread at a safe point: generated
+  code polls a flag at each function entry and loop iteration, and the allocator, lock spins and the scheduler
+  check it too. A thread stopped in its code saves its registers on its stack, as a switch does.
 - **Roots.** Module-level variables, precisely, from a table of addresses and descriptors the compiler emits
   (`cooper_roots`). The stacks of every thread and the registers, conservatively, word by word (a suspended
   thread's registers are saved on its stack, and a thread that has not started is reached through its closure): nothing moves, so an ambiguous word
@@ -48,7 +51,7 @@ percentage of the live bytes and roots (default 100%, at least 4 MiB).
 ## Testing
 
 `COOPER_GC=stress` collects at every allocation and poisons freed memory, and the golden-program harness runs
-every program a second time that way, requiring the same output. `gc_test.c`, run by `tests/allocator.rs`,
+every program again that way, on four processors (`COOPER_THREADS=4`), and both, requiring the same output. `gc_test.c`, run by `tests/allocator.rs`,
 tests the allocator and collector alone: sizes, pointer bitmaps, reuse, interior pointers, reclamation,
 poisoning, and that a sum type retains only the variant it holds.
 
@@ -56,4 +59,5 @@ poisoning, and that a sum type retains only the variant it holds.
 
 Conservative scanning can retain what a stale stack word points at. Optimized builds may keep only a derived
 pointer (one past an object's end), which a stack scan would miss: not yet validated. The page heap is a
-first-fit list. Nothing is thread-safe yet, and the collector stops the world on the one OS thread all threads run on.
+first-fit list. Every allocation takes one heap lock, and the collector marks and sweeps on one OS thread while the
+others wait.

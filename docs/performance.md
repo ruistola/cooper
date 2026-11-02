@@ -12,6 +12,7 @@ Environment variables read by every Cooper program's runtime:
 | `COOPER_GC=poison` | Fill freed memory with `0xDB`, so a missed root crashes instead of silently reusing memory |
 | `COOPER_HEAP_GROWTH=n` or `off` | The heap may grow to `n` percent over what survived the last collection (default 100); `off` disables automatic collection |
 | `COOPER_STACK_KIB=n` | Reserve `n` KiB of stack for each thread (default 8192) |
+| `COOPER_THREADS=n` | Run threads on `n` processors, each an OS thread while busy (default: one per core) |
 | `COOPER_GC=objects` | Mark object by object as they are reached, instead of a span at a time: for comparing the two |
 
 The pacer follows Go's goal: the next collection starts at the live bytes plus the growth percentage of the live
@@ -54,8 +55,8 @@ under 1% of collection time, so lazy sweeping would gain nothing yet.
 
 ## Threads
 
-`benchmarks/threads.coop` (with a Go version, run with one OS thread) measures the scheduler. Cooper `-O2`, Go 1.27,
-Apple M5:
+`benchmarks/threads.coop` (with a Go version, run with one OS thread) measures the scheduler. Cooper `-O2` with
+`COOPER_THREADS=1`, Go 1.27, Apple M5:
 
 | Measure | Cooper | Go |
 |---|---|---|
@@ -65,4 +66,8 @@ Apple M5:
 | All three | 1.0 s | 0.52 s |
 
 The memory is the cost of the design: a stack is at least one page, 16 KiB on this machine, against Go's 2 KiB.
-Time is mostly the kernel zero-filling those pages.
+Time is mostly the kernel zero-filling those pages. With one P per core (ten here) all three take 0.74 s.
+
+The safe-point polls the collector needs (a load and a branch at every function entry and loop iteration) cost
+little where the work is in calls, and most in tight loops they keep LLVM from rewriting: `strings` at `-O2` takes
+0.19 s with them and 0.15 s without.

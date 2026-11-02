@@ -6,7 +6,7 @@
 # stdout: worker handled 2 jobs, then stopped
 use {
     std.io.println,
-    std.sync.{ Channel, ThreadGroup, channel, choose, sync, wrap },
+    std.sync.{ Atomic, Channel, ThreadGroup, channel, choose, sync, wrap },
     std.threads.{ sleep, yield },
 }
 
@@ -20,29 +20,29 @@ func report(e: Maybe string) {
 func main() {
     # every thread finishes before wait returns
     let group: ThreadGroup
-    finished := 0
+    let finished: Atomic
     for i in 0..5 do group.start(func() {
         sleep(2 * i)
-        finished += 1
+        finished.add(1)
     })
     group.wait()
-    println("all {finished} done")
+    println("all {finished.load()} done")
 
     # a failure cancels the rest, which check and stop
     let failing: ThreadGroup
-    steps := 0
+    let steps: Atomic
     failing.start(func() {
         sleep(3)
         failing.fail("disk full")
     })
     for i in 0..3 do failing.start(func() {
         while !failing.cancelled() do {
-            steps += 1
+            steps.add(1)
             sleep(1)
         }
     })
     report(failing.wait())
-    println("stopped early: {steps < 100}")
+    println("stopped early: {steps.load() < 100}")
 
     # a group with no failure
     let quiet: ThreadGroup

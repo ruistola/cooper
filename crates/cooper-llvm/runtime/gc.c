@@ -11,7 +11,8 @@
  *   - a larger object up to 32 KiB has a word before it holding its type, tiled over the object;
  *   - an object with a span of its own has the type in the span.
  *
- * The collector is stop-the-world mark and sweep, single-threaded. The heap is precise: an
+ * The collector is stop-the-world mark and sweep: the allocating thread that crosses the heap goal stops
+ * every other thread at a safe point (sched.c), then marks and sweeps alone. The heap is precise: an
  * object's pointers are found from the record above. The roots are the module-level variables
  * (a table the compiler emits, with their types), and the stack and registers, which are scanned
  * conservatively: any word that points into an allocated object keeps it. Nothing moves, so an
@@ -21,6 +22,7 @@
  * memory with 0xDB, so that a missed root shows up as a crash rather than as silent reuse.
  */
 
+#include <sched.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -126,14 +128,15 @@ static void init_classes(void) {
 
 /* --- arenas and the page heap --- */
 
-/* Every global of the allocator and collector, by who may touch it once Ms run in parallel. All of them are
-   global under one heap lock (to be added with parallel threads; until then a single M owns them), except:
+/* Every global of the allocator and collector, by who may touch it:
      immutable after init:  class_size, class_pages, size_to_class8, stress, poison, object_mark, growth,
-                            gc_off, trace, instrument, zerobase, started
-     per-P (allocation caches, planned): cache, partial
-     collector only (the stopped world): collecting, work, queue, last_span, root_bytes, stats
-   The unmarked ones below (arena table, current_arena, heap_bytes, span_count, heap_used, next_gc, free_runs,
-   spare_runs, span_pool, all_spans, ready, meta_next, meta_end, released_bytes) are the heap lock's. */
+                            gc_off, trace, instrument, zerobase, started, ready
+     collector only (the stopped world, with the heap lock): work, queue, last_span, root_bytes,
+                            stats
+   The rest (arena table, current_arena, heap_bytes, span_count, heap_used, next_gc, free_runs, spare_runs,
+   span_pool, all_spans, cache, partial, meta_next, meta_end, released_bytes) are the heap lock's: one lock
+   for every allocation, until per-P allocation caches (phase D of the plan) take it off the common path. */
+static int64_t heap_word; /* the heap lock */
 static Arena **arena_table[1 << TABLE_BITS]; /* [address >> 26 >> 11][(address >> 26) & 2047] */
 static Arena *current_arena;
 static size_t heap_bytes, span_count;
@@ -141,7 +144,6 @@ static size_t heap_used;  /* bytes in allocated slots: live as of the last colle
 static size_t next_gc;    /* collect when `heap_used` reaches this */
 static int stress, poison, object_mark; /* object_mark: scan objects as reached, not a span at a time */
 static int started;            /* cooper_gc_init has run: collections may begin */
-static int collecting;
 static unsigned growth = 100;  /* the heap may grow to this percent over what survived: COOPER_HEAP_GROWTH */
 static int gc_off;
 static size_t root_bytes;      /* stack and module-level variables scanned by the last collection */
@@ -409,12 +411,33 @@ static void *allocate_large(size_t size, const CooperType *type) {
     span->large_type = type;
     span->large_size = size;
     span_bits(span, 1);
+    __atomic_store_n(&heap_used, heap_used + span->elemsize, __ATOMIC_RELAXED);
     if (span->needzero) memset((void *)span->start, 0, size);
-    heap_used += span->elemsize;
     return (void *)span->start;
 }
 
 static void collect(void);
+
+static void heap_lock(void) {
+    for (int spins = 0; __atomic_exchange_n(&heap_word, 1, __ATOMIC_ACQUIRE); spins++) {
+        while (__atomic_load_n(&heap_word, __ATOMIC_RELAXED)) {
+            if (++spins > 1000) sched_yield();
+        }
+    }
+}
+
+static void heap_unlock(void) {
+    __atomic_store_n(&heap_word, 0, __ATOMIC_RELEASE);
+}
+
+/* Stop the world and collect, unless another thread did meanwhile and the heap no longer needs it. */
+static void collect_stopped(int forced) {
+    if (!cooper_stop_the_world()) return;
+    heap_lock();
+    if (forced || stress || heap_used >= next_gc) collect();
+    heap_unlock();
+    cooper_start_the_world();
+}
 
 static void print_stats(void) {
     uint64_t pause = stats.mark_ns + stats.sweep_ns;
@@ -451,12 +474,20 @@ void *cooper_alloc(size_t size, const CooperType *type) {
     }
     if (size == 0) return &zerobase;
     if (!ready) init_heap();
-    if ((stress || (heap_used >= next_gc && !gc_off)) && started && !collecting) collect();
+    if (__atomic_load_n(&cooper_poll_word, __ATOMIC_RELAXED)) cooper_poll_slow();
+    if (started && (stress || (__atomic_load_n(&heap_used, __ATOMIC_RELAXED) >= next_gc && !gc_off))) {
+        collect_stopped(0);
+    }
     int noscan = type == NULL;
     int kind = noscan ? KIND_NOSCAN : (type->nsites || size > MIN_SIZE_FOR_HEADER) ? KIND_HEADER : KIND_BITS;
     size_t total = size;
     if (kind == KIND_HEADER) total += HEADER_SIZE;
-    if (total < size || total > MAX_SMALL) return allocate_large(size, type);
+    heap_lock();
+    if (total < size || total > MAX_SMALL) {
+        void *large = allocate_large(size, type);
+        heap_unlock();
+        return large;
+    }
     int class = size_to_class8[(total + 7) / 8];
     int spanclass = class * KINDS + kind;
     Span *span = cache[spanclass];
@@ -472,13 +503,13 @@ void *cooper_alloc(size_t size, const CooperType *type) {
         cache[spanclass] = span;
         slot = next_free(span);
     }
-    heap_used += span->elemsize;
-    if (span->needzero) memset(slot, 0, span->elemsize);
-    if (noscan) return slot;
-    if (span->heap_bits_in_span) {
-        write_heap_bits(span, (uintptr_t)slot, type, size);
-        return slot;
-    }
+    __atomic_store_n(&heap_used, heap_used + span->elemsize, __ATOMIC_RELAXED);
+    /* The bitmap words are shared with neighbouring slots; the slot itself is this thread's. */
+    if (!noscan && span->heap_bits_in_span) write_heap_bits(span, (uintptr_t)slot, type, size);
+    int needzero = span->needzero, header = !noscan && !span->heap_bits_in_span;
+    heap_unlock();
+    if (needzero) memset(slot, 0, span->elemsize);
+    if (!header) return slot;
     *(const CooperType **)slot = type;
     return (char *)slot + HEADER_SIZE;
 }
@@ -822,7 +853,6 @@ static __attribute__((noinline)) void collect_with_registers(void) {
 }
 
 static void collect(void) {
-    collecting = 1;
     if (heap_bytes > stats.peak_heap) stats.peak_heap = heap_bytes;
     size_t before = heap_used;
     uint64_t start = instrument ? now_ns() : 0;
@@ -848,10 +878,10 @@ static void collect(void) {
                 (unsigned long long)stats.collections, (marked - start) / 1e6, (done - marked) / 1e6,
                 heap_used / 1048576.0, next_gc / 1048576.0, heap_bytes / 1048576.0);
     }
-    collecting = 0;
 }
 
 void cooper_gc_init(void) {
+    if (!ready) init_heap();
     started = 1;
     cooper_sched_init();
 }
@@ -859,5 +889,5 @@ void cooper_gc_init(void) {
 /* Collect now. */
 void cooper_gc_collect(void) {
     if (!ready) init_heap();
-    if (started && !collecting) collect();
+    if (started) collect_stopped(1);
 }

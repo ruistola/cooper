@@ -66,10 +66,11 @@ enum { COOPER_WAITING, COOPER_CLAIMED, COOPER_SYNCED };
 /* At `deadline` (cooper_now), commit `waiter` to `index` if it is still waiting. */
 void cooper_wake_at(CooperWaiter *waiter, int64_t index, int64_t deadline);
 
-/* Sequentially consistent atomics on a word. */
+/* Sequentially consistent atomics on a word. cooper_add gives the new value. */
 bool cooper_cas(int64_t *word, int64_t old, int64_t new_value);
 int64_t cooper_load(int64_t *word);
 void cooper_store(int64_t *word, int64_t value);
+int64_t cooper_add(int64_t *word, int64_t delta);
 /* A spin lock on a word (0 free, 1 held). It is never held across a park or a yield. */
 void cooper_lock(int64_t *word);
 void cooper_unlock(int64_t *word);
@@ -85,6 +86,15 @@ _Noreturn void cooper_run_main(int (*entry)(void));
 /* For the collector: the top of the running thread's stack, and the other threads' stacks. */
 uintptr_t cooper_current_stack_top(void);
 void cooper_scan_threads(void (*scan)(uintptr_t low, uintptr_t high));
+
+/* Safe points. Generated code polls cooper_poll_word at function entry and loop back-edges, and calls
+   cooper_poll_slow when it is nonzero, which stops the running thread while the world is stopped. */
+extern int64_t cooper_poll_word;
+void cooper_poll_slow(void);
+/* Stop every other M holding a P at a safe point, the running thread's keeps running. If another thread got
+   there first, this one stops at a safe point instead until the world restarts, and the result is false. */
+bool cooper_stop_the_world(void);
+void cooper_start_the_world(void);
 
 /* Start collecting: allocation may collect from now on, and the caller is on a thread of the scheduler. */
 void cooper_gc_init(void);

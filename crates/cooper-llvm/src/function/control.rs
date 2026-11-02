@@ -84,6 +84,7 @@ impl Emitter<'_, '_> {
         let exit = self.fresh("exit");
         self.start_block(if post_test { &pass } else { &test });
         if !post_test {
+            self.safe_point();
             self.branch_on(cond, until, &pass, &exit)?;
             self.start_block(&pass);
         }
@@ -96,6 +97,7 @@ impl Emitter<'_, '_> {
         result?;
         if post_test {
             self.start_block(&test);
+            self.safe_point();
             self.branch_on(cond, until, &pass, &exit)?;
         } else {
             self.terminate(&format!("br label %{test}"));
@@ -172,6 +174,7 @@ impl Emitter<'_, '_> {
             e.loops.pop();
             result?;
             e.start_block(&step);
+            e.safe_point();
             let i = e.load(&counter).expect("a counter has a value");
             if inclusive {
                 let done = e.assign(&format!("icmp eq {int} {}, {}", i.operand, last.operand));
@@ -421,6 +424,7 @@ impl Emitter<'_, '_> {
             result
         })?;
         self.start_block(&step);
+        self.safe_point();
         let position = self.load(&counter).expect("a counter has a value");
         let next = self.assign(&format!("add nuw i64 {}, 1", position.operand));
         self.store(&counter, Some(&Value { ty: "i64".to_string(), operand: next }));
@@ -474,6 +478,7 @@ impl Emitter<'_, '_> {
             result
         })?;
         self.start_block(&step);
+        self.safe_point();
         let position = self.load(&counter).expect("a counter has a value");
         let advance = self.load(&width).expect("a width has a value");
         let wide = self.assign(&format!("zext i32 {} to i64", advance.operand));

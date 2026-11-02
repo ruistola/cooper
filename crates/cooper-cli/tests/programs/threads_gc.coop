@@ -8,7 +8,7 @@
 use {
     std.io.println,
     std.threads.yield,
-    std.sync.WaitGroup,
+    std.sync.{ Atomic, WaitGroup },
 }
 
 struct Node {
@@ -34,16 +34,16 @@ func total(list: Node^): i64 {
     return sum
 }
 
-func holder(id: i32, wg: WaitGroup^, strings: i64^, sums: i64^) {
+func holder(id: i32, wg: WaitGroup^, strings: Atomic^, sums: Atomic^) {
     let mine: string[]
     for i in 0..15 do mine = mine.push("thread {id} holds string number {i} of its own")
     let list = build(10 + i64(id))
     for round in 0..6 do yield()
     for (i, s) in mine do {
-        if s != "thread {id} holds string number {i} of its own" then strings^ = -1000000
+        if s != "thread {id} holds string number {i} of its own" then strings.add(-1000000)
     }
-    strings^ += i64(mine.length())
-    sums^ += total(list)
+    strings.add(i64(mine.length()))
+    sums.add(total(list))
     wg.done()
 }
 
@@ -58,13 +58,13 @@ func churn(wg: WaitGroup^) {
 
 func main() {
     let wg: WaitGroup
-    let strings: i64
-    let sums: i64
+    let strings: Atomic
+    let sums: Atomic
     wg.add(10)
     for id in 0..8 do thread holder(id, &wg, &strings, &sums)
     thread churn(&wg)
     thread churn(&wg)
     wg.wait()
-    println("8 threads hold {strings} strings and 8 lists")
-    println("lists sum {sums}")
+    println("8 threads hold {strings.load()} strings and 8 lists")
+    println("lists sum {sums.load()}")
 }

@@ -1,0 +1,87 @@
+# exit: 0
+# stdout: counter 8000
+# stdout: pipeline sum 499500
+# stdout: timeouts 0, received 400
+# stdout: spinner stopped for the collector: true
+# env: COOPER_THREADS=4
+# Threads running in parallel: a `Mutex` counter over eight threads, a pipeline through bounded channels, and
+# events with timeouts under load. A thread that never blocks still stops at the safe points the compiler puts
+# in loops, so collections caused by the other threads can proceed. (With one processor it would keep the
+# others from running at all: nothing preempts a thread yet.)
+use {
+    std.io.println,
+    std.sync.{ Atomic, Channel, Mutex, WaitGroup, after, channel, choose, sync, wrap },
+}
+
+func bump(m: Mutex^, counter: i64^, wg: WaitGroup^) {
+    for i in 0..1000 do {
+        m.lock()
+        counter^ = counter^ + 1
+        m.unlock()
+    }
+    wg.done()
+}
+
+func stage(input: (Channel i64)^, output: (Channel i64)^) {
+    while input.recv() is Some(v) do output.send(v)
+    output.close()
+}
+
+func send(ch: (Channel i32)^, n: i32) {
+    for i in 0..n do ch.send(i)
+}
+
+func spin(stop: Atomic^, turns: Atomic^) {
+    while stop.load() == 0 do turns.add(1)
+}
+
+func garbage(wg: WaitGroup^) {
+    for i in 0..5000 do {
+        let words: string[]
+        words = words.push("allocated {i}")
+    }
+    wg.done()
+}
+
+func main() {
+    let m: Mutex
+    counter := 0
+    let wg: WaitGroup
+    wg.add(8)
+    for i in 0..8 do thread bump(&m, &counter, &wg)
+    wg.wait()
+    println("counter {counter}")
+
+    let source: Channel i64 = channel(4)
+    let middle: Channel i64 = channel(4)
+    let sink: Channel i64 = channel(4)
+    thread stage(&source, &middle)
+    thread stage(&middle, &sink)
+    thread func() {
+        for i in 0..1000 do source.send(i)
+        source.close()
+    }()
+    sum := 0
+    while sink.recv() is Some(v) do sum += v
+    println("pipeline sum {sum}")
+
+    let values: Channel i32 = channel(0)
+    for i in 0..4 do thread send(&values, 100)
+    timeouts := 0
+    received := 0
+    timeout := wrap(after(10000), func(late: ()): bool { return false })
+    for i in 0..400 do {
+        got := sync(choose(wrap(values.recvEvent(), func(v: Maybe i32): bool { return true }), timeout))
+        if got then received += 1 else timeouts += 1
+    }
+    println("timeouts {timeouts}, received {received}")
+
+    let stop: Atomic
+    let turns: Atomic
+    thread spin(&stop, &turns)
+    wg.add(4)
+    for i in 0..4 do thread garbage(&wg)
+    wg.wait()
+    stop.store(1)
+    println("spinner stopped for the collector: {turns.load() > 0}")
+}

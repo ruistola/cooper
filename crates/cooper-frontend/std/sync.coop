@@ -16,6 +16,7 @@ extern func cooper_wake_at(waiter: Waiter^, index: i64, deadline: i64)
 extern func cooper_cas(word: i64^, old: i64, new: i64): bool
 extern func cooper_load(word: i64^): i64
 extern func cooper_store(word: i64^, value: i64)
+extern func cooper_add(word: i64^, delta: i64): i64
 extern func cooper_lock(word: i64^)
 extern func cooper_unlock(word: i64^)
 extern func cooper_random(n: i64): i64
@@ -522,8 +523,7 @@ struct WaitGroup {
     sync(wg.waitEvent())
 }
 
-# Mutual exclusion between threads, for data used across a blocking call (and, once threads run in
-# parallel, for any data threads share).
+# Mutual exclusion between threads, for any data they share.
 struct Mutex {
     word: i64,
     locked: bool,
@@ -562,6 +562,30 @@ struct Mutex {
     m.locked = false
     if m.waiters.next(&m.word) is Some(o) then o.waiter.publish(o.index)
     cooper_unlock(&m.word)
+}
+
+# An integer that threads read and update without a lock. Each operation is sequentially consistent: all
+# threads see all of them in one order.
+struct Atomic {
+    value: i64,
+}
+
+(a: Atomic^) func load(): i64 {
+    return cooper_load(&a.value)
+}
+
+(a: Atomic^) func store(value: i64) {
+    cooper_store(&a.value, value)
+}
+
+# Adds `delta` and gives the new value.
+(a: Atomic^) func add(delta: i64): i64 {
+    return cooper_add(&a.value, delta)
+}
+
+# Sets the value to `new` if it is `old`, and says whether it did.
+(a: Atomic^) func compareAndSwap(old: i64, new: i64): bool {
+    return cooper_cas(&a.value, old, new)
 }
 
 # Threads started together and waited for together. `wait` returns only when every thread started with `start`

@@ -104,6 +104,7 @@ pub(crate) fn emit(module: &mut Module, function: &Function) -> Result<String, C
             emitter.inst(&format!("store {ty} {operand}, ptr {}", slot.ptr));
         }
     }
+    emitter.safe_point();
     for stmt in &function.body {
         emitter.stmt(stmt)?;
     }
@@ -238,6 +239,21 @@ impl Emitter<'_, '_> {
         self.inst(&format!("call void @cooper_panic(ptr {text})"));
         self.terminate("unreachable");
         self.start_block(&ok);
+    }
+
+    /// A safe point, at function entry and on loop back-edges: while the runtime stops the world for the
+    /// collector (`cooper_poll_word` is set), the thread stops here.
+    fn safe_point(&mut self) {
+        self.module.declare("@cooper_poll_word = external global i64");
+        self.module.declare("declare void @cooper_poll_slow()");
+        let word = self.assign("load atomic i64, ptr @cooper_poll_word monotonic, align 8");
+        let stop = self.assign(&format!("icmp ne i64 {word}, 0"));
+        let poll = self.fresh("poll");
+        let go = self.fresh("go");
+        self.terminate(&format!("br i1 {stop}, label %{poll}, label %{go}"));
+        self.start_block(&poll);
+        self.inst("call void @cooper_poll_slow()");
+        self.start_block(&go);
     }
 
     // --- types and variables ---

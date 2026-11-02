@@ -1,95 +1,377 @@
-# The standard `sync` module: synchronization between threads.
+# The standard `sync` module: communication and synchronization between threads.
+#
+# Threads communicate through events, in the manner of Concurrent ML. An `Event T` describes an operation
+# whose result is a `T`, such as receiving from a channel or a deadline passing, and nothing happens until a
+# thread calls `sync` on it. Events combine: `choose` takes whichever of several commits first, `wrap`
+# transforms a result, `guard` builds an event afresh at each sync, and `withNack` lets a branch learn that
+# another was chosen. A blocking operation `x()` is `sync(xEvent())`.
 
 extern func cooper_current_thread(): u8^
 extern func cooper_park()
-extern func cooper_ready(waiter: u8^)
+extern func cooper_ready(owner: u8^)
+extern func cooper_yield()
 extern func cooper_fail(message: u8^)
 extern func cooper_now(): i64
-extern func cooper_sleep(nanoseconds: i64)
+extern func cooper_wake_at(waiter: Waiter^, index: i64, deadline: i64)
+extern func cooper_cas(word: i64^, old: i64, new: i64): bool
+extern func cooper_load(word: i64^): i64
+extern func cooper_store(word: i64^, value: i64)
+extern func cooper_lock(word: i64^)
+extern func cooper_unlock(word: i64^)
+extern func cooper_random(n: i64): i64
 
-# Waits for a number of threads to finish: `add` before starting them, `done` as each ends, `wait` to
-# block until all have.
-struct WaitGroup {
-    count: i64,
-    waiters: u8^[],
+# --- The commit protocol ---
+#
+# A thread that cannot commit any of its events at once blocks with a `Waiter` (CooperWaiter in the runtime,
+# whose comment gives the states), leaving an offer with each event's source. Whoever moves the waiter from
+# WAITING to SYNCED (a peer, a source, a timer) commits it to one event: it delivers that event's result,
+# then publishes the event's index in `chosen`, which the waiting thread watches. A thread that matches its
+# own offer against a peer's claims its own waiter first (CLAIMED), so that two threads matching each other
+# through different sources cannot both commit.
+
+let waiting: i64 = 0
+let claimed: i64 = 1
+let synced: i64 = 2
+
+struct Waiter {
+    state: i64,
+    chosen: i64,
+    owner: u8^,
 }
 
-# Adds `n` (negative to subtract) to the number of threads being waited for. When it reaches zero, the
-# threads waiting are woken.
-(wg: WaitGroup^) func add(n: i64) {
-    wg.count += n
-    if wg.count < 0 then cooper_fail("negative WaitGroup count\0".data())
-    if wg.count == 0 then {
-        for waiter in wg.waiters do cooper_ready(waiter)
-        wg.waiters = []
+func newWaiter(): Waiter^ {
+    w := Waiter{state: waiting, chosen: -1, owner: cooper_current_thread()}
+    return &w
+}
+
+# Blocks until the waiter is committed, and gives the index of its event.
+(w: Waiter^) func await(): i64 {
+    while cooper_load(&w.chosen) < 0 do cooper_park()
+    return w.chosen
+}
+
+# Completes the commit of a waiter the caller moved to SYNCED, its result delivered.
+(w: Waiter^) func publish(index: i64) {
+    cooper_store(&w.chosen, index)
+    cooper_ready(w.owner)
+}
+
+# The syncing thread's own waiter in a step, nil while polling (when no other thread knows of the sync).
+func claimSelf(w: Waiter^): bool {
+    return w == nil or cooper_cas(&w.state, waiting, claimed)
+}
+
+func releaseSelf(w: Waiter^) {
+    if w != nil then cooper_store(&w.state, waiting)
+}
+
+func commitSelf(w: Waiter^, index: i64) {
+    if w != nil then {
+        cooper_store(&w.chosen, index)
+        cooper_store(&w.state, synced)
     }
 }
 
-# One of the threads being waited for has finished.
-(wg: WaitGroup^) func done() {
-    wg.add(-1)
+# Commits the syncing thread to its event `index`, unless something else committed it first.
+func commitNow(w: Waiter^, index: i64): Outcome {
+    if !claimSelf(w) then return Blocked
+    commitSelf(w, index)
+    return Committed
 }
 
-# Blocks the running thread until the count is zero.
-(wg: WaitGroup^) func wait() {
-    while wg.count > 0 do {
-        wg.waiters = wg.waiters.push(cooper_current_thread())
-        cooper_park()
+# A blocked thread's offer to a source: its waiter, the index of the event, and what the event carries (a
+# value to send, or where to put a received one).
+struct Offer V {
+    waiter: Waiter^,
+    index: i64,
+    value: V,
+}
+
+# The offers waiting at a source, oldest first. An offer whose thread committed elsewhere stays until it is
+# met or the queue is pruned.
+struct Queue V {
+    offers: (Offer V)[],
+    limit: i64,
+}
+
+oneof Peer V {
+    Nobody,
+    Busy,
+    Lost,
+    Got(Offer V),
+}
+
+(q: (Queue V)^) func push(w: Waiter^, index: i64, value: V) {
+    if q.offers.length() >= q.limit then {
+        let live: (Offer V)[]
+        for o in q.offers do if cooper_load(&o.waiter.state) != synced then live = live.push(o)
+        q.offers = live
+        q.limit = 2 * live.length() + 8
+    }
+    q.offers = q.offers.push(Offer{waiter: w, index: index, value: value})
+}
+
+(q: (Queue V)^) func remove(i: i64) {
+    if i == 0 then {
+        q.offers = q.offers[1..]
+        return
+    }
+    let rest: (Offer V)[]
+    for (j, o) in q.offers do if j != i then rest = rest.push(o)
+    q.offers = rest
+}
+
+# Removes the first offer of another thread that still waits and commits that thread (WAITING -> SYNCED);
+# the caller delivers the result and publishes. Offers of `w` itself are skipped and kept. With `mine`, `w`
+# is claimed around the attempt: `Got` leaves it CLAIMED, `Lost` means something else committed it.
+# `Busy`: the peer is committing elsewhere at this moment, so try again with the source's lock released.
+(q: (Queue V)^) func claimPeer(w: Waiter^, mine: bool): Peer V {
+    i := 0
+    while i < q.offers.length() do {
+        o := q.offers[i]
+        if o.waiter == w then {
+            i += 1
+            continue
+        }
+        if mine and !claimSelf(w) then return Lost
+        if cooper_cas(&o.waiter.state, waiting, synced) then {
+            q.remove(i)
+            return Got(o)
+        }
+        if mine then releaseSelf(w)
+        if cooper_load(&o.waiter.state) != synced then return Busy
+        q.remove(i)
+    }
+    return Nobody
+}
+
+# The first offer whose thread still waits, committed as `claimPeer` does; the caller holds the lock `word`.
+(q: (Queue V)^) func next(word: i64^): Maybe (Offer V) {
+    while true do match q.claimPeer(nil, false) with {
+        Got(o) => return Some(o)
+        Busy => pause(word)
+        _ => return None
+    }
+    return None
+}
+
+# Commits every waiting thread; for a condition that has become true.
+(q: (Queue V)^) func wakeAll(word: i64^) {
+    while q.next(word) is Some(o) do o.waiter.publish(o.index)
+}
+
+func pause(word: i64^) {
+    cooper_unlock(word)
+    cooper_yield()
+    cooper_lock(word)
+}
+
+oneof Outcome {
+    Blocked,
+    Committed,
+    Retry,
+}
+
+# An event at a source, erasing the type of its result. `step` runs under the source's lock `word` (nil for
+# an event without one). Given no waiter it commits now if it can; given the syncing thread's waiter it can
+# also commit by matching a waiting peer, and otherwise leaves an offer at the source. `Blocked` also covers
+# finding the waiter committed by something else.
+struct Base {
+    word: i64^,
+    step: func(w: Waiter^, index: i64): Outcome,
+}
+
+(b: Base) func attempt(w: Waiter^, index: i64): bool {
+    while true do {
+        if b.word != nil then cooper_lock(b.word)
+        outcome := b.step(w, index)
+        if b.word != nil then cooper_unlock(b.word)
+        match outcome with {
+            Committed => return true
+            Blocked => return false
+            Retry => cooper_yield()
+        }
+    }
+    return false
+}
+
+# --- Events ---
+
+# An operation whose result is a `T`; nothing happens until `sync`. The zero value never commits. The variants
+# are the module's own: build events with the functions below.
+oneof Event T {
+    Choice((Event T)[]),
+    Leaf(Base, func(): T),
+    Guard(func(): Event T),
+    Nack(func(Event ()): Event T),
+}
+
+struct Branch T {
+    base: Base,
+    result: func(): T,
+}
+
+# The branches a `withNack` setup produced, `from` up to `to`, and the latch telling them they lost.
+struct NackRange {
+    from: i64,
+    to: i64,
+    latch: Latch^,
+}
+
+func flatten T (e: Event T, branches: (Branch T)[]^, nacks: NackRange[]^) {
+    match e with {
+        Choice(es) => for x in es do flatten(x, branches, nacks)
+        Leaf(base, result) => branches^ = branches^.push(Branch{base: base, result: result})
+        Guard(f) => flatten(f(), branches, nacks)
+        Nack(f) => {
+            let latch: Latch
+            from := branches^.length()
+            flatten(f(latch.releasedEvent()), branches, nacks)
+            nacks^ = nacks^.push(NackRange{from: from, to: branches^.length(), latch: &latch})
+        }
     }
 }
 
-# Wakes every thread in `waiters` and empties it. Waiting loops re-check their condition, so waking
-# more threads than needed is harmless.
-func wakeAll(waiters: (u8^[])^) {
-    for waiter in waiters^ do cooper_ready(waiter)
-    waiters^ = []
-}
-
-# Mutual exclusion between threads. Threads switch only where they block, so a lock matters for data that is
-# used across a blocking call; the same rule will hold when threads run on several OS threads.
-struct Mutex {
-    locked: bool,
-    waiters: u8^[],
-}
-
-# Blocks until the mutex is free, then holds it.
-(m: Mutex^) func lock() {
-    while m.locked do {
-        m.waiters = m.waiters.push(cooper_current_thread())
-        cooper_park()
+# Blocks until one of the operations in `e` commits, and gives its result. Guards and `withNack` setups run
+# first, in order. If several operations can commit at once, one of them is picked at random.
+func sync T (e: Event T): T {
+    let branches: (Branch T)[]
+    let nacks: NackRange[]
+    flatten(e, &branches, &nacks)
+    n := branches.length()
+    chosen := -1
+    if n > 0 then {
+        start := cooper_random(n)
+        for k in 0..n do {
+            i := (start + k) % n
+            if branches[i].base.attempt(nil, i) then {
+                chosen = i
+                break
+            }
+        }
     }
-    m.locked = true
+    if chosen < 0 then {
+        w := newWaiter()
+        for (i, b) in branches do if b.base.attempt(w, i) or cooper_load(&w.state) != waiting then break
+        chosen = w.await()
+    }
+    for r in nacks do if chosen < r.from or chosen >= r.to then r.latch.release()
+    return branches[chosen].result()
 }
 
-# Holds the mutex if it is free, and says whether it did.
-(m: Mutex^) func tryLock(): bool {
-    if m.locked then return false
-    m.locked = true
-    return true
+# The first of `es` to commit; one at random among those that can commit at once.
+func choose T (es: ...Event T): Event T {
+    return Choice(es)
 }
 
-# Releases the mutex, waking threads waiting for it.
-(m: Mutex^) func unlock() {
-    if !m.locked then cooper_fail("unlock of unlocked Mutex\0".data())
-    m.locked = false
-    wakeAll(&m.waiters)
+# `e`, with `f` applied to its result after it commits, in the syncing thread.
+func wrap T U (e: Event T, f: func(T): U): Event U {
+    return match e with {
+        Choice(es) => {
+            let wrapped: (Event U)[]
+            for x in es do wrapped = wrapped.push(wrap(x, f))
+            Choice(wrapped)
+        }
+        Leaf(base, result) => Leaf(base, func(): U { return f(result()) })
+        Guard(g) => Guard(func(): Event U { return wrap(g(), f) })
+        Nack(g) => Nack(func(nack: Event ()): Event U { return wrap(g(nack), f) })
+    }
 }
 
-# A queue of values passed between threads. With capacity 0 a send completes when a receiver is waiting
-# for the value; with capacity n up to n values wait in the channel, and a send blocks only while it is full.
-# `recv` returns `None` once the channel is closed and empty.
+# An event that `f` builds afresh at each `sync`, when the sync begins.
+func guard T (f: func(): Event T): Event T {
+    return Guard(f)
+}
+
+# An event that `f` builds afresh at each `sync`, as `guard` does, given an event that commits if and only
+# if the sync commits to an event other than the one `f` returns: a server learns that a client gave up.
+func withNack T (f: func(Event ()): Event T): Event T {
+    return Nack(f)
+}
+
+# An event that commits at once with `v`.
+func always T (v: T): Event T {
+    step := func(w: Waiter^, index: i64): Outcome { return commitNow(w, index) }
+    return Leaf(Base{word: nil, step: step}, func(): T { return v })
+}
+
+# An event that never commits.
+func never T (): Event T {
+    return Choice([])
+}
+
+# An event that commits `ms` milliseconds after the `sync` begins, so one value serves every pass of a loop.
+func after(ms: i64): Event () {
+    return Guard(func(): Event () {
+        deadline := cooper_now() + ms * 1000000
+        step := func(w: Waiter^, index: i64): Outcome {
+            if cooper_now() >= deadline then return commitNow(w, index)
+            if w != nil then cooper_wake_at(w, index, deadline)
+            return Blocked
+        }
+        return Leaf(Base{word: nil, step: step}, func() {})
+    })
+}
+
+# The event of `holds()` becoming true, checked under the lock `word`. A sync that blocks on it waits in
+# `waiters`, which the code making it true wakes with `wakeAll`.
+func condition(word: i64^, holds: func(): bool, waiters: (Queue ())^): Event () {
+    step := func(w: Waiter^, index: i64): Outcome {
+        if holds() then return commitNow(w, index)
+        if w != nil then waiters.push(w, index, ())
+        return Blocked
+    }
+    return Leaf(Base{word: word, step: step}, func() {})
+}
+
+# --- Latches ---
+
+# A one-shot broadcast: once released, it stays released, and everything waiting for it proceeds.
+struct Latch {
+    word: i64,
+    done: bool,
+    waiters: Queue (),
+}
+
+(l: Latch^) func release() {
+    cooper_lock(&l.word)
+    if !l.done then {
+        l.done = true
+        l.waiters.wakeAll(&l.word)
+    }
+    cooper_unlock(&l.word)
+}
+
+(l: Latch^) func released(): bool {
+    cooper_lock(&l.word)
+    done := l.done
+    cooper_unlock(&l.word)
+    return done
+}
+
+(l: Latch^) func releasedEvent(): Event () {
+    return condition(&l.word, func(): bool { return l.done }, &l.waiters)
+}
+
+# --- Channels ---
+
+# A queue of values passed between threads. With capacity 0 a send and a receive commit together (a
+# rendezvous); with capacity n up to n values wait in the channel, and a send blocks only while it is full.
+# A receive gives `None` once the channel is closed and empty.
 struct Channel T {
+    word: i64,
     items: T[],
     head: i64,
     capacity: i64,
-    receiving: i64,
     closed: bool,
-    waiters: u8^[],
+    senders: Queue T,
+    receivers: Queue (Maybe T)^,
 }
 
 # A channel holding up to `capacity` values.
 func channel T (capacity: i64): Channel T {
-    let ch: Channel T = Channel{items: [], head: 0, capacity: capacity, receiving: 0, closed: false, waiters: []}
+    let ch: Channel T
+    ch.capacity = capacity
     return ch
 }
 
@@ -97,132 +379,199 @@ func channel T (capacity: i64): Channel T {
     return ch.items.length() - ch.head
 }
 
-(ch: (Channel T)^) func canSend(): bool {
-    if ch.closed then cooper_fail("send on closed Channel\0".data())
-    return ch.pending() < ch.capacity or (ch.capacity == 0 and ch.pending() < ch.receiving)
-}
-
-(ch: (Channel T)^) func canRecv(): bool {
-    return ch.pending() > 0 or ch.closed
-}
-
-(ch: (Channel T)^) func put(value: T) {
-    ch.items = ch.items.push(value)
-    wakeAll(&ch.waiters)
-}
-
-(ch: (Channel T)^) func take(): Maybe T {
-    if ch.pending() == 0 then return None
+(ch: (Channel T)^) func takeItem(): T {
     value := ch.items[ch.head]
     ch.head += 1
     if ch.head == ch.items.length() then {
         ch.items = []
         ch.head = 0
     }
-    wakeAll(&ch.waiters)
-    return Some(value)
+    return value
 }
 
-# Blocks until the value can be sent. Sending on a closed channel is a fatal error.
-(ch: (Channel T)^) func send(value: T) {
-    while !ch.canSend() do {
-        ch.waiters = ch.waiters.push(cooper_current_thread())
-        cooper_park()
+(ch: (Channel T)^) func sendStep(w: Waiter^, index: i64, value: T): Outcome {
+    if ch.closed then cooper_fail("send on closed Channel\0".data())
+    match ch.receivers.claimPeer(w, true) with {
+        Got(o) => {
+            o.value^ = Some(value)
+            o.waiter.publish(o.index)
+            commitSelf(w, index)
+            return Committed
+        }
+        Busy => return Retry
+        Lost => return Blocked
+        Nobody => {}
     }
-    ch.put(value)
+    if ch.pending() < ch.capacity then {
+        if !claimSelf(w) then return Blocked
+        ch.items = ch.items.push(value)
+        commitSelf(w, index)
+        return Committed
+    }
+    if w != nil then ch.senders.push(w, index, value)
+    return Blocked
+}
+
+(ch: (Channel T)^) func recvStep(w: Waiter^, index: i64, slot: (Maybe T)^): Outcome {
+    if ch.pending() > 0 then {
+        if !claimSelf(w) then return Blocked
+        # a sender blocked on the full buffer moves its value in behind the others
+        match ch.senders.claimPeer(w, false) with {
+            Got(o) => {
+                ch.items = ch.items.push(o.value)
+                o.waiter.publish(o.index)
+            }
+            Busy => {
+                releaseSelf(w)
+                return Retry
+            }
+            _ => {}
+        }
+        slot^ = Some(ch.takeItem())
+        commitSelf(w, index)
+        return Committed
+    }
+    match ch.senders.claimPeer(w, true) with {
+        Got(o) => {
+            slot^ = Some(o.value)
+            o.waiter.publish(o.index)
+            commitSelf(w, index)
+            return Committed
+        }
+        Busy => return Retry
+        Lost => return Blocked
+        Nobody => {}
+    }
+    if ch.closed then {
+        slot^ = None
+        return commitNow(w, index)
+    }
+    if w != nil then ch.receivers.push(w, index, slot)
+    return Blocked
+}
+
+# Sending `value`. Sending on a closed channel, or having a send waiting when it is closed, is a fatal error.
+(ch: (Channel T)^) func sendEvent(value: T): Event () {
+    step := func(w: Waiter^, index: i64): Outcome { return ch.sendStep(w, index, value) }
+    return Leaf(Base{word: &ch.word, step: step}, func() {})
+}
+
+# Blocks until `value` is sent: received, or placed in the channel's buffer.
+(ch: (Channel T)^) func send(value: T) {
+    sync(ch.sendEvent(value))
+}
+
+# Receiving the next value, or `None` once the channel is closed and empty.
+(ch: (Channel T)^) func recvEvent(): Event (Maybe T) {
+    return Guard(func(): Event (Maybe T) {
+        let result: Maybe T
+        step := func(w: Waiter^, index: i64): Outcome { return ch.recvStep(w, index, &result) }
+        return Leaf(Base{word: &ch.word, step: step}, func(): Maybe T { return result })
+    })
 }
 
 # Blocks until a value arrives, or the channel is closed and empty, which gives `None`.
 (ch: (Channel T)^) func recv(): Maybe T {
-    ch.receiving += 1
-    wakeAll(&ch.waiters)
-    while !ch.canRecv() do {
-        ch.waiters = ch.waiters.push(cooper_current_thread())
-        cooper_park()
-    }
-    ch.receiving -= 1
-    return ch.take()
+    return sync(ch.recvEvent())
 }
 
 # Ends the channel: values still in it can be received, then receives give `None`.
 (ch: (Channel T)^) func close() {
+    cooper_lock(&ch.word)
     ch.closed = true
-    wakeAll(&ch.waiters)
-}
-
-# One alternative of a `select`: `attempt` does the operation and runs the case's function if the
-# operation can complete now; `watch` arranges for `waiter` to be woken when it may; `unwatch` undoes `watch`.
-struct Case{
-    attempt: func(): bool,
-    watch: func(u8^),
-    unwatch: func(),
-}
-
-# Runs the function with the next value of `ch` (`None` once it is closed and empty).
-func recv T (ch: (Channel T)^, f: func(Maybe T)): Case {
-    attempt := func(): bool {
-        if !ch.canRecv() then return false
-        f(ch.take())
-        return true
+    while ch.receivers.next(&ch.word) is Some(o) do {
+        o.value^ = None
+        o.waiter.publish(o.index)
     }
-    watch := func(waiter: u8^) {
-        ch.receiving += 1
-        ch.waiters = ch.waiters.push(waiter)
-        wakeAll(&ch.waiters)
-    }
-    unwatch := func() { ch.receiving -= 1 }
-    return Case{attempt: attempt, watch: watch, unwatch: unwatch}
+    if ch.senders.next(&ch.word) is Some(o) then cooper_fail("send on closed Channel\0".data())
+    cooper_unlock(&ch.word)
 }
 
-# Sends `value`, then runs the function.
-func send T (ch: (Channel T)^, value: T, f: func()): Case {
-    attempt := func(): bool {
-        if !ch.canSend() then return false
-        ch.put(value)
-        f()
-        return true
-    }
-    watch := func(waiter: u8^) { ch.waiters = ch.waiters.push(waiter) }
-    unwatch := func() {}
-    return Case{attempt: attempt, watch: watch, unwatch: unwatch}
+# --- Wait groups, mutexes, thread groups ---
+
+# Waits for a number of threads to finish: `add` before starting them, `done` as each ends, `wait` to
+# block until all have.
+struct WaitGroup {
+    word: i64,
+    count: i64,
+    waiters: Queue (),
 }
 
-# Runs the function if no other case has completed within `ms` milliseconds of this call.
-func timeout(ms: i64, f: func()): Case {
-    deadline := cooper_now() + ms * 1000000
-    attempt := func(): bool {
-        if cooper_now() < deadline then return false
-        f()
-        return true
-    }
-    watch := func(waiter: u8^) { thread wakeAt(waiter, deadline) }
-    unwatch := func() {}
-    return Case{attempt: attempt, watch: watch, unwatch: unwatch}
+# Adds `n` (negative to subtract) to the number of threads being waited for. When it reaches zero, the
+# threads waiting are woken.
+(wg: WaitGroup^) func add(n: i64) {
+    cooper_lock(&wg.word)
+    wg.count += n
+    if wg.count < 0 then cooper_fail("negative WaitGroup count\0".data())
+    if wg.count == 0 then wg.waiters.wakeAll(&wg.word)
+    cooper_unlock(&wg.word)
 }
 
-func wakeAt(waiter: u8^, deadline: i64) {
-    cooper_sleep(deadline - cooper_now())
-    cooper_ready(waiter)
+# One of the threads being waited for has finished.
+(wg: WaitGroup^) func done() {
+    wg.add(-1)
 }
 
-# Waits until one of the cases can complete, and completes it; the first of them in argument order when
-# several can.
-func select(cases: ...Case) {
+# The count reaching zero.
+(wg: WaitGroup^) func waitEvent(): Event () {
+    return condition(&wg.word, func(): bool { return wg.count == 0 }, &wg.waiters)
+}
+
+# Blocks the running thread until the count is zero.
+(wg: WaitGroup^) func wait() {
+    sync(wg.waitEvent())
+}
+
+# Mutual exclusion between threads, for data used across a blocking call (and, once threads run in
+# parallel, for any data threads share).
+struct Mutex {
+    word: i64,
+    locked: bool,
+    waiters: Queue (),
+}
+
+# Blocks until the mutex is free, then holds it.
+(m: Mutex^) func lock() {
     while true do {
-        for c in cases do if c.attempt() then return
-        for c in cases do c.watch(cooper_current_thread())
-        cooper_park()
-        for c in cases do c.unwatch()
+        cooper_lock(&m.word)
+        if !m.locked then {
+            m.locked = true
+            cooper_unlock(&m.word)
+            return
+        }
+        w := newWaiter()
+        m.waiters.push(w, 0, ())
+        cooper_unlock(&m.word)
+        w.await()
     }
+}
+
+# Holds the mutex if it is free, and says whether it did.
+(m: Mutex^) func tryLock(): bool {
+    cooper_lock(&m.word)
+    free := !m.locked
+    m.locked = true
+    cooper_unlock(&m.word)
+    return free
+}
+
+# Releases the mutex, waking a thread waiting for it.
+(m: Mutex^) func unlock() {
+    cooper_lock(&m.word)
+    if !m.locked then cooper_fail("unlock of unlocked Mutex\0".data())
+    m.locked = false
+    if m.waiters.next(&m.word) is Some(o) then o.waiter.publish(o.index)
+    cooper_unlock(&m.word)
 }
 
 # Threads started together and waited for together. `wait` returns only when every thread started with `start`
 # has finished, so no thread outlives the code that owns the group. A thread that fails calls `fail`, which records
-# the first message and cancels the group; the others learn of it by checking `cancelled`, since threads are
-# never stopped from outside.
+# the first message and cancels the group; the others learn of it through `cancelled` or `cancelledEvent`, since
+# threads are never stopped from outside.
 struct ThreadGroup {
     running: WaitGroup,
-    stopped: bool,
+    stop: Latch,
+    word: i64,
     error: Maybe string,
 }
 
@@ -239,22 +588,38 @@ func runInGroup(group: ThreadGroup^, f: func()) {
 
 # Asks the group's threads to stop.
 (group: ThreadGroup^) func cancel() {
-    group.stopped = true
+    group.stop.release()
 }
 
 # Whether the group was cancelled, by `cancel` or by a failure.
 (group: ThreadGroup^) func cancelled(): bool {
-    return group.stopped
+    return group.stop.released()
+}
+
+# The group being cancelled.
+(group: ThreadGroup^) func cancelledEvent(): Event () {
+    return group.stop.releasedEvent()
 }
 
 # Records `message` as the group's error unless one is already recorded, and cancels the group.
 (group: ThreadGroup^) func fail(message: string) {
+    cooper_lock(&group.word)
     if group.error is None then group.error = Some(message)
-    group.stopped = true
+    cooper_unlock(&group.word)
+    group.stop.release()
+}
+
+# Every thread of the group having finished, giving the first error, if any.
+(group: ThreadGroup^) func waitEvent(): Event (Maybe string) {
+    return wrap(group.running.waitEvent(), func(finished: ()): Maybe string {
+        cooper_lock(&group.word)
+        error := group.error
+        cooper_unlock(&group.word)
+        return error
+    })
 }
 
 # Blocks until every thread of the group has finished, then gives the first error, if any.
 (group: ThreadGroup^) func wait(): Maybe string {
-    group.running.wait()
-    return group.error
+    return sync(group.waitEvent())
 }

@@ -69,6 +69,34 @@ static void test_sleep_and_park(void) {
     CHECK(woke);
 }
 
+static void test_ready_before_park_leaves_a_permit(void) {
+    cooper_ready(cooper_current_thread());
+    cooper_park(); /* returns at once, consuming the permit; with nothing else to run it would be a deadlock */
+}
+
+/* A waiter whose sync committed otherwise (stale) and one still waiting, each with a timer. */
+static CooperWaiter stale_waiter, timed_waiter;
+static int64_t woke_after;
+
+static void wait_for_timer(void *env) {
+    (void)env;
+    int64_t start = cooper_now();
+    stale_waiter = (CooperWaiter){COOPER_SYNCED, 0, cooper_current_thread()};
+    timed_waiter = (CooperWaiter){COOPER_WAITING, -1, cooper_current_thread()};
+    cooper_wake_at(&stale_waiter, 1, start + 5000000);
+    cooper_wake_at(&timed_waiter, 3, start + 10000000);
+    while (cooper_load(&timed_waiter.chosen) < 0) cooper_park();
+    woke_after = cooper_now() - start;
+}
+
+static void test_timers_commit_waiters(void) {
+    cooper_spawn(wait_for_timer, NULL);
+    cooper_sleep(30000000);
+    CHECK(timed_waiter.state == COOPER_SYNCED && timed_waiter.chosen == 3);
+    CHECK(woke_after >= 10000000);
+    CHECK(stale_waiter.chosen == 0); /* dropped, not committed again */
+}
+
 static long counter;
 static void count(void *env) { (void)env; counter++; cooper_yield(); counter++; }
 
@@ -120,6 +148,8 @@ int main(void) {
     cooper_sched_init(&base);
     test_yield_interleaves_in_order();
     test_sleep_and_park();
+    test_ready_before_park_leaves_a_permit();
+    test_timers_commit_waiters();
     test_many_threads_and_stack_reuse();
     test_deep_recursion_on_a_thread_stack();
     test_scan_visits_other_stacks();

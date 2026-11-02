@@ -12,6 +12,10 @@
  * The collector scans every thread's stack from its saved stack pointer (the registers a switch saves are
  * on the stack, so they are covered) to its top.
  *
+ * The primitives `std.sync` is built on live here too: park with a permit, atomics and lock words, timers
+ * that wake a waiter record (CooperWaiter, in cooper.h), and a random source. They hold the same contracts
+ * when threads run in parallel; only their implementation changes.
+ *
  * Single-threaded; the structure follows Go's (a run queue, a timer list, park and ready) so that
  * per-OS-thread queues and stealing can be added around it.
  */
@@ -45,16 +49,25 @@ typedef struct Thread {
     struct Thread *all_next, *all_prev;
     uint64_t id;
     uintptr_t stack_low, stack_top;
-    int64_t wake;             /* when a sleeping thread is due, in nanoseconds on the monotonic clock */
-    uint64_t wake_order;      /* arrival order among sleepers, to break ties */
     int state;
+    int permit;               /* a cooper_ready that came while the thread was not parked */
 } Thread;
+
+/* A timer: a sleeping thread to resume, or a waiter to commit to its event `index`, when `wake` (nanoseconds
+   on the monotonic clock) is reached. */
+typedef struct {
+    int64_t wake;
+    uint64_t order;           /* arrival order, to break ties */
+    Thread *thread;
+    CooperWaiter *waiter;
+    int64_t index;
+} Timer;
 
 static Thread main_thread;
 static Thread *current = &main_thread;
 static Thread *run_head, *run_tail;
-/* Sleeping threads, a binary min-heap by wake time (ties by arrival, so equal sleeps wake in order). */
-static Thread **timers;
+/* A binary min-heap by wake time (ties by arrival, so equal sleeps wake in order). */
+static Timer *timers;
 static size_t timer_count, timer_capacity;
 static uint64_t timer_sequence;
 static Thread *free_threads;
@@ -62,6 +75,8 @@ static Thread *zombie;        /* a finished thread whose stack is still in use u
 static uint64_t next_id = 1;
 static size_t stack_size = (size_t)8 << 20, guard_size, page_size;
 static uintptr_t main_stack_low;
+static int locks_held;        /* lock words held by the running thread (cooper_lock) */
+static uint64_t random_state; /* xorshift64 */
 
 /* --- context switch --- */
 
@@ -172,44 +187,57 @@ static void reap(void) {
     free_threads = thread;
 }
 
-static int timer_before(const Thread *a, const Thread *b) {
-    return a->wake != b->wake ? a->wake < b->wake : a->wake_order < b->wake_order;
+static int timer_before(const Timer *a, const Timer *b) {
+    return a->wake != b->wake ? a->wake < b->wake : a->order < b->order;
 }
 
-static void timer_push(Thread *thread) {
+static void timer_push(Timer timer) {
     if (timer_count == timer_capacity) {
         timer_capacity = timer_capacity ? timer_capacity * 2 : 1024;
         timers = realloc(timers, timer_capacity * sizeof *timers);
         if (!timers) cooper_panic("out of memory");
     }
+    timer.order = timer_sequence++;
     size_t i = timer_count++;
-    while (i > 0 && timer_before(thread, timers[(i - 1) / 2])) {
+    while (i > 0 && timer_before(&timer, &timers[(i - 1) / 2])) {
         timers[i] = timers[(i - 1) / 2];
         i = (i - 1) / 2;
     }
-    timers[i] = thread;
+    timers[i] = timer;
 }
 
-static Thread *timer_pop(void) {
-    Thread *top = timers[0];
-    Thread *last = timers[--timer_count];
+static void timer_pop(void) {
+    Timer last = timers[--timer_count];
     size_t i = 0;
     for (;;) {
         size_t child = 2 * i + 1;
         if (child >= timer_count) break;
-        if (child + 1 < timer_count && timer_before(timers[child + 1], timers[child])) child++;
-        if (!timer_before(timers[child], last)) break;
+        if (child + 1 < timer_count && timer_before(&timers[child + 1], &timers[child])) child++;
+        if (!timer_before(&timers[child], &last)) break;
         timers[i] = timers[child];
         i = child;
     }
     if (timer_count) timers[i] = last;
-    return top;
 }
 
 static void wake_due(void) {
     if (!timer_count) return;
     int64_t now = now_ns();
-    while (timer_count && timers[0]->wake <= now) enqueue(timer_pop());
+    while (timer_count && timers[0].wake <= now) {
+        Timer timer = timers[0];
+        if (timer.thread) {
+            timer_pop();
+            enqueue(timer.thread);
+        } else if (cooper_cas(&timer.waiter->state, COOPER_WAITING, COOPER_SYNCED)) {
+            timer_pop();
+            cooper_store(&timer.waiter->chosen, timer.index);
+            cooper_ready(timer.waiter->owner);
+        } else if (cooper_load(&timer.waiter->state) == COOPER_SYNCED) {
+            timer_pop(); /* its sync committed otherwise */
+        } else {
+            break; /* claimed: its owner settles it within a few instructions; look again on the next pass */
+        }
+    }
 }
 
 /* The next thread to run, waiting for a sleeper if nothing else can run. */
@@ -223,7 +251,7 @@ static Thread *pick_next(void) {
             return thread;
         }
         if (!timer_count) cooper_panic("all threads are blocked: deadlock");
-        int64_t wait = timers[0]->wake - now_ns();
+        int64_t wait = timers[0].wake - now_ns();
         if (wait > 0) {
             struct timespec t = {wait / 1000000000, wait % 1000000000};
             nanosleep(&t, NULL);
@@ -234,6 +262,7 @@ static Thread *pick_next(void) {
 /* Switch to the next thread. The caller has already said what becomes of the current one (queued,
    parked, sleeping, or dead). */
 static void schedule(void) {
+    if (locks_held) cooper_panic("lock held across a switch");
     Thread *prev = current;
     Thread *next = pick_next();
     next->state = RUNNING;
@@ -264,6 +293,7 @@ int64_t cooper_spawn(void *code, void *env) {
     thread->code = code;
     thread->env = env;
     thread->id = next_id++;
+    thread->permit = 0;
     thread->stack_low = stack_alloc();
     thread->stack_top = thread->stack_low + stack_size;
     char *frame = (char *)thread->stack_top - FRAME_BYTES;
@@ -279,6 +309,7 @@ int64_t cooper_spawn(void *code, void *env) {
 }
 
 void cooper_yield(void) {
+    if (locks_held) cooper_panic("lock held across a switch");
     wake_due();
     if (!run_head) return;
     enqueue(current);
@@ -289,20 +320,23 @@ void *cooper_current_thread(void) {
     return current;
 }
 
-/* Stop the current thread until another calls cooper_ready on it. */
 void cooper_park(void) {
+    if (current->permit) {
+        current->permit = 0;
+        return;
+    }
     current->state = PARKED;
     schedule();
-}
-
-/* Make a parked thread runnable. */
-int64_t cooper_now(void) {
-    return now_ns();
 }
 
 void cooper_ready(void *handle) {
     Thread *thread = handle;
     if (thread->state == PARKED) enqueue(thread);
+    else thread->permit = 1;
+}
+
+int64_t cooper_now(void) {
+    return now_ns();
 }
 
 void cooper_sleep(int64_t ns) {
@@ -310,12 +344,46 @@ void cooper_sleep(int64_t ns) {
         cooper_yield();
         return;
     }
-    int64_t wake = now_ns() + ns;
-    current->wake = wake;
-    current->wake_order = timer_sequence++;
     current->state = SLEEPING;
-    timer_push(current);
+    timer_push((Timer){.wake = now_ns() + ns, .thread = current});
     schedule();
+}
+
+void cooper_wake_at(CooperWaiter *waiter, int64_t index, int64_t deadline) {
+    timer_push((Timer){.wake = deadline, .waiter = waiter, .index = index});
+}
+
+/* --- atomics, lock words, random numbers --- */
+
+bool cooper_cas(int64_t *word, int64_t old, int64_t new_value) {
+    return __atomic_compare_exchange_n(word, &old, new_value, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+}
+
+int64_t cooper_load(int64_t *word) {
+    return __atomic_load_n(word, __ATOMIC_SEQ_CST);
+}
+
+void cooper_store(int64_t *word, int64_t value) {
+    __atomic_store_n(word, value, __ATOMIC_SEQ_CST);
+}
+
+/* One OS thread runs every thread, and none switches while holding a lock, so a lock is never found held:
+   if it is, a holder switched away. */
+void cooper_lock(int64_t *word) {
+    if (!cooper_cas(word, 0, 1)) cooper_panic("lock held across a switch");
+    locks_held++;
+}
+
+void cooper_unlock(int64_t *word) {
+    if (!cooper_cas(word, 1, 0)) cooper_panic("unlock of a lock that is not held");
+    locks_held--;
+}
+
+int64_t cooper_random(int64_t n) {
+    random_state ^= random_state << 13;
+    random_state ^= random_state >> 7;
+    random_state ^= random_state << 17;
+    return (int64_t)(random_state % (uint64_t)n);
 }
 
 /* --- for the collector --- */
@@ -324,9 +392,11 @@ uintptr_t cooper_current_stack_top(void) {
     return current->stack_top;
 }
 
-/* Every thread's stack except the running one's, from its saved stack pointer up; and the code and
-   environment words of each thread, which may be the only reference to a thread that has not started. */
+/* Every thread's stack except the running one's, from its saved stack pointer up; the code and
+   environment words of each thread, which may be the only reference to a thread that has not started;
+   and the timers, which refer to waiters. */
 void cooper_scan_threads(void (*scan)(uintptr_t low, uintptr_t high)) {
+    if (timer_count) scan((uintptr_t)timers, (uintptr_t)(timers + timer_count));
     Thread *thread = &main_thread;
     do {
         if (thread != current) scan((uintptr_t)thread->sp, thread->stack_top);
@@ -380,6 +450,7 @@ void cooper_sched_init(void *base) {
     main_thread.stack_top = (uintptr_t)base;
     main_thread.all_next = main_thread.all_prev = &main_thread;
     main_thread.state = RUNNING;
+    random_state = (uint64_t)now_ns() | 1;
     struct rlimit limit;
     uintptr_t main_size = getrlimit(RLIMIT_STACK, &limit) == 0 && limit.rlim_cur != RLIM_INFINITY ? (uintptr_t)limit.rlim_cur : (8u << 20);
     main_stack_low = main_thread.stack_top - main_size;

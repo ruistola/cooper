@@ -3,6 +3,7 @@
 #ifndef COOPER_H
 #define COOPER_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -45,9 +46,35 @@ int64_t cooper_spawn(void *code, void *env);
 void cooper_yield(void);
 void cooper_sleep(int64_t nanoseconds);
 void *cooper_current_thread(void);
-/* Stop the current thread until cooper_ready is called on its handle. */
+/* Stop the current thread until cooper_ready is called on its handle. A ready that comes first leaves a
+   permit, which the next park consumes by returning at once; a park may also return for no reason, so every
+   caller loops on its own condition. */
 void cooper_park(void);
 void cooper_ready(void *thread);
+
+/* A thread blocked in `std.sync`'s `sync`, mirroring its `Waiter` struct. `state` goes WAITING -> SYNCED
+   when something commits it (a peer, a source, a timer), or WAITING -> CLAIMED -> SYNCED (or back to
+   WAITING) while its own thread commits a match. Whoever wins the move to SYNCED then sets `chosen`
+   (from -1) to the index of the event it commits, and readies `owner`, which waits for `chosen`. */
+typedef struct {
+    int64_t state;
+    int64_t chosen;
+    void *owner;
+} CooperWaiter;
+enum { COOPER_WAITING, COOPER_CLAIMED, COOPER_SYNCED };
+
+/* At `deadline` (cooper_now), commit `waiter` to `index` if it is still waiting. */
+void cooper_wake_at(CooperWaiter *waiter, int64_t index, int64_t deadline);
+
+/* Sequentially consistent atomics on a word. */
+bool cooper_cas(int64_t *word, int64_t old, int64_t new_value);
+int64_t cooper_load(int64_t *word);
+void cooper_store(int64_t *word, int64_t value);
+/* A spin lock on a word (0 free, 1 held). It is never held across a park or a yield. */
+void cooper_lock(int64_t *word);
+void cooper_unlock(int64_t *word);
+/* A pseudo-random number in [0, n), for n > 0. */
+int64_t cooper_random(int64_t n);
 /* Monotonic time in nanoseconds. */
 int64_t cooper_now(void);
 /* Set up the scheduler; the address is a local of `main`, the top of the main thread's stack. */

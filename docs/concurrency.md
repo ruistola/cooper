@@ -27,7 +27,7 @@ values escape to).
 Threads run one at a time, in the order they became ready, and switch where they block: `std.threads.yield()`,
 `std.threads.sleep(ms)`, and waiting in `std.sync`. A thread that never blocks keeps the others from running, since
 nothing preempts it yet. When the main function returns the program ends, whatever the other threads are doing.
-If every thread is blocked (and none is sleeping) the program stops with a deadlock error.
+If every thread is blocked (and none is sleeping or waiting on `after`) the program stops with a deadlock error.
 
 `std.sync.WaitGroup` waits for threads: `add(n)` before starting them, `done()` as each finishes, `wait()` to
 block until all have.
@@ -35,11 +35,11 @@ block until all have.
 ## Mutexes and channels
 
 `Mutex` (`lock`, `tryLock`, `unlock`) guards data used across a blocking call. `Channel T` passes values between
-threads; `channel(n)` makes one holding up to `n` values, and `channel(0)` is unbuffered (a send completes when a
-receiver is waiting):
+threads; `channel(n)` makes one holding up to `n` values, and `channel(0)` is unbuffered: a send and a receive
+complete together.
 
 ```
-ch: Channel i32 = channel(4)
+let ch: Channel i32 = channel(4)
 thread produce(&ch)
 match ch.recv() with {          # blocks; None once closed and empty
     Some(v) => use(v)
@@ -49,18 +49,46 @@ ch.send(5)                      # blocks while full; sending on a closed channel
 ch.close()
 ```
 
-`select` waits for whichever of its cases can complete first (the earliest listed wins a tie) and runs that
-case's function. The cases are `recv(&ch, f)`, `send(&ch, value, f)` and `timeout(ms, f)`:
-
-```
-select(
-    recv(&results, func(r: Maybe i32) { handle(r) }),
-    timeout(500, func() { println("gave up") }),
-)
-```
-
 A channel or mutex is used through its address and must outlive the threads using it, which `&` on a local
 arranges as for any escaping variable.
+
+## Events
+
+Communication follows Concurrent ML: an operation is a value, an `Event T` whose result is a `T`, and nothing
+happens until a thread calls `sync` on it. A blocking operation `x()` is `sync(xEvent())`: `ch.recv()` is
+`sync(ch.recvEvent())`, and `ch.sendEvent(v)`, `wg.waitEvent()`, `group.waitEvent()` and
+`group.cancelledEvent()` are the others. Because events are values, a function can return one and its caller
+can combine it with others, which Go's `select` statement cannot do.
+
+| Function | Event |
+|---|---|
+| `sync(e)` | blocks until one operation in `e` commits, and gives its result |
+| `choose(e1, e2, ...)` | whichever commits first; one at random among those that can commit at once |
+| `wrap(e, f)` | `e`, with `f` applied to its result after it commits, in the syncing thread |
+| `guard(f)` | the event `f()` returns, with `f` run afresh at each `sync` |
+| `withNack(f)` | as `guard`, but `f` also gets an event that commits if the sync chooses something else |
+| `after(ms)` | commits `ms` milliseconds after the `sync` begins |
+| `always(v)`, `never()` | commits at once with `v`; never commits |
+
+```
+reply := sync(choose(
+    wrap(results.recvEvent(), func(r: Maybe i32): string { return "got {r}" }),
+    wrap(after(500), func(late: ()): string { return "gave up" }),
+))
+```
+
+Exactly one of the operations in a `sync` commits: when a send on an unbuffered channel is chosen, a receive
+was chosen in some other thread's sync at the same moment, and a send that times out leaves nothing behind.
+`after(ms)` counts from each `sync`, so one value serves every pass of a loop.
+
+`withNack` is how an operation learns it was abandoned. In a request to a server, the setup function sends
+the request along with the event it is given, and returns the event of receiving the reply. If the caller's
+sync chooses something else (a timeout, say), that event commits, and the server, which offers its reply in a
+`choose` with it, moves on instead of waiting for a client that is gone. The event `f` is given is created afresh
+at each sync, and never commits if the branch is chosen.
+
+A `Latch` is a one-shot broadcast: `release()`, `released()`, and `releasedEvent()`, which commits once it is
+released.
 
 ## Thread groups
 
@@ -77,7 +105,14 @@ match group.wait() with {       # returns when every thread has finished
 
 `group.fail(message)` records the first failure and cancels the group; `group.cancel()` cancels without one.
 Cancellation is cooperative: threads are never stopped from outside, they check `group.cancelled()` where they
-can stop (a loop, between steps). A plain `thread` remains for fire-and-forget work.
+can stop (a loop, between steps), or include `group.cancelledEvent()` in what they wait for:
+
+```
+stopped := wrap(group.cancelledEvent(), func(c: ()): Maybe Job { return None })
+while sync(choose(jobs.recvEvent(), stopped)) is Some(job) do handle(job)
+```
+
+A plain `thread` remains for fire-and-forget work.
 
 Nothing checks that a group is waited for, so write `defer group.wait()` right after declaring it (or call `wait`
 before every return) to keep the guarantee.
@@ -102,6 +137,7 @@ with the primitives in `std.sync`.
 
 ## Not yet
 
-Running threads in parallel on several OS threads, `RWMutex`, `Once`, atomics, events in the manner of Concurrent ML
-(composable choice and cancellation, replacing the `select` above), nested groups that cancel their children,
-preemption, timers beyond `sleep`, and handing a blocked C call's OS thread to other threads.
+Running threads in parallel on several OS threads, `RWMutex`, `Once`, atomics, an event form of `Mutex.lock`,
+nested groups that cancel their children, preemption, timers beyond `sleep` and `after`, and handing a blocked C
+call's OS thread to other threads. A thread blocked forever on an event nothing can commit stays blocked; only
+when every thread is blocked does the program stop with the deadlock error.

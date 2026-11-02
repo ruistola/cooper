@@ -3,13 +3,10 @@
 # stdout: ping pong 3
 # stdout: closed after 5, got 10
 # stdout: counter 400
-# stdout: first ready: a
-# stdout: timed out
-# stdout: sent 7
 use {
     std.io.println,
-    std.sync.{ Channel, Mutex, WaitGroup, channel, recv, send, select, timeout },
-    std.threads.{ sleep, yield },
+    std.sync.{ Channel, Mutex, WaitGroup, channel },
+    std.threads.yield,
 }
 
 func produce(ch: (Channel i32)^, from: i32, to: i32) {
@@ -36,11 +33,6 @@ func value(m: Maybe i32): i32 {
 
 func relay(ping: (Channel i32)^, pong: (Channel i32)^) {
     for i in 0..3 do pong.send(value(ping.recv()) + 1)
-}
-
-func late(out: (Channel i32)^) {
-    sleep(5)
-    println("sent {value(out.recv())}")
 }
 
 func main() {
@@ -86,21 +78,4 @@ func main() {
     for i in 0..4 do thread bump(&m, &counter, &wg)
     wg.wait()
     println("counter {counter}")
-
-    # select
-    a := channel(1)
-    b := channel(1)
-    a.send("a")
-    select(
-        recv(&b, func(v: Maybe string) { println("first ready: b") }),
-        recv(&a, func(v: Maybe string) { println("first ready: a") }),
-    )
-    select(
-        recv(&b, func(v: Maybe string) { println("got b") }),
-        timeout(20, func() { println("timed out") }),
-    )
-    out := channel(0)
-    thread late(&out)
-    select(send(&out, 7, func() {}))
-    sleep(10)
 }

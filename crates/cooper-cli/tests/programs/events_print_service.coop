@@ -1,0 +1,67 @@
+# exit: 0
+# stdout: attempt 0: no response within 20 ms
+# stdout: attempt 1: no response within 20 ms
+# stdout: attempt 2: printed hello 2
+# stdout: never submitted: hello 1
+# stdout: reply abandoned: hello 0
+# A print service in the manner of Concurrent ML (after Nikhil Marathe's comparison of Go and Racket). A
+# client's `printEvent` is an ordinary event: the caller puts a timeout around it, and `withNack` tells the
+# request it was abandoned. A request the service has not accepted yet is withdrawn; a reply nobody waits for
+# any longer is dropped. The service sleeps 100 ms per job, so the first two attempts give up.
+use {
+    std.io.println,
+    std.sync.{ Channel, Event, after, channel, choose, sync, withNack, wrap },
+    std.threads.sleep,
+}
+
+struct Request {
+    message: string,
+    reply: (Channel string)^,
+    abandoned: Event (),
+}
+
+struct Service {
+    requests: Channel Request,
+    withdrawn: Channel string,
+    dropped: Channel string,
+}
+
+func serve(service: Service^) {
+    while service.requests.recv() is Some(request) do {
+        sleep(100)
+        sync(choose(
+            request.reply.sendEvent("printed {request.message}"),
+            wrap(request.abandoned, func(gone: ()) { service.dropped.send(request.message) }),
+        ))
+    }
+}
+
+func printEvent(service: Service^, message: string): Event string {
+    return withNack(func(abandoned: Event ()): Event string {
+        let reply: Channel string = channel(0)
+        thread submit(service, Request{message: message, reply: &reply, abandoned: abandoned})
+        return wrap(reply.recvEvent(), text)
+    })
+}
+
+func text(m: Maybe string): string {
+    return if m is Some(s) then s else ""
+}
+
+func submit(service: Service^, request: Request) {
+    sync(choose(
+        service.requests.sendEvent(request),
+        wrap(request.abandoned, func(gone: ()) { service.withdrawn.send(request.message) }),
+    ))
+}
+
+func main() {
+    let service = Service{requests: channel(0), withdrawn: channel(1), dropped: channel(1)}
+    thread serve(&service)
+    for (i, limit) in [20, 20, 1000] do println(sync(choose(
+        wrap(printEvent(&service, "hello {i}"), func(reply: string): string { return "attempt {i}: {reply}" }),
+        wrap(after(limit), func(late: ()): string { return "attempt {i}: no response within {limit} ms" }),
+    )))
+    println("never submitted: {text(service.withdrawn.recv())}")
+    println("reply abandoned: {text(service.dropped.recv())}")
+}

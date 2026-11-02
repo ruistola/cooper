@@ -1,0 +1,87 @@
+# exit: 0
+# stdout: first ready: a
+# stdout: send timed out
+# stdout: nothing to receive
+# stdout: sent Some(7)
+# stdout: both picked: true
+# stdout: received 3 values, then timed out
+# stdout: always 5, guarded 2
+# Events: an operation is a value, and `sync` performs it. `choose` takes whichever commits first (one at random
+# among those ready), `wrap` turns a result into another, `after` is a timeout counted from each `sync`, and
+# `guard` builds an event at each sync. An unbuffered send commits only together with a receive, so a send that
+# times out leaves nothing behind.
+use {
+    std.io.println,
+    std.sync.{ Channel, Event, after, always, channel, choose, guard, sync, wrap },
+    std.threads.sleep,
+}
+
+func late(out: (Channel i32)^) {
+    sleep(5)
+    println("sent {out.recv()}")
+}
+
+func produce(ch: (Channel i32)^) {
+    for i in 0..3 do {
+        sleep(30)
+        ch.send(i)
+    }
+}
+
+func main() {
+    let a: Channel string = channel(1)
+    let b: Channel string = channel(1)
+    a.send("a")
+    sync(choose(
+        wrap(b.recvEvent(), func(v: Maybe string) { println("first ready: b") }),
+        wrap(a.recvEvent(), func(v: Maybe string) { println("first ready: a") }),
+    ))
+
+    # nobody receives: the send times out, and a later receive finds nothing
+    let ch: Channel i32 = channel(0)
+    println(sync(choose(
+        wrap(ch.sendEvent(1), func(sent: ()): string { return "sent" }),
+        wrap(after(10), func(late: ()): string { return "send timed out" }),
+    )))
+    println(sync(choose(
+        wrap(ch.recvEvent(), func(v: Maybe i32): string { return "received {v}" }),
+        wrap(after(10), func(late: ()): string { return "nothing to receive" }),
+    )))
+
+    # a send waits for a receiver that comes later
+    let out: Channel i32 = channel(0)
+    thread late(&out)
+    out.send(7)
+    sleep(10)
+
+    # with both ready, each side gets picked
+    let xs: Channel i32 = channel(200)
+    let ys: Channel i32 = channel(200)
+    for i in 0..200 do {
+        xs.send(1)
+        ys.send(2)
+    }
+    picks := [0, 0, 0]
+    for i in 0..200 do match sync(choose(xs.recvEvent(), ys.recvEvent())) with {
+        Some(v) => picks[v] += 1
+        None => {}
+    }
+    println("both picked: {picks[1] > 50 and picks[2] > 50}")
+
+    # one timeout event serves every pass: each sync waits 50 ms from its own start
+    let values: Channel i32 = channel(0)
+    thread produce(&values)
+    timeout := wrap(after(50), func(late: ()): Maybe i32 { return None })
+    received := 0
+    while sync(choose(values.recvEvent(), timeout)) is Some(v) do received += 1
+    println("received {received} values, then timed out")
+
+    # guard runs its function at each sync
+    syncs := 0
+    let counted: Event i32 = guard(func(): Event i32 {
+        syncs += 1
+        return always(syncs)
+    })
+    sync(counted)
+    println("always {sync(always(5))}, guarded {sync(counted)}")
+}

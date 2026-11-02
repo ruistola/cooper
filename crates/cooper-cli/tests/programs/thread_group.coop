@@ -3,9 +3,10 @@
 # stdout: error: disk full
 # stdout: stopped early: true
 # stdout: error: none
+# stdout: worker handled 2 jobs, then stopped
 use {
     std.io.println,
-    std.sync.{ Mutex, ThreadGroup },
+    std.sync.{ Channel, ThreadGroup, channel, choose, sync, wrap },
     std.threads.{ sleep, yield },
 }
 
@@ -47,4 +48,18 @@ func main() {
     let quiet: ThreadGroup
     quiet.start(func() { yield() })
     report(quiet.wait())
+
+    # a member blocked on a channel stops when the group is cancelled
+    let workers: ThreadGroup
+    let jobs: Channel i32 = channel(0)
+    handled := 0
+    workers.start(func() {
+        stopped := wrap(workers.cancelledEvent(), func(c: ()): Maybe i32 { return None })
+        while sync(choose(jobs.recvEvent(), stopped)) is Some(job) do handled += 1
+    })
+    jobs.send(1)
+    jobs.send(2)
+    workers.cancel()
+    workers.wait()
+    println("worker handled {handled} jobs, then stopped")
 }

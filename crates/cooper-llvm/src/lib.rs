@@ -195,7 +195,7 @@ pub fn emit(program: &Program, triple: &str, project: &Project, options: Options
             out.push('\n');
         });
     }
-    // A frame larger than the guard page below a task's stack must not step over it: probe it a page at a time.
+    // A frame larger than the guard page below a thread's stack must not step over it: probe it a page at a time.
     out.push_str("\nattributes #0 = { \"probe-stack\"=\"inline-asm\" }\n");
     out.push_str(&functions);
     module.thunks.values().for_each(|t| {

@@ -1,52 +1,52 @@
-# The standard `sync` module: synchronization between tasks.
+# The standard `sync` module: synchronization between threads.
 
-extern func cooper_current_task(): u8^
+extern func cooper_current_thread(): u8^
 extern func cooper_park()
-extern func cooper_ready(task: u8^)
+extern func cooper_ready(waiter: u8^)
 extern func cooper_fail(message: u8^)
 extern func cooper_now(): i64
 extern func cooper_sleep(nanoseconds: i64)
 
-# Waits for a number of tasks to finish: `add` before starting them, `done` as each ends, `wait` to
+# Waits for a number of threads to finish: `add` before starting them, `done` as each ends, `wait` to
 # block until all have.
 struct WaitGroup {
     count: i64,
     waiters: u8^[],
 }
 
-# Adds `n` (negative to subtract) to the number of tasks being waited for. When it reaches zero, the
-# tasks waiting are woken.
+# Adds `n` (negative to subtract) to the number of threads being waited for. When it reaches zero, the
+# threads waiting are woken.
 (wg: WaitGroup^) func add(n: i64) {
     wg.count += n
     if wg.count < 0 then cooper_fail("negative WaitGroup count\0".data())
     if wg.count == 0 then {
-        for task in wg.waiters do cooper_ready(task)
+        for waiter in wg.waiters do cooper_ready(waiter)
         wg.waiters = []
     }
 }
 
-# One of the tasks being waited for has finished.
+# One of the threads being waited for has finished.
 (wg: WaitGroup^) func done() {
     wg.add(-1)
 }
 
-# Blocks the running task until the count is zero.
+# Blocks the running thread until the count is zero.
 (wg: WaitGroup^) func wait() {
     while wg.count > 0 do {
-        wg.waiters = wg.waiters.push(cooper_current_task())
+        wg.waiters = wg.waiters.push(cooper_current_thread())
         cooper_park()
     }
 }
 
-# Wakes every task in `waiters` and empties it. Waiting loops re-check their condition, so waking
-# more tasks than needed is harmless.
-func wake_all(waiters: (u8^[])^) {
-    for task in waiters^ do cooper_ready(task)
+# Wakes every thread in `waiters` and empties it. Waiting loops re-check their condition, so waking
+# more threads than needed is harmless.
+func wakeAll(waiters: (u8^[])^) {
+    for waiter in waiters^ do cooper_ready(waiter)
     waiters^ = []
 }
 
-# Mutual exclusion between tasks. Tasks switch only where they block, so a lock matters for data that is
-# used across a blocking call; the same rule will hold when tasks run on several threads.
+# Mutual exclusion between threads. Threads switch only where they block, so a lock matters for data that is
+# used across a blocking call; the same rule will hold when threads run on several OS threads.
 struct Mutex {
     locked: bool,
     waiters: u8^[],
@@ -55,27 +55,27 @@ struct Mutex {
 # Blocks until the mutex is free, then holds it.
 (m: Mutex^) func lock() {
     while m.locked do {
-        m.waiters = m.waiters.push(cooper_current_task())
+        m.waiters = m.waiters.push(cooper_current_thread())
         cooper_park()
     }
     m.locked = true
 }
 
 # Holds the mutex if it is free, and says whether it did.
-(m: Mutex^) func try_lock(): bool {
+(m: Mutex^) func tryLock(): bool {
     if m.locked then return false
     m.locked = true
     return true
 }
 
-# Releases the mutex, waking tasks waiting for it.
+# Releases the mutex, waking threads waiting for it.
 (m: Mutex^) func unlock() {
     if !m.locked then cooper_fail("unlock of unlocked Mutex\0".data())
     m.locked = false
-    wake_all(&m.waiters)
+    wakeAll(&m.waiters)
 }
 
-# A queue of values passed between tasks. With capacity 0 a send completes when a receiver is waiting
+# A queue of values passed between threads. With capacity 0 a send completes when a receiver is waiting
 # for the value; with capacity n up to n values wait in the channel, and a send blocks only while it is full.
 # `recv` returns `None` once the channel is closed and empty.
 struct Channel T {
@@ -97,18 +97,18 @@ func channel T (capacity: i64): Channel T {
     return ch.items.length() - ch.head
 }
 
-(ch: (Channel T)^) func can_send(): bool {
+(ch: (Channel T)^) func canSend(): bool {
     if ch.closed then cooper_fail("send on closed Channel\0".data())
     return ch.pending() < ch.capacity or (ch.capacity == 0 and ch.pending() < ch.receiving)
 }
 
-(ch: (Channel T)^) func can_recv(): bool {
+(ch: (Channel T)^) func canRecv(): bool {
     return ch.pending() > 0 or ch.closed
 }
 
 (ch: (Channel T)^) func put(value: T) {
     ch.items = ch.items.push(value)
-    wake_all(&ch.waiters)
+    wakeAll(&ch.waiters)
 }
 
 (ch: (Channel T)^) func take(): Maybe T {
@@ -119,14 +119,14 @@ func channel T (capacity: i64): Channel T {
         ch.items = []
         ch.head = 0
     }
-    wake_all(&ch.waiters)
+    wakeAll(&ch.waiters)
     return Some(value)
 }
 
 # Blocks until the value can be sent. Sending on a closed channel is a fatal error.
 (ch: (Channel T)^) func send(value: T) {
-    while !ch.can_send() do {
-        ch.waiters = ch.waiters.push(cooper_current_task())
+    while !ch.canSend() do {
+        ch.waiters = ch.waiters.push(cooper_current_thread())
         cooper_park()
     }
     ch.put(value)
@@ -135,9 +135,9 @@ func channel T (capacity: i64): Channel T {
 # Blocks until a value arrives, or the channel is closed and empty, which gives `None`.
 (ch: (Channel T)^) func recv(): Maybe T {
     ch.receiving += 1
-    wake_all(&ch.waiters)
-    while !ch.can_recv() do {
-        ch.waiters = ch.waiters.push(cooper_current_task())
+    wakeAll(&ch.waiters)
+    while !ch.canRecv() do {
+        ch.waiters = ch.waiters.push(cooper_current_thread())
         cooper_park()
     }
     ch.receiving -= 1
@@ -147,11 +147,11 @@ func channel T (capacity: i64): Channel T {
 # Ends the channel: values still in it can be received, then receives give `None`.
 (ch: (Channel T)^) func close() {
     ch.closed = true
-    wake_all(&ch.waiters)
+    wakeAll(&ch.waiters)
 }
 
 # One alternative of a `select`: `attempt` does the operation and runs the case's function if the
-# operation can complete now; `watch` arranges for `task` to be woken when it may; `unwatch` undoes `watch`.
+# operation can complete now; `watch` arranges for `waiter` to be woken when it may; `unwatch` undoes `watch`.
 struct Case{
     attempt: func(): bool,
     watch: func(u8^),
@@ -161,14 +161,14 @@ struct Case{
 # Runs the function with the next value of `ch` (`None` once it is closed and empty).
 func recv T (ch: (Channel T)^, f: func(Maybe T)): Case {
     attempt := func(): bool {
-        if !ch.can_recv() then return false
+        if !ch.canRecv() then return false
         f(ch.take())
         return true
     }
-    watch := func(task: u8^) {
+    watch := func(waiter: u8^) {
         ch.receiving += 1
-        ch.waiters = ch.waiters.push(task)
-        wake_all(&ch.waiters)
+        ch.waiters = ch.waiters.push(waiter)
+        wakeAll(&ch.waiters)
     }
     unwatch := func() { ch.receiving -= 1 }
     return Case{attempt: attempt, watch: watch, unwatch: unwatch}
@@ -177,12 +177,12 @@ func recv T (ch: (Channel T)^, f: func(Maybe T)): Case {
 # Sends `value`, then runs the function.
 func send T (ch: (Channel T)^, value: T, f: func()): Case {
     attempt := func(): bool {
-        if !ch.can_send() then return false
+        if !ch.canSend() then return false
         ch.put(value)
         f()
         return true
     }
-    watch := func(task: u8^) { ch.waiters = ch.waiters.push(task) }
+    watch := func(waiter: u8^) { ch.waiters = ch.waiters.push(waiter) }
     unwatch := func() {}
     return Case{attempt: attempt, watch: watch, unwatch: unwatch}
 }
@@ -195,14 +195,14 @@ func timeout(ms: i64, f: func()): Case {
         f()
         return true
     }
-    watch := func(task: u8^) { thread wake_at(task, deadline) }
+    watch := func(waiter: u8^) { thread wakeAt(waiter, deadline) }
     unwatch := func() {}
     return Case{attempt: attempt, watch: watch, unwatch: unwatch}
 }
 
-func wake_at(task: u8^, deadline: i64) {
+func wakeAt(waiter: u8^, deadline: i64) {
     cooper_sleep(deadline - cooper_now())
-    cooper_ready(task)
+    cooper_ready(waiter)
 }
 
 # Waits until one of the cases can complete, and completes it; the first of them in argument order when
@@ -210,51 +210,51 @@ func wake_at(task: u8^, deadline: i64) {
 func select(cases: ...Case) {
     while true do {
         for c in cases do if c.attempt() then return
-        for c in cases do c.watch(cooper_current_task())
+        for c in cases do c.watch(cooper_current_thread())
         cooper_park()
         for c in cases do c.unwatch()
     }
 }
 
-# Tasks started together and waited for together. `wait` returns only when every task started with `start`
-# has finished, so no task outlives the code that owns the group. A task that fails calls `fail`, which records
-# the first message and cancels the group; the others learn of it by checking `cancelled`, since tasks are
+# Threads started together and waited for together. `wait` returns only when every thread started with `start`
+# has finished, so no thread outlives the code that owns the group. A thread that fails calls `fail`, which records
+# the first message and cancels the group; the others learn of it by checking `cancelled`, since threads are
 # never stopped from outside.
-struct TaskGroup {
+struct ThreadGroup {
     running: WaitGroup,
     stopped: bool,
     error: Maybe string,
 }
 
-func run_in_group(group: TaskGroup^, f: func()) {
+func runInGroup(group: ThreadGroup^, f: func()) {
     f()
     group.running.done()
 }
 
-# Runs `f` as a task of the group.
-(group: TaskGroup^) func start(f: func()) {
+# Runs `f` as a thread of the group.
+(group: ThreadGroup^) func start(f: func()) {
     group.running.add(1)
-    thread run_in_group(group, f)
+    thread runInGroup(group, f)
 }
 
-# Asks the group's tasks to stop.
-(group: TaskGroup^) func cancel() {
+# Asks the group's threads to stop.
+(group: ThreadGroup^) func cancel() {
     group.stopped = true
 }
 
 # Whether the group was cancelled, by `cancel` or by a failure.
-(group: TaskGroup^) func cancelled(): bool {
+(group: ThreadGroup^) func cancelled(): bool {
     return group.stopped
 }
 
 # Records `message` as the group's error unless one is already recorded, and cancels the group.
-(group: TaskGroup^) func fail(message: string) {
+(group: ThreadGroup^) func fail(message: string) {
     if group.error is None then group.error = Some(message)
     group.stopped = true
 }
 
-# Blocks until every task of the group has finished, then gives the first error, if any.
-(group: TaskGroup^) func wait(): Maybe string {
+# Blocks until every thread of the group has finished, then gives the first error, if any.
+(group: ThreadGroup^) func wait(): Maybe string {
     group.running.wait()
     return group.error
 }

@@ -1866,9 +1866,9 @@ impl Lower<'_> {
             span,
         }];
         let func = Type::Func { return_type: Box::new(Type::Unit), param_types: Vec::new() };
-        let task = self.lift(Vec::new(), Type::Unit, body, env, func, span)?;
+        let thread = self.lift(Vec::new(), Type::Unit, body, env, func, span)?;
         let id = IrExpr {
-            kind: IrExprKind::Intrinsic { op: Intrinsic::Spawn, args: vec![task] },
+            kind: IrExprKind::Intrinsic { op: Intrinsic::Spawn, args: vec![thread] },
             ty: Type::Primitive("i64".to_string()),
             span,
         };

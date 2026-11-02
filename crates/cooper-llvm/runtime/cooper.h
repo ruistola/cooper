@@ -38,23 +38,23 @@ _Noreturn void cooper_panic(const char *message);
    several); null means it holds no pointers. */
 void *cooper_alloc(size_t size, const CooperType *type);
 
-/* The scheduler (sched.c), whose tasks are the language's threads. Start a task running `code(env)`: a
-   function taking its environment, as a closure's code does. It first runs when the current task blocks or
-   yields. Gives the task's id. */
+/* The scheduler (sched.c), which runs the language's threads. Start a thread running `code(env)`: a
+   function taking its environment, as a closure's code does. It first runs when the current thread blocks or
+   yields. Gives the thread's id. */
 int64_t cooper_spawn(void *code, void *env);
 void cooper_yield(void);
 void cooper_sleep(int64_t nanoseconds);
-void *cooper_current_task(void);
-/* Stop the current task until cooper_ready is called on its handle. */
+void *cooper_current_thread(void);
+/* Stop the current thread until cooper_ready is called on its handle. */
 void cooper_park(void);
-void cooper_ready(void *task);
+void cooper_ready(void *thread);
 /* Monotonic time in nanoseconds. */
 int64_t cooper_now(void);
-/* Set up the scheduler; the address is a local of `main`, the top of the main task's stack. */
+/* Set up the scheduler; the address is a local of `main`, the top of the main thread's stack. */
 void cooper_sched_init(void *stack_base);
-/* For the collector: the top of the running task's stack, and the other tasks' stacks. */
+/* For the collector: the top of the running thread's stack, and the other threads' stacks. */
 uintptr_t cooper_current_stack_top(void);
-void cooper_scan_tasks(void (*scan)(uintptr_t low, uintptr_t high));
+void cooper_scan_threads(void (*scan)(uintptr_t low, uintptr_t high));
 
 /* Tell the collector where the stack begins: the address of a local of `main`. */
 void cooper_gc_init(void *stack_base);

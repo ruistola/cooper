@@ -9,7 +9,7 @@
 use {
     std.io.println,
     std.sync.{ Channel, Mutex, WaitGroup, channel, recv, send, select, timeout },
-    std.task.{ sleep, yield },
+    std.threads.{ sleep, yield },
 }
 
 func produce(ch: (Channel i32)^, from: i32, to: i32) {
@@ -55,7 +55,7 @@ func main() {
     }
     println("sum {total}")
 
-    # two tasks taking turns over a pair of channels
+    # two threads taking turns over a pair of channels
     ping := channel(0)
     pong := channel(0)
     thread relay(&ping, &pong)

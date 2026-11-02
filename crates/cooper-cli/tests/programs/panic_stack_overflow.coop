@@ -1,7 +1,7 @@
 # exit: 101
 # stderr: panic: stack overflow in thread
 use {
-    std.task.yield,
+    std.threads.yield,
     std.sync.WaitGroup,
 }
 

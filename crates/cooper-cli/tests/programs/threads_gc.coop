@@ -1,13 +1,13 @@
 # exit: 0
-# stdout: 8 tasks hold 120 strings and 8 lists
+# stdout: 8 threads hold 120 strings and 8 lists
 # stdout: lists sum 696
-# Each task keeps its data only on its own stack (a local array of strings and a linked list) while
-# it is suspended and the others allocate a great deal. The collector must scan every task's stack,
+# Each thread keeps its data only on its own stack (a local array of strings and a linked list) while
+# it is suspended and the others allocate a great deal. The collector must scan every thread's stack,
 # not just the running one's: the data must come back intact. (The harness also runs this collecting
 # at every allocation.)
 use {
     std.io.println,
-    std.task.yield,
+    std.threads.yield,
     std.sync.WaitGroup,
 }
 
@@ -36,11 +36,11 @@ func total(list: Node^): i64 {
 
 func holder(id: i32, wg: WaitGroup^, strings: i64^, sums: i64^) {
     let mine: string[]
-    for i in 0..15 do mine = mine.push("task {id} holds string number {i} of its own")
+    for i in 0..15 do mine = mine.push("thread {id} holds string number {i} of its own")
     let list = build(10 + i64(id))
     for round in 0..6 do yield()
     for (i, s) in mine do {
-        if s != "task {id} holds string number {i} of its own" then strings^ = -1000000
+        if s != "thread {id} holds string number {i} of its own" then strings^ = -1000000
     }
     strings^ += i64(mine.length())
     sums^ += total(list)
@@ -65,6 +65,6 @@ func main() {
     thread churn(&wg)
     thread churn(&wg)
     wg.wait()
-    println("8 tasks hold {strings} strings and 8 lists")
+    println("8 threads hold {strings} strings and 8 lists")
     println("lists sum {sums}")
 }

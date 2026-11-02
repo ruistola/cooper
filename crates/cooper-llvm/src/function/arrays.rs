@@ -133,9 +133,9 @@ impl Emitter<'_, '_> {
             };
         }
         if op == Intrinsic::Spawn {
-            let task = self.expr(&args[0])?.expect("a function value has a value");
-            let code = self.assign(&format!("extractvalue {FUNC_VALUE} {}, 0", task.operand));
-            let env = self.assign(&format!("extractvalue {FUNC_VALUE} {}, 1", task.operand));
+            let thread = self.expr(&args[0])?.expect("a function value has a value");
+            let code = self.assign(&format!("extractvalue {FUNC_VALUE} {}, 0", thread.operand));
+            let env = self.assign(&format!("extractvalue {FUNC_VALUE} {}, 1", thread.operand));
             self.module.declare("declare i64 @cooper_spawn(ptr, ptr)");
             let id = self.assign(&format!("call i64 @cooper_spawn(ptr {code}, ptr {env})"));
             return Ok(Some(Value { operand: id, ty: "i64".to_string() }));

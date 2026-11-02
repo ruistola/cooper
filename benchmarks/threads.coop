@@ -1,8 +1,8 @@
-# Scheduler costs: two tasks switching back and forth, a million short-lived tasks, and a large
-# number of tasks alive at once, each holding a stack.
+# Scheduler costs: two threads switching back and forth, a million short-lived threads, and a large
+# number of threads alive at once, each holding a stack.
 use {
     std.io.println,
-    std.task.{ sleep, yield },
+    std.threads.{ sleep, yield },
     std.sync.WaitGroup,
 }
 
@@ -33,10 +33,10 @@ func main() {
         for i in 0..1000 do thread noop(&wg)
         wg.wait()
     }
-    println("1M tasks")
+    println("1M threads")
 
     wg.add(100000)
     for i in 0..100000 do thread hold(&wg)
     wg.wait()
-    println("100k tasks alive at once")
+    println("100k threads alive at once")
 }

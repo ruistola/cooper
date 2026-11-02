@@ -706,14 +706,14 @@ static void scan_range(uintptr_t low, uintptr_t high) {
     }
 }
 
-/* Every word of the running task's stack from `here` up to its top, and the other tasks' stacks. */
+/* Every word of the running thread's stack from `here` up to its top, and the other threads' stacks. */
 static __attribute__((noinline)) void scan_stack(void) {
     volatile uintptr_t here = 0;
     uintptr_t low = (uintptr_t)&here & ~(uintptr_t)7;
     uintptr_t high = cooper_current_stack_top();
     root_bytes += (size_t)(high - low);
     scan_range(low, high);
-    cooper_scan_tasks(scan_range);
+    cooper_scan_threads(scan_range);
     drain();
 }
 

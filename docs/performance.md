@@ -54,7 +54,7 @@ under 1% of collection time, so lazy sweeping would gain nothing yet.
 
 ## Threads
 
-`benchmarks/tasks.coop` (with a Go version, run with one OS thread) measures the scheduler. Cooper `-O2`, Go 1.27,
+`benchmarks/threads.coop` (with a Go version, run with one OS thread) measures the scheduler. Cooper `-O2`, Go 1.27,
 Apple M5:
 
 | Measure | Cooper | Go |

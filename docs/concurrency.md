@@ -24,8 +24,8 @@ values escape to).
 
 ## Scheduling
 
-Threads run one at a time, in the order they became ready, and switch where they block: `std.task.yield()`,
-`std.task.sleep(ms)`, and waiting in `std.sync`. A thread that never blocks keeps the others from running, since
+Threads run one at a time, in the order they became ready, and switch where they block: `std.threads.yield()`,
+`std.threads.sleep(ms)`, and waiting in `std.sync`. A thread that never blocks keeps the others from running, since
 nothing preempts it yet. When the main function returns the program ends, whatever the other threads are doing.
 If every thread is blocked (and none is sleeping) the program stops with a deadlock error.
 
@@ -34,7 +34,7 @@ block until all have.
 
 ## Mutexes and channels
 
-`Mutex` (`lock`, `try_lock`, `unlock`) guards data used across a blocking call. `Channel T` passes values between
+`Mutex` (`lock`, `tryLock`, `unlock`) guards data used across a blocking call. `Channel T` passes values between
 threads; `channel(n)` makes one holding up to `n` values, and `channel(0)` is unbuffered (a send completes when a
 receiver is waiting):
 
@@ -64,10 +64,10 @@ arranges as for any escaping variable.
 
 ## Thread groups
 
-A `TaskGroup` owns the threads started through it, so none outlives the code that waits for the group:
+A `ThreadGroup` owns the threads started through it, so none outlives the code that waits for the group:
 
 ```
-let group: TaskGroup
+let group: ThreadGroup
 for url in urls do group.start(func() { fetch(url, &group) })
 match group.wait() with {       # returns when every thread has finished
     Some(message) => println("failed: {message}")

@@ -36,11 +36,11 @@ func main() {
 		}
 		wg.Wait()
 	}
-	fmt.Println("1M tasks")
+	fmt.Println("1M threads")
 	wg.Add(100000)
 	for i := 0; i < 100000; i++ {
 		go hold(&wg)
 	}
 	wg.Wait()
-	fmt.Println("100k tasks alive at once")
+	fmt.Println("100k threads alive at once")
 }

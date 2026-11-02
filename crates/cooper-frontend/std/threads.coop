@@ -1,0 +1,18 @@
+# The standard `threads` module: operations on the running thread. A thread is started with `thread f(args)`.
+# (The module is plural because `thread` is a keyword, as `strings` is the module of `string`.)
+#
+# Threads run one at a time and switch only where they block: here, or in `std.sync`. A thread that
+# never blocks keeps the others from running.
+
+extern func cooper_yield()
+extern func cooper_sleep(nanoseconds: i64)
+
+# Lets the other threads that are ready run, then continues.
+func yield() {
+    cooper_yield()
+}
+
+# Suspends the running thread for at least `ms` milliseconds, during which the others run.
+func sleep(ms: i64) {
+    cooper_sleep(ms * 1000000)
+}

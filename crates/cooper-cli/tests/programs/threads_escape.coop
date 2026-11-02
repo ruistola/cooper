@@ -1,8 +1,8 @@
 # exit: 0
 # stdout: arr 3
 # stdout: n = 42
-# Values a started task uses live on past the function that started it, and so are on the heap.
-use { std.io.println, std.task.sleep, std.sync.WaitGroup }
+# Values a started thread uses live on past the function that started it, and so are on the heap.
+use { std.io.println, std.threads.sleep, std.sync.WaitGroup }
 func work(n: i64^, wg: WaitGroup^) {
     sleep(5)
     println("n = {n^}")

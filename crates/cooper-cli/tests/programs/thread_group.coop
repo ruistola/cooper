@@ -5,8 +5,8 @@
 # stdout: error: none
 use {
     std.io.println,
-    std.sync.{ Mutex, TaskGroup },
-    std.task.{ sleep, yield },
+    std.sync.{ Mutex, ThreadGroup },
+    std.threads.{ sleep, yield },
 }
 
 func report(e: Maybe string) {
@@ -17,8 +17,8 @@ func report(e: Maybe string) {
 }
 
 func main() {
-    # every task finishes before wait returns
-    let group: TaskGroup
+    # every thread finishes before wait returns
+    let group: ThreadGroup
     finished := 0
     for i in 0..5 do group.start(func() {
         sleep(2 * i)
@@ -28,7 +28,7 @@ func main() {
     println("all {finished} done")
 
     # a failure cancels the rest, which check and stop
-    let failing: TaskGroup
+    let failing: ThreadGroup
     steps := 0
     failing.start(func() {
         sleep(3)
@@ -44,7 +44,7 @@ func main() {
     println("stopped early: {steps < 100}")
 
     # a group with no failure
-    let quiet: TaskGroup
+    let quiet: ThreadGroup
     quiet.start(func() { yield() })
     report(quiet.wait())
 }

@@ -15,7 +15,7 @@
 # at once.
 use {
     std.io.println,
-    std.task.{ sleep, yield },
+    std.threads.{ sleep, yield },
     std.sync.WaitGroup,
 }
 

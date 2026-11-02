@@ -51,7 +51,7 @@ static void sleeper_b(void *env) { (void)env; cooper_sleep(10000000); note("fast
 
 static void parker(void *env) {
     (void)env;
-    parked = cooper_current_task();
+    parked = cooper_current_thread();
     cooper_park();
     woke = 1;
 }
@@ -72,7 +72,7 @@ static void test_sleep_and_park(void) {
 static long counter;
 static void count(void *env) { (void)env; counter++; cooper_yield(); counter++; }
 
-static void test_many_tasks_and_stack_reuse(void) {
+static void test_many_threads_and_stack_reuse(void) {
     counter = 0;
     for (int round = 0; round < 3; round++) {
         for (int i = 0; i < 2000; i++) cooper_spawn(count, NULL);
@@ -90,7 +90,7 @@ static long recurse(long n) {
 }
 static void deep(void *env) { depth_reached = recurse((long)env); }
 
-static void test_deep_recursion_on_a_task_stack(void) {
+static void test_deep_recursion_on_a_thread_stack(void) {
     /* About 60000 frames of over 100 bytes: several MiB, well inside the 8 MiB reservation. */
     cooper_spawn(deep, (void *)60000);
     for (int i = 0; i < 3; i++) cooper_yield();
@@ -107,9 +107,9 @@ static void inspect(uintptr_t low, uintptr_t high) {
 static void test_scan_visits_other_stacks(void) {
     Worker z = {"z", 1};
     cooper_spawn(worker, &z);
-    cooper_scan_tasks(inspect);
-    /* The new task's stack (its prepared frame), and each of the two tasks' code and environment
-       words. The running task's own stack is the collector's to scan, and is not offered. */
+    cooper_scan_threads(inspect);
+    /* The new thread's stack (its prepared frame), and each of the two threads' code and environment
+       words. The running thread's own stack is the collector's to scan, and is not offered. */
     CHECK(ranges_seen == 3);
     CHECK(largest_range >= 64);
     for (int i = 0; i < 3; i++) cooper_yield();
@@ -120,8 +120,8 @@ int main(void) {
     cooper_sched_init(&base);
     test_yield_interleaves_in_order();
     test_sleep_and_park();
-    test_many_tasks_and_stack_reuse();
-    test_deep_recursion_on_a_task_stack();
+    test_many_threads_and_stack_reuse();
+    test_deep_recursion_on_a_thread_stack();
     test_scan_visits_other_stacks();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

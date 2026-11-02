@@ -1,19 +1,19 @@
 /*
- * The Cooper scheduler: tasks (coroutines) started with `co`, run one at a time on the program's
- * thread by a cooperative scheduler. A task runs until it blocks (park, sleep) or yields; a task that
- * never does starves the others, and nothing preempts it yet.
+ * The Cooper scheduler: the language's threads, started with the `thread` expression, run one at a
+ * time on the program's OS thread by a cooperative scheduler. A thread runs until it blocks (park,
+ * sleep) or yields; a thread that never does starves the others, and nothing preempts it yet.
  *
- * Each task has a stack of its own: a large virtual reservation (8 MiB by default, COOPER_STACK_KIB)
- * with a guard page at its low end. The operating system commits a page only when the task first
- * touches it, so a task costs the pages it uses, and one that recurses deeply has the room a thread
- * would. A task that overflows hits the guard page, and a signal handler reports it. Stacks never move,
- * so pointers into them stay valid. Finished tasks' stacks are pooled for reuse.
+ * Each thread has a stack of its own: a large virtual reservation (8 MiB by default, COOPER_STACK_KIB)
+ * with a guard page at its low end. The operating system commits a page only when the thread first
+ * touches it, so a thread costs the pages it uses, and one that recurses deeply has the room an OS
+ * thread would. A thread that overflows hits the guard page, and a signal handler reports it. Stacks never move,
+ * so pointers into them stay valid. Finished threads' stacks are pooled for reuse.
  *
- * The collector scans every task's stack from its saved stack pointer (the registers a switch saves are
+ * The collector scans every thread's stack from its saved stack pointer (the registers a switch saves are
  * on the stack, so they are covered) to its top.
  *
  * Single-threaded; the structure follows Go's (a run queue, a timer list, park and ready) so that
- * per-thread queues and stealing can be added around it.
+ * per-OS-thread queues and stealing can be added around it.
  */
 
 #define _DARWIN_C_SOURCE
@@ -38,27 +38,27 @@
 
 enum { RUNNING, RUNNABLE, PARKED, SLEEPING, DEAD };
 
-typedef struct Task {
-    void *sp;                 /* the saved stack pointer, while the task is not running */
+typedef struct Thread {
+    void *sp;                 /* the saved stack pointer, while the thread is not running */
     void *code, *env;         /* what to run: a function taking its environment (adjacent: scanned together) */
-    struct Task *next;        /* the run queue, the timer list, or the free list */
-    struct Task *all_next, *all_prev;
+    struct Thread *next;      /* the run queue, the timer list, or the free list */
+    struct Thread *all_next, *all_prev;
     uint64_t id;
     uintptr_t stack_low, stack_top;
-    int64_t wake;             /* when a sleeping task is due, in nanoseconds on the monotonic clock */
+    int64_t wake;             /* when a sleeping thread is due, in nanoseconds on the monotonic clock */
     uint64_t wake_order;      /* arrival order among sleepers, to break ties */
     int state;
-} Task;
+} Thread;
 
-static Task main_task;
-static Task *current = &main_task;
-static Task *run_head, *run_tail;
-/* Sleeping tasks, a binary min-heap by wake time (ties by arrival, so equal sleeps wake in order). */
-static Task **timers;
+static Thread main_thread;
+static Thread *current = &main_thread;
+static Thread *run_head, *run_tail;
+/* Sleeping threads, a binary min-heap by wake time (ties by arrival, so equal sleeps wake in order). */
+static Thread **timers;
 static size_t timer_count, timer_capacity;
 static uint64_t timer_sequence;
-static Task *free_tasks;
-static Task *zombie;          /* a finished task whose stack is still in use until the next switch completes */
+static Thread *free_threads;
+static Thread *zombie;        /* a finished thread whose stack is still in use until the next switch completes */
 static uint64_t next_id = 1;
 static size_t stack_size = (size_t)8 << 20, guard_size, page_size;
 static uintptr_t main_stack_low;
@@ -129,7 +129,7 @@ static int64_t now_ns(void) {
 /* --- stacks --- */
 
 /* Stacks kept for reuse. Each keeps the pages it touched, a page or more, so this bounds what idle
-   stacks hold; a burst of this many tasks costs no mapping at all. */
+   stacks hold; a burst of this many threads costs no mapping at all. */
 #define MAX_POOLED 4096
 static uintptr_t pool[MAX_POOLED];
 static size_t pooled;
@@ -147,52 +147,52 @@ static void stack_free(uintptr_t low) {
     else munmap((void *)low, stack_size);
 }
 
-/* --- tasks --- */
+/* --- threads --- */
 
-static void enqueue(Task *task) {
-    task->state = RUNNABLE;
-    task->next = NULL;
-    if (run_tail) run_tail->next = task;
-    else run_head = task;
-    run_tail = task;
+static void enqueue(Thread *thread) {
+    thread->state = RUNNABLE;
+    thread->next = NULL;
+    if (run_tail) run_tail->next = thread;
+    else run_head = thread;
+    run_tail = thread;
 }
 
-static void forget(Task *task) {
-    task->all_prev->all_next = task->all_next;
-    task->all_next->all_prev = task->all_prev;
+static void forget(Thread *thread) {
+    thread->all_prev->all_next = thread->all_next;
+    thread->all_next->all_prev = thread->all_prev;
 }
 
-/* Release a finished task. Run by the next task to run, once the dead task's stack is not in use. */
+/* Release a finished thread. Run by the next thread to run, once the dead thread's stack is not in use. */
 static void reap(void) {
-    Task *task = zombie;
-    if (!task) return;
+    Thread *thread = zombie;
+    if (!thread) return;
     zombie = NULL;
-    stack_free(task->stack_low);
-    task->next = free_tasks;
-    free_tasks = task;
+    stack_free(thread->stack_low);
+    thread->next = free_threads;
+    free_threads = thread;
 }
 
-static int timer_before(const Task *a, const Task *b) {
+static int timer_before(const Thread *a, const Thread *b) {
     return a->wake != b->wake ? a->wake < b->wake : a->wake_order < b->wake_order;
 }
 
-static void timer_push(Task *task) {
+static void timer_push(Thread *thread) {
     if (timer_count == timer_capacity) {
         timer_capacity = timer_capacity ? timer_capacity * 2 : 1024;
         timers = realloc(timers, timer_capacity * sizeof *timers);
         if (!timers) cooper_panic("out of memory");
     }
     size_t i = timer_count++;
-    while (i > 0 && timer_before(task, timers[(i - 1) / 2])) {
+    while (i > 0 && timer_before(thread, timers[(i - 1) / 2])) {
         timers[i] = timers[(i - 1) / 2];
         i = (i - 1) / 2;
     }
-    timers[i] = task;
+    timers[i] = thread;
 }
 
-static Task *timer_pop(void) {
-    Task *top = timers[0];
-    Task *last = timers[--timer_count];
+static Thread *timer_pop(void) {
+    Thread *top = timers[0];
+    Thread *last = timers[--timer_count];
     size_t i = 0;
     for (;;) {
         size_t child = 2 * i + 1;
@@ -212,15 +212,15 @@ static void wake_due(void) {
     while (timer_count && timers[0]->wake <= now) enqueue(timer_pop());
 }
 
-/* The next task to run, waiting for a sleeper if nothing else can run. */
-static Task *pick_next(void) {
+/* The next thread to run, waiting for a sleeper if nothing else can run. */
+static Thread *pick_next(void) {
     for (;;) {
         wake_due();
         if (run_head) {
-            Task *task = run_head;
-            run_head = task->next;
+            Thread *thread = run_head;
+            run_head = thread->next;
             if (!run_head) run_tail = NULL;
-            return task;
+            return thread;
         }
         if (!timer_count) cooper_panic("all threads are blocked: deadlock");
         int64_t wait = timers[0]->wake - now_ns();
@@ -231,11 +231,11 @@ static Task *pick_next(void) {
     }
 }
 
-/* Switch to the next task. The caller has already said what becomes of the current one (queued,
+/* Switch to the next thread. The caller has already said what becomes of the current one (queued,
    parked, sleeping, or dead). */
 static void schedule(void) {
-    Task *prev = current;
-    Task *next = pick_next();
+    Thread *prev = current;
+    Thread *next = pick_next();
     next->state = RUNNING;
     if (next == prev) return;
     current = next;
@@ -243,39 +243,39 @@ static void schedule(void) {
     reap();
 }
 
-static void task_entry(void) {
+static void thread_entry(void) {
     reap();
-    Task *task = current;
-    ((void (*)(void *))task->code)(task->env);
-    task->state = DEAD;
-    forget(task);
-    zombie = task;
+    Thread *thread = current;
+    ((void (*)(void *))thread->code)(thread->env);
+    thread->state = DEAD;
+    forget(thread);
+    zombie = thread;
     schedule();
-    __builtin_trap(); /* a dead task is never resumed */
+    __builtin_trap(); /* a dead thread is never resumed */
 }
 
 int64_t cooper_spawn(void *code, void *env) {
-    Task *task = free_tasks;
-    if (task) free_tasks = task->next;
+    Thread *thread = free_threads;
+    if (thread) free_threads = thread->next;
     else {
-        task = calloc(1, sizeof *task);
-        if (!task) cooper_panic("out of memory");
+        thread = calloc(1, sizeof *thread);
+        if (!thread) cooper_panic("out of memory");
     }
-    task->code = code;
-    task->env = env;
-    task->id = next_id++;
-    task->stack_low = stack_alloc();
-    task->stack_top = task->stack_low + stack_size;
-    char *frame = (char *)task->stack_top - FRAME_BYTES;
+    thread->code = code;
+    thread->env = env;
+    thread->id = next_id++;
+    thread->stack_low = stack_alloc();
+    thread->stack_top = thread->stack_low + stack_size;
+    char *frame = (char *)thread->stack_top - FRAME_BYTES;
     memset(frame, 0, FRAME_BYTES);
-    *(void (**)(void))(frame + FRAME_ENTRY_OFFSET) = task_entry;
-    task->sp = frame;
-    task->all_next = main_task.all_next;
-    task->all_prev = &main_task;
-    main_task.all_next->all_prev = task;
-    main_task.all_next = task;
-    enqueue(task);
-    return (int64_t)task->id;
+    *(void (**)(void))(frame + FRAME_ENTRY_OFFSET) = thread_entry;
+    thread->sp = frame;
+    thread->all_next = main_thread.all_next;
+    thread->all_prev = &main_thread;
+    main_thread.all_next->all_prev = thread;
+    main_thread.all_next = thread;
+    enqueue(thread);
+    return (int64_t)thread->id;
 }
 
 void cooper_yield(void) {
@@ -285,24 +285,24 @@ void cooper_yield(void) {
     schedule();
 }
 
-void *cooper_current_task(void) {
+void *cooper_current_thread(void) {
     return current;
 }
 
-/* Stop the current task until another calls cooper_ready on it. */
+/* Stop the current thread until another calls cooper_ready on it. */
 void cooper_park(void) {
     current->state = PARKED;
     schedule();
 }
 
-/* Make a parked task runnable. */
+/* Make a parked thread runnable. */
 int64_t cooper_now(void) {
     return now_ns();
 }
 
 void cooper_ready(void *handle) {
-    Task *task = handle;
-    if (task->state == PARKED) enqueue(task);
+    Thread *thread = handle;
+    if (thread->state == PARKED) enqueue(thread);
 }
 
 void cooper_sleep(int64_t ns) {
@@ -324,15 +324,15 @@ uintptr_t cooper_current_stack_top(void) {
     return current->stack_top;
 }
 
-/* Every task's stack except the running one's, from its saved stack pointer up; and the code and
-   environment words of each task, which may be the only reference to a task that has not started. */
-void cooper_scan_tasks(void (*scan)(uintptr_t low, uintptr_t high)) {
-    Task *task = &main_task;
+/* Every thread's stack except the running one's, from its saved stack pointer up; and the code and
+   environment words of each thread, which may be the only reference to a thread that has not started. */
+void cooper_scan_threads(void (*scan)(uintptr_t low, uintptr_t high)) {
+    Thread *thread = &main_thread;
     do {
-        if (task != current) scan((uintptr_t)task->sp, task->stack_top);
-        scan((uintptr_t)&task->code, (uintptr_t)(&task->env + 1));
-        task = task->all_next;
-    } while (task != &main_task);
+        if (thread != current) scan((uintptr_t)thread->sp, thread->stack_top);
+        scan((uintptr_t)&thread->code, (uintptr_t)(&thread->env + 1));
+        thread = thread->all_next;
+    } while (thread != &main_thread);
 }
 
 /* --- stack overflow --- */
@@ -347,8 +347,8 @@ static void write_text(const char *text) {
 static void on_fault(int signal_number, siginfo_t *info, void *context) {
     (void)context;
     uintptr_t address = (uintptr_t)info->si_addr;
-    int overflow = address >= current->stack_low && address < current->stack_low + guard_size && current != &main_task;
-    if (current == &main_task && address < main_task.stack_top && address + ((uintptr_t)4 << 20) > main_stack_low &&
+    int overflow = address >= current->stack_low && address < current->stack_low + guard_size && current != &main_thread;
+    if (current == &main_thread && address < main_thread.stack_top && address + ((uintptr_t)4 << 20) > main_stack_low &&
         address < main_stack_low + 65536) {
         overflow = 1;
     }
@@ -358,7 +358,7 @@ static void on_fault(int signal_number, siginfo_t *info, void *context) {
         uint64_t id = current->id;
         do number[length++] = (char)('0' + id % 10); while (id /= 10);
         write_text("panic: stack overflow in ");
-        if (current == &main_task) {
+        if (current == &main_thread) {
             write_text("the main thread");
         } else {
             write_text("thread ");
@@ -377,12 +377,12 @@ void cooper_sched_init(void *base) {
     if (kib && atol(kib) > 0) stack_size = (size_t)atol(kib) * 1024;
     stack_size = (stack_size + page_size - 1) / page_size * page_size;
     if (stack_size < 4 * page_size) stack_size = 4 * page_size;
-    main_task.stack_top = (uintptr_t)base;
-    main_task.all_next = main_task.all_prev = &main_task;
-    main_task.state = RUNNING;
+    main_thread.stack_top = (uintptr_t)base;
+    main_thread.all_next = main_thread.all_prev = &main_thread;
+    main_thread.state = RUNNING;
     struct rlimit limit;
     uintptr_t main_size = getrlimit(RLIMIT_STACK, &limit) == 0 && limit.rlim_cur != RLIM_INFINITY ? (uintptr_t)limit.rlim_cur : (8u << 20);
-    main_stack_low = main_task.stack_top - main_size;
+    main_stack_low = main_thread.stack_top - main_size;
     stack_t altstack = {.ss_sp = alternate_stack, .ss_size = sizeof alternate_stack, .ss_flags = 0};
     sigaltstack(&altstack, NULL);
     struct sigaction action;

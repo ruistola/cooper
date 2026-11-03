@@ -105,12 +105,26 @@ impl Emitter<'_, '_> {
         // variable arguments begin.
         let variadic = fixed.is_some().then(|| format!("({}, ...)", declared.join(", ")).replace("(, ", "("));
         let target = if shim { shim_symbol(name) } else { name.to_string() };
+        // The runtime's own functions run as Cooper code does; any other C function may block, so the thread
+        // enters the C state around it, all arguments evaluated (see `cooper_enter_c`).
+        let entered = (!name.starts_with("cooper_")).then(|| {
+            self.module.declare("declare i32 @cooper_enter_c()");
+            self.module.declare("declare void @cooper_exit_c(i32)");
+            self.assign("call i32 @cooper_enter_c()")
+        });
+        let exit = |e: &mut Self| {
+            if let Some(entered) = &entered {
+                e.inst(&format!("call void @cooper_exit_c(i32 {entered})"));
+            }
+        };
         if let Some(slot) = result_slot {
             self.inst(&format!("call void @{target}({})", operands.join(", ")));
+            exit(self);
             return Ok(self.load(&slot));
         }
         if matches!(result, Type::Unit) {
             self.inst(&format!("call void @{target}({})", operands.join(", ")));
+            exit(self);
             return Ok(None);
         }
         let c_type = self.module.c_return(result).map_err(|w| unsupported(self, w))?;
@@ -119,6 +133,7 @@ impl Emitter<'_, '_> {
             variadic.map(|v| format!("{v} ")).unwrap_or_default(),
             operands.join(", ")
         ));
+        exit(self);
         self.wrap_members(result, operand, span).map(Some)
     }
 
@@ -150,7 +165,8 @@ impl Emitter<'_, '_> {
 
     /// The C function pointer for the function `arg` names: the function itself when it is
     /// a C function, otherwise a wrapper with the C calling convention (which extends
-    /// small integers), defined on first use. Only a function named directly qualifies, since
+    /// small integers), defined on first use, that leaves the C state for the call (see
+    /// `cooper_callback_enter`). Only a function named directly qualifies, since
     /// a C callback has nowhere to keep a closure's environment.
     fn callback(&mut self, arg: &IrExpr, span: Span) -> Result<String, CodegenError> {
         let IrExprKind::FuncRef { item, type_args } = &arg.kind else {
@@ -178,14 +194,19 @@ impl Emitter<'_, '_> {
             args.push(format!("{llvm} %a{index}"));
         }
         let call = format!("call {ret} @{symbol}({})", args.join(", "));
+        let leave = "  call void @cooper_callback_leave(i32 %entered, ptr %saved)\n";
         let body = if ret == "void" {
-            format!("  {call}\n  ret void\n")
+            format!("  {call}\n{leave}  ret void\n")
         } else {
-            format!("  %r = {call}\n  ret {ret} %r\n")
+            format!("  %r = {call}\n{leave}  ret {ret} %r\n")
         };
+        self.module.declare("declare i32 @cooper_callback_enter(ptr)");
+        self.module.declare("declare void @cooper_callback_leave(i32, ptr)");
+        // The C call's saved state: COOPER_CALLBACK_WORDS (cooper.h) words.
+        let enter = "  %saved = alloca [13 x i64]\n  %entered = call i32 @cooper_callback_enter(ptr %saved)\n";
         self.module.thunks.insert(
             name.clone(),
-            format!("define private {c_ret} {name}({}) {{\n{body}}}\n", params.join(", ")),
+            format!("define private {c_ret} {name}({}) {{\n{enter}{body}}}\n", params.join(", ")),
         );
         Ok(name)
     }

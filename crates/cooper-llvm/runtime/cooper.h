@@ -81,8 +81,8 @@ int64_t cooper_now(void);
 /* Set up the scheduler. */
 void cooper_sched_init(void);
 /* The number of Ps (at most COOPER_MAX_PROCS), and the index in [0, count) of the running thread's P (0 before
-   the scheduler runs). A thread keeps its P until it blocks, yields or stops at a safe point, so the index is
-   stable across an allocation. */
+   the scheduler runs). A thread keeps its P until it blocks, yields, reaches a safe point or calls C, so the
+   index is stable across an allocation. */
 #define COOPER_MAX_PROCS 256
 int cooper_proc_count(void);
 int cooper_proc_id(void);
@@ -94,13 +94,29 @@ uintptr_t cooper_current_stack_top(void);
 void cooper_scan_threads(void (*scan)(uintptr_t low, uintptr_t high));
 
 /* Safe points. Generated code polls cooper_poll_word at function entry and loop back-edges, and calls
-   cooper_poll_slow when it is nonzero, which stops the running thread while the world is stopped. */
+   cooper_poll_slow when it is nonzero, which stops the running thread while the world is stopped, and switches
+   to another thread when the monitor asks it to (preemption). */
 extern int64_t cooper_poll_word;
 void cooper_poll_slow(void);
 /* Stop every other M holding a P at a safe point, the running thread's keeps running. If another thread got
    there first, this one stops at a safe point instead until the world restarts, and the result is false. */
 bool cooper_stop_the_world(void);
 void cooper_start_the_world(void);
+
+/* A call to a C function the program declares runs between cooper_enter_c, which records the thread's stack
+   pointer and callee-saved registers (so the collector scans it as stopped) and lets the monitor hand its P to
+   another M if the call blocks, and cooper_exit_c, given what cooper_enter_c returned, which takes a P back,
+   waiting for one if need be. A C callback into Cooper code brackets itself with cooper_callback_enter and
+   cooper_callback_leave, which keep the C call's state in `saved` (COOPER_CALLBACK_WORDS words) meanwhile. */
+int cooper_enter_c(void);
+void cooper_exit_c(int entered);
+#define COOPER_CALLBACK_WORDS 13
+int cooper_callback_enter(uintptr_t *saved);
+void cooper_callback_leave(int entered, uintptr_t *saved);
+/* Between these, the running thread neither switches nor enters the C state: it stays on its M (it may stop
+   for the collector). For state kept per M, such as formatting's. */
+void cooper_acquire_m(void);
+void cooper_release_m(void);
 
 /* Start collecting: allocation may collect from now on, and the caller is on a thread of the scheduler. */
 void cooper_gc_init(void);

@@ -3,11 +3,9 @@
 # stdout: pipeline sum 499500
 # stdout: timeouts 0, received 400
 # stdout: spinner stopped for the collector: true
-# env: COOPER_THREADS=4
 # Threads running in parallel: a `Mutex` counter over eight threads, a pipeline through bounded channels, and
 # events with timeouts under load. A thread that never blocks still stops at the safe points the compiler puts
-# in loops, so collections caused by the other threads can proceed. (With one processor it would keep the
-# others from running at all: nothing preempts a thread yet.)
+# in loops, so collections caused by the other threads can proceed.
 use {
     std.io.println,
     std.sync.{ Atomic, Channel, Mutex, WaitGroup, after, channel, choose, sync, wrap },

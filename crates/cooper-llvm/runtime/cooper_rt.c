@@ -208,8 +208,8 @@ typedef struct {
     int32_t printed; /* expanded in the printing pass */
 } FormatEntry;
 
-/* Per-M state (every global of this file): a formatting runs on one M start to end, as no thread switches in
-   the middle of one. */
+/* Per-M state (every global of this file): a formatting runs on one M start to end, holding it
+   (cooper_acquire_m) from cooper_format_begin to cooper_format_take. */
 static _Thread_local FormatEntry *format_entries;
 static _Thread_local uint64_t format_capacity;
 static _Thread_local uint64_t format_count;
@@ -251,6 +251,7 @@ static FormatEntry *format_entry(const void *p) {
 
 /* Start formatting a value: its first (or only) pass. */
 void cooper_format_begin(void) {
+    cooper_acquire_m();
     if (format_count) memset(format_entries, 0, format_capacity * sizeof *format_entries);
     format_count = 0;
     format_depth = 0;
@@ -272,6 +273,7 @@ void cooper_format_take(CooperString *out) {
     if (format_len) memcpy(data, format_text, format_len);
     out->data = data;
     out->len = format_len;
+    cooper_release_m();
 }
 
 /* Whether to expand the target of the non-null pointer `p`; if so, the expansion ends

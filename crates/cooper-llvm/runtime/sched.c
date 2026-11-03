@@ -1,7 +1,7 @@
 /*
  * The Cooper scheduler: the language's threads, started with the `thread` expression, run in parallel on
- * several OS threads. A thread runs until it blocks (park, sleep) or yields; nothing preempts it yet, so a
- * thread that never blocks keeps its OS thread to itself.
+ * several OS threads. A thread runs until it blocks (park, sleep) or yields, or until the monitor preempts it
+ * at a safe point for having run 10 ms while other work waits.
  *
  * The structure is Go's. A P (processor) is the right to run threads: COOPER_THREADS of them (by default one
  * per core), each with a local run queue. An M (machine, an OS thread) runs threads while it holds a P. Each M
@@ -25,6 +25,13 @@
  * polls of cooper_poll_word, the allocator, lock spins, the scheduler loop). A thread stopped at a safe point
  * stays on its M with its callee-saved registers spilled and its stack pointer recorded, so the collector
  * scans every thread's stack the same way, from its saved stack pointer to its top.
+ *
+ * A call to a C function the program declares (`extern func`) is bracketed by cooper_enter_c and
+ * cooper_exit_c. Entering records the thread's stack pointer and callee-saved registers and marks its P as in
+ * C, which counts as stopped for the collector. The monitor (sysmon, an OS thread of its own that holds no P)
+ * hands the P of an M that stays in C to another M; the M leaving C takes its P back if it is still there,
+ * another idle one if not, and otherwise queues its thread and sleeps. The monitor also preempts: it asks the
+ * M of a thread that has run for 10 ms, while other work waits, to switch at its next safe point.
  *
  * The primitives `std.sync` is built on live here too: park with a permit, atomics and lock words, timers
  * that wake a waiter record (CooperWaiter, in cooper.h), and a random source.
@@ -71,6 +78,18 @@ void __tsan_switch_to_fiber(void *fiber, unsigned flags);
 #define LOAD(p) __atomic_load_n((p), __ATOMIC_SEQ_CST)
 #define STORE(p, v) __atomic_store_n((p), (v), __ATOMIC_SEQ_CST)
 #define ADD(p, v) __atomic_add_fetch((p), (v), __ATOMIC_SEQ_CST)
+#define CAS(p, old, new) __sync_bool_compare_and_swap((p), (old), (new))
+
+/* What cooper_enter_c saves on its frame before calling cooper_enter_c_saved: the frame record and callee-saved
+   registers (x29, x30, x19-x28), or the callee-saved registers (r15-r12, rbx, rbp), and the frame's size up
+   to the caller's stack pointer. */
+#if defined(__aarch64__)
+#define C_SAVED_WORDS 12
+#define C_FRAME_BYTES 96
+#elif defined(__x86_64__)
+#define C_SAVED_WORDS 6
+#define C_FRAME_BYTES 56
+#endif
 
 /* Thread states (Thread.state, the low byte; PERMIT is a flag on top of any of them). */
 enum { RUNNING, RUNNABLE, PARKING, PARKED, SLEEPING, DEAD };
@@ -85,6 +104,8 @@ typedef struct Thread {
     uint64_t id;
     uintptr_t stack_low, stack_top; /* 0 when a finished thread's stack was returned to the system */
     int64_t state;            /* atomic: a state, with PERMIT possibly set */
+    int64_t in_c;             /* atomic: in a C call, with `sp` and `regs` recorded on entry */
+    uintptr_t regs[C_SAVED_WORDS]; /* the callee-saved registers on entering C */
     void *fiber;              /* ThreadSanitizer's */
 } Thread;
 
@@ -108,7 +129,12 @@ typedef struct {
    ready each other must not starve the rest. */
 #define RUNNEXT_TURNS 16
 
-enum { P_IDLE, P_RUNNING, P_STOPPED };
+/* A P's status. P_IN_C is held with the id of the M in C above the low byte (p_in_c), so that an M leaving C
+   can only take back the P it left, not one that another M holds in C since. */
+enum { P_IDLE, P_RUNNING, P_STOPPED, P_IN_C };
+#define P_STATUS(s) ((s) & 0xff)
+/* How long the monitor lets a thread run while other work waits, and an M stay in C with work waiting. */
+#define TIME_SLICE_NS 10000000
 
 typedef struct M M;
 
@@ -118,19 +144,25 @@ typedef struct P {
     Thread *queue[RUNQ_SIZE];
     uint32_t head, tail;      /* atomic; tail - head entries, counted without wrapping */
     Thread *runnext;          /* atomic: a readied thread, to run before the queue */
-    uint32_t schedtick;       /* threads picked; every 61st looks at the global queue first */
+    uint32_t schedtick;       /* atomic (written by the owner): threads picked; every 61st looks at the global
+                                 queue first */
+    uint32_t ctick;           /* atomic (written by the owner): C calls entered */
     int runnext_turns;
     Thread *free;             /* finished threads, with their stacks */
     int nfree;
     uint64_t random_state;    /* xorshift64 */
     /* Under sched.lock: */
-    int status;
+    int32_t status;           /* atomic (written under the lock, or by the holding M to enter and leave C) */
     M *m;                     /* the M holding it, while not idle */
     struct P *idle_next;
+    /* The monitor's: the ticks it last saw, and when it first saw them. */
+    uint32_t seen_schedtick, seen_ctick;
+    int64_t seen_schedwhen, seen_cwhen;
+    bool seen_in_c;
 } P;
 
 /* What a thread asks the scheduler to do with it once it has switched away. */
-enum { ACT_YIELD, ACT_PARK, ACT_SLEEP, ACT_DEAD };
+enum { ACT_YIELD, ACT_PREEMPT, ACT_PARK, ACT_SLEEP, ACT_DEAD, ACT_NO_P };
 
 /* A machine: an OS thread. Its scheduler runs on the OS thread's own stack, and every thread switches to it
    and from it (a thread never switches directly to another), so that what must happen after a thread has
@@ -140,7 +172,11 @@ struct M {
     void *sched_sp;           /* the scheduler's saved stack pointer, while a thread runs */
     Thread *current;          /* the running thread; null while the scheduler runs */
     P *p;
-    int locks;                /* lock words held by the running thread (cooper_lock) */
+    int id;
+    int locks;                /* lock words held by the running thread (cooper_lock), and other sections
+                                 that must not switch (cooper_acquire_m); no preemption or C state in them */
+    int64_t preempt;          /* atomic: the monitor asks the running thread to switch, counted in
+                                 cooper_poll_word */
     int action;               /* the running thread's request, read by the scheduler after the switch */
     int64_t action_wake;      /* ACT_SLEEP: when to resume */
     int spinning;             /* looking for work to steal, counted in sched.nmspinning */
@@ -155,8 +191,8 @@ struct M {
      per-M:      this_m (thread-local) and what it points to, the signal alternate stack
      per-P:      the fields of P not marked otherwise
      immutable after cooper_sched_init: nprocs, allp, stack_size, guard_size, page_size
-     atomic:     next_id, all_threads, pooled, cooper_poll_word, and the fields of sched so marked
-     sched.lock: the rest of sched, P.status, P.m, P.idle_next, M.nextp, M.idle_next */
+     atomic:     next_id, next_m_id, all_threads, pooled, cooper_poll_word, and the fields of sched so marked
+     sched.lock: the rest of sched, P.m, P.idle_next, P's monitor fields, M.nextp, M.idle_next */
 static struct {
     pthread_mutex_t lock;
     Thread *global_head, *global_tail;
@@ -173,8 +209,9 @@ static struct {
     int64_t timer_next;       /* atomic (written under the lock): the earliest wake, INT64_MAX if none */
     M *timer_m;               /* the sleeping M that wakes for the earliest timer, and when it wakes */
     int64_t timer_m_until;
+    int64_t nincall;          /* atomic: threads in C calls */
     /* Stopping the world. */
-    int gcwaiting;
+    int gcwaiting;            /* atomic (written under the lock) */
     int stopwait;             /* Ps yet to stop */
     uint64_t restarts;
     pthread_cond_t stopped, restart;
@@ -187,8 +224,11 @@ static M m0;
 static _Thread_local M *this_m;
 static Thread *all_threads;
 static uint64_t next_id = 1;
+static int next_m_id = 1;
 static int64_t pooled;        /* finished threads holding a stack */
 static size_t stack_size = (size_t)8 << 20, guard_size, page_size;
+/* Nonzero while the world is stopping or stopped, and while the monitor's preemption requests are pending:
+   each adds one. */
 int64_t cooper_poll_word;
 
 /* The running M. A thread may resume on another M after any switch, so code on a thread's stack reads this
@@ -243,6 +283,21 @@ __asm__(
     "    ldp x21, x22, [sp, #16]\n"
     "    ldp x19, x20, [sp], #160\n"
     "    ret\n");
+/* Saves what C_SAVED_WORDS counts and passes their address to cooper_enter_c_saved; x19-x28 survive that call
+   as callee-saved. */
+__asm__(
+    ".text\n.p2align 2\n.globl " SYM("cooper_enter_c") "\n" SYM("cooper_enter_c") ":\n"
+    "    stp x29, x30, [sp, #-96]!\n"
+    "    mov x29, sp\n"
+    "    stp x19, x20, [sp, #16]\n"
+    "    stp x21, x22, [sp, #32]\n"
+    "    stp x23, x24, [sp, #48]\n"
+    "    stp x25, x26, [sp, #64]\n"
+    "    stp x27, x28, [sp, #80]\n"
+    "    mov x0, sp\n"
+    "    bl " SYM("cooper_enter_c_saved") "\n"
+    "    ldp x29, x30, [sp], #96\n"
+    "    ret\n");
 #define FRAME_BYTES 160
 #define FRAME_ENTRY_OFFSET 88
 #elif defined(__x86_64__)
@@ -252,6 +307,14 @@ __asm__(
     "    movq %rsp, (%rdi)\n"
     "    movq %rsi, %rsp\n"
     "    popq %r15\n    popq %r14\n    popq %r13\n    popq %r12\n    popq %rbx\n    popq %rbp\n"
+    "    retq\n");
+__asm__(
+    ".text\n.globl " SYM("cooper_enter_c") "\n" SYM("cooper_enter_c") ":\n"
+    "    pushq %rbp\n    pushq %rbx\n    pushq %r12\n    pushq %r13\n    pushq %r14\n    pushq %r15\n"
+    "    movq %rsp, %rdi\n"
+    "    subq $8, %rsp\n"
+    "    call " SYM("cooper_enter_c_saved") "\n"
+    "    addq $56, %rsp\n"
     "    retq\n");
 /* Six saved registers and the entry address; the entry then finds the stack as after a call. */
 #define FRAME_BYTES 64
@@ -303,13 +366,17 @@ static void set_state(Thread *thread, int64_t state) {
 
 /* --- run queues --- */
 
-static void global_put(Thread *thread) {
-    pthread_mutex_lock(&sched.lock);
+static void global_put_locked(Thread *thread) {
     thread->next = NULL;
     if (sched.global_tail) sched.global_tail->next = thread;
     else sched.global_head = thread;
     sched.global_tail = thread;
     STORE(&sched.global_count, sched.global_count + 1);
+}
+
+static void global_put(Thread *thread) {
+    pthread_mutex_lock(&sched.lock);
+    global_put_locked(thread);
     pthread_mutex_unlock(&sched.lock);
 }
 
@@ -407,7 +474,7 @@ static uint64_t random_next(P *p) {
 
 /* With sched.lock held. */
 static void p_put_idle(P *p) {
-    p->status = P_IDLE;
+    STORE(&p->status, P_IDLE);
     p->m = NULL;
     p->idle_next = sched.idle_ps;
     sched.idle_ps = p;
@@ -418,7 +485,7 @@ static P *p_get_idle(void) {
     P *p = sched.idle_ps;
     if (!p) return NULL;
     sched.idle_ps = p->idle_next;
-    p->status = P_RUNNING;
+    STORE(&p->status, P_RUNNING);
     STORE(&sched.npidle, sched.npidle - 1);
     return p;
 }
@@ -457,27 +524,20 @@ static void *m_main(void *arg) {
     scheduler(m);
 }
 
-/* Run `p` (an idle one if null) on a sleeping M, or a new one. A spinning M starts out looking for work to
+/* Run `p` on a sleeping M, or a new one, with sched.lock held. A spinning M starts out looking for work to
    steal, already counted in sched.nmspinning. */
-static void startm(P *p, bool spinning) {
-    pthread_mutex_lock(&sched.lock);
-    if (!p) p = p_get_idle();
-    if (!p) {
-        pthread_mutex_unlock(&sched.lock);
-        if (spinning) ADD(&sched.nmspinning, -1);
-        return;
-    }
+static void startm_locked(P *p, bool spinning) {
     M *m = sched.idle_ms;
     if (m) {
         sched.idle_ms = m->idle_next;
         m->nextp = p;
         m->spinning = spinning;
         pthread_cond_signal(&m->wake);
-        pthread_mutex_unlock(&sched.lock);
         return;
     }
     m = calloc(1, sizeof *m);
     if (!m) cooper_panic("out of memory");
+    m->id = next_m_id++;
     cond_init(&m->wake);
     m->nextp = p;
     m->spinning = spinning;
@@ -487,6 +547,14 @@ static void startm(P *p, bool spinning) {
     pthread_t os_thread;
     if (pthread_create(&os_thread, &attr, m_main, m) != 0) cooper_panic("cannot start an OS thread");
     pthread_attr_destroy(&attr);
+}
+
+/* Run an idle P, if there is one, on a sleeping M or a new one. */
+static void startm(bool spinning) {
+    pthread_mutex_lock(&sched.lock);
+    P *p = p_get_idle();
+    if (p) startm_locked(p, spinning);
+    else if (spinning) ADD(&sched.nmspinning, -1);
     pthread_mutex_unlock(&sched.lock);
 }
 
@@ -495,7 +563,7 @@ static void wakep(void) {
     if (LOAD(&sched.npidle) == 0 || LOAD(&sched.nmspinning) != 0) return;
     int32_t zero = 0;
     if (!__atomic_compare_exchange_n(&sched.nmspinning, &zero, 1, false, __ATOMIC_SEQ_CST, __ATOMIC_RELAXED)) return;
-    startm(NULL, true);
+    startm(true);
 }
 
 /* --- stopping the world --- */
@@ -504,7 +572,7 @@ static void wakep(void) {
 static void gc_park(M *m) {
     pthread_mutex_lock(&sched.lock);
     if (sched.gcwaiting) {
-        m->p->status = P_STOPPED;
+        STORE(&m->p->status, P_STOPPED);
         if (--sched.stopwait == 0) pthread_cond_signal(&sched.stopped);
         /* Not `while (gcwaiting)`: the next stop may begin before this M wakes, and it must stop for that one
            again, counted. */
@@ -522,9 +590,26 @@ static __attribute__((noinline)) void stop_thread(M *m) {
     gc_park(m);
 }
 
-void cooper_poll_slow(void) {
+/* Stop at a safe point while the world is stopped, with the caller's registers spilled to this frame. */
+static __attribute__((noinline)) void gc_poll(void) {
     __builtin_unwind_init();
-    if (LOAD(&cooper_poll_word)) stop_thread(get_m());
+    if (LOAD(&sched.gcwaiting)) stop_thread(get_m());
+}
+
+/* Take back the monitor's request to preempt `m`'s thread, if there is one. */
+static bool clear_preempt(M *m) {
+    if (!LOAD(&m->preempt) || !CAS(&m->preempt, 1, 0)) return false;
+    ADD(&cooper_poll_word, -1);
+    return true;
+}
+
+static void switch_out(int action);
+static void start_sysmon(void);
+
+void cooper_poll_slow(void) {
+    gc_poll();
+    M *m = get_m();
+    if (m->locks == 0 && clear_preempt(m)) switch_out(ACT_PREEMPT);
 }
 
 bool cooper_stop_the_world(void) {
@@ -532,17 +617,22 @@ bool cooper_stop_the_world(void) {
     pthread_mutex_lock(&sched.lock);
     if (sched.gcwaiting) {
         pthread_mutex_unlock(&sched.lock);
-        cooper_poll_slow();
+        gc_poll();
         return false;
     }
-    sched.gcwaiting = 1;
-    STORE(&cooper_poll_word, 1);
+    STORE(&sched.gcwaiting, 1);
+    ADD(&cooper_poll_word, 1);
     sched.stopwait = 0;
     for (int i = 0; i < nprocs; i++) {
         P *p = &allp[i];
         if (p == m->p) continue;
-        if (p->status == P_IDLE) p->status = P_STOPPED;
-        else sched.stopwait++;
+        int32_t status = LOAD(&p->status);
+        /* An M in C stays there, or stops (enter_c_state, exit_c_slow) before it runs Cooper code again. */
+        if (status == P_IDLE || (P_STATUS(status) == P_IN_C && CAS(&p->status, status, P_STOPPED))) {
+            STORE(&p->status, P_STOPPED);
+        } else {
+            sched.stopwait++;
+        }
     }
     sched.idle_ps = NULL;
     STORE(&sched.npidle, 0);
@@ -551,16 +641,21 @@ bool cooper_stop_the_world(void) {
     return true;
 }
 
+static int32_t p_in_c(M *m) {
+    return P_IN_C | m->id << 8;
+}
+
 void cooper_start_the_world(void) {
     pthread_mutex_lock(&sched.lock);
-    sched.gcwaiting = 0;
+    STORE(&sched.gcwaiting, 0);
     sched.restarts++;
-    STORE(&cooper_poll_word, 0);
+    ADD(&cooper_poll_word, -1);
     for (int i = nprocs - 1; i >= 0; i--) {
         P *p = &allp[i];
-        if (p->status != P_STOPPED) continue;
-        if (p->m) p->status = P_RUNNING;
-        else p_put_idle(p);
+        if (LOAD(&p->status) != P_STOPPED) continue;
+        if (!p->m) p_put_idle(p);
+        else if (p->m->current && LOAD(&p->m->current->in_c)) STORE(&p->status, p_in_c(p->m));
+        else STORE(&p->status, P_RUNNING);
     }
     pthread_cond_broadcast(&sched.restart);
     pthread_mutex_unlock(&sched.lock);
@@ -650,7 +745,8 @@ static void stopm(M *m) {
     sched.idle_ms = m;
     bool timers_late = false; /* timers are due, but every P is busy: their Ms will run them */
     while (!m->nextp) {
-        if (sched.npidle == nprocs && !sched.timer_count && !sched.global_count && !sched.gcwaiting) {
+        if (sched.npidle == nprocs && !sched.timer_count && !sched.global_count && !sched.gcwaiting &&
+            !LOAD(&sched.nincall)) {
             cooper_panic("all threads are blocked: deadlock");
         }
         if (sched.timer_count && !timers_late && (!sched.timer_m || sched.timer_m == m)) {
@@ -683,7 +779,7 @@ static Thread *steal_work(M *m) {
     for (int round = 0; round < 4; round++) {
         uint32_t start = (uint32_t)(random_next(m->p) % (uint64_t)nprocs);
         for (int i = 0; i < nprocs; i++) {
-            if (LOAD(&cooper_poll_word)) return NULL;
+            if (LOAD(&sched.gcwaiting)) return NULL;
             P *victim = &allp[(start + (uint32_t)i) % (uint32_t)nprocs];
             if (victim == m->p) continue;
             Thread *thread = runq_steal(m->p, victim, round == 3);
@@ -696,11 +792,12 @@ static Thread *steal_work(M *m) {
 /* The next thread for `m` to run. Without any, the M gives up its P and sleeps until handed one. */
 static Thread *find_runnable(M *m) {
     for (;;) {
-        if (LOAD(&cooper_poll_word)) gc_park(m);
+        if (LOAD(&sched.gcwaiting)) gc_park(m);
         P *p = m->p;
         wake_due(p);
-        p->schedtick++;
-        if (p->schedtick % 61 == 0 && LOAD(&sched.global_count)) {
+        uint32_t tick = p->schedtick + 1;
+        __atomic_store_n(&p->schedtick, tick, __ATOMIC_RELAXED);
+        if (tick % 61 == 0 && LOAD(&sched.global_count)) {
             pthread_mutex_lock(&sched.lock);
             Thread *thread = global_get(p, 1);
             pthread_mutex_unlock(&sched.lock);
@@ -781,6 +878,28 @@ static void complete(M *m, Thread *thread) {
         set_state(thread, RUNNABLE);
         runq_put(m->p, thread, false);
         break;
+    case ACT_PREEMPT:
+        /* Behind everything else, as in Go: from the local queue it might run again before the timers. */
+        set_state(thread, RUNNABLE);
+        global_put(thread);
+        break;
+    case ACT_NO_P: {
+        /* The thread left C and found no P: it waits in the global queue (unless a P became idle since) and
+           the M sleeps. Both under the lock, so that an M idling its P meanwhile sees the queued thread. */
+        set_state(thread, RUNNABLE);
+        pthread_mutex_lock(&sched.lock);
+        P *p = p_get_idle();
+        if (p) {
+            m->p = p;
+            p->m = m;
+        } else {
+            global_put_locked(thread);
+        }
+        pthread_mutex_unlock(&sched.lock);
+        if (p) runq_put(p, thread, true);
+        else stopm(m);
+        break;
+    }
     case ACT_PARK:
         /* A ready that came after the thread chose to park made it RUNNABLE; it is queued here, not by the
            ready, because until now the thread's stack was still in use. */
@@ -827,6 +946,7 @@ static _Noreturn void scheduler(M *m) {
             if (ADD(&sched.nmspinning, -1) == 0) wakep();
         }
         set_state(next, RUNNING);
+        clear_preempt(m); /* a request for the previous thread */
         m->current = next;
         TSAN_SWITCH(next->fiber);
         cooper_switch(&m->sched_sp, next->sp);
@@ -905,6 +1025,8 @@ static Thread *thread_get(P *p) {
 }
 
 int64_t cooper_spawn(void *code, void *env) {
+    static pthread_once_t monitor = PTHREAD_ONCE_INIT;
+    pthread_once(&monitor, start_sysmon);
     P *p = get_m()->p;
     Thread *thread = thread_get(p);
     thread->id = __atomic_fetch_add(&next_id, 1, __ATOMIC_SEQ_CST);
@@ -992,6 +1114,198 @@ void cooper_wake_at(CooperWaiter *waiter, int64_t index, int64_t deadline) {
     timer_push((Timer){.wake = deadline, .waiter = waiter, .index = index});
 }
 
+/* --- C calls --- */
+
+_Static_assert(1 + C_SAVED_WORDS <= COOPER_CALLBACK_WORDS, "a callback's saved state fits");
+
+/* Mark the running thread, whose stack pointer and registers are recorded, as in C, and its P with it; if
+   the world is stopping, the P counts as stopped at once. */
+static void enter_c_state(M *m, Thread *thread) {
+    clear_preempt(m);
+    STORE(&thread->in_c, 1);
+    ADD(&sched.nincall, 1);
+    P *p = m->p;
+    __atomic_store_n(&p->ctick, p->ctick + 1, __ATOMIC_RELAXED);
+    int32_t mine = p_in_c(m);
+    STORE(&p->status, mine);
+    if (LOAD(&sched.gcwaiting)) {
+        /* The stop counted this P as running before it saw it in C, and waits for it. */
+        pthread_mutex_lock(&sched.lock);
+        if (sched.gcwaiting && CAS(&p->status, mine, P_STOPPED) && --sched.stopwait == 0) {
+            pthread_cond_signal(&sched.stopped);
+        }
+        pthread_mutex_unlock(&sched.lock);
+    }
+}
+
+/* Called by cooper_enter_c with the registers it saved. Nothing changes while the thread holds locks: a
+   holder must not lose its P. */
+__attribute__((visibility("hidden"))) int cooper_enter_c_saved(uintptr_t *saved) {
+    M *m = this_m;
+    if (m->locks) return 0;
+    Thread *thread = m->current;
+    memcpy(thread->regs, saved, sizeof thread->regs);
+    thread->sp = (char *)saved + C_FRAME_BYTES;
+    enter_c_state(m, thread);
+    return 1;
+}
+
+/* Leave C without the P: wait out a stop of the world, then take the P back if it was not handed on, or an
+   idle one; failing both, the thread waits in the queue for one. */
+static void exit_c_slow(M *m, Thread *thread) {
+    pthread_mutex_lock(&sched.lock);
+    while (sched.gcwaiting) {
+        uint64_t restarts = sched.restarts;
+        while (sched.restarts == restarts) pthread_cond_wait(&sched.restart, &sched.lock);
+    }
+    P *p = m->p;
+    if (p->m == m) {
+        STORE(&p->status, P_RUNNING);
+    } else {
+        p = p_get_idle();
+        m->p = p;
+        if (p) p->m = m;
+    }
+    STORE(&thread->in_c, 0);
+    ADD(&sched.nincall, -1);
+    pthread_mutex_unlock(&sched.lock);
+    if (!p) switch_out(ACT_NO_P);
+}
+
+void cooper_exit_c(int entered) {
+    if (!entered) return;
+    M *m = get_m();
+    Thread *thread = m->current;
+    if (CAS(&m->p->status, p_in_c(m), P_RUNNING)) {
+        STORE(&thread->in_c, 0);
+        ADD(&sched.nincall, -1);
+        return;
+    }
+    exit_c_slow(m, thread);
+}
+
+/* A call from C into Cooper code leaves the C state for its duration, keeping the C call's stack pointer and
+   registers in `saved` meanwhile. */
+int cooper_callback_enter(uintptr_t *saved) {
+    M *m = this_m;
+    if (!m || !m->current) cooper_panic("a C callback on an OS thread the Cooper runtime did not start");
+    Thread *thread = m->current;
+    if (!LOAD(&thread->in_c)) return 0;
+    saved[0] = (uintptr_t)thread->sp;
+    memcpy(saved + 1, thread->regs, sizeof thread->regs);
+    cooper_exit_c(1);
+    return 1;
+}
+
+void cooper_callback_leave(int entered, uintptr_t *saved) {
+    if (!entered) return;
+    M *m = get_m();
+    Thread *thread = m->current;
+    thread->sp = (void *)saved[0];
+    memcpy(thread->regs, saved + 1, sizeof thread->regs);
+    enter_c_state(m, thread);
+}
+
+void cooper_acquire_m(void) {
+    get_m()->locks++;
+}
+
+void cooper_release_m(void) {
+    get_m()->locks--;
+}
+
+/* --- the monitor --- */
+
+/* With sched.lock held: give the P of an M in C to another M if it has work, or if no M is idle or looking
+   for work (someone may soon need it), or else to the idle list. */
+static void handoff(P *p) {
+    p->m = NULL;
+    if (runq_has_work(p) || sched.global_count) {
+        startm_locked(p, false);
+        return;
+    }
+    int32_t zero = 0;
+    if (sched.npidle == 0 && __atomic_compare_exchange_n(&sched.nmspinning, &zero, 1, false, __ATOMIC_SEQ_CST,
+                                                         __ATOMIC_RELAXED)) {
+        startm_locked(p, true);
+        return;
+    }
+    p_put_idle(p);
+}
+
+/* With sched.lock held and the world running: take the Ps of Ms that stay in C, and ask threads that have run
+   for a time slice while other work waits to switch. Gives the number of Ps taken, or found in C at two looks
+   in a row: when calls follow one another, each lasting about as long as the monitor's pause, it must look
+   sooner to see one of them twice. */
+static int retake(int64_t now) {
+    int busy = 0;
+    bool waiting = LOAD(&sched.global_count) || LOAD(&sched.timer_next) <= now;
+    for (int i = 0; i < nprocs; i++) {
+        P *p = &allp[i];
+        int32_t status = LOAD(&p->status);
+        bool in_c = P_STATUS(status) == P_IN_C;
+        bool was_in_c = p->seen_in_c;
+        p->seen_in_c = in_c;
+        if (in_c) {
+            /* A call seen for the first time gets until the next look. */
+            uint32_t tick = LOAD(&p->ctick);
+            if (tick != p->seen_ctick) {
+                p->seen_ctick = tick;
+                p->seen_cwhen = now;
+                busy += was_in_c;
+                continue;
+            }
+            bool needed = runq_has_work(p) || LOAD(&sched.nmspinning) + LOAD(&sched.npidle) == 0;
+            if (!needed && now - p->seen_cwhen < TIME_SLICE_NS) continue;
+            if (!CAS(&p->status, status, P_RUNNING)) continue; /* the M left C */
+            handoff(p);
+            busy++;
+        } else if (status == P_RUNNING && p->m) {
+            uint32_t tick = LOAD(&p->schedtick);
+            if (tick != p->seen_schedtick) {
+                p->seen_schedtick = tick;
+                p->seen_schedwhen = now;
+                continue;
+            }
+            if (now - p->seen_schedwhen < TIME_SLICE_NS || !(waiting || runq_has_work(p))) continue;
+            p->seen_schedwhen = now;
+            if (CAS(&p->m->preempt, 0, 1)) ADD(&cooper_poll_word, 1);
+        }
+    }
+    return busy;
+}
+
+/* Look every 20 µs while Ms stay in C, slowing to every 10 ms when none does. */
+static void *sysmon(void *arg) {
+    (void)arg;
+    int64_t delay = 20000;
+    int idle = 0;
+    for (;;) {
+        struct timespec pause = {0, delay};
+        nanosleep(&pause, NULL);
+        int busy = 0;
+        if (!LOAD(&sched.gcwaiting)) {
+            pthread_mutex_lock(&sched.lock);
+            if (!sched.gcwaiting) busy = retake(now_ns());
+            pthread_mutex_unlock(&sched.lock);
+        }
+        idle = busy ? 0 : idle + 1;
+        if (idle == 0) delay = 20000;
+        else if (idle > 50) delay = delay * 2 < TIME_SLICE_NS ? delay * 2 : TIME_SLICE_NS;
+    }
+    return NULL;
+}
+
+/* The monitor starts with the second thread: until then there is nothing to hand a P to or preempt for. */
+static void start_sysmon(void) {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_t os_thread;
+    if (pthread_create(&os_thread, &attr, sysmon, NULL) != 0) cooper_panic("cannot start an OS thread");
+    pthread_attr_destroy(&attr);
+}
+
 /* --- atomics, lock words, random numbers --- */
 
 bool cooper_cas(int64_t *word, int64_t old, int64_t new_value) {
@@ -1060,6 +1374,7 @@ void cooper_scan_threads(void (*scan)(uintptr_t low, uintptr_t high)) {
     for (Thread *thread = LOAD(&all_threads); thread; thread = thread->all_next) {
         if (LOAD(&thread->state) == DEAD) continue;
         if (thread != running) scan((uintptr_t)thread->sp, thread->stack_top);
+        if (LOAD(&thread->in_c)) scan((uintptr_t)thread->regs, (uintptr_t)(thread->regs + C_SAVED_WORDS));
         scan((uintptr_t)&thread->code, (uintptr_t)(&thread->env + 1));
     }
 }

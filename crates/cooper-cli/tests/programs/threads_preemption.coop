@@ -1,0 +1,54 @@
+# exit: 0
+# stdout: slept beside a spinning thread
+# stdout: allocated 20000 words beside it
+# stdout: ran while another thread was in C: true
+# stdout: sorted through slow callbacks: [1, 2, 3, 4]
+# env: COOPER_THREADS=1
+# On one processor, a thread that never blocks is preempted, so a sleeper wakes and collections happen
+# beside it; and a thread blocked in a C call, here in Cooper callbacks that themselves call C, lets the
+# others run.
+use {
+    std.io.println,
+    std.threads.sleep,
+    std.sync.{ Atomic, WaitGroup },
+}
+
+extern func usleep(microseconds: u32): i32
+extern func qsort(base: i32^, n: u64, size: u64, cmp: func(i32^, i32^): i32)
+
+func spin(stop: Atomic^, turns: Atomic^) {
+    while stop.load() == 0 do turns.add(1)
+}
+
+func slowly(a: i32^, b: i32^): i32 {
+    usleep(20000)
+    return a^ - b^
+}
+
+func sortSlowly(nums: i32^, done: Atomic^, wg: WaitGroup^) {
+    qsort(nums, 4, 4, slowly)
+    done.store(1)
+    wg.done()
+}
+
+func main() {
+    let stop: Atomic
+    let turns: Atomic
+    thread spin(&stop, &turns)
+    sleep(30)
+    println("slept beside a spinning thread")
+    let words: string[]
+    for i in 0..20000 do words = words.push("word {i}")
+    println("allocated {words.length()} words beside it")
+    stop.store(1)
+
+    let nums: i32[4] = [3, 1, 4, 2]
+    let done: Atomic
+    let wg: WaitGroup
+    wg.add(1)
+    thread sortSlowly(&nums[0], &done, &wg)
+    sleep(10)
+    println("ran while another thread was in C: {done.load() == 0}")
+    wg.wait()
+    println("sorted through slow callbacks: {nums}")
+}

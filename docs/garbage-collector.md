@@ -42,10 +42,13 @@ percentage of the live bytes and roots (default 100%, at least 4 MiB).
 
 - **Stopping.** The allocating thread that reaches the heap goal stops every other thread at a safe point: generated
   code polls a flag at each function entry and loop iteration, and the allocator, lock spins and the scheduler
-  check it too. A thread stopped in its code saves its registers on its stack, as a switch does.
+  check it too. A thread stopped in its code saves its registers on its stack, as a switch does. A thread in a C
+  call counts as stopped without waiting: it recorded its stack pointer and registers when the call began, and
+  waits for the collection to end if the call returns during one.
 - **Roots.** Module-level variables, precisely, from a table of addresses and descriptors the compiler emits
   (`cooper_roots`). The stacks of every thread and the registers, conservatively, word by word (a suspended
-  thread's registers are saved on its stack, and a thread that has not started is reached through its closure): nothing moves, so an ambiguous word
+  thread's registers are saved on its stack, or with the thread record for one in C, and a thread that has not
+  started is reached through its closure): nothing moves, so an ambiguous word
   only keeps alive what it appears to point into. Cooper never turns an integer back into a pointer.
 - **Mark.** Green Tea: reaching a small object marks it and queues its span, first in first out; a span's
   marked-but-unscanned objects are scanned together from its mark and scan bits. Larger objects use an object

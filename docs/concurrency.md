@@ -4,7 +4,7 @@ Work runs in **threads**: lightweight green threads started with the `thread` ex
 schedules onto OS threads of its own. The design follows Go's: threads are cheap enough to start by the
 thousand, no function colors (any function can run as a thread), and shared memory with explicit
 synchronization. `thread` is the only concurrency construct in the language; everything else is the standard
-library. Threads run in parallel, one OS thread per core by default; preemption is planned.
+library. Threads run in parallel, one OS thread per core by default.
 
 ## Starting a thread
 
@@ -34,14 +34,26 @@ A P runs a thread that was just readied next (so a reply is handled at once), th
 became ready, then the global queue; an M whose P has nothing steals half of another P's queue. Ms start as work
 appears: making a thread runnable wakes an idle M only when a P is free and no M is already looking for work, and
 an M that finds nothing sleeps. A thread switches where it blocks: `std.threads.yield()`, `std.threads.sleep(ms)`,
-and waiting in `std.sync`. A thread that never blocks keeps its OS thread, since nothing preempts it yet; with
-`COOPER_THREADS=1` it keeps the others from running at all. When the main function returns the program ends,
-whatever the other threads are doing. If every thread is blocked (and none is sleeping or waiting on `after`) the
-program stops with a deadlock error.
+and waiting in `std.sync`. When the main function returns the program ends, whatever the other threads are doing.
+If every thread is blocked (and none is sleeping, waiting on `after`, or in a C call) the program stops with a
+deadlock error.
 
-The collector stops every thread before it collects: generated code checks a flag at each function entry and loop
-iteration, as do the allocator and the scheduler, and a thread that sees it pauses until the collection is over.
-A thread inside a long C call delays a collection until it returns.
+Generated code checks a flag at each function entry and loop iteration (a safe point), as do the allocator and
+the scheduler. The collector raises it to stop every thread before it collects: a thread that sees it pauses
+until the collection is over. A monitor, an OS thread of the runtime's own, raises it to preempt: a thread that
+has run for 10 ms while other threads wait (in a queue, or for a timer that is due) switches at its next safe
+point and goes to the back of the global queue. Preemption waits while the thread is inside one of the runtime's
+short critical sections (the lock words inside `std.sync`, formatting a value), and code that runs without
+reaching a safe point, such as a long C call, is not preempted.
+
+A call to a C function (`extern func`) may block. The thread's OS thread then holds no processor: the call counts
+as stopped for the collector, and when it lasts (the monitor looks every 20 µs while calls are in progress,
+backing off to every 10 ms when there are none) the monitor gives its processor to another OS thread, so the
+other threads keep running even with `COOPER_THREADS=1`. When the call returns the thread takes a processor
+back, waiting for one if all are busy. A callback from C into Cooper code holds a processor while it runs. A C
+call made inside one of the runtime's critical sections keeps its processor: `print` writes under a lock, so
+writing to a full pipe holds one. Each C call costs about 10 ns for this; the runtime's own functions are called
+directly.
 
 `std.sync.WaitGroup` waits for threads: `add(n)` before starting them, `done()` as each finishes, `wait()` to
 block until all have.
@@ -153,6 +165,6 @@ threads never mix.
 
 ## Not yet
 
-`RWMutex`, `Once`, an event form of `Mutex.lock`, nested groups that cancel their children, preemption, timers
-beyond `sleep` and `after`, and handing a blocked C call's OS thread to other threads. A thread blocked forever on an event nothing can commit stays blocked; only
-when every thread is blocked does the program stop with the deadlock error.
+`RWMutex`, `Once`, an event form of `Mutex.lock`, nested groups that cancel their children, and timers beyond
+`sleep` and `after`. A thread blocked forever on an event nothing can commit stays blocked; only when every thread
+is blocked does the program stop with the deadlock error.

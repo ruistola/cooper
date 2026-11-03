@@ -250,6 +250,55 @@ static void test_stop_the_world(void) {
     wait_all();
 }
 
+/* A thread that polls but never blocks is preempted, so the main thread wakes from its sleep even on one P. */
+static int64_t spin_stop;
+static void spinner(void *env) {
+    (void)env;
+    while (!cooper_load(&spin_stop)) {
+        if (cooper_load(&cooper_poll_word)) cooper_poll_slow();
+    }
+    finished();
+}
+
+static void test_a_spinning_thread_is_preempted(void) {
+    start(1);
+    cooper_spawn(spinner, NULL);
+    cooper_sleep(30000000);
+    cooper_store(&spin_stop, 1);
+    wait_all();
+}
+
+/* A thread blocked in C, and in a callback from C between, gives its P to other threads, and counts as
+   stopped for the collector. */
+static int64_t c_done;
+static void blocker(void *env) {
+    (void)env;
+    int entered = cooper_enter_c();
+    usleep(40000);
+    uintptr_t saved[COOPER_CALLBACK_WORDS];
+    int called = cooper_callback_enter(saved);
+    cooper_yield();
+    cooper_callback_leave(called, saved);
+    usleep(40000);
+    cooper_exit_c(entered);
+    cooper_store(&c_done, 1);
+    finished();
+}
+
+static void test_a_blocking_c_call_gives_up_its_p(void) {
+    start(1);
+    cooper_spawn(blocker, NULL);
+    cooper_sleep(10000000);
+    for (int i = 0; i < 10; i++) {
+        CHECK(cooper_stop_the_world());
+        cooper_start_the_world();
+        cooper_sleep(2000000);
+    }
+    CHECK(cooper_load(&c_done) == 0);
+    wait_all();
+    CHECK(cooper_load(&c_done) == 1);
+}
+
 static int run_tests(void) {
     const char *threads = getenv("COOPER_THREADS");
     int one = threads && atoi(threads) == 1;
@@ -259,6 +308,8 @@ static int run_tests(void) {
     test_timers_commit_waiters();
     test_many_threads_and_stack_reuse();
     test_deep_recursion_on_a_thread_stack();
+    test_a_spinning_thread_is_preempted();
+    test_a_blocking_c_call_gives_up_its_p();
     if (one) {
         test_scan_visits_other_stacks();
     } else {

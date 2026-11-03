@@ -29,6 +29,12 @@ scannable with its pointer bitmap at the span's end (objects up to 512 bytes), o
 word before each object (larger objects and types with sites). Objects larger than 32 KiB keep their type in
 the span.
 
+Each P has an allocation cache holding the span it is allocating from for each class and kind, so the common
+allocation takes no lock. Taking a new span (a partly free one, or fresh pages), a large object, and anything else
+that changes the span structure take one heap lock. The bytes a P has allocated count toward the collection
+threshold when it refills, and the collector adds them when a collection starts; the sweep then returns the
+cached spans to the lists.
+
 ## Collection
 
 Stop-the-world mark and sweep, started by the pacer when the allocated bytes reach the live bytes plus a growth
@@ -53,11 +59,11 @@ percentage of the live bytes and roots (default 100%, at least 4 MiB).
 `COOPER_GC=stress` collects at every allocation and poisons freed memory, and the golden-program harness runs
 every program again that way, on four processors (`COOPER_THREADS=4`), and both, requiring the same output. `gc_test.c`, run by `tests/allocator.rs`,
 tests the allocator and collector alone: sizes, pointer bitmaps, reuse, interior pointers, reclamation,
-poisoning, and that a sum type retains only the variant it holds.
+poisoning, that a sum type retains only the variant it holds, and threads allocating on four Ps during collections.
 
 ## Known limits
 
 Conservative scanning can retain what a stale stack word points at. Optimized builds may keep only a derived
 pointer (one past an object's end), which a stack scan would miss: not yet validated. The page heap is a
-first-fit list. Every allocation takes one heap lock, and the collector marks and sweeps on one OS thread while the
-others wait.
+first-fit list. Refills and large allocations take one heap lock, and the collector marks and sweeps on one OS thread while the
+others wait, so allocation scales with the number of Ps only while collections are rare.

@@ -133,9 +133,11 @@ static void init_classes(void) {
                             gc_off, trace, instrument, zerobase, started, ready
      collector only (the stopped world, with the heap lock): work, queue, last_span, root_bytes,
                             stats
+   per-P (no lock): a P's AllocCache, and the spans in it, which only that P allocates from. The collector
+                            reads and clears every cache with the world stopped.
    The rest (arena table, current_arena, heap_bytes, span_count, heap_used, next_gc, free_runs, spare_runs,
-   span_pool, all_spans, cache, partial, meta_next, meta_end, released_bytes) are the heap lock's: one lock
-   for every allocation, until per-P allocation caches (phase D of the plan) take it off the common path. */
+   span_pool, all_spans, partial, meta_next, meta_end, released_bytes) are the heap lock's: refills, large
+   objects and everything that changes the span structure. heap_used and next_gc are also read without it. */
 static int64_t heap_word; /* the heap lock */
 static Arena **arena_table[1 << TABLE_BITS]; /* [address >> 26 >> 11][(address >> 26) & 2047] */
 static Arena *current_arena;
@@ -331,8 +333,16 @@ static Span *span_of(uintptr_t address) {
    header word holding its type (which a sum type's variant sites need). */
 enum { KIND_BITS = 0, KIND_NOSCAN = 1, KIND_HEADER = 2, KINDS = 3 };
 
-static Span *cache[NUM_CLASSES * KINDS];
 static Span *partial[NUM_CLASSES * KINDS];
+
+/* A P's allocation cache (Go's mcache): the span it is allocating from for each span class, and the bytes it
+   has allocated that heap_used does not count yet. Padded so that two Ps' caches never share a cache line. */
+typedef struct {
+    Span *spans[NUM_CLASSES * KINDS];
+    size_t used;
+} __attribute__((aligned(128))) AllocCache;
+
+static AllocCache caches[COOPER_MAX_PROCS];
 
 static Span *new_small_span(int class, int kind) {
     int noscan = kind == KIND_NOSCAN;
@@ -434,6 +444,11 @@ static void heap_unlock(void) {
 static void collect_stopped(int forced) {
     if (!cooper_stop_the_world()) return;
     heap_lock();
+    /* What the Ps allocated since their refills counts, as the allocating thread's check counted its own. */
+    for (int i = 0; i < cooper_proc_count(); i++) {
+        heap_used += caches[i].used;
+        caches[i].used = 0;
+    }
     if (forced || stress || heap_used >= next_gc) collect();
     heap_unlock();
     cooper_start_the_world();
@@ -475,39 +490,45 @@ void *cooper_alloc(size_t size, const CooperType *type) {
     if (size == 0) return &zerobase;
     if (!ready) init_heap();
     if (__atomic_load_n(&cooper_poll_word, __ATOMIC_RELAXED)) cooper_poll_slow();
-    if (started && (stress || (__atomic_load_n(&heap_used, __ATOMIC_RELAXED) >= next_gc && !gc_off))) {
+    AllocCache *cache = &caches[cooper_proc_id()];
+    if (started && (stress || (__atomic_load_n(&heap_used, __ATOMIC_RELAXED) + cache->used >= next_gc && !gc_off))) {
         collect_stopped(0);
     }
     int noscan = type == NULL;
     int kind = noscan ? KIND_NOSCAN : (type->nsites || size > MIN_SIZE_FOR_HEADER) ? KIND_HEADER : KIND_BITS;
     size_t total = size;
     if (kind == KIND_HEADER) total += HEADER_SIZE;
-    heap_lock();
     if (total < size || total > MAX_SMALL) {
+        heap_lock();
         void *large = allocate_large(size, type);
         heap_unlock();
         return large;
     }
     int class = size_to_class8[(total + 7) / 8];
     int spanclass = class * KINDS + kind;
-    Span *span = cache[spanclass];
+    Span *span = cache->spans[spanclass];
     void *slot = span ? next_free(span) : NULL;
-    while (!slot) {
-        span = partial[spanclass];
-        if (span) {
-            partial[spanclass] = span->partial_next;
-            span->partial_next = NULL;
-        } else {
-            span = new_small_span(class, kind);
-        }
-        cache[spanclass] = span;
-        slot = next_free(span);
+    if (!slot) {
+        heap_lock();
+        __atomic_store_n(&heap_used, heap_used + cache->used, __ATOMIC_RELAXED);
+        cache->used = 0;
+        do {
+            span = partial[spanclass];
+            if (span) {
+                partial[spanclass] = span->partial_next;
+                span->partial_next = NULL;
+            } else {
+                span = new_small_span(class, kind);
+            }
+            cache->spans[spanclass] = span;
+            slot = next_free(span);
+        } while (!slot);
+        heap_unlock();
     }
-    __atomic_store_n(&heap_used, heap_used + span->elemsize, __ATOMIC_RELAXED);
-    /* The bitmap words are shared with neighbouring slots; the slot itself is this thread's. */
+    cache->used += span->elemsize;
+    /* The bitmap words are shared with neighbouring slots of the span, which is this P's. */
     if (!noscan && span->heap_bits_in_span) write_heap_bits(span, (uintptr_t)slot, type, size);
     int needzero = span->needzero, header = !noscan && !span->heap_bits_in_span;
-    heap_unlock();
     if (needzero) memset(slot, 0, span->elemsize);
     if (!header) return slot;
     *(const CooperType **)slot = type;
@@ -762,7 +783,6 @@ static void fill(void *memory, size_t bytes) {
 
 /* Free what is unmarked, and make the marked objects the allocated ones. */
 static void sweep(void) {
-    memset(cache, 0, sizeof cache);
     memset(partial, 0, sizeof partial);
     heap_used = 0;
     Span **link = &all_spans;
@@ -854,6 +874,8 @@ static __attribute__((noinline)) void collect_with_registers(void) {
 
 static void collect(void) {
     if (heap_bytes > stats.peak_heap) stats.peak_heap = heap_bytes;
+    /* The cached spans are swept like the rest and go back to the lists. */
+    memset(caches, 0, (size_t)cooper_proc_count() * sizeof *caches);
     size_t before = heap_used;
     uint64_t start = instrument ? now_ns() : 0;
     mark_roots();

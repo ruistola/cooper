@@ -1,0 +1,40 @@
+# Allocation from several threads at once: each of 8 threads builds and checks many short-lived trees.
+# Compare COOPER_THREADS=1 with the default to see the allocator scale.
+use {
+    std.io.println,
+    std.sync.WaitGroup,
+}
+
+struct Tree {
+    left: Tree^,
+    right: Tree^,
+}
+
+func make(depth: i32): Tree^ {
+    let t: Tree
+    if depth > 0 then {
+        t.left = make(depth - 1)
+        t.right = make(depth - 1)
+    }
+    return &t
+}
+
+func check(t: Tree^): i32 {
+    if t.left == nil then return 1
+    return 1 + check(t.left) + check(t.right)
+}
+
+func worker(wg: WaitGroup^) {
+    sum := 0
+    for i in 0..4000 do sum += check(make(12))
+    if sum != 4000 * 8191 then println("wrong: {sum}")
+    wg.done()
+}
+
+func main() {
+    let wg: WaitGroup
+    wg.add(8)
+    for i in 0..8 do thread worker(&wg)
+    wg.wait()
+    println("done")
+}

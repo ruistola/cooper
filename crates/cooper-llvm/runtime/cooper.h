@@ -80,6 +80,12 @@ int64_t cooper_random(int64_t n);
 int64_t cooper_now(void);
 /* Set up the scheduler. */
 void cooper_sched_init(void);
+/* The number of Ps (at most COOPER_MAX_PROCS), and the index in [0, count) of the running thread's P (0 before
+   the scheduler runs). A thread keeps its P until it blocks, yields or stops at a safe point, so the index is
+   stable across an allocation. */
+#define COOPER_MAX_PROCS 256
+int cooper_proc_count(void);
+int cooper_proc_id(void);
 /* Run `entry` as the main thread (thread 0) on a stack of its own, and the scheduler on the caller's stack.
    The process exits with `entry`'s result when it returns. */
 _Noreturn void cooper_run_main(int (*entry)(void));

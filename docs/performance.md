@@ -71,3 +71,8 @@ Time is mostly the kernel zero-filling those pages. With one P per core (ten her
 The safe-point polls the collector needs (a load and a branch at every function entry and loop iteration) cost
 little where the work is in calls, and most in tight loops they keep LLVM from rewriting: `strings` at `-O2` takes
 0.19 s with them and 0.15 s without.
+
+`benchmarks/alloc_parallel.coop` has 8 threads each allocate 33M short-lived 16-byte nodes (`-O2`, Apple M5, ten
+cores; Go's version is not written). Each P allocates from its own spans without a lock: 2.2 s with one P, 0.83 s
+with four, 0.91 s with ten. Beyond four Ps, stopping the world for a collection of the 4 MiB heap every few
+milliseconds outweighs the gain; with collections made rare (`COOPER_HEAP_GROWTH=5000`) eight Ps take 0.73 s.

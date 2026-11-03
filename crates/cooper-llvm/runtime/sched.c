@@ -1036,6 +1036,17 @@ int64_t cooper_random(int64_t n) {
 
 /* --- for the collector --- */
 
+int cooper_proc_count(void) {
+    return nprocs;
+}
+
+int cooper_proc_id(void) {
+    M *m = this_m;
+    if (!m) return 0;
+    if (!m->p) cooper_panic("internal error: an M without a P runs Cooper code");
+    return (int)(m->p - allp);
+}
+
 uintptr_t cooper_current_stack_top(void) {
     return get_m()->current->stack_top;
 }
@@ -1092,7 +1103,7 @@ void cooper_sched_init(void) {
     const char *threads = getenv("COOPER_THREADS");
     nprocs = threads && atoi(threads) > 0 ? atoi(threads) : (int)sysconf(_SC_NPROCESSORS_ONLN);
     if (nprocs < 1) nprocs = 1;
-    if (nprocs > 256) nprocs = 256;
+    if (nprocs > COOPER_MAX_PROCS) nprocs = COOPER_MAX_PROCS;
     allp = calloc((size_t)nprocs, sizeof *allp);
     if (!allp) cooper_panic("out of memory");
     uint64_t seed = (uint64_t)now_ns() | 1;

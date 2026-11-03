@@ -254,6 +254,44 @@ static void test_sum_type_scans_only_the_live_variant(void) {
     CHECK(((unsigned char *)~hidden_dropped)[50] == 0xDB);
 }
 
+/* Threads on several Ps allocate from their own caches while collections stop them: each builds a list
+   among garbage of every kind and checks it, and nothing a thread holds may be freed or handed out twice. */
+enum { WORKERS = 8, NODES = 30000 };
+static int64_t finished, worker_failures;
+
+static void worker(void *env) {
+    uint64_t seed = (uint64_t)(uintptr_t)env;
+    Node *volatile head = NULL;
+    for (uint64_t i = 0; i < NODES; i++) {
+        Node *node = cooper_alloc(16, (CooperType *)&node_type);
+        node->value = i ^ seed;
+        node->next = head;
+        head = node;
+        for (int k = 0; k < 4; k++) {
+            size_t size = 16 + (size_t)((i * 7 + (uint64_t)k * 13) % 100) * 16;
+            volatile char *garbage = cooper_alloc(size, k & 1 ? NULL : (CooperType *)&node_type);
+            garbage[0] = 1;
+            garbage[size - 1] = 1;
+        }
+        if (i % 5000 == 0) {
+            volatile char *large = cooper_alloc(100000, NULL);
+            large[99999] = 1;
+        }
+    }
+    uint64_t expect = NODES - 1;
+    for (Node *node = head; node; node = node->next, expect--) {
+        if (node->value != (expect ^ seed)) { __atomic_add_fetch(&worker_failures, 1, __ATOMIC_SEQ_CST); break; }
+    }
+    if (expect != (uint64_t)-1) __atomic_add_fetch(&worker_failures, 1, __ATOMIC_SEQ_CST);
+    __atomic_add_fetch(&finished, 1, __ATOMIC_SEQ_CST);
+}
+
+static void test_threads_allocate_in_parallel(void) {
+    for (uintptr_t i = 0; i < WORKERS; i++) cooper_spawn((void *)worker, (void *)(i + 1));
+    while (__atomic_load_n(&finished, __ATOMIC_SEQ_CST) < WORKERS) cooper_yield();
+    CHECK(worker_failures == 0);
+}
+
 static int run_collector_tests(void) {
     test_garbage_is_reclaimed();
     test_reachable_objects_survive();
@@ -261,6 +299,7 @@ static int run_collector_tests(void) {
     test_large_objects_are_reused();
     test_freed_memory_is_poisoned();
     test_sum_type_scans_only_the_live_variant();
+    test_threads_allocate_in_parallel();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
@@ -278,6 +317,7 @@ int main(void) {
     test_reuse_of_slots_clears_bits();
     test_foreign_addresses();
     test_many_arenas();
+    setenv("COOPER_THREADS", "4", 1);
     cooper_gc_init();
     cooper_run_main(run_collector_tests);
 }

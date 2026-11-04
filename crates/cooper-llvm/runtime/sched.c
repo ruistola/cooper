@@ -21,10 +21,12 @@
  * thread would. A thread that overflows hits the guard page, and a signal handler reports it. Stacks never move,
  * so pointers into them stay valid. Finished threads are kept with their stacks for reuse.
  *
- * The collector stops the world: every M holding a P stops at a safe point (contract 6 of the plan: compiler
- * polls of cooper_poll_word, the allocator, lock spins, the scheduler loop). A thread stopped at a safe point
- * stays on its M with its callee-saved registers spilled and its stack pointer recorded, so the collector
- * scans every thread's stack the same way, from its saved stack pointer to its top.
+ * The collector stops the world: every M holding a P stops at a safe point (the compiler's polls of
+ * cooper_poll_word at function entries and loop back-edges, the allocator, lock spins, the scheduler loop).
+ * cooper_poll_word is one global, not thread-local, and counts every reason to stop: a stop of the world,
+ * and each pending preemption. A thread stopped at a safe point stays on its M with its callee-saved registers
+ * spilled and its stack pointer recorded, so the collector scans every thread's stack the same way, from its
+ * saved stack pointer to its top.
  *
  * A call to a C function the program declares (`extern func`) is bracketed by cooper_enter_c and
  * cooper_exit_c. Entering records the thread's stack pointer and callee-saved registers and marks its P as in

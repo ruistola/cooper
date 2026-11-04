@@ -30,7 +30,7 @@ struct Counter {
 func worker(name: string, rounds: i32, wg: WaitGroup^, m: Mutex^, log: string[]^) {
     for i in 0..rounds do {
         m.lock()
-        log^ = log^.push("{name}{i}")
+        log.push("{name}{i}")
         m.unlock()
         yield()
     }
@@ -45,7 +45,7 @@ func show(label: string, a: i32, b: i32, wg: WaitGroup^) {
 func nap(label: string, ms: i64, wg: WaitGroup^, m: Mutex^, order: string[]^) {
     sleep(ms)
     m.lock()
-    order^ = order^.push(label)
+    order.push(label)
     m.unlock()
     wg.done()
 }

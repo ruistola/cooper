@@ -59,15 +59,15 @@ func shape(n: i32): Shape^ {
 
 func shapes(): Shape[] {
     let out: Shape[]
-    out = out.push(Shape.Circle(1))
-    out = out.push(Shape.Link(mixed(), true))
-    out = out.push(Shape.Label("ok", 9))
+    out.push(Shape.Circle(1))
+    out.push(Shape.Link(mixed(), true))
+    out.push(Shape.Label("ok", 9))
     return out
 }
 
 func callbacks(n: i32): (func(): i32)[] {
     let out: (func(): i32)[]
-    for i in 0..n do out = out.push(func(): i32 { return i + n })
+    for i in 0..n do out.push(func(): i32 { return i + n })
     return out
 }
 

@@ -83,7 +83,7 @@ func main(): i32 {
     p.shift(10)
     total := p.sum()
     xs := [3, 4, 5]
-    xs = xs.push(6)                  # growth returns the array
+    xs.push(6)                       # grows xs in place
     for (i, v) in xs do total += i32(i) + v
     n := 0
     while n < 3 do n += 1
@@ -242,7 +242,7 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
 ## Behaviors worth remembering
 
 * Values are stored inline and copied on assignment. Arrays share their elements, and
-  pointers share their target. Grow an array with `xs = xs.push(v)`.
+  pointers share their target. `xs.push(v)` grows `xs` alone; to grow a caller's array, pass `T[]^`.
 * Every type has a zero value, and `let x: T` alone holds it. Dereferencing `nil` yields zero
   values and discards writes; it does not fault. A sum type's zero value is its first variant,
   so list a lone payloadless variant first.

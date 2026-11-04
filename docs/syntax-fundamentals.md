@@ -119,9 +119,10 @@ no visibility meaning. The visibility mechanism is still to be designed.
 ## Arrays
 
 `T[]` is the default sequence type: a growable run of elements with a length and capacity. An
-array value refers to its elements, so assigning or passing an array, or slicing one, shares
-them; `copy()` makes an independent copy. A **static array** `T[N]` has a fixed length,
-written as an integer literal, and is covered [below](#static-arrays).
+array value is a small header that refers to its elements, so assigning or passing an array, or
+slicing one, copies the header and shares the elements; `copy()` makes an independent copy. A
+**static array** `T[N]` has a fixed length, written as an integer literal, and is covered
+[below](#static-arrays).
 
 ```
 let items: i32[]
@@ -134,7 +135,7 @@ let grid: i32[3][2]
 An array literal is a bracketed, comma-separated list. Its elements share one type, which an
 annotation or any use of the elements or the array fixes, and an all-literal list takes a
 float type if any literal is a float. An empty literal takes its element type from later uses
-(`xs := []`, then `xs = xs.push(1)`); if nothing constrains it, it needs an annotation.
+(`xs := []`, then `xs.push(1)`); if nothing constrains it, it needs an annotation.
 
 ```
 let xs: i32[] = [0, 1, 2, 4, 8]
@@ -160,20 +161,26 @@ copied := xs[2..].copy()     # an independent copy
 
 ### Growth
 
-Appending follows a return-value idiom, since it may hand back the same array (when there is
-spare capacity) or one in fresh storage, which no other array shares:
+`push` and `reserve` change the array they are called on, as a method with a pointer receiver
+does, and `push` gives back the element it appended:
 
 ```
-xs = xs.push(9)
-xs = xs.reserve(1000)        # room for at least 1000 more elements
+xs.push(9)
+xs.reserve(1000)             # room for at least 1000 more elements
+last := names.push("{first} {second}")
 ```
 
-A function that appends returns the array, or takes a pointer to the caller's array
-(`log^ = log^.push(line)`). **A slice's capacity is its length**, so growing a slice always
-moves it to fresh storage first and never writes into the array it came from. Two copies of
-one array with spare capacity both append into the same storage, so after `xs = xs.push(..)`
-other copies of the old `xs` should not be appended to. Arrays shared with a grown array keep
-seeing its old storage.
+An array behaves like a struct holding a pointer to its elements. Writing an element is seen
+through every copy of the array, but growing it changes only the length, capacity, and storage
+of the array grown. A function that takes `T[]` can write the caller's elements, while one
+that grows the caller's array takes `T[]^` (`log.push(line)`), or returns the array.
+
+Growing never writes over another copy's elements. **A slice's capacity is its length**, so
+growing a slice always moves it to fresh storage first and never writes into the array it came
+from. Copies of one array with spare capacity take turns: the first to append writes into the
+spare capacity, and a later append through another copy moves that copy to fresh storage.
+Once two copies are in different storage, element writes through one are no longer seen
+through the other.
 
 ### Static arrays
 

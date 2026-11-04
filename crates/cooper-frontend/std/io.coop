@@ -22,7 +22,7 @@ func writeTo(fd: i32, s: string) {
     if written <= 0 or written == n then return
     # A partial write is rare. The rest is copied out, since a string cannot be cut inside a rune.
     let rest: u8[]
-    for i in written..n do rest = rest.push(s.byteAt(i))
+    for i in written..n do rest.push(s.byteAt(i))
     offset := 0
     while offset < rest.length() do {
         more := write(fd, &rest[offset], u64(rest.length() - offset))

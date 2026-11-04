@@ -621,15 +621,14 @@ impl<'a> Pass<'a> {
                 Set::new()
             }
             ArrayPush => {
-                let array = self.eval(&args[0]);
+                self.eval(&args[0]);
                 let value = self.eval(&args[1]);
                 self.sink(&value);
-                array
+                value
             }
             ArrayReserve => {
-                let array = self.eval(&args[0]);
-                self.eval(&args[1]);
-                array
+                self.eval_all(args);
+                Set::new()
             }
             ArrayElementPtr => {
                 if is_static(&args[0]) {

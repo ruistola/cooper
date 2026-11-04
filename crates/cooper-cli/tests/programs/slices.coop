@@ -1,15 +1,16 @@
 # exit: 0
 # Arrays share their elements: assignment, passing, and slicing all do, with
-# `copy()` for an independent copy. A slice's capacity is its length, so growing a
-# slice copies first and never writes into the array it came from. `reserve(n)`
-# makes room for `n` more elements, and a pointer to an array lets a function grow
-# the caller's array.
+# `copy()` for an independent copy. Growing changes only the array grown: a slice's
+# capacity is its length, so growing a slice copies first and never writes into the
+# array it came from, and copies sharing spare capacity never append into the same slot.
+# `reserve(n)` makes room for `n` more elements, and a pointer to an array lets a
+# function grow the caller's array.
 func zero(xs: i32[]) {
     for (i, x) in xs do xs[i] = 0
 }
 
 func record(log: i32[]^, entry: i32) {
-    log^ = log^.push(entry)
+    log.push(entry)
 }
 
 func main(): i32 {
@@ -28,7 +29,7 @@ func main(): i32 {
     if xs[5..].length() != 0 then return 5
 
     head := xs[0..2]
-    head = head.push(77)
+    head.push(77)
     head[0] = 55
     if xs[2] != 99 or xs[0] != 0 then return 6
     if head[2] != 77 or head[0] != 55 then return 7
@@ -36,14 +37,16 @@ func main(): i32 {
     zero(xs[3..])
     if xs[3] != 0 or xs[4] != 0 or xs[2] != 99 then return 8
 
-    # `reserve` really leaves room: both copies append into the same spare slot, the
-    # documented hazard of keeping a stale copy of a growing array.
+    # Copies of one array with spare capacity each append their own elements: a push into
+    # spare capacity is the first copy's, and a later push through the other copy moves it
+    # to fresh storage. `push` gives back the element it appended.
     let roomy: i32[] = []
-    roomy = roomy.reserve(100)
+    roomy.reserve(100)
     same := roomy
-    roomy = roomy.push(1)
-    same = same.push(2)
-    if roomy[0] != 2 then return 9
+    if roomy.push(1) != 1 then return 9
+    same.push(2)
+    roomy.push(3)
+    if roomy[0] != 1 or same[0] != 2 or roomy.length() != 2 or same.length() != 1 then return 9
 
     let log: i32[] = []
     record(&log, 4)

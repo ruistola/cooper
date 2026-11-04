@@ -70,9 +70,9 @@ func kept(): func(): i32 {
 
 func collect(): i32[] {
     let fs: (func(): i32)[]
-    for i in 0..3 do fs = fs.push(func(): i32 { return i })
+    for i in 0..3 do fs.push(func(): i32 { return i })
     let out: i32[]
-    for f in fs do out = out.push(f())
+    for f in fs do out.push(f())
     return out
 }
 

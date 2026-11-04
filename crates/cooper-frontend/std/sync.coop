@@ -105,11 +105,11 @@ oneof Peer V {
 (q: (Queue V)^) func push(w: Waiter^, index: i64, value: V) {
     if q.offers.length() >= q.limit then {
         let live: (Offer V)[]
-        for o in q.offers do if cooper_load(&o.waiter.state) != synced then live = live.push(o)
+        for o in q.offers do if cooper_load(&o.waiter.state) != synced then live.push(o)
         q.offers = live
         q.limit = 2 * live.length() + 8
     }
-    q.offers = q.offers.push(Offer{waiter: w, index: index, value: value})
+    q.offers.push(Offer{waiter: w, index: index, value: value})
 }
 
 (q: (Queue V)^) func remove(i: i64) {
@@ -118,7 +118,7 @@ oneof Peer V {
         return
     }
     let rest: (Offer V)[]
-    for (j, o) in q.offers do if j != i then rest = rest.push(o)
+    for (j, o) in q.offers do if j != i then rest.push(o)
     q.offers = rest
 }
 
@@ -222,13 +222,13 @@ struct NackRange {
 func flatten T (e: Event T, branches: (Branch T)[]^, nacks: NackRange[]^) {
     match e with {
         Choice(es) => for x in es do flatten(x, branches, nacks)
-        Leaf(base, result) => branches^ = branches^.push(Branch{base: base, result: result})
+        Leaf(base, result) => branches.push(Branch{base: base, result: result})
         Guard(f) => flatten(f(), branches, nacks)
         Nack(f) => {
             let latch: Latch
             from := branches^.length()
             flatten(f(latch.releasedEvent()), branches, nacks)
-            nacks^ = nacks^.push(NackRange{from: from, to: branches^.length(), latch: &latch})
+            nacks.push(NackRange{from: from, to: branches^.length(), latch: &latch})
         }
     }
 }
@@ -270,7 +270,7 @@ func wrap T U (e: Event T, f: func(T): U): Event U {
     return match e with {
         Choice(es) => {
             let wrapped: (Event U)[]
-            for x in es do wrapped = wrapped.push(wrap(x, f))
+            for x in es do wrapped.push(wrap(x, f))
             Choice(wrapped)
         }
         Leaf(base, result) => Leaf(base, func(): U { return f(result()) })
@@ -405,7 +405,7 @@ func channel T (capacity: i64): Channel T {
     }
     if ch.pending() < ch.capacity then {
         if !claimSelf(w) then return Blocked
-        ch.items = ch.items.push(value)
+        ch.items.push(value)
         commitSelf(w, index)
         return Committed
     }
@@ -419,7 +419,7 @@ func channel T (capacity: i64): Channel T {
         # a sender blocked on the full buffer moves its value in behind the others
         match ch.senders.claimPeer(w, false) with {
             Got(o) => {
-                ch.items = ch.items.push(o.value)
+                ch.items.push(o.value)
                 o.waiter.publish(o.index)
             }
             Busy => {

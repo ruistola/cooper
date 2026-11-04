@@ -483,10 +483,26 @@ static void init_heap(void) {
     ready = 1;
 }
 
-void *cooper_alloc(size_t size, const CooperType *type) {
+static void *allocate(size_t size, const CooperType *type);
+
+static void check_size(size_t size, const CooperType *type) {
     if (type && (type->size != type->layout_size || size % type->size != 0)) {
         cooper_panic("internal error: an allocation's size does not match its type");
     }
+}
+
+void *cooper_alloc(size_t size, const CooperType *type) {
+    check_size(size, type);
+    return allocate(size, type);
+}
+
+void *cooper_alloc_with_word(size_t size, const CooperType *type) {
+    check_size(size, type);
+    if (size > SIZE_MAX - 8) cooper_panic("allocation too large");
+    return allocate(size + 8, type);
+}
+
+static void *allocate(size_t size, const CooperType *type) {
     if (size == 0) return &zerobase;
     if (!ready) init_heap();
     if (__atomic_load_n(&cooper_poll_word, __ATOMIC_RELAXED)) cooper_poll_slow();

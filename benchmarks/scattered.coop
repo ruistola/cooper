@@ -17,7 +17,7 @@ func main() {
     for i in 0..n do {
         let node: Node
         node.id = i64(i)
-        all = all.push(&node)
+        all.push(&node)
     }
     let seed: u64 = 12345
     for i in 0..n do {
@@ -38,7 +38,7 @@ func main() {
         for i in 0..300000 do {
             let g: Node
             g.id = i64(i)
-            junk = junk.push(&g)
+            junk.push(&g)
         }
         sum += i64(junk.length())
     }

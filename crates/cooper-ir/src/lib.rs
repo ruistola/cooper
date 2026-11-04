@@ -1927,8 +1927,10 @@ impl Lower<'_> {
         let ExprKind::Field { target, name, .. } = &callee.kind else {
             return Ok(None);
         };
+        let through_pointer = matches!(self.types.get(&target.span), Some(Type::Pointer(inner)) if matches!(**inner, Type::Array(_)));
         match self.types.get(&target.span) {
             Some(Type::Array(_) | Type::StaticArray(..)) => {}
+            _ if through_pointer => {}
             Some(ty) if is_string(ty) && matches!(name.as_str(), "length" | "byteAt" | "data") => {
                 let mut lowered = vec![self.expr(target)?];
                 for arg in args {
@@ -1953,7 +1955,13 @@ impl Lower<'_> {
             "utf8" => Intrinsic::ArrayUtf8,
             _ => unreachable!("a checked array method names a blessed method"),
         };
-        let mut lowered = vec![self.expr(target)?];
+        let mut receiver = self.expr(target)?;
+        if through_pointer {
+            let Type::Pointer(inner) = &receiver.ty else { unreachable!("checked above") };
+            let ty = (**inner).clone();
+            receiver = IrExpr { kind: IrExprKind::Deref(Box::new(receiver)), ty, span: target.span };
+        }
+        let mut lowered = vec![receiver];
         for arg in args {
             lowered.push(self.expr(arg)?);
         }

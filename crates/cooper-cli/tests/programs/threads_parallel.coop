@@ -36,7 +36,7 @@ func spin(stop: Atomic^, turns: Atomic^) {
 func garbage(wg: WaitGroup^) {
     for i in 0..5000 do {
         let words: string[]
-        words = words.push("allocated {i}")
+        words.push("allocated {i}")
     }
     wg.done()
 }

@@ -38,7 +38,7 @@ func main() {
     sleep(30)
     println("slept beside a spinning thread")
     let words: string[]
-    for i in 0..20000 do words = words.push("word {i}")
+    for i in 0..20000 do words.push("word {i}")
     println("allocated {words.length()} words beside it")
     stop.store(1)
 

@@ -187,7 +187,9 @@ variable afresh on each pass.
 
 A string is a `{ data, length }` pair of immutable bytes, and an array a `{ data, length,
 capacity }` triple whose copies share elements. Concatenation, string equality, and array
-growth are runtime functions; growth doubles the capacity (at least 4).
+growth are runtime functions; growth doubles the length (at least 4). Storage with spare
+capacity ends in an ownership word, the address after the last element appended, so a push
+writes into spare capacity only from the copy whose length ends there.
 
 The rest of the standard library is Cooper source embedded in the compiler (`std/`, listed in
 `stdlib.rs`). `with_source_modules` adds the ones a project's `use` declarations reach, and

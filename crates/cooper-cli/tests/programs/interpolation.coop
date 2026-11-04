@@ -19,7 +19,7 @@ struct Point { x: i32, y: i32 }
 func greet(name: string): string { return "hi {name}" }
 
 func trace(log: i32[]^, v: i32): i32 {
-    log^ = log^.push(v)
+    log.push(v)
     return v
 }
 

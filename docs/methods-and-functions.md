@@ -88,7 +88,7 @@ Every execution of a binding creates a new variable, and a `for` loop binds its 
 afresh on each pass, so closures made in a loop each keep their own:
 
 ```
-for i in 0..3 do fs = fs.push(func(): i32 { return i })   # fs[k]() is k
+for i in 0..3 do fs.push(func(): i32 { return i })   # fs[k]() is k
 ```
 
 A variable declared outside the loop is one variable, shared by every closure capturing it.

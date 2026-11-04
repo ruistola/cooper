@@ -22,8 +22,8 @@ func main(): i32 {
     if value != 3 then return 1
 
     xs := []
-    xs = xs.push(1)
-    xs = xs.push(2)
+    xs.push(1)
+    xs.push(2)
     if xs[1] != 2 then return 2
     if apply(id, 2) != 2 then return 3
     b := Box{v: 4}

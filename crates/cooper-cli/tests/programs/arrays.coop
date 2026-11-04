@@ -14,7 +14,7 @@ func sum(xs: i32[]): i32 {
 
 func fill(n: i32): i32[] {
     let out: i32[] = []
-    for i in 0..n do out = out.push(i * i)
+    for i in 0..n do out.push(i * i)
     return out
 }
 
@@ -46,7 +46,7 @@ func main(): i32 {
     if points[1].x != 30 then return 8
 
     grid := [[1, 2], [3]]
-    grid[1] = grid[1].push(4)
+    grid[1].push(4)
     if grid[1][1] != 4 or grid[0].length() != 2 then return 9
 
     let none: i32[]

@@ -5,7 +5,7 @@
 # most once, in order, and stop at the first false pair. Each check returns its own
 # status on failure.
 func trace(log: i32[]^, v: i32): i32 {
-    log^ = log^.push(v)
+    log.push(v)
     return v
 }
 

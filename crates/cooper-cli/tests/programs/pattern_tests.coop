@@ -81,7 +81,7 @@ func main() {
     count := Maybe.Some(0)
     let fs: i32[] = []
     while count is Some(i) and i < 3 do {
-        fs = fs.push(i)
+        fs.push(i)
         count = Some(i + 1)
     }
     println("{fs[0]} {fs[1]} {fs[2]}")

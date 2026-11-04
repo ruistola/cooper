@@ -36,7 +36,7 @@ func total(list: Node^): i64 {
 
 func holder(id: i32, wg: WaitGroup^, strings: Atomic^, sums: Atomic^) {
     let mine: string[]
-    for i in 0..15 do mine = mine.push("thread {id} holds string number {i} of its own")
+    for i in 0..15 do mine.push("thread {id} holds string number {i} of its own")
     let list = build(10 + i64(id))
     for round in 0..6 do yield()
     for (i, s) in mine do {
@@ -50,7 +50,7 @@ func holder(id: i32, wg: WaitGroup^, strings: Atomic^, sums: Atomic^) {
 func churn(wg: WaitGroup^) {
     for round in 0..300 do {
         let junk: string[]
-        for j in 0..20 do junk = junk.push("garbage {round} {j} padded out to a reasonable length")
+        for j in 0..20 do junk.push("garbage {round} {j} padded out to a reasonable length")
         yield()
     }
     wg.done()

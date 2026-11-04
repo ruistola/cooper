@@ -44,7 +44,7 @@ func churn(): i64 {
     let total: i64 = 0
     for i in 0..3000 do {
         let junk: Item[]
-        for j in 0..10 do junk = junk.push(Item.Text("garbage {i} {j} and some padding text"))
+        for j in 0..10 do junk.push(Item.Text("garbage {i} {j} and some padding text"))
         total += junk.length()
     }
     return total
@@ -62,11 +62,11 @@ func describe(item: Item): string {
 }
 
 func main() {
-    items = items.push(Item.Num(6))
-    items = items.push(Item.Pair(Some("ab-cd"), 12))
-    items = items.push(chain(6))
-    items = items.push(Item.Many([1, 2, 3]))
-    items = items.push(Item.Text("kept"))
+    items.push(Item.Num(6))
+    items.push(Item.Pair(Some("ab-cd"), 12))
+    items.push(chain(6))
+    items.push(Item.Many([1, 2, 3]))
+    items.push(Item.Text("kept"))
     churn()
     println("{describe(items[0])} {describe(items[1])} {depth(items[2])} {describe(items[3])} {describe(items[4])}")
     println("{items.length()} {churn()}")

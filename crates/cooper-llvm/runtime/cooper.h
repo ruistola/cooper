@@ -39,6 +39,11 @@ _Noreturn void cooper_panic(const char *message);
    several); null means it holds no pointers. */
 void *cooper_alloc(size_t size, const CooperType *type);
 
+/* As cooper_alloc, with one more word after the `size` bytes, a multiple of 8 so the word is
+   aligned. The collector may read the word as one of the values' pointers (tiling and size
+   classes can cover it), so it may hold only zero or an address within the allocation. */
+void *cooper_alloc_with_word(size_t size, const CooperType *type);
+
 /* The scheduler (sched.c), which runs the language's threads. Start a thread running `code(env)`: a
    function taking its environment, as a closure's code does. It first runs when the current thread blocks or
    yields. Gives the thread's id. */

@@ -397,7 +397,7 @@ pub enum Intrinsic {
     /// `set(i, v): unit` — store an element at an index (the `a[i] = v` write).
     /// Args: `[array, index, value]`.
     ArraySet,
-    /// `push(v): T[]` — append, yielding the (possibly reallocated) array.
+    /// `push(v): T` — append in place, through the array's place, yielding `v`.
     /// Args: `[array, value]`.
     ArrayPush,
     /// Interior pointer to an element (the `&a[i]` address-of). Args: `[array, index]`.
@@ -427,8 +427,8 @@ pub enum Intrinsic {
     /// `utf8(): Maybe string` — a `u8[]` copied into a string, `None` unless it is valid
     /// UTF-8. Args: `[array]`.
     ArrayUtf8,
-    /// `reserve(n): T[]` — the array with room for at least `n` more elements,
-    /// reallocated if it lacks it. Args: `[array, n]`.
+    /// `reserve(n): unit` — make room in place for at least `n` more elements,
+    /// reallocating if the array lacks it. Args: `[array, n]`.
     ArrayReserve,
     /// The conversion `CString(s)`: a NUL-terminated heap copy of the string, as a
     /// `std.ffi.CString`. Args: `[string]`.

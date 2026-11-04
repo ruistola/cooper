@@ -22,7 +22,7 @@ func counterFrom(start: i32): func(): i32 {
 
 func map T U (xs: T[], f: func(T): U): U[] {
     let out: U[] = []
-    for x in xs do out = out.push(f(x))
+    for x in xs do out.push(f(x))
     return out
 }
 
@@ -54,11 +54,11 @@ func main(): i32 {
     if fact(5) != 120 then return 4
 
     let fs: (func(): i32)[] = []
-    for i in 0..3 do fs = fs.push(func(): i32 { return i })
+    for i in 0..3 do fs.push(func(): i32 { return i })
     if fs[0]() != 0 or fs[2]() != 2 then return 5
     shared := 0
     let gs: (func(): i32)[] = []
-    for i in 0..2 do gs = gs.push(func(): i32 { return shared })
+    for i in 0..2 do gs.push(func(): i32 { return shared })
     shared = 7
     if gs[0]() + gs[1]() != 14 then return 6
 
@@ -76,7 +76,7 @@ func main(): i32 {
 
     xs := []
     size := func(): i64 { return xs.length() }
-    xs = xs.push(u8(1))
+    xs.push(u8(1))
     if size() != 1 then return 10
     return 0
 }

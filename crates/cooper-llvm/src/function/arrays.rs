@@ -155,6 +155,9 @@ impl Emitter<'_, '_> {
             unreachable!("an array intrinsic's first argument is the array");
         };
         let elem = (**elem).clone();
+        if matches!(op, Intrinsic::ArrayPush | Intrinsic::ArrayReserve) {
+            return self.grow_in_place(op, args, &elem, span);
+        }
         let writes = matches!(op, Intrinsic::ArraySet | Intrinsic::ArrayElementPtr);
         let array = self.array_view(&args[0], writes)?;
         match op {
@@ -211,10 +214,7 @@ impl Emitter<'_, '_> {
                     })),
                 }
             }
-            Intrinsic::ArrayPush => {
-                let value = self.expr(&args[1])?;
-                self.push(&array, &elem, value, span).map(Some)
-            }
+            Intrinsic::ArrayPush | Intrinsic::ArrayReserve => unreachable!("handled above"),
             Intrinsic::ArraySlice { inclusive } => {
                 let start = self.expr(&args[1])?.expect("a bound has a value");
                 let start = self.widen_index(&start, &args[1].ty);
@@ -247,11 +247,45 @@ impl Emitter<'_, '_> {
                 let operand = self.assign(&format!("select i1 {valid}, {} {}, {} {}", some.ty, some.operand, none.ty, none.operand));
                 Ok(Some(Value { ty: some.ty, operand }))
             }
-            Intrinsic::ArrayReserve => {
-                let count = self.expr(&args[1])?.expect("a count has a value");
-                self.reserve(&array, &elem, &count.operand, span).map(Some)
-            }
         }
+    }
+
+    /// `push` and `reserve`, which change the array at the receiver's place (a temporary's,
+    /// if the receiver is no place). The argument is evaluated after the place and before
+    /// the array is read, so an argument that changes the same array is seen.
+    fn grow_in_place(&mut self, op: Intrinsic, args: &[IrExpr], elem: &Type, span: Span) -> Result<Option<Value>, CodegenError> {
+        let place = match self.place(&args[0])? {
+            Some(place) => place,
+            None => {
+                let value = self.expr(&args[0])?;
+                let temp = self.slot(None, &args[0].ty, span)?;
+                self.store(&temp, value.as_ref());
+                temp
+            }
+        };
+        let arg = self.expr(&args[1])?;
+        let array = self.load(&place).expect("an array has a value");
+        let a = &array.operand;
+        let data = self.assign(&format!("extractvalue {ARRAY} {a}, 0"));
+        let length = self.assign(&format!("extractvalue {ARRAY} {a}, 1"));
+        let capacity = self.assign(&format!("extractvalue {ARRAY} {a}, 2"));
+        let Some(llvm) = self.value_type(elem, span)? else {
+            // Unit elements occupy no storage: only a push changes anything, the length.
+            if op == Intrinsic::ArrayPush {
+                let longer = self.assign(&format!("add i64 {length}, 1"));
+                let grown = self.array_value(data, longer.clone(), longer);
+                self.store(&place, Some(&grown));
+            }
+            return Ok(None);
+        };
+        let grown = if op == Intrinsic::ArrayPush {
+            self.push(&data, &length, &capacity, &llvm, elem, arg.as_ref())
+        } else {
+            let count = arg.as_ref().expect("a count has a value");
+            self.reserve(&data, &length, &capacity, &llvm, elem, &count.operand)
+        };
+        self.store(&place, Some(&grown));
+        Ok(arg.filter(|_| op == Intrinsic::ArrayPush))
     }
 
     /// A `std.ffi` copy between Cooper and C data, of result type `result`.
@@ -417,38 +451,65 @@ impl Emitter<'_, '_> {
         Ok(self.array_value(storage, length.clone(), length))
     }
 
-    /// `array.reserve(n)`: the array itself when its spare capacity holds `n` more
-    /// elements, otherwise a copy with capacity for the larger of `length + n` and
-    /// twice the current capacity. A negative `n` reserves nothing.
-    fn reserve(&mut self, array: &Value, elem: &Type, count: &str, span: Span) -> Result<Value, CodegenError> {
-        let Some(llvm) = self.value_type(elem, span)? else {
-            return Ok(array.clone());
-        };
-        let a = &array.operand;
-        let data = self.assign(&format!("extractvalue {ARRAY} {a}, 0"));
-        let length = self.assign(&format!("extractvalue {ARRAY} {a}, 1"));
-        let capacity = self.assign(&format!("extractvalue {ARRAY} {a}, 2"));
+    /// `reserve(n)` on the array of storage `data`, `length`, and `capacity`: the array
+    /// itself when `n` more elements fit in spare capacity it owns, otherwise a copy with
+    /// capacity for the larger of `length + n` and twice the current capacity. A negative
+    /// `n` reserves nothing.
+    fn reserve(&mut self, data: &str, length: &str, capacity: &str, llvm: &str, elem: &Type, count: &str) -> Value {
         let negative = self.assign(&format!("icmp slt i64 {count}, 0"));
         let wanted = self.assign(&format!("select i1 {negative}, i64 0, i64 {count}"));
-        let spare = self.assign(&format!("sub i64 {capacity}, {length}"));
-        let fits = self.assign(&format!("icmp ule i64 {wanted}, {spare}"));
+        let nothing = self.assign(&format!("icmp eq i64 {wanted}, 0"));
         let from = self.current.clone();
+        let sized = self.fresh("sized");
         let grow = self.fresh("reserve");
         let ready = self.fresh("reserved");
-        self.terminate(&format!("br i1 {fits}, label %{ready}, label %{grow}"));
+        self.terminate(&format!("br i1 {nothing}, label %{ready}, label %{sized}"));
+        self.start_block(&sized);
+        let spare = self.assign(&format!("sub i64 {capacity}, {length}"));
+        let fits = self.assign(&format!("icmp ule i64 {wanted}, {spare}"));
+        let (_, owned) = self.owned_room(data, length, capacity, llvm, &fits, &grow, &ready);
         self.start_block(&grow);
         let needed = self.assign(&format!("add i64 {length}, {wanted}"));
         let doubled = self.assign(&format!("shl i64 {capacity}, 1"));
         let more = self.assign(&format!("icmp ugt i64 {needed}, {doubled}"));
         let grown_capacity = self.assign(&format!("select i1 {more}, i64 {needed}, i64 {doubled}"));
-        let grown = self.grown(&data, &length, &grown_capacity, &llvm, elem);
+        let grown = self.grown(data, length, &grown_capacity, llvm, elem);
         let grown_from = self.current.clone();
         self.start_block(&ready);
-        let storage = self.assign(&format!("phi ptr [ {data}, %{from} ], [ {grown}, %{grown_from} ]"));
-        let room = self.assign(&format!(
-            "phi i64 [ {capacity}, %{from} ], [ {grown_capacity}, %{grown_from} ]"
+        let storage = self.assign(&format!(
+            "phi ptr [ {data}, %{from} ], [ {data}, %{owned} ], [ {grown}, %{grown_from} ]"
         ));
-        Ok(self.array_value(storage, length, room))
+        let room = self.assign(&format!(
+            "phi i64 [ {capacity}, %{from} ], [ {capacity}, %{owned} ], [ {grown_capacity}, %{grown_from} ]"
+        ));
+        self.array_value(storage, length.to_string(), room)
+    }
+
+    /// Branch to `ready` when `fits` holds and the spare capacity of storage `data` is this
+    /// array's to write, which its ownership word (see `cooper_array_grow`) records: the
+    /// slot it holds is the one after this array's last element. Branch to `grow` otherwise.
+    /// Gives the address of that first spare slot and the block that branches to `ready`.
+    #[allow(clippy::too_many_arguments)]
+    fn owned_room(&mut self, data: &str, length: &str, capacity: &str, llvm: &str, fits: &str, grow: &str, ready: &str) -> (String, String) {
+        let check = self.fresh("owned");
+        self.terminate(&format!("br i1 {fits}, label %{check}, label %{grow}"));
+        self.start_block(&check);
+        let slot = self.assign(&format!("getelementptr {llvm}, ptr {data}, i64 {length}"));
+        let word = self.ownership_word(data, capacity, llvm);
+        let next = self.assign(&format!("load ptr, ptr {word}"));
+        let owned = self.assign(&format!("icmp eq ptr {next}, {slot}"));
+        self.terminate(&format!("br i1 {owned}, label %{ready}, label %{grow}"));
+        (slot, check)
+    }
+
+    /// The address of the ownership word of storage `data` with room for `capacity`
+    /// elements of LLVM type `llvm`: after the elements, rounded up to 8 bytes.
+    fn ownership_word(&mut self, data: &str, capacity: &str, llvm: &str) -> String {
+        let size = self.size_of(llvm);
+        let bytes = self.assign(&format!("mul i64 {capacity}, {size}"));
+        let padded = self.assign(&format!("add i64 {bytes}, 7"));
+        let offset = self.assign(&format!("and i64 {padded}, -8"));
+        self.assign(&format!("getelementptr i8, ptr {data}, i64 {offset}"))
     }
 
     /// Fresh storage for `capacity` elements of LLVM type `llvm`, holding a copy of the
@@ -472,40 +533,33 @@ impl Emitter<'_, '_> {
         self.aggregate(ARRAY, fields)
     }
 
-    /// `array.push(value)`: the array with `value` appended. Spare capacity is written
-    /// in place, so the result shares the original's storage; a full array is copied
-    /// into fresh storage of twice the capacity (at least four) first.
-    fn push(&mut self, array: &Value, elem: &Type, value: Option<Value>, span: Span) -> Result<Value, CodegenError> {
-        let a = &array.operand;
-        let data = self.assign(&format!("extractvalue {ARRAY} {a}, 0"));
-        let length = self.assign(&format!("extractvalue {ARRAY} {a}, 1"));
-        let capacity = self.assign(&format!("extractvalue {ARRAY} {a}, 2"));
-        let Some(llvm) = self.value_type(elem, span)? else {
-            let longer = self.assign(&format!("add i64 {length}, 1"));
-            return Ok(self.array_value(data, longer.clone(), longer));
-        };
-        let full = self.assign(&format!("icmp eq i64 {length}, {capacity}"));
-        let from = self.current.clone();
+    /// `push(value)` on the array of storage `data`, `length`, and `capacity`: the array
+    /// with `value` appended. Spare capacity the array owns is written in place; otherwise
+    /// the elements are first copied into fresh storage of twice the length (at least four).
+    fn push(&mut self, data: &str, length: &str, capacity: &str, llvm: &str, elem: &Type, value: Option<&Value>) -> Value {
         let grow = self.fresh("grow");
         let ready = self.fresh("ready");
-        self.terminate(&format!("br i1 {full}, label %{grow}, label %{ready}"));
+        let fits = self.assign(&format!("icmp ult i64 {length}, {capacity}"));
+        let (slot, owned) = self.owned_room(data, length, capacity, llvm, &fits, &grow, &ready);
         self.start_block(&grow);
-        let empty = self.assign(&format!("icmp eq i64 {capacity}, 0"));
-        let doubled = self.assign(&format!("shl i64 {capacity}, 1"));
+        let empty = self.assign(&format!("icmp eq i64 {length}, 0"));
+        let doubled = self.assign(&format!("shl i64 {length}, 1"));
         let grown_capacity = self.assign(&format!("select i1 {empty}, i64 4, i64 {doubled}"));
-        let grown = self.grown(&data, &length, &grown_capacity, &llvm, elem);
+        let grown = self.grown(data, length, &grown_capacity, llvm, elem);
+        let grown_slot = self.assign(&format!("getelementptr {llvm}, ptr {grown}, i64 {length}"));
         let grown_from = self.current.clone();
         self.start_block(&ready);
-        let storage = self.assign(&format!("phi ptr [ {data}, %{from} ], [ {grown}, %{grown_from} ]"));
-        let room = self.assign(&format!(
-            "phi i64 [ {capacity}, %{from} ], [ {grown_capacity}, %{grown_from} ]"
-        ));
-        let slot = self.assign(&format!("getelementptr {llvm}, ptr {storage}, i64 {length}"));
+        let storage = self.assign(&format!("phi ptr [ {data}, %{owned} ], [ {grown}, %{grown_from} ]"));
+        let room = self.assign(&format!("phi i64 [ {capacity}, %{owned} ], [ {grown_capacity}, %{grown_from} ]"));
+        let slot = self.assign(&format!("phi ptr [ {slot}, %{owned} ], [ {grown_slot}, %{grown_from} ]"));
         if let Some(value) = value {
             self.inst(&format!("store {llvm} {}, ptr {slot}", value.operand));
         }
+        let next = self.assign(&format!("getelementptr {llvm}, ptr {slot}, i64 1"));
+        let word = self.ownership_word(&storage, &room, llvm);
+        self.inst(&format!("store ptr {next}, ptr {word}"));
         let longer = self.assign(&format!("add i64 {length}, 1"));
-        Ok(self.array_value(storage, longer, room))
+        self.array_value(storage, longer, room)
     }
 
     /// Frame storage for one value of LLVM type `llvm`, reserved in the entry block.

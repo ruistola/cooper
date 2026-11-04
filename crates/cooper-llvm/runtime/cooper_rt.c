@@ -70,14 +70,25 @@ int32_t cooper_string_eq(const char *a, uint64_t a_len, const char *b, uint64_t 
 }
 
 /* Fresh element storage of `capacity` elements of `size` bytes, holding a copy of the
-   `len` elements at `data`. */
+   `len` elements at `data`. Storage with spare capacity ends in its ownership word: at the
+   elements' size rounded up to 8 bytes, the address of the slot after the last element any
+   copy of the array has pushed. A push writes into spare capacity only when that slot is
+   right after its own last element, so copies sharing the storage never write the same slot;
+   the generated push and reserve read and advance the word. */
 void *cooper_array_grow(const void *data, uint64_t len, uint64_t capacity, uint64_t size,
                         const CooperType *elem) {
-    if (size && capacity > UINT64_MAX / size) {
+    if (size && capacity > (UINT64_MAX - 15) / size) {
         cooper_panic("array too large");
     }
-    void *grown = cooper_alloc(capacity * size, elem);
+    if (capacity == len) {
+        void *copy = cooper_alloc(capacity * size, elem);
+        if (len) memcpy(copy, data, len * size);
+        return copy;
+    }
+    uint64_t word = (capacity * size + 7) & ~(uint64_t)7;
+    char *grown = cooper_alloc_with_word(word, elem);
     if (len) memcpy(grown, data, len * size);
+    *(char **)(grown + word) = grown + len * size;
     return grown;
 }
 

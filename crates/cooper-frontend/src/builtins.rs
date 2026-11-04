@@ -9,9 +9,10 @@
 //! (`at`, `set`, …), visibly userspace — because the ergonomic surface (addressable
 //! elements, copy/view slicing) is reachable only for types whose representation the
 //! compiler controls. The planned built-in set that carries this sugar is static and
-//! dynamic arrays, hashmaps, and hashsets. Growth (`push`, `reserve`) follows the
-//! return-value idiom, and `copy` makes the independent copy that assignment and
-//! slicing, which share elements, do not. The bodies are intrinsics the lowering IR realises behind the runtime
+//! dynamic arrays, hashmaps, and hashsets. Growth (`push`, `reserve`) changes the array
+//! in place, as a pointer-receiver method does, and `copy` makes the independent copy
+//! that assignment and slicing, which share elements, do not. The bodies are intrinsics
+//! the lowering IR realises behind the runtime
 //! boundary; only the signatures live here, so a call site type-checks through the same
 //! method-access path as any other method.
 //!
@@ -47,15 +48,15 @@ pub(crate) fn array_method(name: &str, elem: &Type) -> Option<Type> {
         "length" => Some(func(Vec::new(), index_type())),
         "get" => Some(func(vec![index_type()], elem.clone())),
         "set" => Some(func(vec![index_type(), elem.clone()], Type::Unit)),
-        // Growth follows the return-value idiom: an append may hand back the same
-        // array (spare capacity) or a fresh one (a full owner, or any view), so `push`
-        // returns the possibly-new array rather than mutating in place.
-        "push" => Some(func(vec![elem.clone()], Type::Array(Box::new(elem.clone())))),
+        // Growth changes the receiver's length (and storage) in place, so the receiver is
+        // taken by address as for a pointer-receiver method. `push` gives back the element,
+        // for using it after appending it.
+        "push" => Some(func(vec![elem.clone()], elem.clone())),
         // A fresh array holding a copy of the elements, as assignment and slicing share
         // them.
         "copy" => Some(func(Vec::new(), Type::Array(Box::new(elem.clone())))),
-        // Room for at least `n` more elements, by the same return-value idiom as `push`.
-        "reserve" => Some(func(vec![index_type()], Type::Array(Box::new(elem.clone())))),
+        // Room for at least `n` more elements.
+        "reserve" => Some(func(vec![index_type()], Type::Unit)),
         // A byte array read as UTF-8 text, copied: `None` unless every byte sequence is valid.
         "utf8" if matches!(elem, Type::Primitive(name) if name == "u8") => {
             let id = crate::types::TypeId {

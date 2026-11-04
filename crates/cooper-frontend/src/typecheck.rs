@@ -348,13 +348,23 @@ impl<'g> TypeChecker<'g> {
         bound
     }
 
+    /// The element type of an array, or of the array a pointer targets: indexing, slicing,
+    /// and iteration dereference a pointer, which has no such operations of its own.
     fn array_element(&mut self, ty: &Type) -> Option<Type> {
-        if let Type::StaticArray(elem, _) = self.infer.resolve(ty) {
-            return Some(*elem);
+        let ty = self.through_pointer(ty);
+        if let Type::StaticArray(elem, _) = &ty {
+            return Some((**elem).clone());
         }
         let elem = self.infer.fresh(InferKind::General);
-        self.infer.unify(ty, &Type::Array(Box::new(elem.clone()))).ok()?;
+        self.infer.unify(&ty, &Type::Array(Box::new(elem.clone()))).ok()?;
         Some(elem)
+    }
+
+    fn through_pointer(&self, ty: &Type) -> Type {
+        match self.infer.resolve(ty) {
+            Type::Pointer(target) => *target,
+            ty => ty,
+        }
     }
 
     fn is_string(&mut self, ty: &Type) -> bool {

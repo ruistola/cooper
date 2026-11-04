@@ -226,9 +226,9 @@ func flatten T (e: Event T, branches: (Branch T)[]^, nacks: NackRange[]^) {
         Guard(f) => flatten(f(), branches, nacks)
         Nack(f) => {
             let latch: Latch
-            from := branches^.length()
+            from := branches.length()
             flatten(f(latch.releasedEvent()), branches, nacks)
-            nacks.push(NackRange{from: from, to: branches^.length(), latch: &latch})
+            nacks.push(NackRange{from: from, to: branches.length(), latch: &latch})
         }
     }
 }

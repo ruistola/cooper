@@ -290,7 +290,8 @@ impl<'g> TypeChecker<'g> {
         for bound in start.into_iter().chain(end) {
             self.check_index_value(bound)?;
         }
-        let Some(elem) = elem.filter(|_| matches!(self.infer.resolve(&array_type), Type::StaticArray(..))) else {
+        let array_type = self.through_pointer(&array_type);
+        let Some(elem) = elem.filter(|_| matches!(array_type, Type::StaticArray(..))) else {
             return Some(array_type);
         };
         // A slice shares the array's elements, so the array must be stored somewhere.
@@ -348,7 +349,7 @@ impl<'g> TypeChecker<'g> {
                 None => false,
             },
             ExprKind::Index { array, .. } => match self.check_expr(array) {
-                Some(Type::Array(_)) => true,
+                Some(Type::Array(_) | Type::Pointer(_)) => true,
                 Some(Type::StaticArray(..)) => self.is_addressable(array),
                 _ => false,
             },

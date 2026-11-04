@@ -11,10 +11,12 @@
 # stdout: Pixel{rgb: [0, 200, 7], tag: 0} [0, 200, 7]
 # stdout: [100, 2, 55, 4]
 # stdout: 1
+# stdout: [1, 2, 3] 6
 # Static arrays `T[N]`: zero values, array literals checked against the length, copying on
 # assignment and when passed or returned, indexing and `for`, `length()`, slicing to share
 # the elements as a `T[]` (whose `push` leaves the array alone), arrays inside structs and
-# of arrays (`i32[3][2]` is two rows of three), and pointers to elements.
+# of arrays (`i32[3][2]` is two rows of three), pointers to elements, and indexing, slicing,
+# and iteration through a pointer to the array.
 use {
   std.io.println,
 }
@@ -44,6 +46,11 @@ func double(a: i32[4]): i32[4] {
 
 func fill(): i32[3] {
   return [7, 8, 9]
+}
+
+func count(a: i32[3]^): i32 {
+  for i in 0..a.length() do a[i] = i32(i) + 1
+  return sum(a[..])
 }
 
 func main() {
@@ -81,4 +88,7 @@ func main() {
   let big: i64[1000]
   big[999] = 1
   println("{big[999] + big[0]}")
+  let counted: i32[3]
+  total := count(&counted)
+  println("{counted} {total}")
 }

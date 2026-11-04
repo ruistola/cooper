@@ -966,7 +966,7 @@ impl Lower<'_> {
                 // Array iteration drives from the backing's length and reads each
                 // element; it binds either `[elem]` or `[index, elem]`.
                 _ => {
-                    let array = self.expr(iterable)?;
+                    let array = self.array_operand(iterable)?;
                     let elem_ty = match &array.ty {
                         Type::Array(elem) | Type::StaticArray(elem, _) => (**elem).clone(),
                         // A string yields its runes.
@@ -1212,7 +1212,7 @@ impl Lower<'_> {
             },
             ExprKind::Index { array, index } => IrExprKind::Intrinsic {
                 op: Intrinsic::ArrayGet,
-                args: vec![self.expr(array)?, self.expr(index)?],
+                args: vec![self.array_operand(array)?, self.expr(index)?],
             },
             ExprKind::Deref(operand) => IrExprKind::Deref(Box::new(self.expr(operand)?)),
             ExprKind::AddressOf(operand) => match &strip_group(operand).kind {
@@ -1220,7 +1220,7 @@ impl Lower<'_> {
                 // abstract intrinsic rather than an address of an ordinary place.
                 ExprKind::Index { array, index } => IrExprKind::Intrinsic {
                     op: Intrinsic::ArrayElementPtr,
-                    args: vec![self.expr(array)?, self.expr(index)?],
+                    args: vec![self.array_operand(array)?, self.expr(index)?],
                 },
                 _ => IrExprKind::AddressOf(Box::new(self.expr(operand)?)),
             },
@@ -1608,6 +1608,15 @@ impl Lower<'_> {
         exprs.iter().map(|e| self.expr(e)).collect()
     }
 
+    /// The array operand of indexing, slicing, iteration, or a built-in array method,
+    /// dereferenced when the source names a pointer to the array.
+    fn array_operand(&self, array: &Expr) -> Result<IrExpr, LowerError> {
+        let array = self.expr(array)?;
+        let Type::Pointer(target) = &array.ty else { return Ok(array) };
+        let (ty, span) = ((**target).clone(), array.span);
+        Ok(IrExpr { kind: IrExprKind::Deref(Box::new(array)), ty, span })
+    }
+
     /// Lower an indexed assignment `a[i] <op>= v` to an `ArraySet` intrinsic. A plain
     /// `=` stores the value directly; a compound `+=`/`-=`/`*=`/`/=` reads the current
     /// element via `ArrayGet` and stores the combined result, since indexed places
@@ -1619,7 +1628,7 @@ impl Lower<'_> {
         index: &Expr,
         value: &Expr,
     ) -> Result<IrExprKind, LowerError> {
-        let array = self.expr(array)?;
+        let array = self.array_operand(array)?;
         let index = self.expr(index)?;
         let value = self.expr(value)?;
         let elem_ty = match &array.ty {
@@ -1901,7 +1910,7 @@ impl Lower<'_> {
                 span,
             },
         };
-        let mut args = vec![self.expr(array)?, start];
+        let mut args = vec![self.array_operand(array)?, start];
         if let Some(end) = end {
             args.push(self.expr(end)?);
         }
@@ -1927,10 +1936,9 @@ impl Lower<'_> {
         let ExprKind::Field { target, name, .. } = &callee.kind else {
             return Ok(None);
         };
-        let through_pointer = matches!(self.types.get(&target.span), Some(Type::Pointer(inner)) if matches!(**inner, Type::Array(_)));
         match self.types.get(&target.span) {
             Some(Type::Array(_) | Type::StaticArray(..)) => {}
-            _ if through_pointer => {}
+            Some(Type::Pointer(inner)) if matches!(**inner, Type::Array(_) | Type::StaticArray(..)) => {}
             Some(ty) if is_string(ty) && matches!(name.as_str(), "length" | "byteAt" | "data") => {
                 let mut lowered = vec![self.expr(target)?];
                 for arg in args {
@@ -1955,13 +1963,7 @@ impl Lower<'_> {
             "utf8" => Intrinsic::ArrayUtf8,
             _ => unreachable!("a checked array method names a blessed method"),
         };
-        let mut receiver = self.expr(target)?;
-        if through_pointer {
-            let Type::Pointer(inner) = &receiver.ty else { unreachable!("checked above") };
-            let ty = (**inner).clone();
-            receiver = IrExpr { kind: IrExprKind::Deref(Box::new(receiver)), ty, span: target.span };
-        }
-        let mut lowered = vec![receiver];
+        let mut lowered = vec![self.array_operand(target)?];
         for arg in args {
             lowered.push(self.expr(arg)?);
         }

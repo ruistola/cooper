@@ -1,6 +1,7 @@
 # exit: 0
 # Arrays: literals, indexing, assignment through an index, growth with `push`,
-# iteration, element pointers, nested arrays, and shared elements between copies.
+# iteration, element pointers, nested arrays, shared elements between copies, and
+# indexing, slicing, and iterating through a pointer to an array.
 struct Point {
     x: i32,
     y: i32,
@@ -16,6 +17,12 @@ func fill(n: i32): i32[] {
     let out: i32[] = []
     for i in 0..n do out.push(i * i)
     return out
+}
+
+# Indexing, slicing, and iteration dereference a pointer to an array.
+func appendDoubled(xs: i32[]^) {
+    for x in xs[..] do xs.push(x * 2)
+    xs[0] += 100
 }
 
 func main(): i32 {
@@ -52,5 +59,9 @@ func main(): i32 {
     let none: i32[]
     if none.length() != 0 then return 10
     for x in none do return 11
+
+    doubled := [1, 2]
+    appendDoubled(&doubled)
+    if doubled.length() != 4 or doubled[0] != 101 or doubled[3] != 4 then return 12
     return 0
 }

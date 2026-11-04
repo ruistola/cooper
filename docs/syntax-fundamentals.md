@@ -218,7 +218,8 @@ Static arrays are not comparable with `==` yet.
 ## Pointers
 
 `T^` is a pointer to `T`. In value position the postfix `^` dereferences, prefix `&` takes an
-address, and member access dereferences automatically. The caret is used only for pointers.
+address, and member access dereferences automatically, as do indexing, slicing, and `for` on a
+pointer to an array. The caret is used only for pointers.
 
 ```
 let p: Point^
@@ -228,6 +229,7 @@ let sp: Point[]^         # pointer to an array
 
 p^.value = 10            # explicit dereference
 let x: i32 = p.value     # automatic dereference
+sp[0] = p^               # an element of the array sp points to
 ```
 
 `nil` is the value of a pointer with no target. Dereferencing it yields zero values (see

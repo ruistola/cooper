@@ -242,7 +242,8 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
 ## Behaviors worth remembering
 
 * Values are stored inline and copied on assignment. Arrays share their elements, and
-  pointers share their target. `xs.push(v)` grows `xs` alone; to grow a caller's array, pass `T[]^`.
+  pointers share their target. `xs.push(v)` grows `xs` alone; to grow a caller's array, pass `T[]^`,
+  which indexes, slices, and iterates like the array itself.
 * Every type has a zero value, and `let x: T` alone holds it. Dereferencing `nil` yields zero
   values and discards writes; it does not fault. A sum type's zero value is its first variant,
   so list a lone payloadless variant first.

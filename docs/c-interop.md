@@ -28,6 +28,7 @@ and its declaration is the visible marker of that.
 | `bool` | `bool` (`_Bool`) |
 | `T^` (`nil` is `NULL`) | `T *` |
 | a struct of these, nested structs included | the struct with the same members in order |
+| an `extern union` of these | the union with the same members |
 | no return type | `void` |
 
 A Cooper struct is laid out in declaration order with C alignment, so it matches the C struct
@@ -40,10 +41,11 @@ pointer: pass `&a[0]`.
 ```
 struct DivT { quot: i32, rem: i32 }
 extern func div(a: i32, b: i32): DivT     # the C library's div_t div(int, int)
-``` A C buffer is a `u8^`, and `&xs[0]`
-points into an array's storage, so C can read or fill a Cooper buffer. A string's bytes are
-reached with `s.data()`, a `u8^` to the first byte (with no terminating NUL) that C must not
-write through:
+```
+
+A C buffer is a `u8^`, and `&xs[0]` points into an array's storage, so C can read or fill
+a Cooper buffer. A string's bytes are reached with `s.data()`, a `u8^` to the first byte
+(with no terminating NUL) that C must not write through:
 
 ```
 let bytes: u8[] = [104, 105, 0]
@@ -51,6 +53,28 @@ n := strlen(&bytes[0])            # 2
 ```
 
 C may use a Cooper pointer for the duration of a call, but must not keep it afterwards.
+
+## Unions
+
+An `extern union` declares a C union: its members overlap, each starting at the union's first
+byte, and the union is as large as its largest member and aligned as its most aligned one.
+
+```
+extern union Value { n: i64, f: f64, p: u8^, bytes: u8[8] }
+
+struct Event { kind: i32, value: Value }   # struct { int32_t kind; union { … } value; }
+```
+
+A member is any type that crosses to C, or a static array of such values. There is no tag:
+writing a member overwrites the bytes the others read, and reading a member that was not
+written last reinterprets those bytes, as in C. A literal sets exactly one member, over zeroed
+bytes (`Value{f: 1.5}`), and the zero value is all zero bytes.
+
+An `extern union` is a value type like a struct: it is copied, passed to C by value or through a
+pointer, and held in structs, arrays, and other unions. Since its current member is unknown, it
+cannot be compared with `==` or used as a map key, and `string(v)` shows only its name
+(`Value{...}`). It cannot be generic. A word that is a pointer in some member keeps its target
+alive while the union is reachable, whichever member it currently holds.
 
 ## Strings and buffers
 

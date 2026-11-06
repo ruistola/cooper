@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::{FuncDecl, Stmt, StmtKind, TypeExpr, TypeExprKind, TypedIdent, VariantDef};
 use crate::diag::{Diagnostic, Span};
-use crate::types::{is_primitive_name, OneofDef, StructDef, Type, TypeDefs, TypeId};
+use crate::types::{is_primitive_name, StructDef, Type, TypeDefs, TypeId, UnionDef};
 
 /// The module-wide symbol table produced by resolution. Structs, sum types, and
 /// functions are global (only variables are block-scoped), so later passes read
@@ -80,7 +80,7 @@ pub struct Globals {
     /// Struct names in scope, by local spelling, to their identities.
     pub structs: HashMap<String, TypeId>,
     /// Sum type names in scope, by local spelling, to their identities.
-    pub oneofs: HashMap<String, TypeId>,
+    pub unions: HashMap<String, TypeId>,
     /// The definitions of every type reachable from this table, including those
     /// only reachable through another type's members.
     pub defs: TypeDefs,
@@ -114,8 +114,8 @@ impl Globals {
     }
 
     /// The sum type named `name` in scope, as its type (a generic one's template).
-    pub fn lookup_oneof(&self, name: &str) -> Option<Type> {
-        self.oneofs.get(name).map(|id| Type::Oneof {
+    pub fn lookup_union(&self, name: &str) -> Option<Type> {
+        self.unions.get(name).map(|id| Type::Union {
             id: id.clone(),
             type_args: Vec::new(),
         })
@@ -130,10 +130,10 @@ impl Globals {
     }
 
     /// The identity of the sum type `name` names: a sum type, or an alias of one.
-    pub fn oneof_id(&self, name: &str) -> Option<TypeId> {
+    pub fn union_id(&self, name: &str) -> Option<TypeId> {
         match self.aliases.get(name) {
-            Some(Type::Oneof { id, .. }) => Some(id.clone()),
-            _ => self.oneofs.get(name).cloned(),
+            Some(Type::Union { id, .. }) => Some(id.clone()),
+            _ => self.unions.get(name).cloned(),
         }
     }
 
@@ -141,8 +141,8 @@ impl Globals {
     /// `Maybe.Some`): the declaration, or the type an alias of one stands for.
     pub fn lookup_type_value(&self, name: &str) -> Option<Type> {
         self.lookup_struct(name)
-            .or_else(|| self.lookup_oneof(name))
-            .or_else(|| self.aliases.get(name).filter(|t| matches!(t, Type::Struct { .. } | Type::Oneof { .. })).cloned())
+            .or_else(|| self.lookup_union(name))
+            .or_else(|| self.aliases.get(name).filter(|t| matches!(t, Type::Struct { .. } | Type::Union { .. })).cloned())
     }
 
     pub fn lookup_func(&self, name: &str) -> Option<&Signature> {
@@ -155,7 +155,7 @@ impl Globals {
 
     fn type_name_taken(&self, name: &str) -> bool {
         self.structs.contains_key(name)
-            || self.oneofs.contains_key(name)
+            || self.unions.contains_key(name)
             || self.aliases.contains_key(name)
             || self.alias_spans.contains_key(name)
     }
@@ -188,9 +188,9 @@ pub fn declare_types(globals: &mut Globals, decls: &[Stmt], diags: &mut Vec<Diag
             }
             continue;
         }
-        let (name, type_params, is_struct) = match &stmt.kind {
-            StmtKind::StructDecl { name, type_params, .. } => (name, type_params, true),
-            StmtKind::OneofDecl { name, type_params, .. } => (name, type_params, false),
+        let (name, type_params, kind) = match &stmt.kind {
+            StmtKind::StructDecl { name, type_params, extern_union, .. } => (name, type_params, Some(*extern_union)),
+            StmtKind::UnionDecl { name, type_params, .. } => (name, type_params, None),
             _ => continue,
         };
         if globals.type_name_taken(name) {
@@ -205,12 +205,12 @@ pub fn declare_types(globals: &mut Globals, decls: &[Stmt], diags: &mut Vec<Diag
             name: name.clone(),
         };
         let type_params = type_params.clone();
-        if is_struct {
+        if let Some(extern_union) = kind {
             globals.structs.insert(name.clone(), id.clone());
-            globals.defs.structs.insert(id.clone(), StructDef { type_params, ..Default::default() });
+            globals.defs.structs.insert(id.clone(), StructDef { type_params, extern_union, ..Default::default() });
         } else {
-            globals.oneofs.insert(name.clone(), id.clone());
-            globals.defs.oneofs.insert(id.clone(), OneofDef { type_params, ..Default::default() });
+            globals.unions.insert(name.clone(), id.clone());
+            globals.defs.unions.insert(id.clone(), UnionDef { type_params, ..Default::default() });
         }
         globals.pending.insert(id);
     }
@@ -289,12 +289,12 @@ pub fn define_types(globals: &mut Globals, decls: &[Stmt], diags: &mut Vec<Diagn
                 members,
                 ..
             } => define_struct(globals, diags, name, type_params, members, stmt.span),
-            StmtKind::OneofDecl {
+            StmtKind::UnionDecl {
                 name,
                 type_params,
                 variants,
                 ..
-            } => define_oneof(globals, diags, name, type_params, variants, stmt.span),
+            } => define_union(globals, diags, name, type_params, variants, stmt.span),
             _ => {}
         }
     }
@@ -323,11 +323,12 @@ pub fn resolve_signatures(globals: &mut Globals, decls: &[Stmt], diags: &mut Vec
 /// through members, tuple elements, or variant payloads, possibly via other types
 /// or type arguments — since such a value would be infinitely large. Recursion is
 /// legal only through a pointer or an array, which store their target out of line.
+/// An `extern union` must also have members, each of a type that crosses to C.
 pub fn check_type_sizes(globals: &Globals, decls: &[Stmt], diags: &mut Vec<Diagnostic>) {
     for stmt in decls {
         let ty = match &stmt.kind {
             StmtKind::StructDecl { name, .. } => globals.lookup_struct(name),
-            StmtKind::OneofDecl { name, .. } => globals.lookup_oneof(name),
+            StmtKind::UnionDecl { name, .. } => globals.lookup_union(name),
             _ => continue,
         };
         let Some(ty) = ty else { continue };
@@ -348,6 +349,19 @@ pub fn check_type_sizes(globals: &Globals, decls: &[Stmt], diags: &mut Vec<Diagn
                      recurse through a pointer `{spelled}^` or an array `{spelled}[]`"
                 ),
             ));
+        } else if let StmtKind::StructDecl { members, extern_union: true, .. } = &stmt.kind {
+            if members.is_empty() {
+                diags.push(Diagnostic::error(stmt.span, format!("extern union {ty} has no members")));
+            }
+            for member in members {
+                let Some(member_ty) = globals.defs.member(&ty, &member.name) else { continue };
+                if !c_compatible(&member_ty, &globals.defs) {
+                    diags.push(
+                        Diagnostic::error(member.ty.span, format!("type {member_ty} cannot be a member of an extern union"))
+                            .with_note("an extern union holds integers, floats, bool, pointers, arrays, structs, and unions of these"),
+                    );
+                }
+            }
         }
     }
 }
@@ -369,7 +383,7 @@ fn contains_by_value(ty: &Type, root: &Type, defs: &TypeDefs, path: &mut Vec<Typ
             .into_iter()
             .map(|(_, member)| member)
             .collect(),
-        Type::Oneof { .. } => defs
+        Type::Union { .. } => defs
             .variant_order(ty)
             .iter()
             .flat_map(|v| defs.payload(ty, v).unwrap_or_default())
@@ -393,7 +407,7 @@ fn contains_by_value(ty: &Type, root: &Type, defs: &TypeDefs, path: &mut Vec<Typ
 fn same_declaration(a: &Type, b: &Type) -> bool {
     match (a, b) {
         (Type::Struct { id: x, .. }, Type::Struct { id: y, .. })
-        | (Type::Oneof { id: x, .. }, Type::Oneof { id: y, .. }) => x == y,
+        | (Type::Union { id: x, .. }, Type::Union { id: y, .. }) => x == y,
         _ => false,
     }
 }
@@ -420,7 +434,7 @@ pub fn resolve_type(
             if let Some(alias) = globals.aliases.get(name) {
                 return Some(alias.clone());
             }
-            if let Some(ty) = globals.lookup_struct(name).or_else(|| globals.lookup_oneof(name)) {
+            if let Some(ty) = globals.lookup_struct(name).or_else(|| globals.lookup_union(name)) {
                 let arity = globals.defs.type_params(&ty).len();
                 if arity > 0 {
                     diags.push(Diagnostic::error(
@@ -506,7 +520,7 @@ fn resolve_type_application(
         diags.push(Diagnostic::error(span, format!("type alias {name} takes no type arguments")));
         return None;
     }
-    let Some(template) = globals.lookup_struct(name).or_else(|| globals.lookup_oneof(name)) else {
+    let Some(template) = globals.lookup_struct(name).or_else(|| globals.lookup_union(name)) else {
         diags.push(Diagnostic::error(
             span,
             format!("undefined generic type: {name}"),
@@ -539,7 +553,7 @@ fn resolve_type_application(
     }
     Some(match template {
         Type::Struct { id, .. } => Type::Struct { id, type_args: arg_types },
-        Type::Oneof { id, .. } => Type::Oneof { id, type_args: arg_types },
+        Type::Union { id, .. } => Type::Union { id, type_args: arg_types },
         other => other,
     })
 }
@@ -582,7 +596,7 @@ fn define_struct(
     }
 }
 
-fn define_oneof(
+fn define_union(
     globals: &mut Globals,
     diags: &mut Vec<Diagnostic>,
     name: &str,
@@ -590,7 +604,7 @@ fn define_oneof(
     variants: &[VariantDef],
     span: Span,
 ) {
-    let Some(id) = claim_pending(globals, globals.oneofs.get(name).cloned()) else {
+    let Some(id) = claim_pending(globals, globals.unions.get(name).cloned()) else {
         return;
     };
     check_type_param_binders(type_params, span, globals, diags);
@@ -614,7 +628,7 @@ fn define_oneof(
         resolved.insert(variant.name.clone(), slots);
         order.push(variant.name.clone());
     }
-    if let Some(def) = globals.defs.oneofs.get_mut(&id) {
+    if let Some(def) = globals.defs.unions.get_mut(&id) {
         def.variants = resolved;
         def.variant_order = order;
     }
@@ -636,7 +650,7 @@ fn resolve_var_decl(
     if globals.vars.contains_key(name)
         || globals.funcs.contains_key(name)
         || globals.structs.contains_key(name)
-        || globals.oneofs.contains_key(name)
+        || globals.unions.contains_key(name)
     {
         diags.push(Diagnostic::error(
             span,
@@ -741,18 +755,27 @@ fn c_callback(ty: &Type) -> bool {
 }
 
 /// Whether a value of type `ty` has a C counterpart with the same layout: an integer, a
-/// float, `bool`, a pointer, a non-empty array of such values (as a struct member), or a
-/// struct of at least one member, every member such a value. A struct cannot contain itself by value, so the recursion ends.
+/// float, `bool`, a pointer, a non-empty array of such values (as a member), or a struct or
+/// `extern union` of at least one member, every member such a value. A struct that
+/// contains itself by value is reported elsewhere, and has no counterpart here.
 fn c_compatible(ty: &Type, defs: &TypeDefs) -> bool {
-    match ty {
-        Type::Primitive(name) => name != "string" && name != "rune",
-        Type::Pointer(_) => true,
-        Type::StaticArray(elem, len) => *len > 0 && c_compatible(elem, defs),
-        Type::Struct { .. } => defs
-            .struct_members(ty)
-            .is_some_and(|members| !members.is_empty() && members.iter().all(|(_, m)| c_compatible(m, defs))),
-        _ => false,
+    fn walk(ty: &Type, defs: &TypeDefs, visiting: &mut Vec<Type>) -> bool {
+        match ty {
+            Type::Primitive(name) => name != "string" && name != "rune",
+            Type::Pointer(_) => true,
+            Type::StaticArray(elem, len) => *len > 0 && walk(elem, defs, visiting),
+            Type::Struct { .. } if visiting.iter().any(|seen| seen.equals(ty)) => false,
+            Type::Struct { .. } => {
+                let Some(members) = defs.struct_members(ty) else { return false };
+                visiting.push(ty.clone());
+                let compatible = !members.is_empty() && members.iter().all(|(_, m)| walk(m, defs, visiting));
+                visiting.pop();
+                compatible
+            }
+            _ => false,
+        }
     }
+    walk(ty, defs, &mut Vec::new())
 }
 
 fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &FuncDecl) {

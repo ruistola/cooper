@@ -139,7 +139,7 @@ fn size(ty: &Type) -> usize {
             return_type,
             param_types,
         } => size(return_type) + param_types.iter().map(size).sum::<usize>(),
-        Type::Struct { type_args, .. } | Type::Oneof { type_args, .. } => {
+        Type::Struct { type_args, .. } | Type::Union { type_args, .. } => {
             type_args.iter().map(size).sum()
         }
         Type::Unknown

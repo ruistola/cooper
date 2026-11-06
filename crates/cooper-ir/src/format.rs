@@ -199,6 +199,9 @@ impl Formatters<'_> {
                 body.extend(enclose("(", parts, ")", span));
                 body
             }
+            // Which member is current is unknown, and reading a pointer member that holds
+            // another member's bits would follow a stray address.
+            Type::Struct { id, .. } if self.defs.is_extern_union(ty) => vec![append_text(&format!("{}{{...}}", id.name), span)],
             Type::Struct { id, .. } => {
                 let members = self.defs.struct_members(ty).expect("a formatted struct is defined");
                 let parts = members
@@ -217,7 +220,7 @@ impl Formatters<'_> {
                     .collect();
                 enclose_all(&format!("{}{{", id.name), parts, "}", span)
             }
-            Type::Oneof { .. } => self.variants(ty, value, file, span),
+            Type::Union { .. } => self.variants(ty, value, file, span),
             Type::Array(elem) | Type::StaticArray(elem, _) => self.array(elem, value, file, span),
             Type::Pointer(target) => self.pointer(target, value, file, span),
             _ => unreachable!("a value of type {ty} is never formatted by a formatter"),
@@ -398,7 +401,7 @@ fn reaches_pointer(defs: &TypeDefs, ty: &Type, visiting: &mut Vec<Type>) -> bool
         Type::Pointer(_) => true,
         Type::Array(elem) | Type::StaticArray(elem, _) => reaches_pointer(defs, elem, visiting),
         Type::Tuple(elems) => elems.iter().any(|e| reaches_pointer(defs, e, visiting)),
-        Type::Struct { .. } | Type::Oneof { .. } => {
+        Type::Struct { .. } | Type::Union { .. } => {
             visiting.push(ty.clone());
             let parts: Vec<Type> = match ty {
                 Type::Struct { .. } => defs.struct_members(ty).unwrap_or_default().into_iter().map(|(_, t)| t).collect(),

@@ -25,7 +25,7 @@ struct Ranged {
 (r: Ranged) func isLethal(): bool { return r.damage > 50 and r.accuracy > 0.9 }
 (r: Ranged) func scaled(by: i32): i32 { return r.damage * by + 1 }
 
-oneof Attack {
+union Attack {
     Melee(Melee),
     Ranged(Ranged),
 }
@@ -50,7 +50,7 @@ struct Pair {
 
 (p: Pair) func get(): i32 { return p.a + p.b }
 
-oneof Holder {
+union Holder {
     Boxed(Box i32),
     Paired(Pair),
 }

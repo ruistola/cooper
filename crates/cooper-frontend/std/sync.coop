@@ -95,7 +95,7 @@ struct Queue V {
     limit: i64,
 }
 
-oneof Peer V {
+union Peer V {
     Nobody,
     Busy,
     Lost,
@@ -167,7 +167,7 @@ func pause(word: i64^) {
     cooper_lock(word)
 }
 
-oneof Outcome {
+union Outcome {
     Blocked,
     Committed,
     Retry,
@@ -200,7 +200,7 @@ struct Base {
 
 # An operation whose result is a `T`; nothing happens until `sync`. The zero value never commits. The variants
 # are the module's own: build events with the functions below.
-oneof Event T {
+union Event T {
     Choice((Event T)[]),
     Leaf(Base, func(): T),
     Guard(func(): Event T),

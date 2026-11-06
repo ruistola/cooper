@@ -64,7 +64,7 @@ pub(crate) fn array_method(name: &str, elem: &Type) -> Option<Type> {
                 name: "Maybe".to_string(),
             };
             let string = Type::Primitive("string".to_string());
-            Some(func(Vec::new(), Type::Oneof { id, type_args: vec![string] }))
+            Some(func(Vec::new(), Type::Union { id, type_args: vec![string] }))
         }
         _ => None,
     }

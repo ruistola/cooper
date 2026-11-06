@@ -106,7 +106,7 @@ fn unification_and_resolution_descend_through_composite_types() {
             Type::Array(Box::new(Type::Pointer(Box::new(elem.clone())))),
             Type::TypeParam("T".to_string()),
         ])],
-        return_type: Box::new(Type::Oneof {
+        return_type: Box::new(Type::Union {
             id: id("Maybe"),
             type_args: vec![Type::Struct { id: id("Box"), type_args: vec![elem] }],
         }),
@@ -136,7 +136,7 @@ fn structural_matching_preserves_arity_nominal_identity_and_rigid_parameters() {
         id: TypeId { module: "other".to_string(), name: "Box".to_string() },
         type_args: vec![prim("i32")],
     };
-    let sum = Type::Oneof { id: id("Box"), type_args: vec![prim("i32")] };
+    let sum = Type::Union { id: id("Box"), type_args: vec![prim("i32")] };
     let template = Type::Struct { id: id("Box"), type_args: vec![] };
     assert!(table.unify(&boxed, &other_module).is_err());
     assert!(table.unify(&boxed, &sum).is_err());

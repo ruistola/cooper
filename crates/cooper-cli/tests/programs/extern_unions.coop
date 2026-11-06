@@ -1,0 +1,47 @@
+# exit: 0
+# stdout: Bits{...} 4950
+# An `extern union` overlaps its members at offset zero, with C's size and alignment. A literal
+# sets one member over zeroed storage, writing a member reinterprets the bytes the others read,
+# and C can fill one through a pointer. A word that is a pointer in any member keeps its target
+# alive (the test harness also runs this collecting at every allocation).
+use { std.io.println }
+
+extern union Bits { f: f64, n: u64, bytes: u8[12] }
+struct Tagged { kind: u8, bits: Bits }
+
+struct Node { value: i32 }
+extern union Slot { node: Node^, n: i64 }
+
+extern func memset(p: Bits^, c: i32, n: u64): Bits^
+
+func fill(n: i32): Slot[] {
+    let slots: Slot[]
+    for i in 0..n do {
+        let node = Node{value: i}
+        slots.push(Slot{node: &node})
+    }
+    return slots
+}
+
+func main(): i32 {
+    b := Bits{f: 1.0}
+    if b.n != 0x3FF0000000000000 or b.bytes[8] != 0 then return 1
+    b.n = 0x0102
+    if b.bytes[0] != 2 or b.bytes[1] != 1 then return 2   # little-endian targets
+    let pair: Bits[2]
+    if u64(&pair[1]) - u64(&pair[0]) != 16 then return 3   # 12 bytes, aligned as an f64
+    let t: Tagged
+    if u64(&t.bits) - u64(&t) != 8 then return 4
+    memset(&b, 255, 16)
+    if b.n != 0xFFFFFFFFFFFFFFFF then return 5
+
+    slots := fill(100)
+    for j in 0..2000 do {
+        let junk: string[]
+        junk.push("garbage {j}")
+    }
+    let total = 0
+    for slot in slots do total += slot.node.value
+    println("{b} {total}")
+    return 0
+}

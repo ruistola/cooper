@@ -505,8 +505,10 @@ pub enum StmtKind {
         name_span: Span,
         type_params: Vec<String>,
         members: Vec<TypedIdent>,
+        /// An `extern union`: C's untagged union, every member at offset zero.
+        extern_union: bool,
     },
-    OneofDecl {
+    UnionDecl {
         name: String,
         name_span: Span,
         type_params: Vec<String>,

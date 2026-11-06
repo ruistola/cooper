@@ -128,7 +128,7 @@ fn a_type_may_refer_to_one_declared_later() {
 fn a_type_may_refer_to_itself_through_a_pointer_or_an_array() {
     ok(concat!(
         "struct Node {\n  next: Node^,\n  kids: Node[],\n}\n",
-        "oneof List T {\n  Nil,\n  Cons(T, (List T)^),\n}\n",
+        "union List T {\n  Nil,\n  Cons(T, (List T)^),\n}\n",
         "func f(n: Node): i32 {\n  return 0\n}",
     ));
 }
@@ -150,4 +150,24 @@ fn a_type_containing_itself_by_value_is_reported() {
 #[test]
 fn a_function_named_like_a_type_is_reported() {
     err("struct B {\n  x: i32,\n}\nfunc B() { }", "redeclared function B");
+}
+
+#[test]
+fn extern_union_members_must_cross_to_c() {
+    ok("struct Pair { a: i32, b: i32 }\nextern union Value { n: i64, f: f64, p: u8^, pair: Pair, bytes: u8[8] }");
+    err("extern union Value { n: i64, s: string }", "type string cannot be a member of an extern union");
+}
+
+#[test]
+fn extern_union_literal_sets_one_member() {
+    ok("extern union Value { n: i64, f: f64 }\nfunc f(): Value { return Value{f: 1.5} }");
+    err(
+        "extern union Value { n: i64, f: f64 }\nfunc f(): Value { return Value{n: 1, f: 1.5} }",
+        "a literal of extern union Value sets exactly one member",
+    );
+}
+
+#[test]
+fn extern_union_is_not_comparable() {
+    err("extern union Value { n: i64, f: f64 }\nfunc f(a: Value, b: Value): bool { return a == b }", "Value");
 }

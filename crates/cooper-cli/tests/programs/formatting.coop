@@ -14,7 +14,7 @@
 use { std.io as io }
 
 struct Point { x: i32, y: f64 }
-oneof Shape { Dot, Circle(f64), Rect(Point, Point) }
+union Shape { Dot, Circle(f64), Rect(Point, Point) }
 struct Node { value: i32, next: Node^ }
 struct Pair { left: Node^, right: Node^ }
 

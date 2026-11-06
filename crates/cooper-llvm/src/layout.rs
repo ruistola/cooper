@@ -2,7 +2,9 @@
 //!
 //! Scalars map to LLVM integer and float types, pointers to the opaque `ptr`, tuples to
 //! literal struct types, and each struct instantiation to a named struct type
-//! (`%QN4mainE5Point`, its mangled type name) whose fields follow declaration order. A
+//! (`%QN4mainE5Point`, its mangled type name) whose fields follow declaration order. An
+//! `extern union` is a named struct of its most aligned member padded to C's union size;
+//! its members are read and written through memory. A
 //! function value is a `{ code, env }` pointer pair, a string a `{ data, length }` pair,
 //! and an array a `{ data, length, capacity }` triple whose copies share elements. A
 //! sum type instantiation is a named struct of an `i32` tag (the variant's declaration
@@ -93,7 +95,7 @@ impl Module<'_> {
                 format!("{{ {} }}", fields.join(", "))
             }
             Type::Struct { .. } => self.struct_type(ty)?,
-            Type::Oneof { .. } => self.oneof_type(ty)?,
+            Type::Union { .. } => self.union_type(ty)?,
             Type::Infer(_) => unreachable!("inference variables are resolved before code generation"),
             _ => return Err(format!("values of type {ty}")),
         };
@@ -122,14 +124,27 @@ impl Module<'_> {
             .iter()
             .map(|(_, member)| self.field_type(member))
             .collect::<Result<Vec<_>, _>>()?;
+        let body = if self.defs.is_extern_union(ty) {
+            // As C compilers lay out a union: its most aligned member, padded to the size
+            // of the largest.
+            let size = self.gc_layout(ty).size;
+            let layouts: Vec<_> = members.iter().map(|(_, member)| self.gc_layout(member)).collect();
+            let first = (0..layouts.len()).max_by_key(|&i| layouts[i].align).unwrap_or(0);
+            match size - layouts[first].size {
+                0 => fields[first].clone(),
+                pad => format!("{}, [{pad} x i8]", fields[first]),
+            }
+        } else {
+            fields.join(", ")
+        };
         self.types
-            .insert(name.clone(), format!("{name} = type {{ {} }}", fields.join(", ")));
+            .insert(name.clone(), format!("{name} = type {{ {body} }}"));
         Ok(name)
     }
 
     /// The named LLVM struct type of sum type instantiation `ty`, defined on first use:
     /// a tag and a payload area large enough for every variant.
-    fn oneof_type(&mut self, ty: &Type) -> Result<String, Unsupported> {
+    fn union_type(&mut self, ty: &Type) -> Result<String, Unsupported> {
         let name = format!("%{}", mangle::type_name(ty));
         if self.types.contains_key(&name) {
             return Ok(name);
@@ -181,7 +196,7 @@ impl Module<'_> {
                 .iter()
                 .map(|(_, member)| self.size_bound(member).max(8))
                 .sum(),
-            Type::Oneof { .. } => {
+            Type::Union { .. } => {
                 let largest = self
                     .defs
                     .variant_order(ty)

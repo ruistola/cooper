@@ -70,7 +70,7 @@ impl<'g> TypeChecker<'g> {
         if let ObligationKind::Variant { result, payload: None, .. } = &obligation.kind {
             if !self.infer.is_bound(&obligation.subject) {
                 let expected = match self.infer.resolve(result) {
-                    sum @ Type::Oneof { .. } => Some(sum),
+                    sum @ Type::Union { .. } => Some(sum),
                     Type::Func { return_type, .. } => Some(*return_type),
                     _ => None,
                 };

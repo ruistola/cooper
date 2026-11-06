@@ -19,7 +19,7 @@ pub enum DeclKind {
     Method,
     Extern,
     Struct,
-    Oneof,
+    Union,
     Alias,
     Variable,
     Field,
@@ -194,8 +194,8 @@ impl<'p> Index<'p> {
                     self.add(None, make(&member.name, DeclKind::Field, member.name_span, member.span, ty, Some(name.clone())));
                 }
             }
-            StmtKind::OneofDecl { name, name_span, variants, .. } => {
-                self.add(None, make(name, DeclKind::Oneof, *name_span, stmt.span, None, None));
+            StmtKind::UnionDecl { name, name_span, variants, .. } => {
+                self.add(None, make(name, DeclKind::Union, *name_span, stmt.span, None, None));
                 for variant in variants {
                     self.add(None, make(&variant.name, DeclKind::Variant, variant.name_span, variant.span, None, Some(name.clone())));
                 }

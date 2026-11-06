@@ -3,8 +3,8 @@
 use crate::{ok, err};
 
 /// A shared sum-type preamble for the bare-variant cases.
-const RESULT: &str = "oneof Result T E {\n  Ok(T),\n  Err(E),\n}\n";
-const MAYBE: &str = "oneof Maybe T {\n  None,\n  Some(T),\n}\n";
+const RESULT: &str = "union Result T E {\n  Ok(T),\n  Err(E),\n}\n";
+const MAYBE: &str = "union Maybe T {\n  None,\n  Some(T),\n}\n";
 
 #[test]
 fn bare_variant_construction_uses_return_context() {
@@ -89,7 +89,7 @@ fn a_comparison_infers_a_variant_from_its_typed_partner_on_either_side() {
 #[test]
 fn a_comparison_of_two_bare_variants_has_no_context() {
     err(
-        "oneof Color {\n  Red,\n  Green,\n}\nfunc f(): bool {\n  return Red != Green\n}",
+        "union Color {\n  Red,\n  Green,\n}\nfunc f(): bool {\n  return Red != Green\n}",
         "cannot infer sum type for bare variant Red",
     );
 }

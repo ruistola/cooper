@@ -149,7 +149,7 @@ fn ty(out: &mut String, t: &Type) {
             out.push('E');
             ty(out, return_type);
         }
-        Type::Struct { id, type_args } | Type::Oneof { id, type_args } => {
+        Type::Struct { id, type_args } | Type::Union { id, type_args } => {
             out.push('Q');
             path(out, &id.module);
             ident(out, &id.name);

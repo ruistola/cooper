@@ -398,11 +398,15 @@ impl Emitter<'_, '_> {
         })
     }
 
-    /// The place of field `name` within the struct at `base`. A null base yields a
+    /// The place of field `name` within the struct at `base`, or of a member of the
+    /// `extern union` there, which is the union's own storage. A null base yields a
     /// null field place.
     fn field_place(&mut self, base: &Place, name: &str, span: Span) -> Result<Place, CodegenError> {
         let (index, ty) = self.module.field(&base.ty, name);
         let llvm = self.value_type(&ty, span)?;
+        if self.module.defs.is_extern_union(&base.ty) {
+            return Ok(Place { ptr: base.ptr.clone(), ty, llvm, nullable: base.nullable });
+        }
         let aggregate = base.llvm.clone().expect("a struct has an LLVM type");
         let mut ptr = self.assign(&format!(
             "getelementptr {aggregate}, ptr {}, i32 0, i32 {index}",
@@ -427,6 +431,19 @@ impl Emitter<'_, '_> {
         };
         let operand = self.assign(&format!("extractvalue {} {}, {index}", value.ty, value.operand));
         Ok(Some(Value { ty: llvm, operand }))
+    }
+
+    /// Member `name` of `value`, a struct or `extern union` of type `ty`. A union's
+    /// member is read through memory, which reinterprets the union's bytes.
+    fn member(&mut self, value: &Value, ty: &Type, name: &str, span: Span) -> Result<Option<Value>, CodegenError> {
+        if !self.module.defs.is_extern_union(ty) {
+            let (index, member_ty) = self.module.field(ty, name);
+            return self.extract(value, index, &member_ty, span);
+        }
+        let temp = self.slot(None, ty, span)?;
+        self.store(&temp, Some(value));
+        let member = self.field_place(&temp, name, span)?;
+        Ok(self.load(&member))
     }
 
     /// An aggregate of LLVM type `ty` holding `fields` at their positions; a missing
@@ -502,8 +519,7 @@ impl Emitter<'_, '_> {
                 Some(place) => Ok(self.load(&place)),
                 None => {
                     let aggregate = self.expr(target)?.expect("a struct has a value");
-                    let (index, ty) = self.module.field(&target.ty, name);
-                    self.extract(&aggregate, index, &ty, span)
+                    self.member(&aggregate, &target.ty, name, span)
                 }
             },
             IrExprKind::AddressOf(operand) => match self.place(operand)? {
@@ -519,6 +535,17 @@ impl Emitter<'_, '_> {
             })),
             IrExprKind::StructLiteral { members, .. } => {
                 let llvm = self.value_type(&expr.ty, span)?.expect("a struct has an LLVM type");
+                if self.module.defs.is_extern_union(&expr.ty) {
+                    // The one member set is written over zeroed storage.
+                    let temp = self.slot(None, &expr.ty, span)?;
+                    self.inst(&format!("store {llvm} zeroinitializer, ptr {}", temp.ptr));
+                    for (name, value) in members {
+                        let value = self.expr(value)?;
+                        let member = self.field_place(&temp, name, span)?;
+                        self.store(&member, value.as_ref());
+                    }
+                    return Ok(self.load(&temp));
+                }
                 // Members are evaluated in source order, then placed in layout order.
                 let mut values = HashMap::new();
                 for (name, value) in members {

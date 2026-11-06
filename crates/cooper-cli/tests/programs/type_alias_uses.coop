@@ -10,7 +10,7 @@ use {
 }
 struct Point { x: i32, y: i32 }
 struct Box T { v: T }
-oneof Shape { Dot, Circle(i32) }
+union Shape { Dot, Circle(i32) }
 
 type Pt = Point
 type IntBox = Box i32

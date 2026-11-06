@@ -50,7 +50,7 @@ impl SemanticAnalyzer<'_> {
                 }
             }
             StmtKind::StructDecl { .. }
-            | StmtKind::OneofDecl { .. }
+            | StmtKind::UnionDecl { .. }
             | StmtKind::TypeAlias { .. }
             | StmtKind::ExternFunc { .. } => {}
             StmtKind::FuncDecl(func) if self.depth > 0 => {

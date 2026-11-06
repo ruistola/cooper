@@ -72,6 +72,22 @@ impl Layout {
     fn then_scalar(self, size: usize) -> Layout {
         Layout::sequence(&[self, Layout::scalar(size)])
     }
+
+    /// The layout of `members` overlapping at offset zero, as a C union's are. A word that
+    /// is a pointer in any member is scanned as one: the collector ignores a word that
+    /// points into no object.
+    fn overlapping(members: &[Layout]) -> Layout {
+        let mut out = Layout { size: 0, align: 1, ..Layout::default() };
+        for member in members {
+            out.size = out.size.max(member.size);
+            out.align = out.align.max(member.align);
+            out.pointers.extend(&member.pointers);
+        }
+        out.size = out.size.next_multiple_of(out.align);
+        out.pointers.sort_unstable();
+        out.pointers.dedup();
+        out
+    }
 }
 
 impl Module<'_> {
@@ -107,9 +123,13 @@ impl Module<'_> {
             Type::Struct { .. } => {
                 let members = self.defs.struct_members(ty).unwrap_or_default();
                 let fields: Vec<Layout> = members.iter().map(|(_, m)| self.gc_layout(m)).collect();
-                Layout::sequence(&fields)
+                if self.defs.is_extern_union(ty) {
+                    Layout::overlapping(&fields)
+                } else {
+                    Layout::sequence(&fields)
+                }
             }
-            Type::Oneof { .. } => {
+            Type::Union { .. } => {
                 // `{ i32 tag, [words x i64] payload }`: the payload starts at byte 8, and holds
                 // each variant's slots laid out as a struct.
                 let mut words = 0;

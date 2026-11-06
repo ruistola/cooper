@@ -308,7 +308,7 @@ impl Emitter<'_, '_> {
                             value.ty, value.operand
                         ));
                     }
-                    None if matches!(ty, Type::Oneof { .. }) => {
+                    None if matches!(ty, Type::Union { .. }) => {
                         let tag = self.tag(&value);
                         let mut arms = String::new();
                         for (case, label) in cases.iter().zip(&case_labels) {
@@ -348,8 +348,9 @@ impl Emitter<'_, '_> {
             Access::Root => return Ok(scrutinee.clone()),
             Access::Field { parent, name } => {
                 let (parent, parent_ty) = self.access(parent, scrutinee, span)?;
-                let (index, ty) = self.module.field(&parent_ty, name);
-                (parent, index, ty)
+                let parent = parent.expect("an aggregate has a value");
+                let ty = self.module.field(&parent_ty, name).1;
+                return Ok((self.member(&parent, &parent_ty, name, span)?, ty));
             }
             Access::Elem { parent, index } => {
                 let (parent, parent_ty) = self.access(parent, scrutinee, span)?;

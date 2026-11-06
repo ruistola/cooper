@@ -47,7 +47,7 @@ pub fn parse_with_docs(tokens: Vec<Token>, mut docs: crate::lexer::Docs) -> Pars
         starts.insert(decl.span.start);
         match &decl.kind {
             StmtKind::StructDecl { members, .. } => starts.extend(members.iter().map(|m| m.span.start)),
-            StmtKind::OneofDecl { variants, .. } => starts.extend(variants.iter().map(|v| v.span.start)),
+            StmtKind::UnionDecl { variants, .. } => starts.extend(variants.iter().map(|v| v.span.start)),
             _ => {}
         }
     }
@@ -141,7 +141,7 @@ fn can_follow_semicolon(kind: TokenKind) -> bool {
             | Repeat
             | Return
             | Struct
-            | Oneof
+            | Union
             | Type
             | True
             | Until
@@ -294,7 +294,7 @@ impl Parser {
                     self.advance();
                     return;
                 }
-                For | Func | Extern | If | Let | Match | Return | Struct | Oneof | Type | Use | While
+                For | Func | Extern | If | Let | Match | Return | Struct | Union | Type | Use | While
                 | Until | Do | Repeat | Break | Continue | Defer
                     if depth == 0 =>
                 {
@@ -409,9 +409,9 @@ impl Parser {
                     span,
                 })
             }
-            Extern => self.parse_extern_func(),
+            Extern => self.parse_extern(),
             Struct => self.parse_struct_decl_stmt(),
-            Oneof => self.parse_oneof_decl_stmt(),
+            Union => self.parse_union_decl_stmt(),
             Type => self.parse_type_alias(),
             Let => self.parse_var_decl_stmt(),
             _ => {

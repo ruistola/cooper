@@ -18,14 +18,14 @@ reference before writing Cooper source:
 * [Methods and Functions](docs/methods-and-functions.md) — declarations, receivers, method binding, function values, shadowing
 * [Memory and the Object Model](docs/memory-and-object-model.md) — inline values, storage, pointers, inert nil, unmanaged memory
 * [Generics](docs/generics.md) — juxtaposition type application, binders, generic methods, inference
-* [Sum Types](docs/sum-types.md) — `oneof`, variant construction, `match` and patterns
+* [Sum Types](docs/sum-types.md) — `union`, variant construction, `match` and patterns
 * [Type System](docs/type-system.md) — nominal/structural types, HM(X) inference, operators, equality and hashing
 * [Numeric Types](docs/numeric-types.md) — primitive grid, literal inference, same-type arithmetic, conversions
 * [Concurrency](docs/concurrency.md) — threads, `thread`, the scheduler, stacks, the memory model
 * [Garbage Collector](docs/garbage-collector.md) — typed allocation, allocator, collection
 * [Performance](docs/performance.md) — collector controls and statistics, benchmarks against Go
 * [Testing](docs/testing.md) — writing and running tests with `cooper test`
-* [C Interop](docs/c-interop.md) — `extern func`, types at the boundary, linking C libraries and sources
+* [C Interop](docs/c-interop.md) — `extern func`, `extern union`, types at the boundary, linking C libraries and sources
 
 ## Coding guidelines
 

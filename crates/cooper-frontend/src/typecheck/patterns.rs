@@ -59,7 +59,7 @@ impl<'g> TypeChecker<'g> {
             return Some(ty);
         }
         match &ty {
-            Type::Oneof { .. } | Type::Struct { .. } | Type::Tuple(_) => Some(ty),
+            Type::Union { .. } | Type::Struct { .. } | Type::Tuple(_) => Some(ty),
             Type::Primitive(n) if n == "bool" || n == "rune" || is_integer_name(n) => Some(ty),
             _ => {
                 self.err(
@@ -230,16 +230,16 @@ impl<'g> TypeChecker<'g> {
         ty: &Type,
         span: Span,
     ) {
-        let Type::Oneof { id, .. } = ty else {
+        let Type::Union { id, .. } = ty else {
             self.err(
                 span,
                 format!("variant pattern cannot match a value of type {ty}"),
             );
             return;
         };
-        let oneof_name = id.name.clone();
+        let union_name = id.name.clone();
         if let Some(type_name) = type_name {
-            if self.globals.oneof_id(type_name).as_ref() != Some(id) {
+            if self.globals.union_id(type_name).as_ref() != Some(id) {
                 let named = self.globals.lookup_type_value(type_name);
                 let (name_shown, ty_shown) = match &named {
                     Some(named) => display_pair(named, ty),
@@ -257,7 +257,7 @@ impl<'g> TypeChecker<'g> {
         let Some(payload) = self.globals.defs.payload(ty, variant) else {
             self.err(
                 span,
-                format!("{variant} is not a variant of sum type {oneof_name}"),
+                format!("{variant} is not a variant of sum type {union_name}"),
             );
             return;
         };
@@ -265,7 +265,7 @@ impl<'g> TypeChecker<'g> {
             self.err(
                 span,
                 format!(
-                    "variant pattern {oneof_name}.{variant} binds {} slot(s) but the variant has {}",
+                    "variant pattern {union_name}.{variant} binds {} slot(s) but the variant has {}",
                     binders.len(),
                     payload.len()
                 ),
@@ -305,7 +305,7 @@ impl<'g> TypeChecker<'g> {
             return;
         }
         match ty {
-            Type::Oneof { id, .. } => {
+            Type::Union { id, .. } => {
                 let name = &id.name;
                 let missing: Vec<&str> = self
                     .globals

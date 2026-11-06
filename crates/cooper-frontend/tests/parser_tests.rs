@@ -55,8 +55,8 @@ fn parses_value_block_with_statements() {
 }
 
 #[test]
-fn parses_oneof_and_match_expression_with_braced_arms() {
-    ok("oneof Shape {\n  Circle(i32),\n  Rect(i32, i32),\n}\nfunc area(s: Shape): i32 {\n  a := match s with {\n    Shape.Circle(r) => { r }\n    Shape.Rect(w, h) => { w }\n  }\n  return a\n}");
+fn parses_union_and_match_expression_with_braced_arms() {
+    ok("union Shape {\n  Circle(i32),\n  Rect(i32, i32),\n}\nfunc area(s: Shape): i32 {\n  a := match s with {\n    Shape.Circle(r) => { r }\n    Shape.Rect(w, h) => { w }\n  }\n  return a\n}");
 }
 
 #[test]
@@ -229,7 +229,7 @@ fn malformed_variant_payload_recovers_without_hanging() {
     // `Some T` is rejected. Recovery must terminate: the stray closing brace that
     // ends the declaration cannot begin a top-level declaration, so the parser has
     // to consume it rather than retry it forever.
-    err("oneof Maybe T { Some T, None }", "expected");
+    err("union Maybe T { Some T, None }", "expected");
 }
 
 #[test]

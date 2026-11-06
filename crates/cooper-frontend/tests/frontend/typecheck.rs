@@ -64,7 +64,7 @@ fn unassigned_struct_member_is_reported() {
 #[test]
 fn generic_variant_construction_infers_arguments() {
     ok(concat!(
-        "oneof Result T E {\n  Ok(T),\n  Err(E),\n}\n",
+        "union Result T E {\n  Ok(T),\n  Err(E),\n}\n",
         "func f(): Result i32 string {\n  return Result.Ok(5)\n}"
     ));
 }
@@ -72,7 +72,7 @@ fn generic_variant_construction_infers_arguments() {
 #[test]
 fn payload_free_variant_needs_annotation_context() {
     ok(concat!(
-        "oneof Maybe T {\n  None,\n  Some(T),\n}\n",
+        "union Maybe T {\n  None,\n  Some(T),\n}\n",
         "func f(): Maybe i32 {\n  return Maybe.None\n}"
     ));
 }
@@ -81,7 +81,7 @@ fn payload_free_variant_needs_annotation_context() {
 fn non_exhaustive_match_is_reported() {
     err(
         concat!(
-            "oneof Shape {\n  Circle(i32),\n  Rect(i32, i32),\n}\n",
+            "union Shape {\n  Circle(i32),\n  Rect(i32, i32),\n}\n",
             "func area(s: Shape): i32 {\n  a := match s with {\n    Shape.Circle(r) => { r }\n  }\n  return a\n}"
         ),
         "non-exhaustive match",
@@ -91,7 +91,7 @@ fn non_exhaustive_match_is_reported() {
 #[test]
 fn match_expression_binds_and_unifies_arms() {
     ok(concat!(
-        "oneof Option T {\n  None,\n  Some(T),\n}\n",
+        "union Option T {\n  None,\n  Some(T),\n}\n",
         "func unwrap(o: Option i32): i32 {\n",
         "  a := match o with {\n    Option.Some(v) => { v }\n    Option.None => { 0 }\n  }\n",
         "  return a\n}"

@@ -54,7 +54,7 @@ struct Ranged {
   return r.damage > 50 and r.accuracy > 0.9
 }
 
-oneof Attack {
+union Attack {
   Melee(Melee),
   Ranged(Ranged),
 }

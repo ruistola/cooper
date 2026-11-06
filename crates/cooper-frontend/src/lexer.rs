@@ -154,8 +154,8 @@ pub enum TokenKind {
     Return,
     #[token("struct")]
     Struct,
-    #[token("oneof")]
-    Oneof,
+    #[token("union")]
+    Union,
     #[token("then")]
     Then,
     #[token("true")]
@@ -247,7 +247,7 @@ impl std::fmt::Display for TokenKind {
             Repeat => "'repeat'",
             Return => "'return'",
             Struct => "'struct'",
-            Oneof => "'oneof'",
+            Union => "'union'",
             Then => "'then'",
             True => "'true'",
             Until => "'until'",

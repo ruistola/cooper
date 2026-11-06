@@ -309,7 +309,7 @@ fn tests_exhaustive(defs: &TypeDefs, ty: &Type, tests: &[Test]) -> bool {
         Type::Primitive(name) if name == "bool" => {
             tests.contains(&Test::Bool(true)) && tests.contains(&Test::Bool(false))
         }
-        Type::Oneof { .. } => defs
+        Type::Union { .. } => defs
             .variant_order(ty)
             .iter()
             .all(|v| tests.contains(&Test::Variant(v.clone()))),

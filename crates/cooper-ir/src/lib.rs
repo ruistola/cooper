@@ -292,7 +292,7 @@ pub fn lower_module(
                 functions.extend(lower_function(file, func, globals, checked)?);
             }
             StmtKind::StructDecl { .. }
-            | StmtKind::OneofDecl { .. }
+            | StmtKind::UnionDecl { .. }
             | StmtKind::TypeAlias { .. }
             | StmtKind::ExternFunc { .. } => {}
             StmtKind::VarDecl { init: None, .. } => {}
@@ -996,7 +996,7 @@ impl Lower<'_> {
                 }
             },
             StmtKind::FuncDecl(func) => IrStmtKind::Block(self.nested_func(func)?.into()),
-            StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } => {
+            StmtKind::StructDecl { .. } | StmtKind::UnionDecl { .. } => {
                 return unsupported_stmt(stmt.span, "local type declaration");
             }
             StmtKind::ExternFunc { .. } => unreachable!("the checker rejects a local extern"),
@@ -1196,9 +1196,9 @@ impl Lower<'_> {
                 return unsupported(expr.span, "a method of a sum type used as a value");
             }
             ExprKind::Field { target, name, .. } => match self.types.get(&target.span) {
-                // `Oneof.Variant` reads as a payload-free variant value, not a
+                // `Union.Variant` reads as a payload-free variant value, not a
                 // field access on a runtime target.
-                Some(Type::Oneof { .. }) => IrExprKind::Variant {
+                Some(Type::Union { .. }) => IrExprKind::Variant {
                     variant: name.clone(),
                     args: Vec::new(),
                 },
@@ -1997,7 +1997,7 @@ impl Lower<'_> {
             let ty = (**inner).clone();
             receiver = IrExpr { kind: IrExprKind::Deref(Box::new(receiver)), ty, span };
         }
-        let oneof = receiver.ty.clone();
+        let union = receiver.ty.clone();
         let local = |name: &str, init: IrExpr| {
             let var = IrExpr { kind: IrExprKind::Var(name.to_string()), ty: init.ty.clone(), span };
             let decl = IrStmt {
@@ -2021,8 +2021,8 @@ impl Lower<'_> {
         let payload_name = format!("payload.{}", span.start);
         let mut patterns = Vec::new();
         let mut actions = Vec::new();
-        for (index, variant) in self.globals.defs.variant_order(&oneof).iter().enumerate() {
-            let payload = self.globals.defs.payload(&oneof, variant).and_then(|p| p.into_iter().next());
+        for (index, variant) in self.globals.defs.variant_order(&union).iter().enumerate() {
+            let payload = self.globals.defs.payload(&union, variant).and_then(|p| p.into_iter().next());
             let (Some(payload), Some(method)) = (payload, self.dispatch.get(&(span, index))) else {
                 return Err(LowerError::MissingType(span));
             };
@@ -2031,7 +2031,7 @@ impl Lower<'_> {
                     variant: variant.clone(),
                     binders: vec![Binder { name: payload_name.clone(), ty: payload.clone() }],
                 },
-                ty: oneof.clone(),
+                ty: union.clone(),
                 span,
             });
             let bound = IrExpr {
@@ -2049,7 +2049,7 @@ impl Lower<'_> {
                 span,
             });
         }
-        let tree = compile_match(&self.globals.defs, &oneof, &patterns);
+        let tree = compile_match(&self.globals.defs, &union, &patterns);
         let dispatch = IrExpr {
             kind: IrExprKind::Match { scrutinee: Box::new(receiver), actions, tree: Box::new(tree) },
             ty: result.clone(),
@@ -2059,13 +2059,13 @@ impl Lower<'_> {
     }
 
     /// The variant name a call constructs, if the callee denotes a sum-type variant
-    /// rather than a function: a qualified `Oneof.Variant(..)` (target typed as a sum
+    /// rather than a function: a qualified `Union.Variant(..)` (target typed as a sum
     /// type) or a bare `Variant(..)` whose result type is a sum type owning that
     /// variant and whose name is not a known function.
     fn variant_callee(&self, callee: &Expr, result: &Type) -> Option<String> {
         match &callee.kind {
             ExprKind::Field { target, name, .. } => match self.types.get(&target.span) {
-                Some(oneof @ Type::Oneof { .. }) if self.globals.defs.payload(oneof, name).is_some() => {
+                Some(union @ Type::Union { .. }) if self.globals.defs.payload(union, name).is_some() => {
                     Some(name.clone())
                 }
                 _ => None,

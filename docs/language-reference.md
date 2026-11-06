@@ -26,7 +26,7 @@ only reports diagnostics, and `cooper test dir` runs the tests of a project
 | `*p`, `&mut x`, `Box<T>` | `p^`, `&x`, `T^` (`^` is the pointer sigil in types and values) |
 | `Vec<i32>`, `[]int`, `Option<T>`, `Map<K, V>` | `i32[]`, `Maybe T`, `Map K V` (type application by juxtaposition) |
 | `fn id<T>(x: T) -> T` | `func id T (x: T): T` (binders follow the name; no angle brackets) |
-| `enum Shape { Circle(i32), Empty }` | `oneof Shape { Empty, Circle(i32) }` (list a lone payloadless variant first); `Maybe` and `Result` are built in |
+| `enum Shape { Circle(i32), Empty }` | `union Shape { Empty, Circle(i32) }` (list a lone payloadless variant first); `Maybe` and `Result` are built in |
 | `Maybe::Some(5)` | `Maybe.Some(5)`, or bare `Some(5)` where inference fixes the sum type |
 | `use std::io;`, `import "fmt"` | `use { std.io }` (a braced block of dotted paths) |
 | `println!("{}", n)`, `fmt.Println(n)` | `io.println("n = {n}")` (every string literal interpolates) |
@@ -51,7 +51,7 @@ struct Point {
     y: i32,
 }
 
-oneof Shape {
+union Shape {
     Empty,
     Circle(i32),
     Rect(i32, i32),
@@ -124,8 +124,8 @@ kind := match n with {               # integer, bool, tuple, struct, or sum-type
   camelCase. Casing matters to the compiler only in patterns (below).
 * A final parameter `vals: ...T` receives its arguments as a `T[]`; `f(xs...)` passes an array
   as them ([Methods and Functions](./methods-and-functions.md#variadic-parameters)).
-* Reserved words: `and as break continue defer do else extern false for func if in is let match nil oneof or
-  repeat return struct then thread true type until use while with xor`.
+* Reserved words: `and as break continue defer do else extern false for func if in is let match nil or
+  repeat return struct then thread true type union until use while with xor`.
 * `thread f(args)` starts a green thread running the call and gives its `Thread` handle ([Concurrency](./concurrency.md)).
 * `type Name = T` names a type, transparently ([Syntax Fundamentals](./syntax-fundamentals.md#type-aliases)). A comment block directly above a declaration is its documentation.
 * Numbers: `42`, `1_000`, `0xFF`, `0b1010`, `3.14`, `1e9`, `2.5e-3`. A float needs digits on
@@ -149,13 +149,14 @@ useBlock   ::= "use" "{" useItem* "}"                 # items: comma-separated
 useItem    ::= path ("as" ident)? | path "." "{" (ident ("as" ident)?)* "}"
 path       ::= ident ("." ident)*
 
-decl       ::= struct | oneof | func | extern | "let" ident ":" type ("=" expr)?   # a module-level variable
+decl       ::= struct | union | func | extern | "let" ident ":" type ("=" expr)?   # a module-level variable
 struct     ::= "struct" ident ident* "{" member* "}"  # ident* are type-parameter binders
 member     ::= ident ":" type
-oneof      ::= "oneof" ident ident* "{" variant* "}"
+union      ::= "union" ident ident* "{" variant* "}"
 variant    ::= ident ("(" type* ")")?
 func       ::= receiver? "func" ident ident* "(" param* ")" (":" type)? block
 extern     ::= "extern" "func" ident "(" param* ")" (":" type)?   # a C function
+             | "extern" "union" ident "{" member* "}"            # a C union
 receiver   ::= "(" ident ":" type ")"
 param      ::= ident ":" type
 
@@ -235,7 +236,7 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
 * Primitives: `i8 i16 i32 i64`, `u8 u16 u32 u64`, `f32 f64`, `bool`, `rune` (a Unicode scalar value), `string`. Unit is `()`.
 * Composites: tuple `(A, B)`, array `T[]`, static array `T[3]` (a copied value; `a[..]` slices
   it to a `T[]`), pointer `T^`, function `func(A, B): R`.
-* Declared types are nominal: `struct` and `oneof`, optionally generic (`Box T`, `Result T E`).
+* Declared types are nominal: `struct` and `union`, optionally generic (`Box T`, `Result T E`).
 * There is no implicit numeric conversion. Arithmetic needs both operands to share one type,
   and a literal takes the type its uses give it ([Numeric Types](./numeric-types.md)).
 

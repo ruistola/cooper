@@ -18,7 +18,7 @@ fn a_literal_argument_takes_its_width_from_the_expected_result() {
 #[test]
 fn a_type_argument_only_in_the_result_comes_from_the_expected_type() {
     ok(concat!(
-        "oneof Maybe T {\n  None,\n  Some(T),\n}\n",
+        "union Maybe T {\n  None,\n  Some(T),\n}\n",
         "func none T (): Maybe T {\n  return None\n}\n",
         "func f() {\n  let m: Maybe i32 = none()\n}",
     ));
@@ -87,7 +87,7 @@ fn a_generic_function_value_needs_an_expected_function_type() {
 #[test]
 fn unit_is_a_type_argument_like_any_other() {
     ok(concat!(
-        "oneof Result T E {\n  Ok(T),\n  Err(E),\n}\n",
+        "union Result T E {\n  Ok(T),\n  Err(E),\n}\n",
         "struct Box T {\n  v: T,\n}\n",
         "func done(): Result i32 () {\n  return Err(())\n}\n",
         "func call T (h: func(): T): T {\n  return h()\n}\n",

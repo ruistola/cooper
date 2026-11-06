@@ -17,12 +17,14 @@ pub struct TypeId {
 pub struct StructDef {
     pub type_params: Vec<String>,
     pub members: Vec<(String, Type)>,
+    /// An `extern union`: its members overlap, each at offset zero.
+    pub extern_union: bool,
 }
 
 /// A sum type declaration's body: its type parameters and its variants' payload
 /// types, with the variants' declaration order.
 #[derive(Debug, Clone, Default)]
-pub struct OneofDef {
+pub struct UnionDef {
     pub type_params: Vec<String>,
     pub variants: HashMap<String, Vec<Type>>,
     pub variant_order: Vec<String>,
@@ -34,7 +36,7 @@ pub struct OneofDef {
 #[derive(Debug, Clone, Default)]
 pub struct TypeDefs {
     pub structs: HashMap<TypeId, StructDef>,
-    pub oneofs: HashMap<TypeId, OneofDef>,
+    pub unions: HashMap<TypeId, UnionDef>,
 }
 
 impl TypeDefs {
@@ -43,7 +45,7 @@ impl TypeDefs {
     pub fn type_params(&self, ty: &Type) -> &[String] {
         match ty {
             Type::Struct { id, .. } => self.structs.get(id).map_or(&[], |d| &d.type_params),
-            Type::Oneof { id, .. } => self.oneofs.get(id).map_or(&[], |d| &d.type_params),
+            Type::Union { id, .. } => self.unions.get(id).map_or(&[], |d| &d.type_params),
             _ => &[],
         }
     }
@@ -75,12 +77,17 @@ impl TypeDefs {
         Some(member.substitute(&binding(&def.type_params, type_args)))
     }
 
+    /// Whether `ty` is an `extern union`.
+    pub fn is_extern_union(&self, ty: &Type) -> bool {
+        matches!(ty, Type::Struct { id, .. } if self.structs.get(id).is_some_and(|d| d.extern_union))
+    }
+
     /// The payload of `variant` of sum type `ty`, substituted by its arguments.
     pub fn payload(&self, ty: &Type, variant: &str) -> Option<Vec<Type>> {
-        let Type::Oneof { id, type_args } = ty else {
+        let Type::Union { id, type_args } = ty else {
             return None;
         };
-        let def = self.oneofs.get(id)?;
+        let def = self.unions.get(id)?;
         let subst = binding(&def.type_params, type_args);
         let slots = def.variants.get(variant)?;
         Some(slots.iter().map(|t| t.substitute(&subst)).collect())
@@ -90,7 +97,7 @@ impl TypeDefs {
     /// other type.
     pub fn variant_order(&self, ty: &Type) -> &[String] {
         match ty {
-            Type::Oneof { id, .. } => self.oneofs.get(id).map_or(&[], |d| &d.variant_order),
+            Type::Union { id, .. } => self.unions.get(id).map_or(&[], |d| &d.variant_order),
             _ => &[],
         }
     }
@@ -140,7 +147,7 @@ pub enum Type {
         type_args: Vec<Type>,
     },
     /// A declared sum type, by identity; its variants live in the [`TypeDefs`] table.
-    Oneof {
+    Union {
         id: TypeId,
         type_args: Vec<Type>,
     },
@@ -186,7 +193,7 @@ impl Type {
                 },
             ) => ra.equals(rb) && pa.len() == pb.len() && pa.iter().zip(pb).all(|(x, y)| x.equals(y)),
             (Type::Struct { id: ia, type_args: aa }, Type::Struct { id: ib, type_args: ab })
-            | (Type::Oneof { id: ia, type_args: aa }, Type::Oneof { id: ib, type_args: ab }) => {
+            | (Type::Union { id: ia, type_args: aa }, Type::Union { id: ib, type_args: ab }) => {
                 ia == ib && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| x.equals(y))
             }
             (Type::TypeParam(a), Type::TypeParam(b)) => a == b,
@@ -217,7 +224,7 @@ impl Type {
                 id: id.clone(),
                 type_args: type_args.iter().map(|a| a.substitute(subst)).collect(),
             },
-            Type::Oneof { id, type_args } => Type::Oneof {
+            Type::Union { id, type_args } => Type::Union {
                 id: id.clone(),
                 type_args: type_args.iter().map(|a| a.substitute(subst)).collect(),
             },
@@ -303,7 +310,8 @@ pub fn is_float(t: &Type) -> bool {
 /// value (`string` by content, floats by IEEE), pointers by address, and tuples,
 /// structs, and sum types (tag, then payload) when every component is comparable.
 /// Functions are excluded (closure identity has no meaning), as are dynamic arrays
-/// (a view's identity and its contents are both plausible readings) and unconstrained
+/// (a view's identity and its contents are both plausible readings), `extern union`s
+/// (which member is current is unknown), and unconstrained
 /// type parameters. The same set defines which types are hashable.
 pub(crate) fn incomparable_part(t: &Type, defs: &TypeDefs) -> Option<Type> {
     match t {
@@ -315,11 +323,12 @@ pub(crate) fn incomparable_part(t: &Type, defs: &TypeDefs) -> Option<Type> {
         | Type::Infer(_)
         | Type::Module(_) => Some(t.clone()),
         Type::Tuple(elems) => elems.iter().find_map(|e| incomparable_part(e, defs)),
+        Type::Struct { .. } if defs.is_extern_union(t) => Some(t.clone()),
         Type::Struct { .. } => defs
             .struct_members(t)?
             .iter()
             .find_map(|(_, member)| incomparable_part(member, defs)),
-        Type::Oneof { .. } => defs
+        Type::Union { .. } => defs
             .variant_order(t)
             .iter()
             .flat_map(|v| defs.payload(t, v).unwrap_or_default())
@@ -362,7 +371,7 @@ impl Type {
                 param_types.iter().for_each(|p| p.collect_ids(out));
                 return_type.collect_ids(out);
             }
-            Type::Struct { id, type_args } | Type::Oneof { id, type_args } => {
+            Type::Struct { id, type_args } | Type::Union { id, type_args } => {
                 out.push(id);
                 type_args.iter().for_each(|a| a.collect_ids(out));
             }
@@ -407,7 +416,7 @@ impl fmt::Display for Rendered<'_> {
                 let params: Vec<String> = param_types.iter().map(|p| r(p).to_string()).collect();
                 write!(f, "func({}):{}", params.join(","), r(return_type))
             }
-            Type::Struct { id, type_args } | Type::Oneof { id, type_args } => {
+            Type::Struct { id, type_args } | Type::Union { id, type_args } => {
                 let name = if self.qualify.contains(&id.name) {
                     format!("{}.{}", id.module, id.name)
                 } else {

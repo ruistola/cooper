@@ -177,7 +177,7 @@ fn lowers_a_struct_literal_with_its_members_in_source_order() {
 #[test]
 fn lowers_a_match_expression_binding_variant_payloads() {
     let (decls, globals, checked) = check(
-        "oneof Shape { Circle(i32), Rect(i32, i32) }\n\
+        "union Shape { Circle(i32), Rect(i32, i32) }\n\
          func area(s: Shape): i32 {\n\
          \ta := match s with {\n\
          \t\tShape.Circle(r) => { r }\n\
@@ -248,7 +248,7 @@ fn generic_variant_binders_lower_with_instantiated_slot_types() {
     // A scrutinee of an instantiated generic sum type binds payload slots at
     // their substituted types, not the sum type's parameters.
     let (decls, globals, checked) = check(
-        "oneof Maybe T { None, Some(T) }\n\
+        "union Maybe T { None, Some(T) }\n\
          func unwrap(m: Maybe i32): i32 {\n\
          \ta := match m with {\n\
          \t\tMaybe.Some(x) => { x }\n\
@@ -350,7 +350,7 @@ fn lowers_a_tuple_match_into_a_nested_decision_tree() {
 #[test]
 fn lowers_variant_construction_and_payload_free_access() {
     let (decls, globals, checked) = check(
-        "oneof Maybe T { None, Some(T) }\n\
+        "union Maybe T { None, Some(T) }\n\
          func some(): Maybe i32 { return Maybe.Some(5) }\n\
          func none(): Maybe i32 { return Maybe.None }",
     );
@@ -372,7 +372,7 @@ fn lowers_variant_construction_and_payload_free_access() {
     assert_eq!(variant, "Some");
     assert_eq!(args.len(), 1);
     assert!(is_primitive(&args[0].ty, "i32"));
-    assert!(matches!(&some.ty, Type::Oneof { id, .. } if id.name == "Maybe"));
+    assert!(matches!(&some.ty, Type::Union { id, .. } if id.name == "Maybe"));
 
     // `Maybe.None` is a payload-free variant value, not a field access.
     let none = variant_return(2);
@@ -578,7 +578,7 @@ fn mentions_type_param(ty: &Type) -> bool {
             return_type,
             param_types,
         } => mentions_type_param(return_type) || param_types.iter().any(mentions_type_param),
-        Type::Struct { type_args, .. } | Type::Oneof { type_args, .. } => {
+        Type::Struct { type_args, .. } | Type::Union { type_args, .. } => {
             type_args.iter().any(mentions_type_param)
         }
         _ => false,

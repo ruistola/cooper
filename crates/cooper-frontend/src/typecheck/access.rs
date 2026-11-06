@@ -53,12 +53,15 @@ impl<'g> TypeChecker<'g> {
                 self.err(member.value.span, message);
             }
         }
-        for (member_name, _) in &struct_members {
-            if !assigned.contains(member_name) {
-                self.err(
-                    target.span,
-                    format!("struct member {member_name} is not assigned a value"),
-                );
+        if self.globals.defs.is_extern_union(&target_type) {
+            if assigned.len() != 1 {
+                self.err(target.span, format!("a literal of extern union {name} sets exactly one member"));
+            }
+        } else {
+            for (member_name, _) in &struct_members {
+                if !assigned.contains(member_name) {
+                    self.err(target.span, format!("struct member {member_name} is not assigned a value"));
+                }
             }
         }
         if is_generic {
@@ -109,7 +112,7 @@ impl<'g> TypeChecker<'g> {
         // A type name (`Shape.Circle`) names a variant; a value (`shape.area()`) may call a
         // method across its variants.
         let type_name = matches!(&target.kind, ExprKind::Ident(name)
-            if self.lookup_var(name).is_none() && self.globals.oneof_id(name).is_some());
+            if self.lookup_var(name).is_none() && self.globals.union_id(name).is_some());
         self.resolve_field(target_type, field, span, target.span, type_name)
     }
 
@@ -125,18 +128,18 @@ impl<'g> TypeChecker<'g> {
             return self.check_module_access(&prefix, field, span);
         }
         // A member access whose base is a sum type names a variant constructor.
-        if matches!(target_type, Type::Oneof { .. }) {
+        if matches!(target_type, Type::Union { .. }) {
             if type_name || self.globals.defs.payload(&target_type, field).is_some() {
                 return self.check_variant_access(&target_type, field, span);
             }
-            return self.check_oneof_method(&target_type, field, span);
+            return self.check_union_method(&target_type, field, span);
         }
         // Auto-deref: `p.field` works transparently through a pointer-to-struct.
         if let Type::Pointer(elem) = target_type {
             target_type = *elem;
         }
-        if matches!(target_type, Type::Oneof { .. }) {
-            return self.check_oneof_method(&target_type, field, span);
+        if matches!(target_type, Type::Union { .. }) {
+            return self.check_union_method(&target_type, field, span);
         }
         // An array exposes a compiler-blessed method set (`xs.length()`, the `get`/
         // `set` that index syntax binds to) rather than data fields; these resolve by
@@ -196,14 +199,14 @@ impl<'g> TypeChecker<'g> {
     /// a struct whose method `name` takes its receiver by value, and all of them must
     /// agree on the signature. The call branches on the variant, so each variant's method is
     /// recorded for lowering. Returns the shared signature.
-    fn check_oneof_method(&mut self, oneof: &Type, name: &str, span: Span) -> Option<Type> {
-        let Type::Oneof { id, .. } = oneof else {
+    fn check_union_method(&mut self, union: &Type, name: &str, span: Span) -> Option<Type> {
+        let Type::Union { id, .. } = union else {
             unreachable!("checked by the caller");
         };
-        let oneof_name = id.name.clone();
+        let union_name = id.name.clone();
         let mut shared: Option<Type> = None;
-        for (index, variant) in self.globals.defs.variant_order(oneof).to_vec().into_iter().enumerate() {
-            let payload = self.globals.defs.payload(oneof, &variant).unwrap_or_default();
+        for (index, variant) in self.globals.defs.variant_order(union).to_vec().into_iter().enumerate() {
+            let payload = self.globals.defs.payload(union, &variant).unwrap_or_default();
             let method = match payload.as_slice() {
                 [owner @ Type::Struct { id, .. }] => {
                     self.globals.lookup_method(id, name).cloned().map(|sig| (sig, owner.clone()))
@@ -211,12 +214,12 @@ impl<'g> TypeChecker<'g> {
                 _ => None,
             };
             let Some((sig, owner)) = method else {
-                self.err(span, format!("not all variants of {oneof_name} define {name}: variant {variant} does not"));
+                self.err(span, format!("not all variants of {union_name} define {name}: variant {variant} does not"));
                 return None;
             };
             if sig.by_pointer {
                 self.err(span, format!(
-                    "method {name} of variant {variant} takes a pointer receiver; a method called across the variants of {oneof_name} takes its receiver by value"
+                    "method {name} of variant {variant} takes a pointer receiver; a method called across the variants of {union_name} takes its receiver by value"
                 ));
                 return None;
             }
@@ -239,7 +242,7 @@ impl<'g> TypeChecker<'g> {
                 Some(first) if self.infer.unify(first, &ty).is_err() => {
                     let (first, other) = self.shown_pair(first, &ty);
                     self.err(span, format!(
-                        "the variants of {oneof_name} define {name} with different signatures: {first} and {other}"
+                        "the variants of {union_name} define {name} with different signatures: {first} and {other}"
                     ));
                     return None;
                 }
@@ -247,7 +250,7 @@ impl<'g> TypeChecker<'g> {
             }
         }
         if shared.is_none() {
-            self.err(span, format!("{oneof_name} has no variants to call {name} on"));
+            self.err(span, format!("{union_name} has no variants to call {name} on"));
         }
         shared
     }

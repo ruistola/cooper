@@ -451,7 +451,7 @@ impl<'g> TypeChecker<'g> {
                     self.err(stmt.span, "a type alias must be declared at module level");
                 }
             }
-            StmtKind::StructDecl { .. } | StmtKind::OneofDecl { .. } => {}
+            StmtKind::StructDecl { .. } | StmtKind::UnionDecl { .. } => {}
             StmtKind::FuncDecl(func) if self.current_return.is_some() => self.check_nested_func(func),
             StmtKind::FuncDecl(func) => self.check_func_decl(func),
             StmtKind::ExternFunc { .. } => {

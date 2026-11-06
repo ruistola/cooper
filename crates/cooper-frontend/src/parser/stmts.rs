@@ -24,7 +24,7 @@ impl Parser {
                 })
             }
             // Parsed anywhere so the checker can say an extern belongs at module level.
-            Extern => self.parse_extern_func(),
+            Extern => self.parse_extern(),
             If => self.parse_if_stmt(),
             While => self.parse_pre_test_loop(),
             Until => self.parse_pre_test_loop(),
@@ -38,7 +38,7 @@ impl Parser {
             Defer => self.parse_defer_stmt(),
             Struct => self.parse_struct_decl_stmt(),
             Type => self.parse_type_alias(),
-            Oneof => self.parse_oneof_decl_stmt(),
+            Union => self.parse_union_decl_stmt(),
             _ => self.parse_expression_stmt(),
         }
     }

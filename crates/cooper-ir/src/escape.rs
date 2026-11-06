@@ -421,7 +421,7 @@ impl<'a> Pass<'a> {
             Type::Pointer(_) | Type::Array(_) | Type::Func { .. } | Type::Nil => true,
             Type::StaticArray(elem, _) => self.can_hold(elem, seen),
             Type::Tuple(elems) => elems.iter().any(|e| self.can_hold(e, seen)),
-            Type::Struct { .. } | Type::Oneof { .. } => {
+            Type::Struct { .. } | Type::Union { .. } => {
                 if seen.iter().any(|s| s.equals(ty)) {
                     return false;
                 }

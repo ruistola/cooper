@@ -20,7 +20,7 @@ use std::collections::HashSet;
 
 use crate::project::{Module, ModulePath, Project, SourceFile};
 use crate::resolve::{Callable, Globals, Signature};
-use crate::types::{OneofDef, StructDef, Type, TypeId};
+use crate::types::{StructDef, Type, TypeId, UnionDef};
 
 /// The module path of standard input and output.
 pub const IO_MODULE: &str = "std.io";
@@ -44,28 +44,28 @@ pub fn thread_type() -> Type {
 pub(crate) fn prelude() -> Globals {
     let param = |name: &str| Type::TypeParam(name.to_string());
     let mut globals = module(PRELUDE_MODULE);
-    let mut oneof = |name: &str, params: &[&str], variants: Vec<(&str, Vec<Type>)>| {
+    let mut union = |name: &str, params: &[&str], variants: Vec<(&str, Vec<Type>)>| {
         let id = TypeId {
             module: PRELUDE_MODULE.to_string(),
             name: name.to_string(),
         };
-        globals.oneofs.insert(name.to_string(), id.clone());
-        globals.defs.oneofs.insert(
+        globals.unions.insert(name.to_string(), id.clone());
+        globals.defs.unions.insert(
             id,
-            OneofDef {
+            UnionDef {
                 type_params: params.iter().map(|p| p.to_string()).collect(),
                 variant_order: variants.iter().map(|(v, _)| v.to_string()).collect(),
                 variants: variants.into_iter().map(|(v, slots)| (v.to_string(), slots)).collect(),
             },
         );
     };
-    oneof("Maybe", &["T"], vec![("None", vec![]), ("Some", vec![param("T")])]);
-    oneof("Result", &["T", "E"], vec![("Ok", vec![param("T")]), ("Err", vec![param("E")])]);
+    union("Maybe", &["T"], vec![("None", vec![]), ("Some", vec![param("T")])]);
+    union("Result", &["T", "E"], vec![("Ok", vec![param("T")]), ("Err", vec![param("E")])]);
     let Type::Struct { id, .. } = thread_type() else { unreachable!() };
     globals.structs.insert(id.name.clone(), id.clone());
     globals.defs.structs.insert(
         id,
-        StructDef { type_params: Vec::new(), members: vec![("id".to_string(), Type::Primitive("i64".to_string()))] },
+        StructDef { type_params: Vec::new(), members: vec![("id".to_string(), Type::Primitive("i64".to_string()))], ..Default::default() },
     );
     globals
 }
@@ -147,6 +147,7 @@ pub(crate) fn interfaces() -> Vec<(ModulePath, Globals)> {
         StructDef {
             type_params: Vec::new(),
             members: vec![("data".to_string(), byte_ptr())],
+            ..Default::default()
         },
     );
     let bytes = Type::Array(Box::new(Type::Primitive("u8".to_string())));

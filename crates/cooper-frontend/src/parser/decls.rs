@@ -186,7 +186,11 @@ impl Parser {
     }
 
     /// `extern func name(params): R`: a C function's signature, with no body.
-    pub(super) fn parse_extern_func(&mut self) -> PResult<Stmt> {
+    /// An `extern func`, or an `extern union`.
+    pub(super) fn parse_extern(&mut self) -> PResult<Stmt> {
+        if self.lookahead(2).get(1).is_some_and(|t| t.kind == Union) {
+            return self.parse_struct_decl_stmt();
+        }
         let start = self.peek().span;
         self.expect(Extern)?;
         self.expect(Func)?;
@@ -280,13 +284,20 @@ impl Parser {
         Ok(Some(self.parse_type_expr()?))
     }
 
+    /// A `struct`, or an `extern union`, which has the same body and no type parameters.
     pub(super) fn parse_struct_decl_stmt(&mut self) -> PResult<Stmt> {
         let start = self.peek().span;
-        self.expect(Struct)?;
+        let extern_union = self.peek().kind == Extern;
+        if extern_union {
+            self.expect(Extern)?;
+            self.expect(Union)?;
+        } else {
+            self.expect(Struct)?;
+        }
         let name_token = self.expect(Identifier)?;
         let (name, name_span) = (name_token.text, name_token.span);
         let mut type_params = Vec::new();
-        while self.peek().kind == Identifier {
+        while !extern_union && self.peek().kind == Identifier {
             type_params.push(self.expect(Identifier)?.text);
         }
         self.expect(OpenCurly)?;
@@ -316,14 +327,15 @@ impl Parser {
                 name_span,
                 type_params,
                 members,
+                extern_union,
             },
             span: start.to(self.prev_token().span),
         })
     }
 
-    pub(super) fn parse_oneof_decl_stmt(&mut self) -> PResult<Stmt> {
+    pub(super) fn parse_union_decl_stmt(&mut self) -> PResult<Stmt> {
         let start = self.peek().span;
-        self.expect(Oneof)?;
+        self.expect(Union)?;
         let name_token = self.expect(Identifier)?;
         let (name, name_span) = (name_token.text, name_token.span);
         let mut type_params = Vec::new();
@@ -363,7 +375,7 @@ impl Parser {
         }
         self.expect(CloseCurly)?;
         Ok(Stmt {
-            kind: StmtKind::OneofDecl {
+            kind: StmtKind::UnionDecl {
                 name,
                 name_span,
                 type_params,

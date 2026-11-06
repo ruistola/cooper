@@ -83,8 +83,8 @@ Comparison is field-wise rather than bitwise because padding, float encodings, a
 storage address, and inactive payload bytes must not affect it.
 
 A type is **comparable** when all its components are. Function types, dynamic arrays `T[]`,
-and unconstrained type parameters are not comparable, and neither is any type containing
-them. Generic code that needs equality takes an `eq` function.
+`extern union`s, and unconstrained type parameters are not comparable, and neither is any
+type containing them. Generic code that needs equality takes an `eq` function.
 
 The comparable types are also the **hashable** types, and hashing agrees with `==`:
 `+0.0` and `-0.0` hash alike, and a `NaN` key can be inserted but never found. Pointers hash
@@ -104,6 +104,7 @@ Ordering operators (`<`, `<=`, `>`, `>=`) apply to numeric types only.
 | tuple, unit | `(1, "a")`, `()` |
 | array | `[1, 2, 3]` |
 | sum type | `Some(3)`, `None` |
+| `extern union` | `Value{...}` |
 | pointer | `nil`, or `&` and its target: `&Node{value: 1, next: nil}` |
 | function | `<func>` |
 

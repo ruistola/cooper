@@ -201,7 +201,7 @@ fn module_binding_reaches_a_type_qualified() {
 #[test]
 fn module_binding_reaches_a_variant_qualified() {
     project_ok(&[
-        ("shapes", "oneof Shape {\n  Circle(i32),\n  Rect(i32, i32),\n}"),
+        ("shapes", "union Shape {\n  Circle(i32),\n  Rect(i32, i32),\n}"),
         (
             "main",
             "use {\n  shapes,\n}\nfunc main() {\n  s := shapes.Shape.Circle(5)\n}",

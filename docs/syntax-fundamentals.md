@@ -3,7 +3,7 @@
 ## Comments and documentation
 
 A comment runs from `#` to the end of the line. A block of comment lines directly above a
-declaration (a `struct` and its members, a `oneof` and its variants, a function or method, an
+declaration (a `struct` and its members, a `union` and its variants, a function or method, an
 `extern`, a `type`, a module-level variable) documents it, as in Go: the lines are kept, without
 the `#` and the space after it, and a blank line between the comment and the declaration detaches
 it. Tools show it as the declaration's documentation. Any other comment is dropped.

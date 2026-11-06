@@ -1,35 +1,36 @@
 # Sum Types
 
-A `oneof` declares a nominal tagged union: a set of named **variants**, each with an
-optional positional payload. Variants are not types; they exist only within their `oneof`.
+A `union` declares a sum type, a nominal tagged union: a set of named **variants**, each
+with an optional positional payload. Variants are not types; they exist only within their
+`union`.
 
 ```
-oneof Color { Red, Green, Blue }
+union Color { Red, Green, Blue }
 
-oneof Shape {
+union Shape {
   Circle(i32),
   Rect(i32, i32),
 }
 
-oneof Tree T {
+union Tree T {
   Leaf,
   Node(T, Tree T, Tree T),
 }
 ```
 
 A payload is a parenthesised, comma-separated list of type expressions, which may be generic
-applications (`Full(Box i32)`). A generic `oneof` binds its type parameters after its name,
+applications (`Full(Box i32)`). A generic `union` binds its type parameters after its name,
 like a struct. Each instantiation is a distinct type: `Maybe i32` is not `Maybe string`.
-The words `enum` and `union` are kept free for possible C-style integer enumerations and
-untagged unions.
+An untagged C union is declared with `extern union`
+([C Interop](./c-interop.md#unions)).
 
 ## `Maybe` and `Result`
 
 Two sum types are always in scope, with no declaration or `use`:
 
 ```
-oneof Maybe T { None, Some(T) }      # a value that may be absent
-oneof Result T E { Ok(T), Err(E) }   # a success or a failure
+union Maybe T { None, Some(T) }      # a value that may be absent
+union Result T E { Ok(T), Err(E) }   # a success or a failure
 ```
 
 They are ordinary sum types, matched with `match` and `is`. A module that declares a type
@@ -65,7 +66,7 @@ A bare variant with no determining use is an error at body completion. Even a un
 variant name does not select its owning sum type; inference does not search declarations.
 
 The zero value of a sum type is its first variant with a zero payload. By convention, a sum
-type with a single payloadless variant lists it first (`oneof Maybe T { None, Some(T) }`), so
+type with a single payloadless variant lists it first (`union Maybe T { None, Some(T) }`), so
 that variant is the zero value and a zero-initialized value never carries a payload.
 
 A generic sum type's arguments are inferred from payloads and all uses of the constructed

@@ -153,7 +153,7 @@ impl Emitter<'_, '_> {
                 .map(|(_, member)| member)
                 .collect(),
             Type::Pointer(_) | Type::Nil => return Ok(self.assign(&format!("icmp eq ptr {l}, {r}"))),
-            Type::Oneof { .. } => return self.equal_variants(ty, left, right, span),
+            Type::Union { .. } => return self.equal_variants(ty, left, right, span),
             _ if is_string(ty) => {
                 self.module.declare(STRING_EQ_DECL);
                 let (a, a_len) = self.string_parts(left);

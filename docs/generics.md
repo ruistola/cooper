@@ -40,7 +40,7 @@ value-parameter list:
 
 ```
 struct Map K V { … }
-oneof Maybe T { … }
+union Maybe T { … }
 func map T U (f: func(T): U, xs: List T): List U { … }
 ```
 

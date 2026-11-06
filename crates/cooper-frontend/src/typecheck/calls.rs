@@ -9,7 +9,7 @@ impl<'g> TypeChecker<'g> {
         self.lookup_var(name).is_none()
             && self.globals.lookup_func(name).is_none()
             && self.globals.lookup_type_value(name).is_none()
-            && self.globals.defs.oneofs.values().any(|def| def.variants.contains_key(name))
+            && self.globals.defs.unions.values().any(|def| def.variants.contains_key(name))
     }
 
     pub(super) fn check_call(&mut self, callee: &Expr, args: &[Expr], span: Span) -> Option<Type> {
@@ -18,10 +18,10 @@ impl<'g> TypeChecker<'g> {
         // construction, not an ordinary call: its type arguments are inferred by
         // unifying the payload slots against the arguments.
         if let ExprKind::Field { target, name, .. } = &callee.kind {
-            if let Some(oneof @ Type::Oneof { .. }) = self.check_expr(target) {
+            if let Some(union @ Type::Union { .. }) = self.check_expr(target) {
                 // A call of a name that is not a variant is a method called across them.
-                if self.globals.defs.payload(&oneof, name).is_some() {
-                    return self.check_variant_construction(&oneof, name, args, callee.span);
+                if self.globals.defs.payload(&union, name).is_some() {
+                    return self.check_variant_construction(&union, name, args, callee.span);
                 }
             }
         }
@@ -367,7 +367,7 @@ impl<'g> TypeChecker<'g> {
         payload: Option<&[(Type, Span)]>, bare: bool, span: Span,
     ) {
         let slots = self.globals.defs.payload(subject, name);
-        let Type::Oneof { id, .. } = subject else {
+        let Type::Union { id, .. } = subject else {
             self.err(span, format!("cannot infer sum type for bare variant {name}; qualify it as Type.{name} or add a type annotation"));
             return;
         };
@@ -409,16 +409,16 @@ impl<'g> TypeChecker<'g> {
         }
     }
 
-    fn variant_subject(&mut self, oneof: &Type) -> Type {
-        let Type::Oneof { id, type_args } = oneof else {
+    fn variant_subject(&mut self, union: &Type) -> Type {
+        let Type::Union { id, type_args } = union else {
             unreachable!("a qualified variant has a sum type");
         };
         if !type_args.is_empty() {
-            return oneof.clone();
+            return union.clone();
         }
-        let params = self.globals.defs.type_params(oneof).to_vec();
+        let params = self.globals.defs.type_params(union).to_vec();
         let subst = self.fresh_subst(&params);
-        Type::Oneof {
+        Type::Union {
             id: id.clone(),
             type_args: params.iter().map(|param| subst[param].clone()).collect(),
         }
@@ -426,7 +426,7 @@ impl<'g> TypeChecker<'g> {
 
     pub(super) fn bare_variant_subject(&mut self, expected: Option<Type>) -> Type {
         match expected.map(|ty| self.infer.resolve(&ty)) {
-            Some(ty @ (Type::Oneof { .. } | Type::Infer(_))) => ty,
+            Some(ty @ (Type::Union { .. } | Type::Infer(_))) => ty,
             Some(Type::Func { return_type, .. }) => *return_type,
             _ => self.infer.fresh(InferKind::General),
         }
@@ -454,24 +454,24 @@ impl<'g> TypeChecker<'g> {
         Some(payload)
     }
 
-    /// Type check a bare variant access `Oneof.Variant`. A payload-free variant is a
+    /// Type check a bare variant access `Union.Variant`. A payload-free variant is a
     /// complete value of the sum type; a variant with a payload yields its
     /// constructor as a function type.
-    pub(super) fn check_variant_access(&mut self, oneof: &Type, variant: &str, span: Span) -> Option<Type> {
-        let subject = self.variant_subject(oneof);
+    pub(super) fn check_variant_access(&mut self, union: &Type, variant: &str, span: Span) -> Option<Type> {
+        let subject = self.variant_subject(union);
         Some(self.defer_variant(subject, variant, None, false, span))
     }
 
-    /// Type check a variant construction `Oneof.Variant(args)`, inferring a generic
+    /// Type check a variant construction `Union.Variant(args)`, inferring a generic
     /// sum type's arguments by unifying each payload slot against its argument.
     fn check_variant_construction(
         &mut self,
-        oneof: &Type,
+        union: &Type,
         variant: &str,
         args: &[Expr],
         span: Span,
     ) -> Option<Type> {
-        let subject = self.variant_subject(oneof);
+        let subject = self.variant_subject(union);
         let payload = self.variant_arguments(args)?;
         Some(self.defer_variant(subject, variant, Some(payload), false, span))
     }

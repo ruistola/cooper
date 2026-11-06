@@ -26,7 +26,7 @@ struct Pair {
     cells: Mixed[2],
 }
 
-oneof Shape {
+union Shape {
     Dot,
     Circle(i32),
     Label(string, i64),

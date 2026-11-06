@@ -124,7 +124,7 @@ impl InferTable {
                 id,
                 type_args: self.resolve_all(&type_args),
             },
-            Type::Oneof { id, type_args } => Type::Oneof {
+            Type::Union { id, type_args } => Type::Union {
                 id,
                 type_args: self.resolve_all(&type_args),
             },
@@ -181,7 +181,7 @@ impl InferTable {
                 }
                 self.unbound_ids(&return_type, out);
             }
-            Type::Struct { type_args, .. } | Type::Oneof { type_args, .. } => {
+            Type::Struct { type_args, .. } | Type::Union { type_args, .. } => {
                 for arg in type_args {
                     self.unbound_ids(&arg, out);
                 }
@@ -206,7 +206,7 @@ impl InferTable {
                 self.is_resolved(return_type)
                     && param_types.iter().all(|ty| self.is_resolved(ty))
             }
-            Type::Struct { type_args, .. } | Type::Oneof { type_args, .. } => {
+            Type::Struct { type_args, .. } | Type::Union { type_args, .. } => {
                 type_args.iter().all(|ty| self.is_resolved(ty))
             }
             _ => true,
@@ -261,7 +261,7 @@ impl InferTable {
                 self.unify_inner(a, b)
             }
             (Type::Struct { id: a, type_args: aa }, Type::Struct { id: b, type_args: ab })
-            | (Type::Oneof { id: a, type_args: aa }, Type::Oneof { id: b, type_args: ab })
+            | (Type::Union { id: a, type_args: aa }, Type::Union { id: b, type_args: ab })
                 if a == b => self.unify_all(aa, ab),
             _ if left.equals(&right) => Ok(()),
             _ => Err(()),
@@ -322,7 +322,7 @@ impl InferTable {
                 id: id.clone(),
                 type_args: type_args.iter().map(|ty| self.pointer_nils(ty)).collect(),
             },
-            Type::Oneof { id, type_args } => Type::Oneof {
+            Type::Union { id, type_args } => Type::Union {
                 id: id.clone(),
                 type_args: type_args.iter().map(|ty| self.pointer_nils(ty)).collect(),
             },
@@ -339,7 +339,7 @@ impl InferTable {
                 self.occurs(index, &return_type)
                     || param_types.iter().any(|ty| self.occurs(index, ty))
             }
-            Type::Struct { type_args, .. } | Type::Oneof { type_args, .. } => {
+            Type::Struct { type_args, .. } | Type::Union { type_args, .. } => {
                 type_args.iter().any(|ty| self.occurs(index, ty))
             }
             _ => false,

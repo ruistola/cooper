@@ -133,11 +133,11 @@ fn analyze_parsed(mut parsed: Vec<ParsedModule>) -> (Vec<Diagnostic>, CheckedPro
     // is analyzed against all definitions resolved before it.
     let mut defs = TypeDefs::default();
     let prelude = crate::stdlib::prelude();
-    defs.oneofs.extend(prelude.defs.oneofs);
+    defs.unions.extend(prelude.defs.unions);
     defs.structs.extend(prelude.defs.structs);
     for (_, interface) in &standard {
         defs.structs.extend(interface.defs.structs.clone());
-        defs.oneofs.extend(interface.defs.oneofs.clone());
+        defs.unions.extend(interface.defs.unions.clone());
     }
     let mut interfaces: HashMap<ModulePath, Globals> = standard.into_iter().collect();
     let mut checked = Vec::new();
@@ -368,7 +368,7 @@ fn topological_order(
 #[derive(Default)]
 struct Imports {
     structs: HashMap<String, TypeId>,
-    oneofs: HashMap<String, TypeId>,
+    unions: HashMap<String, TypeId>,
     aliases: HashMap<String, crate::types::Type>,
     funcs: HashMap<String, Signature>,
     vars: HashMap<String, GlobalVar>,
@@ -387,14 +387,14 @@ impl Imports {
     fn overlay(&self, base: &Globals) -> Globals {
         let mut globals = base.clone();
         let prelude = crate::stdlib::prelude();
-        for (name, id) in prelude.oneofs {
-            globals.oneofs.entry(name).or_insert(id);
+        for (name, id) in prelude.unions {
+            globals.unions.entry(name).or_insert(id);
         }
         for (name, id) in prelude.structs {
             globals.structs.entry(name).or_insert(id);
         }
         globals.structs.extend(self.structs.clone());
-        globals.oneofs.extend(self.oneofs.clone());
+        globals.unions.extend(self.unions.clone());
         globals.aliases.extend(self.aliases.clone());
         globals.funcs.extend(self.funcs.clone());
         globals.vars.extend(self.vars.clone());
@@ -509,7 +509,7 @@ fn declared_names(files: &[ParsedFile]) -> HashSet<String> {
         for stmt in &file.decls {
             match &stmt.kind {
                 StmtKind::StructDecl { name, .. }
-                | StmtKind::OneofDecl { name, .. }
+                | StmtKind::UnionDecl { name, .. }
                 | StmtKind::VarDecl { name, .. }
                 | StmtKind::TypeAlias { name, .. }
                 | StmtKind::ExternFunc { name, .. } => {
@@ -587,8 +587,8 @@ fn build_file_imports(
                     }
                 } else if let Some(ty) = interface.aliases.get(&item) {
                     imports.aliases.insert(local, ty.clone());
-                } else if let Some(id) = interface.oneofs.get(&item) {
-                    imports.oneofs.insert(local, id.clone());
+                } else if let Some(id) = interface.unions.get(&item) {
+                    imports.unions.insert(local, id.clone());
                 } else if let Some(sig) = interface.lookup_func(&item) {
                     imports.funcs.insert(local, sig.clone());
                 } else if let Some(var) = interface.vars.get(&item) {
@@ -615,8 +615,8 @@ fn strip_imports(mut globals: Globals, imports: &Imports) -> Globals {
     for name in imports.structs.keys() {
         globals.structs.remove(name);
     }
-    for name in imports.oneofs.keys() {
-        globals.oneofs.remove(name);
+    for name in imports.unions.keys() {
+        globals.unions.remove(name);
     }
     for name in imports.aliases.keys() {
         globals.aliases.remove(name);
@@ -627,7 +627,7 @@ fn strip_imports(mut globals: Globals, imports: &Imports) -> Globals {
     for name in imports.vars.keys() {
         globals.vars.remove(name);
     }
-    globals.oneofs.retain(|_, id| id.module != crate::stdlib::PRELUDE_MODULE);
+    globals.unions.retain(|_, id| id.module != crate::stdlib::PRELUDE_MODULE);
     for owner in imports.methods.keys() {
         globals.methods.remove(owner);
     }

@@ -8,7 +8,7 @@ use {
     std.io.{ print, println },
 }
 
-oneof Option T {
+union Option T {
     Nothing,
     Some(T),
 }

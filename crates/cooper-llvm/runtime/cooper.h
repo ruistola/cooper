@@ -94,9 +94,14 @@ int cooper_proc_id(void);
 /* Run `entry` as the main thread (thread 0) on a stack of its own, and the scheduler on the caller's stack.
    The process exits with `entry`'s result when it returns. */
 _Noreturn void cooper_run_main(int (*entry)(void));
-/* For the collector: the top of the running thread's stack, and the other threads' stacks. */
-uintptr_t cooper_current_stack_top(void);
-void cooper_scan_threads(void (*scan)(uintptr_t low, uintptr_t high));
+/* For the collector, with the world stopped. Record the running thread's stack pointer, so that its stack is
+   scanned from there up like a stopped thread's. Scan the threads, their stacks, and the scheduler's timers
+   that no other caller has claimed for `cycle` (a number the collector chooses, new for each scan of all).
+   Run `helper` on an M for each P other than the caller's: the Ms stopped at safe points and idle Ms, started
+   if need be. A helper may also run late, after the world restarts. */
+void cooper_save_stack_pointer(void *sp);
+void cooper_scan_threads(void (*scan)(void *context, uintptr_t low, uintptr_t high), void *context, uint64_t cycle);
+void cooper_start_helpers(void (*helper)(void));
 
 /* Safe points. Generated code polls cooper_poll_word at function entry and loop back-edges, and calls
    cooper_poll_slow when it is nonzero, which stops the running thread while the world is stopped, and switches

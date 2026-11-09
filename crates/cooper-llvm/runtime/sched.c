@@ -26,7 +26,8 @@
  * cooper_poll_word is one global, not thread-local, and counts every reason to stop: a stop of the world,
  * and each pending preemption. A thread stopped at a safe point stays on its M with its callee-saved registers
  * spilled and its stack pointer recorded, so the collector scans every thread's stack the same way, from its
- * saved stack pointer to its top.
+ * saved stack pointer to its top. While the world is stopped, the stopped Ms and idle ones (one for each other P)
+ * run the collector's mark workers.
  *
  * A call to a C function the program declares (`extern func`) is bracketed by cooper_enter_c and
  * cooper_exit_c. Entering records the thread's stack pointer and callee-saved registers and marks its P as in
@@ -108,6 +109,7 @@ typedef struct Thread {
     int64_t state;            /* atomic: a state, with PERMIT possibly set */
     int64_t in_c;             /* atomic: in a C call, with `sp` and `regs` recorded on entry */
     uintptr_t regs[C_SAVED_WORDS]; /* the callee-saved registers on entering C */
+    uint64_t scanned;         /* atomic: the last mark cycle that claimed this thread's stack for scanning */
     void *fiber;              /* ThreadSanitizer's */
 } Thread;
 
@@ -183,6 +185,7 @@ struct M {
     int64_t action_wake;      /* ACT_SLEEP: when to resume */
     int spinning;             /* looking for work to steal, counted in sched.nmspinning */
     /* Under sched.lock: */
+    bool help;                /* taken off the idle list to run the collector's helper */
     P *nextp;                 /* a P handed over to this sleeping M */
     M *idle_next;
     pthread_cond_t wake;
@@ -216,6 +219,9 @@ static struct {
     int gcwaiting;            /* atomic (written under the lock) */
     int stopwait;             /* Ps yet to stop */
     uint64_t restarts;
+    int parked;               /* Ms stopped in gc_park */
+    uint64_t helps;           /* requests for the collector's helper while the world is stopped */
+    void (*helper)(void);
     pthread_cond_t stopped, restart;
 } sched = {.lock = PTHREAD_MUTEX_INITIALIZER, .timer_next = INT64_MAX};
 
@@ -502,6 +508,7 @@ static void m_remove_idle(M *m) {
 }
 
 static _Noreturn void scheduler(M *m);
+static void stopm(M *m);
 
 /* Per M: the stack the fault handler runs on, since the faulting thread's own stack is exhausted. */
 static void install_alternate_stack(void) {
@@ -518,12 +525,35 @@ static void *m_main(void *arg) {
     M *m = arg;
     this_m = m;
     install_alternate_stack();
-    pthread_mutex_lock(&sched.lock);
-    m->p = m->nextp;
-    m->nextp = NULL;
-    m->p->m = m;
-    pthread_mutex_unlock(&sched.lock);
+    if (m->help) {
+        /* Started to run the collector's helper: then it idles. */
+        m->help = false;
+        sched.helper();
+        stopm(m);
+    } else {
+        pthread_mutex_lock(&sched.lock);
+        m->p = m->nextp;
+        m->nextp = NULL;
+        m->p->m = m;
+        pthread_mutex_unlock(&sched.lock);
+    }
     scheduler(m);
+}
+
+static void new_m(P *nextp, bool spinning, bool help) {
+    M *m = calloc(1, sizeof *m);
+    if (!m) cooper_panic("out of memory");
+    m->id = next_m_id++;
+    cond_init(&m->wake);
+    m->nextp = nextp;
+    m->spinning = spinning;
+    m->help = help;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_t os_thread;
+    if (pthread_create(&os_thread, &attr, m_main, m) != 0) cooper_panic("cannot start an OS thread");
+    pthread_attr_destroy(&attr);
 }
 
 /* Run `p` on a sleeping M, or a new one, with sched.lock held. A spinning M starts out looking for work to
@@ -537,18 +567,7 @@ static void startm_locked(P *p, bool spinning) {
         pthread_cond_signal(&m->wake);
         return;
     }
-    m = calloc(1, sizeof *m);
-    if (!m) cooper_panic("out of memory");
-    m->id = next_m_id++;
-    cond_init(&m->wake);
-    m->nextp = p;
-    m->spinning = spinning;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    pthread_t os_thread;
-    if (pthread_create(&os_thread, &attr, m_main, m) != 0) cooper_panic("cannot start an OS thread");
-    pthread_attr_destroy(&attr);
+    new_m(p, spinning, false);
 }
 
 /* Run an idle P, if there is one, on a sleeping M or a new one. */
@@ -570,16 +589,27 @@ static void wakep(void) {
 
 /* --- stopping the world --- */
 
-/* Stop `m`, which holds a P, until the world restarts. */
+/* Stop `m`, which holds a P, until the world restarts, running the collector's helper when asked. */
 static void gc_park(M *m) {
     pthread_mutex_lock(&sched.lock);
     if (sched.gcwaiting) {
         STORE(&m->p->status, P_STOPPED);
         if (--sched.stopwait == 0) pthread_cond_signal(&sched.stopped);
+        sched.parked++;
         /* Not `while (gcwaiting)`: the next stop may begin before this M wakes, and it must stop for that one
            again, counted. */
-        uint64_t restarts = sched.restarts;
-        while (sched.restarts == restarts) pthread_cond_wait(&sched.restart, &sched.lock);
+        uint64_t restarts = sched.restarts, helps = sched.helps;
+        while (sched.restarts == restarts) {
+            if (sched.helps != helps) {
+                helps = sched.helps;
+                pthread_mutex_unlock(&sched.lock);
+                sched.helper();
+                pthread_mutex_lock(&sched.lock);
+            } else {
+                pthread_cond_wait(&sched.restart, &sched.lock);
+            }
+        }
+        sched.parked--;
     }
     pthread_mutex_unlock(&sched.lock);
 }
@@ -662,6 +692,27 @@ void cooper_start_the_world(void) {
     pthread_cond_broadcast(&sched.restart);
     pthread_mutex_unlock(&sched.lock);
     if (LOAD(&sched.global_count)) wakep();
+}
+
+/* The Ms stopped in gc_park run the helper when woken with a new request; an idle M is taken off the idle list
+   (or a new one started) for each other P, which is idle or held by an M in C. */
+void cooper_start_helpers(void (*helper)(void)) {
+    pthread_mutex_lock(&sched.lock);
+    sched.helper = helper;
+    sched.helps++;
+    pthread_cond_broadcast(&sched.restart);
+    for (int wanted = nprocs - 1 - sched.parked; wanted > 0; wanted--) {
+        M *m = sched.idle_ms;
+        if (!m) {
+            new_m(NULL, false, true);
+            continue;
+        }
+        sched.idle_ms = m->idle_next;
+        if (sched.timer_m == m) sched.timer_m = NULL;
+        m->help = true;
+        pthread_cond_signal(&m->wake);
+    }
+    pthread_mutex_unlock(&sched.lock);
 }
 
 /* --- timers --- */
@@ -747,6 +798,15 @@ static void stopm(M *m) {
     sched.idle_ms = m;
     bool timers_late = false; /* timers are due, but every P is busy: their Ms will run them */
     while (!m->nextp) {
+        if (m->help) {
+            m->help = false;
+            pthread_mutex_unlock(&sched.lock);
+            sched.helper();
+            pthread_mutex_lock(&sched.lock);
+            m->idle_next = sched.idle_ms;
+            sched.idle_ms = m;
+            continue;
+        }
         if (sched.npidle == nprocs && !sched.timer_count && !sched.global_count && !sched.gcwaiting &&
             !LOAD(&sched.nincall)) {
             cooper_panic("all threads are blocked: deadlock");
@@ -755,7 +815,7 @@ static void stopm(M *m) {
             sched.timer_m = m;
             sched.timer_m_until = sched.timers[0].wake;
             wait_until(&m->wake, sched.timer_m_until);
-            if (m->nextp || !sched.timer_count || sched.timers[0].wake > now_ns()) continue;
+            if (m->nextp || m->help || !sched.timer_count || sched.timers[0].wake > now_ns()) continue;
             sched.timer_m = NULL;
             P *p = p_get_idle();
             if (p) {
@@ -1363,21 +1423,29 @@ int cooper_proc_id(void) {
     return (int)(m->p - allp);
 }
 
-uintptr_t cooper_current_stack_top(void) {
-    return get_m()->current->stack_top;
+/* Record the running thread's stack pointer, as a switch does, so that cooper_scan_threads covers its stack from
+   there up. */
+void cooper_save_stack_pointer(void *sp) {
+    get_m()->current->sp = sp;
 }
 
-/* With the world stopped: every thread's stack except the running one's, from its saved stack pointer up; the
-   code and environment words of each thread, which may be the only reference to a thread that has not
-   started; and the timers, which refer to waiters. The schedulers' own stacks hold no heap pointers. */
-void cooper_scan_threads(void (*scan)(uintptr_t low, uintptr_t high)) {
-    Thread *running = get_m()->current;
-    if (sched.timer_count) scan((uintptr_t)sched.timers, (uintptr_t)(sched.timers + sched.timer_count));
+/* With the world stopped: the stack of every thread, from its saved stack pointer up; its registers saved on
+   entering C; the code and environment words of each thread, which may be the only reference to a thread
+   that has not started; and the timers, which refer to waiters. The schedulers' own stacks hold no heap
+   pointers. Each thread is scanned by whichever caller claims it first for `cycle`. */
+void cooper_scan_threads(void (*scan)(void *context, uintptr_t low, uintptr_t high), void *context, uint64_t cycle) {
+    static uint64_t timers_scanned;
+    uint64_t seen = LOAD(&timers_scanned);
+    if (seen != cycle && CAS(&timers_scanned, seen, cycle) && sched.timer_count) {
+        scan(context, (uintptr_t)sched.timers, (uintptr_t)(sched.timers + sched.timer_count));
+    }
     for (Thread *thread = LOAD(&all_threads); thread; thread = thread->all_next) {
+        seen = LOAD(&thread->scanned);
+        if (seen == cycle || !CAS(&thread->scanned, seen, cycle)) continue;
         if (LOAD(&thread->state) == DEAD) continue;
-        if (thread != running) scan((uintptr_t)thread->sp, thread->stack_top);
-        if (LOAD(&thread->in_c)) scan((uintptr_t)thread->regs, (uintptr_t)(thread->regs + C_SAVED_WORDS));
-        scan((uintptr_t)&thread->code, (uintptr_t)(&thread->env + 1));
+        scan(context, (uintptr_t)thread->sp, thread->stack_top);
+        if (LOAD(&thread->in_c)) scan(context, (uintptr_t)thread->regs, (uintptr_t)(thread->regs + C_SAVED_WORDS));
+        scan(context, (uintptr_t)&thread->code, (uintptr_t)(&thread->env + 1));
     }
 }
 

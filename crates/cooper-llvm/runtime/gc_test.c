@@ -309,7 +309,7 @@ static int run_collector_tests(void) {
 }
 
 int main(void) {
-    setenv("COOPER_GC", "poison", 1);
+    setenv("COOPER_GC", "poison,checkmark", 1);
     /* These keep their objects where the collector does not look, so it must not run yet. */
     test_sizes_and_zeroing();
     test_distinct_objects();

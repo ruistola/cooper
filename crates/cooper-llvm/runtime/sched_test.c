@@ -157,19 +157,25 @@ static void test_deep_recursion_on_a_thread_stack(void) {
 
 static int ranges_seen;
 static size_t largest_range;
-static void inspect(uintptr_t low, uintptr_t high) {
+static void inspect(void *context, uintptr_t low, uintptr_t high) {
+    (void)context;
     ranges_seen++;
     if (high - low > largest_range) largest_range = high - low;
 }
 
-static void test_scan_visits_other_stacks(void) {
+static void test_scan_visits_every_stack(void) {
     Worker z = {"z", 1};
     cooper_spawn(worker, &z);
-    cooper_scan_threads(inspect);
-    /* The new thread's stack (its prepared frame), and each of the two threads' code and environment
-       words. The running thread's own stack is the collector's to scan, and is not offered. */
-    CHECK(ranges_seen == 3);
+    volatile char here = 0;
+    cooper_save_stack_pointer((void *)&here);
+    cooper_scan_threads(inspect, NULL, 1);
+    /* The two threads' stacks (the new one's prepared frame, and the running one's from here up), and each
+       one's code and environment words. */
+    CHECK(ranges_seen == 4);
     CHECK(largest_range >= 64);
+    /* Each thread is scanned once for a cycle. */
+    cooper_scan_threads(inspect, NULL, 1);
+    CHECK(ranges_seen == 4);
     for (int i = 0; i < 3; i++) cooper_yield();
 }
 
@@ -311,7 +317,7 @@ static int run_tests(void) {
     test_a_spinning_thread_is_preempted();
     test_a_blocking_c_call_gives_up_its_p();
     if (one) {
-        test_scan_visits_other_stacks();
+        test_scan_visits_every_stack();
     } else {
         test_ping_pong_across_ms();
         test_idle_ms_steal_work();

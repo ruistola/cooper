@@ -6,14 +6,14 @@ Environment variables read by every Cooper program's runtime:
 
 | Variable | Effect |
 |---|---|
-| `COOPER_GC_STATS=1` | At exit, print the number of collections, time spent marking and sweeping, the longest pause, allocations, bytes allocated, peak heap, live bytes after the last collection, and memory returned to the system |
-| `COOPER_GC=trace` | Print one line per collection: mark and sweep time, live bytes, the next collection's trigger, heap size |
+| `COOPER_GC_STATS=1` | At exit, print the number of collections, time spent marking (wall time, and summed over the mark workers) and sweeping, the longest pause, bytes allocated, peak heap, live bytes after the last collection, and memory returned to the system |
+| `COOPER_GC=trace` | Print one line per collection: mark time (wall time, summed over the workers, and their number), sweep time, live bytes, the next collection's trigger, heap size |
 | `COOPER_GC=stress` | Collect at every allocation and poison freed memory (the test harness runs every golden program this way) |
 | `COOPER_GC=poison` | Fill freed memory with `0xDB`, so a missed root crashes instead of silently reusing memory |
+| `COOPER_GC=checkmark` | After every mark, mark again serially and panic on any object the mark missed (combine with `stress` as `stress,checkmark`) |
 | `COOPER_HEAP_GROWTH=n` or `off` | The heap may grow to `n` percent over what survived the last collection (default 100); `off` disables automatic collection |
 | `COOPER_STACK_KIB=n` | Reserve `n` KiB of stack for each thread (default 8192) |
-| `COOPER_THREADS=n` | Run threads on `n` processors, each an OS thread while busy (default: one per core) |
-| `COOPER_GC=objects` | Mark object by object as they are reached, instead of a span at a time: for comparing the two |
+| `COOPER_THREADS=n` | Run threads on `n` processors, each an OS thread while busy (default: one per core); the collector marks on as many |
 
 The pacer follows Go's goal: the next collection starts at the live bytes plus the growth percentage of the live
 bytes and the roots (stack and module-level variables), but at least 4 MiB scaled by the percentage.
@@ -27,31 +27,36 @@ collection, free runs of 128 KiB or more are returned to the operating system (`
 `clang -O2`), Go, and Java when a JDK is installed, reporting the best of three wall times and the peak
 resident memory. Every implementation prints the same output.
 
-Baseline, Apple M5, Go 1.26 (with its concurrent collector on spare cores), Cooper's collector stop-the-world
-and single-threaded:
+Apple M5 with ten cores, Go 1.27 (with its concurrent collector on spare cores), Cooper with one processor per
+core and its stop-the-world collector marking on all of them:
 
 | Benchmark | Cooper (default) | Cooper (`-O2`) | Go |
 |---|---|---|---|
-| `binary_trees`: 33M short-lived 16-byte nodes, one 8 MB long-lived tree | 1.31 s, 22 MiB | 0.44 s, 21 MiB | 0.29 s, 28 MiB |
-| `live_heap`: 128 MB live tree, 50M short-lived allocations | 1.94 s, 269 MiB | 0.65 s, 269 MiB | 0.43 s, 275 MiB |
-| `strings`: building, joining, and splitting 1.2M small strings | 0.43 s, 8 MiB | 0.15 s, 7 MiB | 0.08 s, 10 MiB |
+| `binary_trees`: 33M short-lived 16-byte nodes, one 8 MB long-lived tree | 0.97 s, 22 MiB | 0.35 s, 23 MiB | 0.31 s, 28 MiB |
+| `live_heap`: 128 MB live tree, 50M short-lived allocations | 1.39 s, 276 MiB | 0.51 s, 276 MiB | 0.46 s, 274 MiB |
+| `strings`: building, joining, and splitting 1.2M small strings | 0.49 s, 8 MiB | 0.18 s, 7 MiB | 0.09 s, 10 MiB |
+| `scattered`: 3M-node random graph, 120M short-lived allocations | 5.84 s, 236 MiB | 3.22 s, 165 MiB | 4.52 s, 234 MiB |
 
 Marking works a span at a time, after Go's Green Tea collector: reaching a small object marks it and queues its
 span (first in, first out), and a span's marked-but-unscanned objects are scanned together from the span's bit
-arrays. On `scattered`, a random graph of 3M nodes where tracing jumps around memory, this makes marking 2.6x
-faster than scanning object by object (7.2 s against 18.7 s over 105 collections). On the tree benchmarks,
-whose nodes are allocated in the order they are traced, it makes no difference, since a collection already
-costs about 6 ns per object there. Cooper's mark is single-threaded; Go's runs on other cores concurrently
-(on `scattered` Go takes 4.2 s of wall time and 29 s of CPU, Cooper 8.0 s of wall time and CPU).
+arrays. On `scattered`, where tracing jumps around memory, this makes marking 2.6x faster than scanning object
+by object (7.2 s against 18.7 s over 105 collections, on one processor). On the tree benchmarks, whose nodes
+are allocated in the order they are traced, it makes no difference, since a collection already costs about
+6 ns per object there, the cost of chasing pointers across a heap bigger than the cache.
 
-| Benchmark | Cooper (`-O2`) | Go |
-|---|---|---|
-| `scattered`: 3M-node random graph, 120M short-lived allocations | 8.03 s, 173 MiB | 4.21 s, 249 MiB |
+Mark time over all collections (`COOPER_GC_STATS=1`, `-O2`) by the number of processors:
 
-Where the time goes (`COOPER_GC_STATS=1`, `-O2`): in `binary_trees` 63 collections take 227 ms of 440 ms, almost
-all of it marking; in `live_heap` 10 collections take 330 ms, marking 8.4M live objects at about 6 ns each, the
-cost of chasing pointers across a heap bigger than the cache. Sweeping is
-under 1% of collection time, so lazy sweeping would gain nothing yet.
+| Benchmark | 1 | 4 | 10 | Longest pause at 10 (at 1) |
+|---|---|---|---|---|
+| `binary_trees` (63 collections) | 213 ms | 98 ms | 42 ms | 1.0 ms (5.2 ms) |
+| `live_heap` (10 collections) | 377 ms | 121 ms | 75 ms | 15 ms (66 ms) |
+| `scattered` (105 collections) | 7.1 s | 2.5 s | 1.9 s | 22 ms (118 ms) |
+| `alloc_parallel` (1140 collections of a 4 MiB heap) | 230 ms | 95 ms | 92 ms | 0.2 ms (0.4 ms) |
+
+With one processor the mark takes as long as it did before it was parallel (within about 5%). `scattered` gains
+little beyond four processors (2.5 s at four, 1.9 s at ten); its marking is bound by memory latency. With ten
+processors the time summed over the workers is 5 to 10 times the wall time, much of it idle workers waiting for
+work. Sweeping is under 1% of collection time, so lazy sweeping would gain nothing yet.
 
 ## Threads
 
@@ -73,6 +78,6 @@ little where the work is in calls, and most in tight loops they keep LLVM from r
 0.19 s with them and 0.15 s without.
 
 `benchmarks/alloc_parallel.coop` has 8 threads each allocate 33M short-lived 16-byte nodes (`-O2`, Apple M5, ten
-cores; Go's version is not written). Each P allocates from its own spans without a lock: 2.2 s with one P, 0.83 s
-with four, 0.91 s with ten. Beyond four Ps, stopping the world for a collection of the 4 MiB heap every few
-milliseconds outweighs the gain; with collections made rare (`COOPER_HEAP_GROWTH=5000`) eight Ps take 0.73 s.
+cores; Go's version is not written). Each P allocates from its own spans without a lock: 2.4 s with one P, 0.97 s
+with four, 0.84 s with ten. Beyond four Ps, stopping the world for a collection of the 4 MiB heap every few
+milliseconds limits the gain; with collections made rare (`COOPER_HEAP_GROWTH=5000`) eight Ps take 0.75 s.

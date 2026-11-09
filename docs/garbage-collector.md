@@ -2,8 +2,8 @@
 
 Memory is reclaimed by a tracing collector modelled on Go's: a span-based allocator, a precise heap,
 conservative stacks, and Green Tea marking. It lives in the C runtime (`runtime/gc.c`, with the
-descriptor generation in `crates/cooper-llvm/src/gc.rs`). It stops the world and then marks and sweeps on
-one OS thread; parallel and concurrent marking are planned. Controls and measurements are in [Performance](./performance.md).
+descriptor generation in `crates/cooper-llvm/src/gc.rs`). It stops the world, marks in parallel on every
+processor, and sweeps; concurrent marking is planned. Controls and measurements are in [Performance](./performance.md).
 
 ## Typed allocation
 
@@ -38,7 +38,8 @@ cached spans to the lists.
 ## Collection
 
 Stop-the-world mark and sweep, started by the pacer when the allocated bytes reach the live bytes plus a growth
-percentage of the live bytes and roots (default 100%, at least 4 MiB).
+percentage of the live bytes and roots (default 100%, at least 4 MiB). The roots counted are the module-level
+variables and the stacks of every thread.
 
 - **Stopping.** The allocating thread that reaches the heap goal stops every other thread at a safe point: generated
   code polls a flag at each function entry and loop iteration, and the allocator, lock spins and the scheduler
@@ -52,7 +53,15 @@ percentage of the live bytes and roots (default 100%, at least 4 MiB).
   only keeps alive what it appears to point into. Cooper never turns an integer back into a pointer.
 - **Mark.** Green Tea: reaching a small object marks it and queues its span, first in first out; a span's
   marked-but-unscanned objects are scanned together from its mark and scan bits. Larger objects use an object
-  work stack. Interior pointers resolve through the span table.
+  work stack, and an object over 128 KiB is scanned in pieces that different workers can take. Interior pointers
+  resolve through the span table.
+- **Parallel marking.** Every processor marks, up to `COOPER_THREADS` OS threads: the collecting thread, the
+  threads stopped at safe points, and idle OS threads (started when the program has fewer) for the remaining
+  processors. A processor held by a thread in a C call gets an idle OS thread for the mark. Each worker has its own
+  span queue and object stack, publishes surplus work in fixed-size blocks to global lists, and steals half of
+  another worker's span queue when it runs out; the stacks are divided among the workers, each claiming a
+  thread's stack before scanning it. Marking ends when every worker is idle and no work is left. Mark and scan
+  bits are set by atomic OR, so each object is marked and scanned once.
 - **Sweep.** The marked objects become the allocated ones. Spans with nothing live return to a page heap that
   merges neighbouring free runs, large free runs go back to the operating system, and spans with free slots
   are listed per size class. Reused memory is zeroed when allocated.
@@ -60,13 +69,18 @@ percentage of the live bytes and roots (default 100%, at least 4 MiB).
 ## Testing
 
 `COOPER_GC=stress` collects at every allocation and poisons freed memory, and the golden-program harness runs
-every program again that way, on four processors (`COOPER_THREADS=4`), and both, requiring the same output. `gc_test.c`, run by `tests/allocator.rs`,
+every program again that way, on four processors (`COOPER_THREADS=4`), and both, requiring the same output.
+`COOPER_GC=checkmark` (after Go's `gccheckmark`) marks a second time after every mark, serially and object by
+object into separate bits, and panics naming any object reached that way that the parallel mark missed, its
+size and kind, and the object or root it was reached from. `gc_test.c`, run by `tests/allocator.rs`,
 tests the allocator and collector alone: sizes, pointer bitmaps, reuse, interior pointers, reclamation,
-poisoning, that a sum type retains only the variant it holds, and threads allocating on four Ps during collections.
+poisoning, that a sum type retains only the variant it holds, and threads allocating on four Ps during
+collections, with checkmark on.
 
 ## Known limits
 
 Conservative scanning can retain what a stale stack word points at. Optimized builds may keep only a derived
 pointer (one past an object's end), which a stack scan would miss: not yet validated. The page heap is a
-first-fit list. Refills and large allocations take one heap lock, and the collector marks and sweeps on one OS thread while the
-others wait, so allocation scales with the number of Ps only while collections are rare.
+first-fit list. Refills and large allocations take one heap lock, and the world stays stopped while the
+collector marks and sweeps, so pauses grow with the live heap. Sweeping is serial. Waking the helpers costs
+about 40 µs per collection with ten processors, which shows only when collections are small and frequent.

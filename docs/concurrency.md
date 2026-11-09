@@ -40,11 +40,11 @@ deadlock error.
 
 Generated code checks a flag at each function entry and loop iteration (a safe point), as do the allocator and
 the scheduler. The collector raises it to stop every thread before it collects: a thread that sees it pauses
-until the collection is over. A monitor, an OS thread of the runtime's own, raises it to preempt: a thread that
-has run for 10 ms while other threads wait (in a queue, or for a timer that is due) switches at its next safe
-point and goes to the back of the global queue. Preemption waits while the thread is inside one of the runtime's
-short critical sections (the lock words inside `std.sync`, formatting a value), and code that runs without
-reaching a safe point, such as a long C call, is not preempted.
+until the collection is over, and its OS thread helps mark meanwhile. A monitor, an OS thread of the runtime's
+own, raises it to preempt: a thread that has run for 10 ms while other threads wait (in a queue, or for a timer
+that is due) switches at its next safe point and goes to the back of the global queue. Preemption waits while
+the thread is inside one of the runtime's short critical sections (the lock words inside `std.sync`, formatting
+a value), and code that runs without reaching a safe point, such as a long C call, is not preempted.
 
 A call to a C function (`extern func`) may block. The thread's OS thread then holds no processor: the call counts
 as stopped for the collector, and when it lasts (the monitor looks every 20 µs while calls are in progress,

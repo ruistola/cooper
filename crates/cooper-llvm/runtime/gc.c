@@ -12,14 +12,15 @@
  *   - an object with a span of its own has the type in the span.
  *
  * The collector is stop-the-world mark and sweep: the allocating thread that crosses the heap goal stops
- * every other thread at a safe point (sched.c), then marks and sweeps alone. The heap is precise: an
- * object's pointers are found from the record above. The roots are the module-level variables
+ * every other thread at a safe point (sched.c), then marks with a helper on every other P, and sweeps alone.
+ * The heap is precise: an object's pointers are found from the record above. The roots are the module-level variables
  * (a table the compiler emits, with their types), and the stack and registers, which are scanned
  * conservatively: any word that points into an allocated object keeps it. Nothing moves, so an
  * ambiguous word costs only the retention of what it appears to point at.
  *
  * COOPER_GC=stress collects at every allocation, and COOPER_GC=poison (or stress) fills freed
- * memory with 0xDB, so that a missed root shows up as a crash rather than as silent reuse.
+ * memory with 0xDB, so that a missed root shows up as a crash rather than as silent reuse. COOPER_GC=checkmark
+ * marks again serially after every mark, and fails on any object the mark missed.
  */
 
 #include <sched.h>
@@ -62,7 +63,7 @@ typedef struct Span {
     uint64_t *alloc_bits; /* allocated as of the last collection */
     uint64_t *mark_bits;  /* reached by the collector */
     uint64_t *scan_bits;  /* already scanned (scannable small objects only) */
-    uint8_t queued;       /* on the collector's span queue */
+    uint8_t queued;       /* on a mark worker's span queue */
     uint32_t div_magic;   /* index = offset * div_magic >> 32, as Go's size classes do: no divide */
     size_t bits_words;    /* the capacity of the two bit arrays, in words */
     const CooperType *large_type;
@@ -129,10 +130,12 @@ static void init_classes(void) {
 /* --- arenas and the page heap --- */
 
 /* Every global of the allocator and collector, by who may touch it:
-     immutable after init:  class_size, class_pages, size_to_class8, stress, poison, object_mark, growth,
+     immutable after init:  class_size, class_pages, size_to_class8, stress, poison, checkmark, growth,
                             gc_off, trace, instrument, zerobase, started, ready
-     collector only (the stopped world, with the heap lock): work, queue, last_span, root_bytes,
-                            stats
+     collector only (the stopped world, with the heap lock): stats, and the fields of `mark` not marked
+                            otherwise
+     mark workers (the stopped world): `workers` (each its own, but rings are shared), and `mark` by its own
+                            lock and atomics; mark and scan bits and `Span.queued` atomically
    per-P (no lock): a P's AllocCache, and the spans in it, which only that P allocates from. The collector
                             reads and clears every cache with the world stopped.
    The rest (arena table, current_arena, heap_bytes, span_count, heap_used, next_gc, free_runs, spare_runs,
@@ -144,17 +147,16 @@ static Arena *current_arena;
 static size_t heap_bytes, span_count;
 static size_t heap_used;  /* bytes in allocated slots: live as of the last collection, plus allocated since */
 static size_t next_gc;    /* collect when `heap_used` reaches this */
-static int stress, poison, object_mark; /* object_mark: scan objects as reached, not a span at a time */
+static int stress, poison, checkmark;
 static int started;            /* cooper_gc_init has run: collections may begin */
 static unsigned growth = 100;  /* the heap may grow to this percent over what survived: COOPER_HEAP_GROWTH */
 static int gc_off;
-static size_t root_bytes;      /* stack and module-level variables scanned by the last collection */
 
 /* --- measurements: COOPER_GC=trace prints a line per collection, COOPER_GC_STATS=1 a summary at exit --- */
 
 static struct {
     uint64_t collections, bytes_allocated;
-    uint64_t mark_ns, sweep_ns, max_pause_ns;
+    uint64_t mark_ns, mark_worker_ns, sweep_ns, max_pause_ns;
     size_t peak_heap, last_live;
 } stats;
 static int trace, instrument; /* instrument: trace or statistics are on */
@@ -428,16 +430,32 @@ static void *allocate_large(size_t size, const CooperType *type) {
 
 static void collect(void);
 
-static void heap_lock(void) {
-    for (int spins = 0; __atomic_exchange_n(&heap_word, 1, __ATOMIC_ACQUIRE); spins++) {
-        while (__atomic_load_n(&heap_word, __ATOMIC_RELAXED)) {
+static void cpu_relax(void) {
+#if defined(__aarch64__)
+    __asm__ volatile("yield");
+#elif defined(__x86_64__)
+    __asm__ volatile("pause");
+#endif
+}
+
+static void spin_lock(int64_t *word) {
+    for (int spins = 0; __atomic_exchange_n(word, 1, __ATOMIC_ACQUIRE); spins++) {
+        while (__atomic_load_n(word, __ATOMIC_RELAXED)) {
             if (++spins > 1000) sched_yield();
         }
     }
 }
 
+static void spin_unlock(int64_t *word) {
+    __atomic_store_n(word, 0, __ATOMIC_RELEASE);
+}
+
+static void heap_lock(void) {
+    spin_lock(&heap_word);
+}
+
 static void heap_unlock(void) {
-    __atomic_store_n(&heap_word, 0, __ATOMIC_RELEASE);
+    spin_unlock(&heap_word);
 }
 
 /* Stop the world and collect, unless another thread did meanwhile and the heap no longer needs it. */
@@ -458,9 +476,10 @@ static void print_stats(void) {
     uint64_t pause = stats.mark_ns + stats.sweep_ns;
     fprintf(stderr,
             "gc: %llu collections, %.1f ms collecting (mark %.1f, sweep %.1f), longest pause %.2f ms\n"
+            "gc: marking took %.1f ms on all workers together\n"
             "gc: %.1f MiB allocated, peak heap %.1f MiB, %.1f MiB live after the last collection, %.1f MiB returned to the system\n",
             (unsigned long long)stats.collections, pause / 1e6, stats.mark_ns / 1e6, stats.sweep_ns / 1e6,
-            stats.max_pause_ns / 1e6, stats.bytes_allocated / 1048576.0,
+            stats.max_pause_ns / 1e6, stats.mark_worker_ns / 1e6, stats.bytes_allocated / 1048576.0,
             stats.peak_heap / 1048576.0, stats.last_live / 1048576.0, released_bytes / 1048576.0);
 }
 
@@ -477,7 +496,7 @@ static void init_heap(void) {
     if (percent && !strcmp(percent, "off")) gc_off = 1;
     else if (percent && atoi(percent) > 0) growth = (unsigned)atoi(percent);
     stress = mode && strstr(mode, "stress");
-    object_mark = mode && strstr(mode, "objects");
+    checkmark = mode && strstr(mode, "checkmark");
     poison = stress || (mode && strstr(mode, "poison"));
     next_gc = MIN_HEAP * growth / 100;
     ready = 1;
@@ -602,84 +621,253 @@ void cooper_heap_stats(size_t *bytes, size_t *spans) {
 
 /* --- the collector --- */
 
+/* Marking runs in parallel while the world is stopped: the collecting thread is one worker, and sched.c runs a
+   helper on an M for each other P. Each worker has an object stack and a span queue of its own, and shares
+   surplus work through global lists of fixed-size blocks; a worker that runs out steals from the others' span
+   rings. Marking ends when every worker that joined is idle and no work is left. Mark and scan bits change by
+   atomic OR and a span's `queued` flag by exchange, so each object is marked once and scanned once.
+
+   The runtime is compiled with the program, unoptimized by default: the functions on the path of every word
+   and span are inlined even then. */
+
 typedef struct {
-    uintptr_t slot;
+    uintptr_t slot; /* an object to scan; for a large object, the start of one of its oblets */
     Span *span;
 } Work;
 
-static Work *work;
-static size_t work_len, work_cap;
+#define BLOCK_WORK 128
+#define RING_SIZE 256
+#define OBLET_BYTES ((size_t)128 << 10) /* a large object is scanned in pieces of about this size */
 
-static void push_work(uintptr_t slot, Span *span) {
-    if (work_len == work_cap) {
-        size_t cap = work_cap ? work_cap * 2 : 4096;
-        Work *grown = map_zeroed(cap * sizeof *grown);
-        if (work) {
-            memcpy(grown, work, work_len * sizeof *grown);
-            munmap(work, work_cap * sizeof *work);
+typedef struct Block {
+    struct Block *next;
+    size_t count;
+    union {
+        Work objects[BLOCK_WORK];
+        Span *spans[RING_SIZE];
+    };
+} Block;
+
+typedef struct {
+    /* Spans to scan, oldest first: only the owner adds (at tail); the owner and thieves take (CAS on head). */
+    Span *ring[RING_SIZE];
+    uint32_t head, tail;
+    Block *objects;  /* objects to scan, a stack */
+    Block *fresh;    /* spans queued most recently, until a full block of them goes to the global list */
+    Span *last_span; /* the span the previous word pointed into: the next often does too */
+    uint64_t random;
+    size_t root_bytes; /* stack and register bytes this worker scanned, for the pacer */
+    int checking;    /* checkmark: verify marks instead of making them */
+    uintptr_t from;  /* checkmark: the object being scanned, 0 for a root */
+} __attribute__((aligned(128))) Worker;
+
+static Worker workers[COOPER_MAX_PROCS];
+
+/* The state word: the workers that joined this mark, those of them idle, whether marking is done, and a
+   sequence number that changes with every update, so a compare-and-swap cannot succeed on a word that changed
+   and changed back. Between marks the word is DONE, and nobody can join. */
+#define JOINED(s) ((s) & 0x3ff)
+#define IDLE(s) (((s) >> 10) & 0x3ff)
+#define IDLE_ONE ((uint64_t)1 << 10)
+#define DONE ((uint64_t)1 << 20)
+#define SEQ ((uint64_t)1 << 21)
+
+/* Work shared between the workers: under `lock`, except the atomic fields. */
+static struct {
+    int64_t lock;
+    Block *objects;            /* full blocks of objects, a stack */
+    Block *spans, *spans_tail; /* full blocks of spans, first in first out */
+    Block *empty;
+    char *chunk, *chunk_end;   /* memory for new blocks */
+    int64_t nobjects, nspans;  /* atomic: the blocks in the two lists */
+    uint64_t state;            /* atomic */
+    int64_t left;              /* atomic: helpers that have finished */
+    uint64_t cycle;            /* each mark's number: a thread's stack is claimed for scanning by setting it */
+    int64_t worker_ns;         /* atomic: time spent by all workers, for statistics */
+} mark = {.state = DONE};
+
+/* An empty block, with mark.lock held. */
+static Block *new_block(void) {
+    Block *block = mark.empty;
+    if (block) {
+        mark.empty = block->next;
+    } else {
+        if ((size_t)(mark.chunk_end - mark.chunk) < sizeof *block) {
+            mark.chunk = map_zeroed((size_t)1 << 20);
+            mark.chunk_end = mark.chunk + ((size_t)1 << 20);
         }
-        work = grown;
-        work_cap = cap;
+        block = (Block *)mark.chunk;
+        mark.chunk += sizeof *block;
     }
-    work[work_len].slot = slot;
-    work[work_len].span = span;
-    work_len++;
+    block->next = NULL;
+    block->count = 0;
+    return block;
 }
 
-/* The spans with objects waiting to be scanned, first in first out: the longer a span waits, the more
-   of its objects have been reached by the time it is scanned. */
-static Span **queue;
-static size_t queue_head, queue_len, queue_cap;
-
-static void queue_span(Span *span) {
-    if (queue_len == queue_cap) {
-        size_t cap = queue_cap ? queue_cap * 2 : 1024;
-        Span **grown = map_zeroed(cap * sizeof *grown);
-        for (size_t i = 0; i < queue_len; i++) grown[i] = queue[(queue_head + i) % queue_cap];
-        if (queue) munmap(queue, queue_cap * sizeof *queue);
-        queue = grown;
-        queue_head = 0;
-        queue_cap = cap;
+static void push_object(Worker *w, uintptr_t slot, Span *span) {
+    Block *block = w->objects;
+    if (block->count == BLOCK_WORK) {
+        spin_lock(&mark.lock);
+        block->next = mark.objects;
+        mark.objects = block;
+        __atomic_add_fetch(&mark.nobjects, 1, __ATOMIC_SEQ_CST);
+        w->objects = block = new_block();
+        spin_unlock(&mark.lock);
     }
-    queue[(queue_head + queue_len++) % queue_cap] = span;
+    block->objects[block->count++] = (Work){slot, span};
 }
+
+__attribute__((always_inline)) static inline int pop_object(Worker *w, Work *item) {
+    Block *block = w->objects;
+    if (block->count == 0) {
+        if (!__atomic_load_n(&mark.nobjects, __ATOMIC_RELAXED)) return 0;
+        spin_lock(&mark.lock);
+        Block *full = mark.objects;
+        if (full) {
+            mark.objects = full->next;
+            __atomic_sub_fetch(&mark.nobjects, 1, __ATOMIC_SEQ_CST);
+            block->next = mark.empty;
+            mark.empty = block;
+            w->objects = block = full;
+        }
+        spin_unlock(&mark.lock);
+        if (!full) return 0;
+    }
+    *item = block->objects[--block->count];
+    return 1;
+}
+
+/* Queue a span whose objects were marked: the longer it waits, the more of its objects have been reached by
+   the time it is scanned (Green Tea). New spans collect in the worker's fresh block, full blocks join the end
+   of the global list, and a worker takes from its ring, then the global list, then its fresh block: first in,
+   first out, as a whole. */
+static void queue_span(Worker *w, Span *span) {
+    Block *block = w->fresh;
+    block->spans[block->count++] = span;
+    if (block->count < RING_SIZE) return;
+    spin_lock(&mark.lock);
+    if (mark.spans_tail) mark.spans_tail->next = block;
+    else mark.spans = block;
+    mark.spans_tail = block;
+    __atomic_add_fetch(&mark.nspans, 1, __ATOMIC_SEQ_CST);
+    w->fresh = new_block();
+    spin_unlock(&mark.lock);
+}
+
+__attribute__((always_inline)) static inline Span *ring_take(Worker *w) {
+    for (;;) {
+        uint32_t head = __atomic_load_n(&w->head, __ATOMIC_ACQUIRE);
+        if (head == __atomic_load_n(&w->tail, __ATOMIC_ACQUIRE)) return NULL;
+        Span *span = __atomic_load_n(&w->ring[head % RING_SIZE], __ATOMIC_RELAXED);
+        if (__atomic_compare_exchange_n(&w->head, &head, head + 1, false, __ATOMIC_SEQ_CST, __ATOMIC_RELAXED)) {
+            return span;
+        }
+    }
+}
+
+/* Move a block's spans to the owner's empty ring, emptying the block. */
+static void ring_fill(Worker *w, Block *block) {
+    uint32_t tail = w->tail;
+    for (size_t i = 0; i < block->count; i++) __atomic_store_n(&w->ring[(tail + i) % RING_SIZE], block->spans[i], __ATOMIC_RELAXED);
+    __atomic_store_n(&w->tail, tail + (uint32_t)block->count, __ATOMIC_SEQ_CST);
+    block->count = 0;
+}
+
+static Span *pop_span(Worker *w) {
+    Span *span = ring_take(w);
+    if (span) return span;
+    if (__atomic_load_n(&mark.nspans, __ATOMIC_RELAXED)) {
+        spin_lock(&mark.lock);
+        Block *block = mark.spans;
+        if (block) {
+            mark.spans = block->next;
+            if (!mark.spans) mark.spans_tail = NULL;
+            __atomic_sub_fetch(&mark.nspans, 1, __ATOMIC_SEQ_CST);
+            ring_fill(w, block);
+            block->next = mark.empty;
+            mark.empty = block;
+        }
+        spin_unlock(&mark.lock);
+        if (block) return ring_take(w);
+    }
+    if (!w->fresh->count) return NULL;
+    ring_fill(w, w->fresh);
+    return ring_take(w);
+}
+
+/* Take half of another worker's ring into this worker's empty one. */
+static int steal(Worker *w, int joined) {
+    if (joined < 2) return 0;
+    w->random ^= w->random << 13;
+    w->random ^= w->random >> 7;
+    w->random ^= w->random << 17;
+    int start = (int)(w->random % (uint64_t)joined);
+    for (int i = 0; i < joined; i++) {
+        Worker *victim = &workers[(start + i) % joined];
+        if (victim == w) continue;
+        for (;;) {
+            uint32_t head = __atomic_load_n(&victim->head, __ATOMIC_ACQUIRE);
+            uint32_t tail = __atomic_load_n(&victim->tail, __ATOMIC_ACQUIRE);
+            uint32_t n = tail - head;
+            n -= n / 2;
+            if (n == 0) break;
+            if (n > RING_SIZE / 2) continue; /* head and tail read at different moments */
+            uint32_t mine = w->tail;
+            for (uint32_t k = 0; k < n; k++) {
+                Span *span = __atomic_load_n(&victim->ring[(head + k) % RING_SIZE], __ATOMIC_RELAXED);
+                __atomic_store_n(&w->ring[(mine + k) % RING_SIZE], span, __ATOMIC_RELAXED);
+            }
+            if (__atomic_compare_exchange_n(&victim->head, &head, head + n, false, __ATOMIC_SEQ_CST, __ATOMIC_RELAXED)) {
+                __atomic_store_n(&w->tail, mine + n, __ATOMIC_SEQ_CST);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static __attribute__((noinline, cold)) void check_mark(Worker *w, Span *span, uint32_t index);
 
 /* Mark the object `word` points into, if it points into an allocated one. */
-static Span *last_span; /* the span the previous word pointed into: the next often does too */
-
-static void mark_word(uintptr_t word) {
-    Span *span = last_span;
+__attribute__((always_inline)) static inline void mark_word(Worker *w, uintptr_t word) {
+    Span *span = w->last_span;
     if (!span || word - span->start >= span->npages << PAGE_SHIFT || span->state != SPAN_IN_USE) {
         span = span_of(word);
-        if (span) last_span = span;
+        if (span) w->last_span = span;
     }
     if (!span || span->state != SPAN_IN_USE || word < span->start) return;
     uint32_t index = span->large ? 0 : (uint32_t)(((word - span->start) * span->div_magic) >> 32);
     if (index >= span->nelems) return;
     uint64_t bit = (uint64_t)1 << (index % 64);
     if (index >= span->freeindex && !(span->alloc_bits[index / 64] & bit)) return;
-    if (span->mark_bits[index / 64] & bit) return;
-    span->mark_bits[index / 64] |= bit;
+    if (w->checking) {
+        check_mark(w, span, index);
+        return;
+    }
+    uint64_t *marks = &span->mark_bits[index / 64];
+    if (__atomic_load_n(marks, __ATOMIC_RELAXED) & bit) return;
+    if (__atomic_fetch_or(marks, bit, __ATOMIC_SEQ_CST) & bit) return;
     if (span->noscan) return;
-    if (span->heap_bits_in_span && !object_mark) {
-        /* Green Tea: do not scan the object now. Queue its span, so that the objects reached
-           meanwhile in the same span are scanned together, a span at a time. */
-        if (!span->queued) {
-            span->queued = 1;
-            queue_span(span);
+    if (span->heap_bits_in_span) {
+        /* Do not scan the object now: queue its span, unless it is queued already. Its scanner clears `queued`
+           before it reads the mark bits, and all four accesses are sequentially consistent, so either it sees
+           this mark or this load sees the flag clear. The load first keeps markers from writing the flag's
+           cache line for every object. */
+        if (!__atomic_load_n(&span->queued, __ATOMIC_SEQ_CST) && !__atomic_exchange_n(&span->queued, 1, __ATOMIC_SEQ_CST)) {
+            queue_span(w, span);
         }
         return;
     }
-    push_work(span->start + (size_t)index * span->elemsize, span);
+    push_object(w, span->start + (size_t)index * span->elemsize, span);
 }
 
 /* The pointers in one value of `type` at `base`: the words its bitmap names, and the payload of the
    variant each sum type in it holds. */
-static void scan_value(const uint64_t *base, const CooperType *type) {
+static void scan_value(Worker *w, const uint64_t *base, const CooperType *type) {
     for (size_t chunk = 0; chunk < (type->words + 63) / 64; chunk++) {
         uint64_t mask = type->bits[chunk];
         while (mask) {
-            mark_word(base[chunk * 64 + (size_t)__builtin_ctzll(mask)]);
+            mark_word(w, base[chunk * 64 + (size_t)__builtin_ctzll(mask)]);
             mask &= mask - 1;
         }
     }
@@ -687,21 +875,20 @@ static void scan_value(const uint64_t *base, const CooperType *type) {
         const CooperSite *site = &type->sites[i];
         uint32_t tag = *(const uint32_t *)((const char *)base + site->tag_offset);
         if (tag < site->variants && site->payloads[tag]) {
-            scan_value((const uint64_t *)((const char *)base + site->payload_offset), site->payloads[tag]);
+            scan_value(w, (const uint64_t *)((const char *)base + site->payload_offset), site->payloads[tag]);
         }
     }
 }
 
 /* The pointers among `bytes` bytes at `base`, which hold whole values of `type`. */
-static void scan_tiled(const uint64_t *base, size_t bytes, const CooperType *type) {
+static void scan_tiled(Worker *w, const uint64_t *base, size_t bytes, const CooperType *type) {
     size_t stride = type->size / 8;
-    for (size_t copy = 0; copy < bytes / type->size; copy++) scan_value(base + copy * stride, type);
+    for (size_t copy = 0; copy < bytes / type->size; copy++) scan_value(w, base + copy * stride, type);
 }
 
-static void scan_object(uintptr_t slot, const Span *span) {
-    if (span->large) {
-        scan_tiled((const uint64_t *)slot, span->large_size, span->large_type);
-    } else if (span->heap_bits_in_span) {
+/* A small object, from its span's bitmap or its header word. */
+static void scan_object(Worker *w, uintptr_t slot, const Span *span) {
+    if (span->heap_bits_in_span) {
         /* The slot's pointer words, as one mask taken from the span's bitmap, and only those visited. */
         const uint64_t *bits = heap_bits(span);
         size_t first = (slot - span->start) / 8, slot_words = span->elemsize / 8;
@@ -710,50 +897,116 @@ static void scan_object(uintptr_t slot, const Span *span) {
         if (shift && shift + slot_words > 64) mask |= bits[at + 1] << (64 - shift);
         if (slot_words < 64) mask &= ((uint64_t)1 << slot_words) - 1;
         while (mask) {
-            mark_word(((const uint64_t *)slot)[__builtin_ctzll(mask)]);
+            mark_word(w, ((const uint64_t *)slot)[__builtin_ctzll(mask)]);
             mask &= mask - 1;
         }
     } else {
         const CooperType *type = *(const CooperType **)slot;
-        scan_tiled((const uint64_t *)(slot + HEADER_SIZE), span->elemsize - HEADER_SIZE, type);
+        scan_tiled(w, (const uint64_t *)(slot + HEADER_SIZE), span->elemsize - HEADER_SIZE, type);
     }
+}
+
+/* An object from the object stack. A large object is scanned an oblet (a run of whole values) at a time:
+   reaching its first oblet queues the rest, which other workers may take. */
+static void scan_work(Worker *w, Work item) {
+    w->from = item.slot;
+    Span *span = item.span;
+    if (!span->large) {
+        scan_object(w, item.slot, span);
+        return;
+    }
+    const CooperType *type = span->large_type;
+    size_t oblet = OBLET_BYTES / type->size * type->size;
+    if (oblet == 0) oblet = type->size;
+    uintptr_t end = span->start + span->large_size;
+    if (item.slot == span->start) {
+        for (uintptr_t next = item.slot + oblet; next < end; next += oblet) push_object(w, next, span);
+    }
+    size_t bytes = end - item.slot < oblet ? end - item.slot : oblet;
+    scan_tiled(w, (const uint64_t *)item.slot, bytes, type);
 }
 
 /* Scan the objects of a small span that were marked and not yet scanned. Scanning may mark more of
    them (and requeue the span), which a later turn picks up. */
-static void scan_span(Span *span) {
+static void scan_span(Worker *w, Span *span) {
     size_t words = (span->nelems + 63) / 64;
     for (size_t word = 0; word < words; word++) {
-        uint64_t pending = span->mark_bits[word] & ~span->scan_bits[word];
-        span->scan_bits[word] |= pending;
+        uint64_t pending = __atomic_load_n(&span->mark_bits[word], __ATOMIC_SEQ_CST) &
+                           ~__atomic_load_n(&span->scan_bits[word], __ATOMIC_RELAXED);
+        if (!pending) continue;
+        pending &= ~__atomic_fetch_or(&span->scan_bits[word], pending, __ATOMIC_RELAXED);
         while (pending) {
             size_t index = word * 64 + (size_t)__builtin_ctzll(pending);
             pending &= pending - 1;
-            scan_object(span->start + index * span->elemsize, span);
+            scan_object(w, span->start + index * span->elemsize, span);
         }
     }
 }
 
-static void drain(void) {
-    while (work_len || queue_len) {
-        while (work_len) {
-            Work item = work[--work_len];
-            scan_object(item.slot, item.span);
+/* Scan until this worker finds no work: its own, the global lists', or another's to steal. */
+static void drain(Worker *w, int joined) {
+    for (;;) {
+        Work item;
+        if (pop_object(w, &item)) {
+            scan_work(w, item);
+            continue;
         }
-        if (queue_len) {
-            Span *span = queue[queue_head];
-            queue_head = (queue_head + 1) % queue_cap;
-            queue_len--;
-            span->queued = 0;
+        Span *span = pop_span(w);
+        if (span) {
+            __atomic_exchange_n(&span->queued, 0, __ATOMIC_SEQ_CST);
             /* The span after this one will be scanned soon: start bringing in what that takes. */
-            if (queue_len) {
-                const Span *next = queue[queue_head];
+            uint32_t head = __atomic_load_n(&w->head, __ATOMIC_RELAXED);
+            if (head != w->tail) {
+                const Span *next = __atomic_load_n(&w->ring[head % RING_SIZE], __ATOMIC_RELAXED);
                 __builtin_prefetch(next->mark_bits);
                 __builtin_prefetch(next->scan_bits);
                 __builtin_prefetch((const void *)next->start);
             }
-            scan_span(span);
+            scan_span(w, span);
+            continue;
         }
+        if (!steal(w, joined)) return;
+    }
+}
+
+static int work_available(int joined) {
+    if (__atomic_load_n(&mark.nobjects, __ATOMIC_SEQ_CST) || __atomic_load_n(&mark.nspans, __ATOMIC_SEQ_CST)) return 1;
+    for (int i = 0; i < joined; i++) {
+        if (__atomic_load_n(&workers[i].head, __ATOMIC_SEQ_CST) != __atomic_load_n(&workers[i].tail, __ATOMIC_SEQ_CST)) return 1;
+    }
+    return 0;
+}
+
+/* Mark until marking is done. An idle worker waits for work to appear; when every worker that joined is idle
+   and none is left, no worker can make more, and marking is done. */
+static void work(Worker *w) {
+    uint64_t s = __atomic_load_n(&mark.state, __ATOMIC_SEQ_CST);
+    for (;;) {
+        drain(w, (int)JOINED(s));
+        s = __atomic_add_fetch(&mark.state, IDLE_ONE + SEQ, __ATOMIC_SEQ_CST);
+        for (int spins = 0;; spins++) {
+            if (s & DONE) return;
+            if (work_available((int)JOINED(s))) {
+                if (__atomic_compare_exchange_n(&mark.state, &s, s - IDLE_ONE + SEQ, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) break;
+                continue;
+            }
+            if (IDLE(s) == JOINED(s)) {
+                if (__atomic_compare_exchange_n(&mark.state, &s, s | DONE, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) return;
+                continue;
+            }
+            if (spins < 100) cpu_relax();
+            else sched_yield();
+            s = __atomic_load_n(&mark.state, __ATOMIC_SEQ_CST);
+        }
+    }
+}
+
+/* Every word in [low, high) as a possible pointer. */
+static void scan_range(void *context, uintptr_t low, uintptr_t high) {
+    Worker *w = context;
+    w->root_bytes += high - low;
+    for (const uintptr_t *word = (const uintptr_t *)((low + 7) & ~(uintptr_t)7); (uintptr_t)word + 8 <= high; word++) {
+        mark_word(w, *word);
     }
 }
 
@@ -765,32 +1018,109 @@ struct Root {
 extern const struct Root cooper_roots[];
 extern const int64_t cooper_root_count;
 
-static void mark_roots(void) {
-    root_bytes = 0;
-    last_span = NULL;
+/* The module-level variables, and the stacks no other worker has claimed this cycle. */
+static void mark_roots(Worker *w) {
+    w->from = 0;
     for (int64_t i = 0; i < cooper_root_count; i++) {
-        root_bytes += cooper_roots[i].type->size;
-        scan_tiled(cooper_roots[i].address, cooper_roots[i].type->size, cooper_roots[i].type);
+        scan_tiled(w, cooper_roots[i].address, cooper_roots[i].type->size, cooper_roots[i].type);
     }
-    drain();
+    cooper_scan_threads(scan_range, w, mark.cycle);
 }
 
-/* Every word in [low, high) as a possible pointer. */
-static void scan_range(uintptr_t low, uintptr_t high) {
-    for (const uintptr_t *word = (const uintptr_t *)((low + 7) & ~(uintptr_t)7); (uintptr_t)word + 8 <= high; word++) {
-        mark_word(*word);
-    }
+/* What a helper M runs while the world is stopped: join the mark, if it has not ended and has room. */
+static void help_mark(void) {
+    uint64_t s = __atomic_load_n(&mark.state, __ATOMIC_SEQ_CST);
+    do {
+        if (s & DONE || JOINED(s) >= (uint64_t)cooper_proc_count()) return;
+    } while (!__atomic_compare_exchange_n(&mark.state, &s, s + 1 + SEQ, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST));
+    uint64_t start = instrument ? now_ns() : 0;
+    Worker *w = &workers[JOINED(s)];
+    w->from = 0;
+    cooper_scan_threads(scan_range, w, mark.cycle);
+    work(w);
+    if (instrument) __atomic_add_fetch(&mark.worker_ns, (int64_t)(now_ns() - start), __ATOMIC_SEQ_CST);
+    __atomic_add_fetch(&mark.left, 1, __ATOMIC_SEQ_CST);
 }
 
-/* Every word of the running thread's stack from `here` up to its top, and the other threads' stacks. */
-static __attribute__((noinline)) void scan_stack(void) {
+/* Mark everything reachable, on every P. The calling thread's stack is scanned from here up, like a stopped
+   thread's: its registers are spilled in the caller's frame. Gives the number of workers. */
+static __attribute__((noinline)) int mark_all(void) {
     volatile uintptr_t here = 0;
-    uintptr_t low = (uintptr_t)&here & ~(uintptr_t)7;
-    uintptr_t high = cooper_current_stack_top();
-    root_bytes += (size_t)(high - low);
-    scan_range(low, high);
-    cooper_scan_threads(scan_range);
-    drain();
+    cooper_save_stack_pointer((void *)&here);
+    mark.cycle++;
+    for (int i = 0; i < cooper_proc_count(); i++) {
+        Worker *w = &workers[i];
+        w->last_span = NULL;
+        w->root_bytes = 0;
+        w->random = mark.cycle * (uint64_t)(2 * i + 1) | 1;
+        if (!w->objects) {
+            spin_lock(&mark.lock);
+            w->objects = new_block();
+            w->fresh = new_block();
+            spin_unlock(&mark.lock);
+        }
+    }
+    mark.left = 0;
+    __atomic_store_n(&mark.state, 1 + SEQ, __ATOMIC_SEQ_CST);
+    if (cooper_proc_count() > 1) cooper_start_helpers(help_mark);
+    uint64_t start = instrument ? now_ns() : 0;
+    mark_roots(&workers[0]);
+    work(&workers[0]);
+    if (instrument) __atomic_add_fetch(&mark.worker_ns, (int64_t)(now_ns() - start), __ATOMIC_SEQ_CST);
+    /* The helpers still look at the workers until they see marking done. */
+    int64_t helpers = (int64_t)JOINED(__atomic_load_n(&mark.state, __ATOMIC_SEQ_CST)) - 1;
+    for (int spins = 0; __atomic_load_n(&mark.left, __ATOMIC_SEQ_CST) < helpers; spins++) {
+        if (spins < 100) cpu_relax();
+        else sched_yield();
+    }
+    return (int)helpers + 1;
+}
+
+static __attribute__((noinline)) int mark_with_registers(void) {
+    /* The callee-saved registers are spilled into this frame, which the scan covers. */
+    __builtin_unwind_init();
+    return mark_all();
+}
+
+/* --- checkmark: COOPER_GC=checkmark marks again, serially and object by object, after every mark, and fails on
+   an object reached that way that the mark missed --- */
+
+static __attribute__((noinline, cold)) void check_mark(Worker *w, Span *span, uint32_t index) {
+    uint64_t bit = (uint64_t)1 << (index % 64);
+    if (span->scan_bits[index / 64] & bit) return;
+    span->scan_bits[index / 64] |= bit;
+    uintptr_t slot = span->start + (size_t)index * span->elemsize;
+    if (!(span->mark_bits[index / 64] & bit)) {
+        const void *type = span->large ? (const void *)span->large_type
+                           : !span->noscan && !span->heap_bits_in_span ? (const void *)*(const CooperType **)slot
+                                                                      : NULL;
+        char from[48] = "a root";
+        if (w->from) snprintf(from, sizeof from, "the object at %p", (void *)w->from);
+        char message[256];
+        snprintf(message, sizeof message,
+                 "internal error: the collector missed the %zu-byte object at %p (%s, type descriptor %p), reached from %s",
+                 span->large ? span->large_size : span->elemsize, (void *)slot,
+                 span->noscan ? "pointer-free" : span->large ? "large" : span->heap_bits_in_span ? "bitmap" : "header",
+                 type, from);
+        cooper_panic(message);
+    }
+    if (!span->noscan) push_object(w, slot, span);
+}
+
+/* With the world still stopped after marking. The scan bits serve as the checkmark bits: marking is done with
+   them, and the sweep clears them. */
+static __attribute__((noinline)) void check_marks(void) {
+    for (Span *span = all_spans; span; span = span->all_next) {
+        memset(span->scan_bits, 0, (span->nelems + 63) / 64 * 8);
+    }
+    Worker *w = &workers[0];
+    w->checking = 1;
+    w->last_span = NULL;
+    mark.cycle++;
+    mark_roots(w);
+    Work item;
+    while (pop_object(w, &item)) scan_work(w, item);
+    w->checking = 0;
 }
 
 static void fill(void *memory, size_t bytes) {
@@ -882,20 +1212,18 @@ static void scavenge(void) {
     }
 }
 
-static __attribute__((noinline)) void collect_with_registers(void) {
-    /* The callee-saved registers are spilled into this frame, which the scan covers. */
-    __builtin_unwind_init();
-    scan_stack();
-}
-
 static void collect(void) {
     if (heap_bytes > stats.peak_heap) stats.peak_heap = heap_bytes;
     /* The cached spans are swept like the rest and go back to the lists. */
     memset(caches, 0, (size_t)cooper_proc_count() * sizeof *caches);
     size_t before = heap_used;
     uint64_t start = instrument ? now_ns() : 0;
-    mark_roots();
-    collect_with_registers();
+    mark.worker_ns = 0;
+    int nworkers = mark_with_registers();
+    size_t root_bytes = 0;
+    for (int64_t i = 0; i < cooper_root_count; i++) root_bytes += cooper_roots[i].type->size;
+    for (int i = 0; i < nworkers; i++) root_bytes += workers[i].root_bytes;
+    if (checkmark) check_marks();
     uint64_t marked = instrument ? now_ns() : 0;
     sweep();
     uint64_t done = instrument ? now_ns() : 0;
@@ -908,13 +1236,15 @@ static void collect(void) {
     stats.last_live = heap_used;
     if (instrument) {
         stats.mark_ns += marked - start;
+        stats.mark_worker_ns += (uint64_t)mark.worker_ns;
         stats.sweep_ns += done - marked;
         if (done - start > stats.max_pause_ns) stats.max_pause_ns = done - start;
     }
     if (trace) {
-        fprintf(stderr, "gc %llu: mark %.2f ms, sweep %.2f ms, live %.1f MiB, next at %.1f MiB, heap %.1f MiB\n",
-                (unsigned long long)stats.collections, (marked - start) / 1e6, (done - marked) / 1e6,
-                heap_used / 1048576.0, next_gc / 1048576.0, heap_bytes / 1048576.0);
+        fprintf(stderr,
+                "gc %llu: mark %.2f ms (%.2f ms on %d workers), sweep %.2f ms, live %.1f MiB, next at %.1f MiB, heap %.1f MiB\n",
+                (unsigned long long)stats.collections, (marked - start) / 1e6, mark.worker_ns / 1e6, nworkers,
+                (done - marked) / 1e6, heap_used / 1048576.0, next_gc / 1048576.0, heap_bytes / 1048576.0);
     }
 }
 

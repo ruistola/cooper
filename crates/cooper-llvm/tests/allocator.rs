@@ -5,8 +5,7 @@ use std::path::Path;
 use std::process::Command;
 
 /// Builds the test with `flags` and runs it, giving whether it passed and its output; `None` if a sanitizer
-/// build is not possible here. Unoptimized, because at `-O1` a dropped object's address survives somewhere
-/// the conservative scan reaches, and the checks that it was freed fail.
+/// build is not possible here.
 fn build_and_run(flags: &[&str]) -> Option<(bool, String)> {
     let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime");
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("gc_test{}", flags.concat()));

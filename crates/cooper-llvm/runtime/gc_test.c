@@ -19,18 +19,15 @@ _Noreturn void cooper_panic(const char *message) {
     exit(101);
 }
 
-/* Under ThreadSanitizer the tests that collect many times over a live list are some 20 times slower, so they
-   shrink; and, as in an optimized build, a dropped object's address survives somewhere the conservative scan
-   reaches, so the checks that it was freed cannot hold. */
+/* ThreadSanitizer makes the tests that collect many times over a live list some 20 times slower: they shrink. */
 #ifndef __has_feature
 #define __has_feature(x) 0
 #endif
 #if defined(__SANITIZE_THREAD__) || __has_feature(thread_sanitizer)
-#define UNDER_TSAN 1
+#define SCALE 10
 #else
-#define UNDER_TSAN 0
+#define SCALE 1
 #endif
-#define SCALE (UNDER_TSAN ? 10 : 1)
 
 static int failures;
 #define CHECK(condition) do { if (!(condition)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #condition); failures++; } } while (0)
@@ -228,23 +225,35 @@ static void test_large_objects_are_reused(void) {
 extern uintptr_t probe_hidden;
 extern size_t probe_size;
 
+/* Allocate `size` bytes filled with `fill`, store their address in `*payload` unless that is NULL, and give
+   the address complemented, which is not a pointer to the collector. The address is in hand only in this
+   frame, below the caller's, which `scrub_stack` then overwrites: in the caller's own frame an optimizing
+   compiler or ThreadSanitizer's instrumentation would keep it in a register or a spill slot the collector
+   scans. */
+static __attribute__((noinline)) uintptr_t allocate_hidden(size_t size, unsigned char fill, uint64_t *payload) {
+    unsigned char *p = cooper_alloc(size, NULL);
+    memset(p, fill, size);
+    if (payload) *payload = (uintptr_t)p;
+    return ~(uintptr_t)p;
+}
+
+/* The address `allocate_hidden` gave. The empty asm keeps the compiler from holding the address itself,
+   rather than its complement, across the collection. */
+static unsigned char *reveal(uintptr_t hidden) {
+    __asm__ volatile("" : "+r"(hidden));
+    return (unsigned char *)~hidden;
+}
+
 static void test_freed_memory_is_poisoned(void) {
     fprintf(stderr, "probe: poison test frame %p\n", __builtin_frame_address(0));
-    volatile unsigned char *address;
-    {
-        address = cooper_alloc(256, NULL);
-        address[0] = 1;
-    }
+    uintptr_t hidden = allocate_hidden(256, 1, NULL);
     for (int i = 0; i < 10; i++) cooper_alloc(256, NULL);
-    uintptr_t hidden = ~(uintptr_t)address;  /* not a pointer to the collector */
-    address = NULL;
     scrub_stack();
     probe_hidden = hidden, probe_size = 256;
     cooper_gc_collect();
     probe_size = 0;
     /* Nothing refers to it any more; the poison is what a stale pointer would find. */
-    unsigned char first = *(volatile unsigned char *)~hidden;
-    if (!UNDER_TSAN) CHECK(first == 0xDB);
+    CHECK(*reveal(hidden) == 0xDB);
 }
 
 /* A sum type { Num(u64), Ref(ptr) } as the compiler lays it out: a u32 tag, then the payload at byte 8. */
@@ -258,23 +267,17 @@ static const struct { uint64_t size, layout_size, flags, words, nsites; const Co
 static void test_sum_type_scans_only_the_live_variant(void) {
     scrub_stack();
     Sum *volatile holder = cooper_alloc(2 * sizeof(Sum), (const CooperType *)&sum_type);
-    unsigned char *kept = cooper_alloc(100, NULL);
-    unsigned char *dropped = cooper_alloc(100, NULL);
-    memset(kept, 0x11, 100);
-    memset(dropped, 0x22, 100);
     holder[0].tag = 1;                      /* Ref: a pointer, which keeps its target */
-    holder[0].payload = (uintptr_t)kept;
+    uintptr_t hidden_kept = allocate_hidden(100, 0x11, &holder[0].payload);
     holder[1].tag = 0;                      /* Num: an integer that happens to be an address */
-    holder[1].payload = (uintptr_t)dropped;
-    uintptr_t hidden_kept = ~(uintptr_t)kept, hidden_dropped = ~(uintptr_t)dropped;
-    kept = dropped = NULL;
+    uintptr_t hidden_dropped = allocate_hidden(100, 0x22, &holder[1].payload);
     scrub_stack();
     fprintf(stderr, "probe: sum test frame %p\n", __builtin_frame_address(0));
     probe_hidden = hidden_dropped, probe_size = 100;
     cooper_gc_collect();
     probe_size = 0;
-    CHECK(((unsigned char *)~hidden_kept)[50] == 0x11);
-    if (!UNDER_TSAN) CHECK(((unsigned char *)~hidden_dropped)[50] == 0xDB);
+    CHECK(reveal(hidden_kept)[50] == 0x11);
+    CHECK(reveal(hidden_dropped)[50] == 0xDB);
 }
 
 /* Threads on several Ps allocate from their own caches while collections stop them: each builds a list

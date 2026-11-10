@@ -21,13 +21,15 @@
  * thread would. A thread that overflows hits the guard page, and a signal handler reports it. Stacks never move,
  * so pointers into them stay valid. Finished threads are kept with their stacks for reuse.
  *
- * The collector stops the world: every M holding a P stops at a safe point (the compiler's polls of
- * cooper_poll_word at function entries and loop back-edges, the allocator, lock spins, the scheduler loop).
+ * The collector stops the world briefly to begin and to end marking: every M holding a P stops at a safe point
+ * (the compiler's polls of cooper_poll_word at function entries and loop back-edges, the allocator, lock spins,
+ * the scheduler loop).
  * cooper_poll_word is one global, not thread-local, and counts every reason to stop: a stop of the world,
  * and each pending preemption. A thread stopped at a safe point stays on its M with its callee-saved registers
  * spilled and its stack pointer recorded, so the collector scans every thread's stack the same way, from its
  * saved stack pointer to its top. While the world is stopped, the stopped Ms and idle ones (one for each other P)
- * run the collector's mark workers.
+ * run the collector's mark workers. While the collector marks with the program running, Ms with nothing to run mark
+ * instead of idling, and every thread's stack is scanned once (see "scanning stacks while the program runs").
  *
  * A call to a C function the program declares (`extern func`) is bracketed by cooper_enter_c and
  * cooper_exit_c. Entering records the thread's stack pointer and callee-saved registers and marks its P as in
@@ -110,6 +112,9 @@ typedef struct Thread {
     int64_t in_c;             /* atomic: in a C call, with `sp` and `regs` recorded on entry */
     uintptr_t regs[C_SAVED_WORDS]; /* the callee-saved registers on entering C */
     uint64_t scanned;         /* atomic: the last mark cycle that claimed this thread's stack for scanning */
+    int64_t running;          /* atomic: switched to and not yet away (set with scan_lock held) */
+    int64_t scan_lock;        /* atomic: held to scan the stack while marking concurrently, and to switch to the
+                                 thread meanwhile */
     void *fiber;              /* ThreadSanitizer's */
 } Thread;
 
@@ -196,7 +201,9 @@ struct M {
      per-M:      this_m (thread-local) and what it points to, the signal alternate stack
      per-P:      the fields of P not marked otherwise
      immutable after cooper_sched_init: nprocs, allp, stack_size, guard_size, page_size
-     atomic:     next_id, next_m_id, all_threads, pooled, cooper_poll_word, and the fields of sched so marked
+     set with the world stopped: scan_cycle (read atomically), scan_hook, idle_mark_hook, timers_scanned
+     atomic:     next_id, next_m_id, all_threads, pooled, cooper_poll_word, stacks_pending, and the fields of sched so
+                 marked
      sched.lock: the rest of sched, P.m, P.idle_next, P's monitor fields, M.nextp, M.idle_next */
 static struct {
     pthread_mutex_t lock;
@@ -238,6 +245,14 @@ static size_t stack_size = (size_t)8 << 20, guard_size, page_size;
 /* Nonzero while the world is stopping or stopped, and while the monitor's preemption requests are pending:
    each adds one. */
 int64_t cooper_poll_word;
+/* Marking while the program runs (cooper_mark_begin), all set with the world stopped: the cycle stacks are scanned
+   for, 0 when not marking; the collector's functions; whether some thread not running may still wait for a scan
+   (atomic); and the last cycle whose timers were scanned. */
+static uint64_t scan_cycle;
+static void (*scan_hook)(uintptr_t low, uintptr_t high);
+static bool (*idle_mark_hook)(bool (*stop)(void));
+static bool stacks_pending;
+static uint64_t timers_scanned;
 
 /* The running M. A thread may resume on another M after any switch, so code on a thread's stack reads this
    afresh after each one; the call keeps the compiler from keeping the thread-local's address across it. */
@@ -587,6 +602,102 @@ static void wakep(void) {
     startm(true);
 }
 
+/* --- scanning stacks while the program runs ---
+
+   Between cooper_mark_begin and cooper_mark_end the collector marks while threads run, and each thread's stack is
+   scanned once in the cycle. No thread runs Cooper code with its stack not yet scanned: the threads running when
+   marking begins are stopped, and each scans its own stack as it resumes; a thread is scanned before it is switched
+   to, and as it leaves C. The collector relies on this: it allocates black and the compiler leaves out the barrier
+   on stores that initialize a fresh object, which would lose an object that an unscanned stack stored there and
+   then dropped. Meanwhile mark workers scan the threads that are not running, and those in C (whose Cooper frames
+   are above their recorded stack pointer, and which C changes only through cooper_store_pointer).
+
+   A thread's scan lock serializes these: a worker scans a thread only with the lock held and the thread not
+   running or in C; the scheduler sets `running` with the lock held; a thread leaving C takes the lock to scan
+   itself, so it waits for a worker's scan to finish first. */
+
+static void scan_lock(Thread *thread) {
+    while (!CAS(&thread->scan_lock, 0, 1)) cpu_relax();
+}
+
+static void scan_unlock(Thread *thread) {
+    STORE(&thread->scan_lock, 0);
+}
+
+/* With its scan lock held, a thread that does not run: its stack from its saved stack pointer up, its registers
+   if it is in C, and its code and environment. A finished thread's record holds nothing. */
+static void scan_waiting(Thread *thread, uint64_t cycle) {
+    if (LOAD(&thread->state) != DEAD) {
+        scan_hook((uintptr_t)thread->sp, thread->stack_top);
+        if (LOAD(&thread->in_c)) scan_hook((uintptr_t)thread->regs, (uintptr_t)(thread->regs + C_SAVED_WORDS));
+        scan_hook((uintptr_t)&thread->code, (uintptr_t)(&thread->env + 1));
+    }
+    STORE(&thread->scanned, cycle);
+}
+
+/* The running thread's stack from this frame up, which is below the caller's, where the registers were spilled. */
+static __attribute__((noinline)) void scan_own_frames(Thread *thread, uint64_t cycle) {
+    volatile char here = 0;
+    scan_lock(thread);
+    if (LOAD(&thread->scanned) != cycle) {
+        scan_hook((uintptr_t)&here, thread->stack_top);
+        scan_hook((uintptr_t)&thread->code, (uintptr_t)(&thread->env + 1));
+        STORE(&thread->scanned, cycle);
+    }
+    scan_unlock(thread);
+}
+
+/* Scan the running thread's stack, unless it was scanned this cycle or marking is not on. */
+static __attribute__((noinline)) void scan_own_stack(void) {
+    __builtin_unwind_init();
+    Thread *thread = get_m()->current;
+    uint64_t cycle = LOAD(&scan_cycle);
+    if (thread && cycle && LOAD(&thread->scanned) != cycle) scan_own_frames(thread, cycle);
+}
+
+/* Before switching to `thread`. */
+static void switch_in(Thread *thread) {
+    scan_lock(thread);
+    STORE(&thread->running, 1);
+    uint64_t cycle = LOAD(&scan_cycle);
+    if (cycle && LOAD(&thread->scanned) != cycle) scan_waiting(thread, cycle);
+    scan_unlock(thread);
+}
+
+void cooper_mark_begin(uint64_t cycle, void (*scan)(uintptr_t low, uintptr_t high), bool (*idle_mark)(bool (*stop)(void))) {
+    scan_hook = scan;
+    idle_mark_hook = idle_mark;
+    STORE(&stacks_pending, true);
+    STORE(&scan_cycle, cycle);
+    STORE(&timers_scanned, cycle);
+    if (sched.timer_count) scan((uintptr_t)sched.timers, (uintptr_t)(sched.timers + sched.timer_count));
+}
+
+void cooper_mark_end(void) {
+    STORE(&scan_cycle, 0);
+}
+
+bool cooper_scan_waiting_threads(void) {
+    uint64_t cycle = LOAD(&scan_cycle);
+    if (!cycle || !LOAD(&stacks_pending)) return false;
+    bool left = false;
+    for (Thread *thread = LOAD(&all_threads); thread; thread = thread->all_next) {
+        if (LOAD(&thread->scanned) == cycle) continue;
+        if (!CAS(&thread->scan_lock, 0, 1)) {
+            left = true;
+            continue;
+        }
+        if (LOAD(&thread->scanned) != cycle) {
+            if (!LOAD(&thread->running) || LOAD(&thread->in_c)) scan_waiting(thread, cycle);
+            else left = true; /* it resumed from the stop that began marking, and scans itself */
+        }
+        scan_unlock(thread);
+    }
+    /* A thread started since is scanned before it first runs. */
+    if (!left) STORE(&stacks_pending, false);
+    return left;
+}
+
 /* --- stopping the world --- */
 
 /* Stop `m`, which holds a P, until the world restarts, running the collector's helper when asked. */
@@ -620,6 +731,7 @@ static __attribute__((noinline)) void stop_thread(M *m) {
     volatile char here = 0;
     m->current->sp = (void *)&here;
     gc_park(m);
+    scan_own_stack();
 }
 
 /* Stop at a safe point while the world is stopped, with the caller's registers spilled to this frame. */
@@ -649,7 +761,8 @@ bool cooper_stop_the_world(void) {
     pthread_mutex_lock(&sched.lock);
     if (sched.gcwaiting) {
         pthread_mutex_unlock(&sched.lock);
-        gc_poll();
+        if (m->current) gc_poll();
+        else gc_park(m);
         return false;
     }
     STORE(&sched.gcwaiting, 1);
@@ -689,9 +802,14 @@ void cooper_start_the_world(void) {
         else if (p->m->current && LOAD(&p->m->current->in_c)) STORE(&p->status, p_in_c(p->m));
         else STORE(&p->status, P_RUNNING);
     }
+    /* Idle Ps mark (find_runnable). */
+    if (LOAD(&scan_cycle)) {
+        for (P *p; (p = p_get_idle());) startm_locked(p, false);
+    }
     pthread_cond_broadcast(&sched.restart);
     pthread_mutex_unlock(&sched.lock);
     if (LOAD(&sched.global_count)) wakep();
+    scan_own_stack();
 }
 
 /* The Ms stopped in gc_park run the helper when woken with a new request; an idle M is taken off the idle list
@@ -851,6 +969,13 @@ static Thread *steal_work(M *m) {
     return NULL;
 }
 
+/* An idle P's marking gives way to a stop of the world, and to threads to run: on its own queue, the global one,
+   or due timers. */
+static bool idle_mark_should_stop(void) {
+    P *p = get_m()->p;
+    return LOAD(&sched.gcwaiting) || runq_has_work(p) || LOAD(&sched.global_count) || LOAD(&sched.timer_next) <= now_ns();
+}
+
 /* The next thread for `m` to run. Without any, the M gives up its P and sleeps until handed one. */
 static Thread *find_runnable(M *m) {
     for (;;) {
@@ -889,6 +1014,14 @@ static Thread *find_runnable(M *m) {
             }
             thread = steal_work(m);
             if (thread) return thread;
+        }
+        /* Nothing to run: mark while the collector has work, rather than give the P back. */
+        if (LOAD(&scan_cycle)) {
+            if (m->spinning) {
+                m->spinning = 0;
+                ADD(&sched.nmspinning, -1);
+            }
+            if (idle_mark_hook(idle_mark_should_stop)) continue;
         }
         /* Nothing to run: give the P back. */
         pthread_mutex_lock(&sched.lock);
@@ -1010,10 +1143,12 @@ static _Noreturn void scheduler(M *m) {
         set_state(next, RUNNING);
         clear_preempt(m); /* a request for the previous thread */
         m->current = next;
+        switch_in(next);
         TSAN_SWITCH(next->fiber);
         cooper_switch(&m->sched_sp, next->sp);
         Thread *prev = m->current;
         m->current = NULL;
+        STORE(&prev->running, 0);
         complete(m, prev);
     }
 }
@@ -1093,6 +1228,8 @@ int64_t cooper_spawn(void *code, void *env) {
     Thread *thread = thread_get(p);
     thread->id = __atomic_fetch_add(&next_id, 1, __ATOMIC_SEQ_CST);
     thread_prepare(thread, code, env);
+    /* The thread's record may have been scanned this cycle while it was free. */
+    if (LOAD(&scan_cycle)) scan_hook((uintptr_t)&thread->code, (uintptr_t)(&thread->env + 1));
     runq_put(p, thread, false);
     wakep();
     return (int64_t)thread->id;
@@ -1173,6 +1310,8 @@ void cooper_sleep(int64_t ns) {
 }
 
 void cooper_wake_at(CooperWaiter *waiter, int64_t index, int64_t deadline) {
+    /* The timers were scanned when marking began. */
+    if (LOAD(&scan_cycle)) scan_hook((uintptr_t)&waiter, (uintptr_t)(&waiter + 1));
     timer_push((Timer){.wake = deadline, .waiter = waiter, .index = index});
 }
 
@@ -1241,9 +1380,11 @@ void cooper_exit_c(int entered) {
     if (CAS(&m->p->status, p_in_c(m), P_RUNNING)) {
         STORE(&thread->in_c, 0);
         ADD(&sched.nincall, -1);
-        return;
+    } else {
+        exit_c_slow(m, thread);
     }
-    exit_c_slow(m, thread);
+    /* Once `in_c` is clear no worker starts a scan, and one in progress holds the lock this waits for. */
+    if (LOAD(&scan_cycle)) scan_own_stack();
 }
 
 /* A call from C into Cooper code leaves the C state for its duration, keeping the C call's stack pointer and
@@ -1426,7 +1567,8 @@ int cooper_proc_id(void) {
 /* Record the running thread's stack pointer, as a switch does, so that cooper_scan_threads covers its stack from
    there up. */
 void cooper_save_stack_pointer(void *sp) {
-    get_m()->current->sp = sp;
+    Thread *thread = get_m()->current;
+    if (thread) thread->sp = sp;
 }
 
 /* With the world stopped: the stack of every thread, from its saved stack pointer up; its registers saved on
@@ -1434,7 +1576,6 @@ void cooper_save_stack_pointer(void *sp) {
    that has not started; and the timers, which refer to waiters. The schedulers' own stacks hold no heap
    pointers. Each thread is scanned by whichever caller claims it first for `cycle`. */
 void cooper_scan_threads(void (*scan)(void *context, uintptr_t low, uintptr_t high), void *context, uint64_t cycle) {
-    static uint64_t timers_scanned;
     uint64_t seen = LOAD(&timers_scanned);
     if (seen != cycle && CAS(&timers_scanned, seen, cycle) && sched.timer_count) {
         scan(context, (uintptr_t)sched.timers, (uintptr_t)(sched.timers + sched.timer_count));

@@ -11,16 +11,20 @@
  *   - a larger object up to 32 KiB has a word before it holding its type, tiled over the object;
  *   - an object with a span of its own has the type in the span.
  *
- * The collector is stop-the-world mark and sweep: the allocating thread that crosses the heap goal stops
- * every other thread at a safe point (sched.c), then marks with a helper on every other P, and sweeps alone.
+ * The collector marks while the program runs, after Go's: a short stop of the world begins marking (it turns on
+ * the write barrier and scans the module-level variables), mark workers on otherwise idle Ps and allocations that
+ * reach the heap goal do the marking, each thread's stack is scanned once as the scheduler arranges (sched.c), and
+ * a second short stop ends it (it finishes what the Ps' workers hold, turns off the barrier) and sweeps.
  * The heap is precise: an object's pointers are found from the record above. The roots are the module-level variables
  * (a table the compiler emits, with their types), and the stack and registers, which are scanned
  * conservatively: any word that points into an allocated object keeps it. Nothing moves, so an
  * ambiguous word costs only the retention of what it appears to point at.
  *
  * COOPER_GC=stress collects at every allocation, and COOPER_GC=poison (or stress) fills freed
- * memory with 0xDB, so that a missed root shows up as a crash rather than as silent reuse. COOPER_GC=checkmark
- * marks again serially after every mark, and fails on any object the mark missed.
+ * memory with 0xDB, so that a missed root shows up as a crash rather than as silent reuse. COOPER_GC=markstress
+ * (which also poisons) keeps marking on almost all the time, a new cycle beginning at the first allocation after
+ * one ends, and each allocation marking a little. COOPER_GC=checkmark marks again serially after every mark, and
+ * fails on any object the mark missed.
  */
 
 #include <sched.h>
@@ -52,7 +56,8 @@ typedef struct Span {
     size_t npages;
     size_t elemsize;     /* the slot size, or for a large object its size rounded up to a page */
     uint32_t nelems;
-    uint32_t freeindex;  /* slots below this are allocated; above it, allocated iff alloc_bits says so */
+    uint32_t freeindex;  /* slots below this are allocated; above it, allocated iff alloc_bits says so (atomic:
+                            mark workers read it while the P allocating from the span changes it) */
     uint32_t alloc_count;
     uint16_t spanclass;  /* size class * 3 + kind, or 0 for a large object */
     uint8_t state;
@@ -130,24 +135,28 @@ static void init_classes(void) {
 /* --- arenas and the page heap --- */
 
 /* Every global of the allocator and collector, by who may touch it:
-     immutable after init:  class_size, class_pages, size_to_class8, stress, poison, checkmark, growth,
+     immutable after init:  class_size, class_pages, size_to_class8, stress, markstress, poison, checkmark, growth,
                             gc_off, trace, instrument, zerobase, started, ready
-     collector only (the stopped world, with the heap lock): stats, and the fields of `mark` not marked
-                            otherwise
-     mark workers (the stopped world): `workers` (each its own, but rings are shared), and `mark` by its own
-                            lock and atomics; mark and scan bits and `Span.queued` atomically
+     collector only (a stopped world, with the heap lock): stats, and the fields of `mark` not marked
+                            otherwise; `phase` and `cycles`, which are also read atomically
+     mark workers: `workers` (each P's its own, but rings are shared), and `mark` by its own lock and atomics;
+                            mark and scan bits and `Span.queued` atomically
    per-P (no lock): a P's AllocCache, and the spans in it, which only that P allocates from. The collector
                             reads and clears every cache with the world stopped.
-   The rest (arena table, current_arena, heap_bytes, span_count, heap_used, next_gc, free_runs, spare_runs,
-   span_pool, all_spans, partial, meta_next, meta_end, released_bytes) are the heap lock's: refills, large
-   objects and everything that changes the span structure. heap_used and next_gc are also read without it. */
+   The rest (arena table, current_arena, heap_bytes, span_count, heap_used, next_gc, trigger, pace_at, free_runs,
+   spare_runs, span_pool, all_spans, partial, meta_next, meta_end, released_bytes) are the heap lock's: refills,
+   large objects and everything that changes the span structure. heap_used and pace_at are also read without it,
+   and mark workers find spans through the arena table without it, so a span is published there (atomically)
+   once it is complete. */
 static int64_t heap_word; /* the heap lock */
 static Arena **arena_table[1 << TABLE_BITS]; /* [address >> 26 >> 11][(address >> 26) & 2047] */
 static Arena *current_arena;
 static size_t heap_bytes, span_count;
 static size_t heap_used;  /* bytes in allocated slots: live as of the last collection, plus allocated since */
-static size_t next_gc;    /* collect when `heap_used` reaches this */
-static int stress, poison, checkmark;
+static size_t next_gc;    /* the heap goal: marking should end before `heap_used` reaches this */
+static size_t trigger;    /* begin marking when `heap_used` reaches this */
+static size_t pace_at;    /* `trigger` while not marking, `next_gc` while marking: an allocation reaching it acts */
+static int stress, markstress, poison, checkmark;
 static int started;            /* cooper_gc_init has run: collections may begin */
 static unsigned growth = 100;  /* the heap may grow to this percent over what survived: COOPER_HEAP_GROWTH */
 static int gc_off;
@@ -156,7 +165,9 @@ static int gc_off;
 
 static struct {
     uint64_t collections, bytes_allocated;
-    uint64_t mark_ns, mark_worker_ns, sweep_ns, max_pause_ns;
+    uint64_t mark_ns;        /* from the beginning of marking to its end, while the program ran */
+    uint64_t mark_worker_ns; /* spent marking, summed over the workers, assists and the end's helpers */
+    uint64_t pause_ns, max_pause_ns, sweep_ns;
     size_t peak_heap, last_live;
 } stats;
 static int trace, instrument; /* instrument: trace or statistics are on */
@@ -172,8 +183,8 @@ static void register_arena(Arena *arena, size_t chunks) {
     for (size_t chunk = 0; chunk < chunks; chunk++) {
         uintptr_t index = (arena->base >> ARENA_SHIFT) + chunk;
         Arena ***top = &arena_table[(index >> TABLE_BITS) & ((1 << TABLE_BITS) - 1)];
-        if (!*top) *top = meta_alloc(sizeof(Arena *) << TABLE_BITS);
-        (*top)[index & ((1 << TABLE_BITS) - 1)] = arena;
+        if (!*top) __atomic_store_n(top, meta_alloc(sizeof(Arena *) << TABLE_BITS), __ATOMIC_RELEASE);
+        __atomic_store_n(&(*top)[index & ((1 << TABLE_BITS) - 1)], arena, __ATOMIC_RELEASE);
     }
 }
 
@@ -247,7 +258,7 @@ static void free_pages(Arena *arena, size_t first_page, size_t npages) {
 }
 
 /* A new span of `npages` pages: from a free run if one is big enough (its memory is dirty),
-   otherwise from fresh memory. */
+   otherwise from fresh memory. The caller publishes it once it is complete. */
 static Span *new_span(size_t npages) {
     Arena *arena = NULL;
     size_t first_page = 0;
@@ -277,7 +288,7 @@ static Span *new_span(size_t npages) {
         }
         arena = current_arena;
         first_page = arena->next_page;
-        arena->next_page += npages;
+        __atomic_store_n(&arena->next_page, first_page + npages, __ATOMIC_RELAXED);
     }
     Span *span = span_pool;
     if (span) span_pool = span->all_next;
@@ -295,12 +306,18 @@ static Span *new_span(size_t npages) {
     span->npages = npages;
     span->state = SPAN_IN_USE;
     span->needzero = (uint8_t)dirty;
-    for (size_t page = 0; page < npages; page++) arena->spans[first_page + page] = span;
     span->all_next = all_spans;
     all_spans = span;
     heap_bytes += npages << PAGE_SHIFT;
     span_count++;
     return span;
+}
+
+/* Make the span's pages lead to `span`, or to nothing (null). */
+static void set_span_pages(Span *span, Span *value) {
+    for (size_t page = 0; page < span->npages; page++) {
+        __atomic_store_n(&span->arena->spans[span->first_page + page], value, __ATOMIC_RELEASE);
+    }
 }
 
 /* Bit arrays for `words` words, reusing the span's if they are big enough. They start zeroed. */
@@ -320,12 +337,13 @@ static void span_bits(Span *span, size_t words) {
 /* The span an address is in, or null if it is not in the heap. */
 static Span *span_of(uintptr_t address) {
     uintptr_t index = address >> ARENA_SHIFT;
-    Arena **row = arena_table[(index >> TABLE_BITS) & ((1 << TABLE_BITS) - 1)];
+    Arena **row = __atomic_load_n(&arena_table[(index >> TABLE_BITS) & ((1 << TABLE_BITS) - 1)], __ATOMIC_ACQUIRE);
     if (!row) return NULL;
-    Arena *arena = row[index & ((1 << TABLE_BITS) - 1)];
+    Arena *arena = __atomic_load_n(&row[index & ((1 << TABLE_BITS) - 1)], __ATOMIC_ACQUIRE);
     if (!arena || address < arena->base) return NULL;
     size_t page = (address - arena->base) >> PAGE_SHIFT;
-    return page < arena->next_page ? arena->spans[page] : NULL;
+    if (page >= __atomic_load_n(&arena->next_page, __ATOMIC_RELAXED)) return NULL;
+    return __atomic_load_n(&arena->spans[page], __ATOMIC_ACQUIRE);
 }
 
 /* --- spans of small objects --- */
@@ -359,11 +377,14 @@ static Span *new_small_span(int class, int kind) {
     size_t bitmap = span->heap_bits_in_span ? bytes / 64 : 0;
     span->nelems = (uint32_t)((bytes - bitmap) / span->elemsize);
     span_bits(span, (span->nelems + 63) / 64);
+    set_span_pages(span, span);
     return span;
 }
 
-/* The next free slot of a span, or null when it has none. */
-static void *next_free(Span *span) {
+/* The next free slot of a span, or null when it has none. While marking, the slot is allocated black: marked, and
+   for a span with a pointer bitmap scanned too, so that no worker scans it while it is initialized. A worker that
+   sees the slot allocated (by `freeindex`) sees those bits; one that does not leaves it alone. */
+static void *next_free(Span *span, int black) {
     uint32_t index = span->freeindex;
     while (index < span->nelems) {
         uint64_t free = ~span->alloc_bits[index / 64] >> (index % 64);
@@ -373,11 +394,17 @@ static void *next_free(Span *span) {
         }
         index += (uint32_t)__builtin_ctzll(free);
         if (index >= span->nelems) break;
-        span->freeindex = index + 1;
+        if (black) {
+            /* The scan bit first: a worker that sees the mark bit must not take the object as unscanned. */
+            uint64_t bit = (uint64_t)1 << (index % 64);
+            if (span->heap_bits_in_span) __atomic_fetch_or(&span->scan_bits[index / 64], bit, __ATOMIC_RELAXED);
+            __atomic_fetch_or(&span->mark_bits[index / 64], bit, __ATOMIC_RELEASE);
+        }
+        __atomic_store_n(&span->freeindex, index + 1, __ATOMIC_RELEASE);
         span->alloc_count++;
         return (void *)(span->start + (size_t)index * span->elemsize);
     }
-    span->freeindex = span->nelems;
+    __atomic_store_n(&span->freeindex, span->nelems, __ATOMIC_RELEASE);
     return NULL;
 }
 
@@ -389,7 +416,8 @@ static uint64_t *heap_bits(const Span *span) {
 
 /* Set the heap bits of the slot at `slot` of a small-object span: the descriptor tiled over
    `size` bytes, and clear for the rest of the slot. A slot is at most 64 words, so the bits of
-   one object are a single mask that falls in at most two words of the bitmap. */
+   one object are a single mask that falls in at most two words of the bitmap. Mark workers may be reading the
+   neighbouring slots' bits in the same words. */
 static void write_heap_bits(const Span *span, uintptr_t slot, const CooperType *type, size_t size) {
     uint64_t *bits = heap_bits(span);
     size_t first = (slot - span->start) / 8;
@@ -399,9 +427,11 @@ static void write_heap_bits(const Span *span, uintptr_t slot, const CooperType *
     for (size_t copy = 0; copy < size / type->size; copy++) mask |= type->bits[0] << (copy * stride);
     uint64_t clear = slot_words >= 64 ? ~(uint64_t)0 : ((uint64_t)1 << slot_words) - 1;
     size_t word = first / 64, shift = first % 64;
-    bits[word] = (bits[word] & ~(clear << shift)) | (mask << shift);
+    uint64_t old = __atomic_load_n(&bits[word], __ATOMIC_RELAXED);
+    __atomic_store_n(&bits[word], (old & ~(clear << shift)) | (mask << shift), __ATOMIC_RELAXED);
     if (shift + slot_words > 64) {
-        bits[word + 1] = (bits[word + 1] & ~(clear >> (64 - shift))) | (mask >> (64 - shift));
+        old = __atomic_load_n(&bits[word + 1], __ATOMIC_RELAXED);
+        __atomic_store_n(&bits[word + 1], (old & ~(clear >> (64 - shift))) | (mask >> (64 - shift)), __ATOMIC_RELAXED);
     }
 }
 
@@ -410,6 +440,10 @@ static void write_heap_bits(const Span *span, uintptr_t slot, const CooperType *
 static uint64_t zerobase;
 static int ready;
 
+static int phase; /* PHASE_OFF or PHASE_MARK */
+enum { PHASE_OFF, PHASE_MARK };
+
+/* With the heap lock held. Allocated black while marking, as next_free does. */
 static void *allocate_large(size_t size, const CooperType *type) {
     size_t npages = (size + PAGE_SIZE - 1) >> PAGE_SHIFT;
     if (size > SIZE_MAX - PAGE_SIZE) cooper_panic("out of memory");
@@ -423,12 +457,12 @@ static void *allocate_large(size_t size, const CooperType *type) {
     span->large_type = type;
     span->large_size = size;
     span_bits(span, 1);
+    if (__atomic_load_n(&phase, __ATOMIC_RELAXED) == PHASE_MARK) span->mark_bits[0] = 1;
     __atomic_store_n(&heap_used, heap_used + span->elemsize, __ATOMIC_RELAXED);
     if (span->needzero) memset((void *)span->start, 0, size);
+    set_span_pages(span, span);
     return (void *)span->start;
 }
-
-static void collect(void);
 
 static void cpu_relax(void) {
 #if defined(__aarch64__)
@@ -458,35 +492,38 @@ static void heap_unlock(void) {
     spin_unlock(&heap_word);
 }
 
-/* Stop the world and collect, unless another thread did meanwhile and the heap no longer needs it. */
-static void collect_stopped(int forced) {
-    if (!cooper_stop_the_world()) return;
-    heap_lock();
-    /* What the Ps allocated since their refills counts, as the allocating thread's check counted its own. */
-    for (int i = 0; i < cooper_proc_count(); i++) {
-        heap_used += caches[i].used;
-        caches[i].used = 0;
-    }
-    if (forced || stress || heap_used >= next_gc) collect();
-    heap_unlock();
-    cooper_start_the_world();
+static void print_stats(void) {
+    fprintf(stderr,
+            "gc: %llu collections, pauses %.1f ms in all (sweeping %.1f), longest pause %.2f ms\n"
+            "gc: marking ran %.1f ms, and took %.1f ms on all workers together\n"
+            "gc: %.1f MiB allocated, peak heap %.1f MiB, %.1f MiB live after the last collection, %.1f MiB returned to the system\n",
+            (unsigned long long)stats.collections, stats.pause_ns / 1e6, stats.sweep_ns / 1e6, stats.max_pause_ns / 1e6,
+            stats.mark_ns / 1e6, stats.mark_worker_ns / 1e6, stats.bytes_allocated / 1048576.0,
+            stats.peak_heap / 1048576.0, stats.last_live / 1048576.0, released_bytes / 1048576.0);
 }
 
-static void print_stats(void) {
-    uint64_t pause = stats.mark_ns + stats.sweep_ns;
-    fprintf(stderr,
-            "gc: %llu collections, %.1f ms collecting (mark %.1f, sweep %.1f), longest pause %.2f ms\n"
-            "gc: marking took %.1f ms on all workers together\n"
-            "gc: %.1f MiB allocated, peak heap %.1f MiB, %.1f MiB live after the last collection, %.1f MiB returned to the system\n",
-            (unsigned long long)stats.collections, pause / 1e6, stats.mark_ns / 1e6, stats.sweep_ns / 1e6,
-            stats.max_pause_ns / 1e6, stats.mark_worker_ns / 1e6, stats.bytes_allocated / 1048576.0,
-            stats.peak_heap / 1048576.0, stats.last_live / 1048576.0, released_bytes / 1048576.0);
+/* Go's goal: what survived, plus a percentage of it and of the roots, but at least a minimum. Marking begins
+   seven tenths of the way there. */
+static void set_goal(size_t live, size_t root_bytes) {
+    next_gc = live + (live + root_bytes) / 100 * growth;
+    if (next_gc < MIN_HEAP / 100 * growth) next_gc = MIN_HEAP / 100 * growth;
+    trigger = live + (next_gc - live) / 10 * 7;
+    __atomic_store_n(&pace_at, gc_off ? SIZE_MAX : trigger, __ATOMIC_RELAXED);
+}
+
+/* Whether the comma-separated list `options` has `name`. */
+static int has_option(const char *options, const char *name) {
+    size_t length = strlen(name);
+    for (const char *at = options; at && *at; at = strchr(at, ',') ? strchr(at, ',') + 1 : NULL) {
+        if (!strncmp(at, name, length) && (at[length] == ',' || at[length] == 0)) return 1;
+    }
+    return 0;
 }
 
 static void init_heap(void) {
     init_classes();
     const char *mode = getenv("COOPER_GC");
-    trace = mode && strstr(mode, "trace");
+    trace = has_option(mode, "trace");
     if (getenv("COOPER_GC_STATS")) {
         atexit(print_stats);
         instrument = 1;
@@ -495,14 +532,16 @@ static void init_heap(void) {
     const char *percent = getenv("COOPER_HEAP_GROWTH");
     if (percent && !strcmp(percent, "off")) gc_off = 1;
     else if (percent && atoi(percent) > 0) growth = (unsigned)atoi(percent);
-    stress = mode && strstr(mode, "stress");
-    checkmark = mode && strstr(mode, "checkmark");
-    poison = stress || (mode && strstr(mode, "poison"));
-    next_gc = MIN_HEAP * growth / 100;
+    stress = has_option(mode, "stress");
+    markstress = has_option(mode, "markstress");
+    checkmark = has_option(mode, "checkmark");
+    poison = stress || markstress || has_option(mode, "poison");
+    set_goal(0, 0);
     ready = 1;
 }
 
 static void *allocate(size_t size, const CooperType *type);
+static void pace(void);
 
 static void check_size(size_t size, const CooperType *type) {
     if (type && (type->size != type->layout_size || size % type->size != 0)) {
@@ -526,9 +565,12 @@ static void *allocate(size_t size, const CooperType *type) {
     if (!ready) init_heap();
     if (__atomic_load_n(&cooper_poll_word, __ATOMIC_RELAXED)) cooper_poll_slow();
     AllocCache *cache = &caches[cooper_proc_id()];
-    if (started && (stress || (__atomic_load_n(&heap_used, __ATOMIC_RELAXED) + cache->used >= next_gc && !gc_off))) {
-        collect_stopped(0);
+    size_t used = __atomic_load_n(&heap_used, __ATOMIC_RELAXED) + cache->used;
+    if (started && (stress || markstress || used >= __atomic_load_n(&pace_at, __ATOMIC_RELAXED))) {
+        pace();
+        cache = &caches[cooper_proc_id()]; /* it may have switched */
     }
+    int black = __atomic_load_n(&phase, __ATOMIC_RELAXED) == PHASE_MARK;
     int noscan = type == NULL;
     int kind = noscan ? KIND_NOSCAN : (type->nsites || size > MIN_SIZE_FOR_HEADER) ? KIND_HEADER : KIND_BITS;
     size_t total = size;
@@ -542,7 +584,7 @@ static void *allocate(size_t size, const CooperType *type) {
     int class = size_to_class8[(total + 7) / 8];
     int spanclass = class * KINDS + kind;
     Span *span = cache->spans[spanclass];
-    void *slot = span ? next_free(span) : NULL;
+    void *slot = span ? next_free(span, black) : NULL;
     if (!slot) {
         heap_lock();
         __atomic_store_n(&heap_used, heap_used + cache->used, __ATOMIC_RELAXED);
@@ -556,7 +598,7 @@ static void *allocate(size_t size, const CooperType *type) {
                 span = new_small_span(class, kind);
             }
             cache->spans[spanclass] = span;
-            slot = next_free(span);
+            slot = next_free(span, black);
         } while (!slot);
         heap_unlock();
     }
@@ -621,11 +663,19 @@ void cooper_heap_stats(size_t *bytes, size_t *spans) {
 
 /* --- the collector --- */
 
-/* Marking runs in parallel while the world is stopped: the collecting thread is one worker, and sched.c runs a
-   helper on an M for each other P. Each worker has an object stack and a span queue of its own, and shares
-   surplus work through global lists of fixed-size blocks; a worker that runs out steals from the others' span
-   rings. Marking ends when every worker that joined is idle and no work is left. Mark and scan bits change by
-   atomic OR and a span's `queued` flag by exchange, so each object is marked once and scanned once.
+/* A cycle: an allocation that reaches the trigger stops the world to begin marking (begin_mark): it turns on the
+   write barrier, scans the module-level variables and the timers, and has the scheduler scan every thread's stack
+   once as the program runs (sched.c). Each P has a worker, which whatever runs on the P uses: the barrier of the
+   code it runs, an allocation that helps mark, or the P's idle time (mark_running). Each worker has an object
+   stack and a span queue of its own, and shares surplus work through global lists of fixed-size blocks; a worker
+   that runs out steals from the others' span rings. Mark and scan bits change by atomic OR and a span's `queued`
+   flag by exchange, so each object is marked once and scanned once. Objects allocated meanwhile are black.
+
+   A worker that finds no work while no other is marking ends the cycle (end_mark): with the world stopped again it
+   hands the work every worker kept to itself (the barrier's, mostly) to the global lists, scans the stacks of any
+   threads not yet scanned, and if any work is left, marks it on every P, as a stopped world's helpers join
+   (mark_stopped). Then it turns off the barrier and sweeps. An allocation that reaches the heap goal while marking
+   helps until the cycle ends.
 
    The runtime is compiled with the program, unoptimized by default: the functions on the path of every word
    and span are inlined even then. */
@@ -657,15 +707,16 @@ typedef struct {
     Span *last_span; /* the span the previous word pointed into: the next often does too */
     uint64_t random;
     size_t root_bytes; /* stack and register bytes this worker scanned, for the pacer */
+    uint64_t items;  /* objects and spans scanned, to tell whether a turn found work */
     int checking;    /* checkmark: verify marks instead of making them */
-    uintptr_t from;  /* checkmark: the object being scanned, 0 for a root */
+    uintptr_t from;  /* checkmark: the object being scanned, 0 for a module-level variable, FROM_STACK */
 } __attribute__((aligned(128))) Worker;
 
 static Worker workers[COOPER_MAX_PROCS];
 
-/* The state word: the workers that joined this mark, those of them idle, whether marking is done, and a
-   sequence number that changes with every update, so a compare-and-swap cannot succeed on a word that changed
-   and changed back. Between marks the word is DONE, and nobody can join. */
+/* The state word of marking with the world stopped: the workers that joined, those of them idle, whether marking
+   is done, and a sequence number that changes with every update, so a compare-and-swap cannot succeed on a word
+   that changed and changed back. Otherwise the word is DONE, and nobody can join. */
 #define JOINED(s) ((s) & 0x3ff)
 #define IDLE(s) (((s) >> 10) & 0x3ff)
 #define IDLE_ONE ((uint64_t)1 << 10)
@@ -684,7 +735,12 @@ static struct {
     int64_t left;              /* atomic: helpers that have finished */
     uint64_t cycle;            /* each mark's number: a thread's stack is claimed for scanning by setting it */
     int64_t worker_ns;         /* atomic: time spent by all workers, for statistics */
+    int64_t working;           /* atomic: workers marking while the program runs */
+    int64_t ending;            /* atomic: a worker is ending the cycle */
+    uint64_t began;            /* when the cycle began, for statistics */
 } mark = {.state = DONE};
+
+static uint64_t cycles; /* atomic: the cycles begun */
 
 /* An empty block, with mark.lock held. */
 static Block *new_block(void) {
@@ -805,7 +861,8 @@ static Span *pop_span(Worker *w) {
 }
 
 /* Take half of another worker's ring into this worker's empty one. */
-static int steal(Worker *w, int joined) {
+static int steal(Worker *w) {
+    int joined = cooper_proc_count();
     if (joined < 2) return 0;
     w->random ^= w->random << 13;
     w->random ^= w->random >> 7;
@@ -848,7 +905,7 @@ __attribute__((always_inline)) static inline void mark_word(Worker *w, uintptr_t
     uint32_t index = span->large ? 0 : (uint32_t)(((word - span->start) * span->div_magic) >> 32);
     if (index >= span->nelems) return;
     uint64_t bit = (uint64_t)1 << (index % 64);
-    if (index >= span->freeindex && !(span->alloc_bits[index / 64] & bit)) return;
+    if (index >= __atomic_load_n(&span->freeindex, __ATOMIC_ACQUIRE) && !(span->alloc_bits[index / 64] & bit)) return;
     if (w->checking) {
         check_mark(w, span, index);
         return;
@@ -870,19 +927,25 @@ __attribute__((always_inline)) static inline void mark_word(Worker *w, uintptr_t
     push_object(w, span->start + (size_t)index * span->elemsize, span);
 }
 
+/* A word of memory the program may be writing meanwhile (marking while it runs). */
+__attribute__((always_inline)) static inline uintptr_t read_word(const uint64_t *word) {
+    return __atomic_load_n(word, __ATOMIC_RELAXED);
+}
+
 /* The pointers in one value of `type` at `base`: the words its bitmap names, and the payload of the
-   variant each sum type in it holds. */
+   variant each sum type in it holds. A tag and payload changing meanwhile may be read torn, but the barrier shaded
+   the pointers of both values. */
 static void scan_value(Worker *w, const uint64_t *base, const CooperType *type) {
     for (size_t chunk = 0; chunk < (type->words + 63) / 64; chunk++) {
         uint64_t mask = type->bits[chunk];
         while (mask) {
-            mark_word(w, base[chunk * 64 + (size_t)__builtin_ctzll(mask)]);
+            mark_word(w, read_word(&base[chunk * 64 + (size_t)__builtin_ctzll(mask)]));
             mask &= mask - 1;
         }
     }
     for (uint64_t i = 0; i < type->nsites; i++) {
         const CooperSite *site = &type->sites[i];
-        uint32_t tag = *(const uint32_t *)((const char *)base + site->tag_offset);
+        uint32_t tag = __atomic_load_n((const uint32_t *)((const char *)base + site->tag_offset), __ATOMIC_RELAXED);
         if (tag < site->variants && site->payloads[tag]) {
             scan_value(w, (const uint64_t *)((const char *)base + site->payload_offset), site->payloads[tag]);
         }
@@ -902,11 +965,11 @@ static void scan_object(Worker *w, uintptr_t slot, const Span *span) {
         const uint64_t *bits = heap_bits(span);
         size_t first = (slot - span->start) / 8, slot_words = span->elemsize / 8;
         size_t at = first / 64, shift = first % 64;
-        uint64_t mask = bits[at] >> shift;
-        if (shift && shift + slot_words > 64) mask |= bits[at + 1] << (64 - shift);
+        uint64_t mask = read_word(&bits[at]) >> shift;
+        if (shift && shift + slot_words > 64) mask |= read_word(&bits[at + 1]) << (64 - shift);
         if (slot_words < 64) mask &= ((uint64_t)1 << slot_words) - 1;
         while (mask) {
-            mark_word(w, ((const uint64_t *)slot)[__builtin_ctzll(mask)]);
+            mark_word(w, read_word(&((const uint64_t *)slot)[__builtin_ctzll(mask)]));
             mask &= mask - 1;
         }
     } else {
@@ -952,16 +1015,22 @@ static void scan_span(Worker *w, Span *span) {
     }
 }
 
-/* Scan until this worker finds no work: its own, the global lists', or another's to steal. */
-static void drain(Worker *w, int joined) {
-    for (;;) {
+/* Scan until this worker finds no work: its own, the global lists', or another's to steal. Marking while the
+   program runs, it also stops when `stop` says so (asked every few items) or after `budget` items (-1: no limit).
+   Gives whether it ran out of work. */
+static int drain(Worker *w, bool (*stop)(void), long budget) {
+    for (long n = 1;; n++) {
+        if (n > budget && budget >= 0) return 0;
+        if (stop && n % 64 == 0 && stop()) return 0;
         Work item;
         if (pop_object(w, &item)) {
+            w->items++;
             scan_work(w, item);
             continue;
         }
         Span *span = pop_span(w);
         if (span) {
+            w->items++;
             __atomic_exchange_n(&span->queued, 0, __ATOMIC_SEQ_CST);
             /* The span after this one will be scanned soon: start bringing in what that takes. */
             uint32_t head = __atomic_load_n(&w->head, __ATOMIC_RELAXED);
@@ -974,28 +1043,49 @@ static void drain(Worker *w, int joined) {
             scan_span(w, span);
             continue;
         }
-        if (!steal(w, joined)) return;
+        if (!steal(w)) return 1;
     }
 }
 
-static int work_available(int joined) {
+/* Whether any work is shared: in the global lists or a worker's ring. */
+static int work_available(void) {
     if (__atomic_load_n(&mark.nobjects, __ATOMIC_SEQ_CST) || __atomic_load_n(&mark.nspans, __ATOMIC_SEQ_CST)) return 1;
-    for (int i = 0; i < joined; i++) {
+    for (int i = 0; i < cooper_proc_count(); i++) {
         if (__atomic_load_n(&workers[i].head, __ATOMIC_SEQ_CST) != __atomic_load_n(&workers[i].tail, __ATOMIC_SEQ_CST)) return 1;
     }
     return 0;
 }
 
-/* Mark until marking is done. An idle worker waits for work to appear; when every worker that joined is idle
-   and none is left, no worker can make more, and marking is done. */
+/* Hand the work a worker keeps to itself to the global lists. */
+static void flush(Worker *w) {
+    if (!w->objects->count && !w->fresh->count) return;
+    spin_lock(&mark.lock);
+    if (w->objects->count) {
+        w->objects->next = mark.objects;
+        mark.objects = w->objects;
+        __atomic_add_fetch(&mark.nobjects, 1, __ATOMIC_SEQ_CST);
+        w->objects = new_block();
+    }
+    if (w->fresh->count) {
+        if (mark.spans_tail) mark.spans_tail->next = w->fresh;
+        else mark.spans = w->fresh;
+        mark.spans_tail = w->fresh;
+        __atomic_add_fetch(&mark.nspans, 1, __ATOMIC_SEQ_CST);
+        w->fresh = new_block();
+    }
+    spin_unlock(&mark.lock);
+}
+
+/* Mark with the world stopped until marking is done. An idle worker waits for work to appear; when every worker
+   that joined is idle and none is left, no worker can make more, and marking is done. */
 static void work(Worker *w) {
     uint64_t s = __atomic_load_n(&mark.state, __ATOMIC_SEQ_CST);
     for (;;) {
-        drain(w, (int)JOINED(s));
+        drain(w, NULL, -1);
         s = __atomic_add_fetch(&mark.state, IDLE_ONE + SEQ, __ATOMIC_SEQ_CST);
         for (int spins = 0;; spins++) {
             if (s & DONE) return;
-            if (work_available((int)JOINED(s))) {
+            if (work_available()) {
                 if (__atomic_compare_exchange_n(&mark.state, &s, s - IDLE_ONE + SEQ, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) break;
                 continue;
             }
@@ -1014,8 +1104,8 @@ static void work(Worker *w) {
 static void scan_range(void *context, uintptr_t low, uintptr_t high) {
     Worker *w = context;
     w->root_bytes += high - low;
-    for (const uintptr_t *word = (const uintptr_t *)((low + 7) & ~(uintptr_t)7); (uintptr_t)word + 8 <= high; word++) {
-        mark_word(w, *word);
+    for (const uint64_t *word = (const uint64_t *)((low + 7) & ~(uintptr_t)7); (uintptr_t)word + 8 <= high; word++) {
+        mark_word(w, read_word(word));
     }
 }
 
@@ -1027,13 +1117,11 @@ struct Root {
 extern const struct Root cooper_roots[];
 extern const int64_t cooper_root_count;
 
-/* The module-level variables, and the stacks no other worker has claimed this cycle. */
-static void mark_roots(Worker *w) {
+static void mark_variables(Worker *w) {
     w->from = 0;
     for (int64_t i = 0; i < cooper_root_count; i++) {
         scan_tiled(w, cooper_roots[i].address, cooper_roots[i].type->size, cooper_roots[i].type);
     }
-    cooper_scan_threads(scan_range, w, mark.cycle);
 }
 
 /* What a helper M runs while the world is stopped: join the mark, if it has not ended and has room. */
@@ -1045,30 +1133,17 @@ static void help_mark(void) {
     uint64_t start = instrument ? now_ns() : 0;
     Worker *w = &workers[JOINED(s)];
     w->from = 0;
-    cooper_scan_threads(scan_range, w, mark.cycle);
     work(w);
     if (instrument) __atomic_add_fetch(&mark.worker_ns, (int64_t)(now_ns() - start), __ATOMIC_SEQ_CST);
     __atomic_add_fetch(&mark.left, 1, __ATOMIC_SEQ_CST);
 }
 
-/* Mark everything reachable, on every P. The calling thread's stack is scanned from here up, like a stopped
-   thread's: its registers are spilled in the caller's frame. Gives the number of workers. */
-static __attribute__((noinline)) int mark_all(void) {
-    volatile uintptr_t here = 0;
-    cooper_save_stack_pointer((void *)&here);
-    mark.cycle++;
-    for (int i = 0; i < cooper_proc_count(); i++) {
-        Worker *w = &workers[i];
-        w->last_span = NULL;
-        w->root_bytes = 0;
-        w->random = mark.cycle * (uint64_t)(2 * i + 1) | 1;
-        worker_ready(w);
-    }
+/* With the world stopped, mark what is left on every P: the caller's worker 0, and helpers for the others. */
+static void mark_stopped(void) {
     mark.left = 0;
     __atomic_store_n(&mark.state, 1 + SEQ, __ATOMIC_SEQ_CST);
     if (cooper_proc_count() > 1) cooper_start_helpers(help_mark);
     uint64_t start = instrument ? now_ns() : 0;
-    mark_roots(&workers[0]);
     work(&workers[0]);
     if (instrument) __atomic_add_fetch(&mark.worker_ns, (int64_t)(now_ns() - start), __ATOMIC_SEQ_CST);
     /* The helpers still look at the workers until they see marking done. */
@@ -1077,24 +1152,15 @@ static __attribute__((noinline)) int mark_all(void) {
         if (spins < 100) cpu_relax();
         else sched_yield();
     }
-    return (int)helpers + 1;
-}
-
-static __attribute__((noinline)) int mark_with_registers(void) {
-    /* The callee-saved registers are spilled into this frame, which the scan covers. */
-    __builtin_unwind_init();
-    return mark_all();
 }
 
 /* --- the write barrier ---
 
-   Go's hybrid write barrier, for marking while the program runs: while cooper_barrier_on is set, a store that may
-   write a pointer word anywhere but the storing function's own frame first shades the pointers the destination
-   holds and those it stores, which marks their objects and queues them to be scanned. Generated code tests the
-   flag inline and before such a store passes both values to cooper_barrier_pointer or cooper_barrier_typed; the
-   runtime copies
-   values that hold pointers with cooper_typed_copy, and C stores a pointer with cooper_store_pointer. The
-   collector does not set the flag yet: it marks with the world stopped. */
+   Go's hybrid write barrier: while the collector marks (cooper_barrier_on is set), a store that may write a pointer
+   word anywhere but the storing function's own frame first shades the pointers the destination holds and those it
+   stores, which marks their objects and queues them to be scanned. Generated code tests the flag inline and before
+   such a store passes both values to cooper_barrier_pointer or cooper_barrier_typed; the runtime copies values
+   that hold pointers with cooper_typed_copy, and C stores a pointer with cooper_store_pointer. */
 
 int32_t cooper_barrier_on;
 
@@ -1129,50 +1195,47 @@ void cooper_typed_copy(void *dst, const void *src, size_t bytes, const CooperTyp
 }
 
 /* C may run without a P, so it shades into a worker of its own, under a lock, and hands what that queued to the
-   global lists at once. */
+   global lists at once. C does not stop for the collector, so a store counts itself in `c_stores` around its test
+   of the flag: marking begins only once the stores that may have missed the flag are done. */
 static Worker c_worker;
-static int64_t c_worker_lock;
+static int64_t c_worker_lock, c_stores;
 
 void cooper_store_pointer(void **slot, void *value) {
-    if (__atomic_load_n(&cooper_barrier_on, __ATOMIC_RELAXED)) {
+    __atomic_add_fetch(&c_stores, 1, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&cooper_barrier_on, __ATOMIC_SEQ_CST)) {
         spin_lock(&c_worker_lock);
         Worker *w = &c_worker;
         worker_ready(w);
         mark_word(w, (uintptr_t)__atomic_load_n(slot, __ATOMIC_RELAXED));
         mark_word(w, (uintptr_t)value);
-        spin_lock(&mark.lock);
-        if (w->objects->count) {
-            w->objects->next = mark.objects;
-            mark.objects = w->objects;
-            __atomic_add_fetch(&mark.nobjects, 1, __ATOMIC_SEQ_CST);
-            w->objects = new_block();
-        }
-        if (w->fresh->count) {
-            if (mark.spans_tail) mark.spans_tail->next = w->fresh;
-            else mark.spans = w->fresh;
-            mark.spans_tail = w->fresh;
-            __atomic_add_fetch(&mark.nspans, 1, __ATOMIC_SEQ_CST);
-            w->fresh = new_block();
-        }
-        spin_unlock(&mark.lock);
+        flush(w);
         spin_unlock(&c_worker_lock);
     }
-    __atomic_store_n(slot, value, __ATOMIC_RELAXED);
+    __atomic_store_n(slot, value, __ATOMIC_RELEASE);
+    __atomic_sub_fetch(&c_stores, 1, __ATOMIC_SEQ_CST);
 }
 
 /* --- checkmark: COOPER_GC=checkmark marks again, serially and object by object, after every mark, and fails on
-   an object reached that way that the mark missed --- */
+   an object reached that way that the mark missed ---
+
+   A stack is scanned once in a cycle, and by the end it may have exposed words its frames left behind before then
+   (a slot a later frame does not initialize): such a word can name an object that died before the scan. So an
+   object reached only from a stack and not marked is passed over, not reported. Missing a stack shows instead as
+   an object freed (and poisoned) while in use. */
+
+#define FROM_STACK UINTPTR_MAX
 
 static __attribute__((noinline, cold)) void check_mark(Worker *w, Span *span, uint32_t index) {
     uint64_t bit = (uint64_t)1 << (index % 64);
     if (span->scan_bits[index / 64] & bit) return;
-    span->scan_bits[index / 64] |= bit;
     uintptr_t slot = span->start + (size_t)index * span->elemsize;
+    if (!(span->mark_bits[index / 64] & bit) && w->from == FROM_STACK) return;
+    span->scan_bits[index / 64] |= bit;
     if (!(span->mark_bits[index / 64] & bit)) {
         const void *type = span->large ? (const void *)span->large_type
                            : !span->noscan && !span->heap_bits_in_span ? (const void *)*(const CooperType **)slot
                                                                       : NULL;
-        char from[48] = "a root";
+        char from[48] = "a module-level variable";
         if (w->from) snprintf(from, sizeof from, "the object at %p", (void *)w->from);
         char message[256];
         snprintf(message, sizeof message,
@@ -1186,8 +1249,11 @@ static __attribute__((noinline, cold)) void check_mark(Worker *w, Span *span, ui
 }
 
 /* With the world still stopped after marking. The scan bits serve as the checkmark bits: marking is done with
-   them, and the sweep clears them. */
+   them, and the sweep clears them. The calling thread's stack is scanned from here up, like a stopped thread's:
+   its registers are spilled in the caller's frame. Stacks go last, so that what else reaches is reported. */
 static __attribute__((noinline)) void check_marks(void) {
+    volatile uintptr_t here = 0;
+    cooper_save_stack_pointer((void *)&here);
     for (Span *span = all_spans; span; span = span->all_next) {
         memset(span->scan_bits, 0, (span->nelems + 63) / 64 * 8);
     }
@@ -1195,10 +1261,18 @@ static __attribute__((noinline)) void check_marks(void) {
     w->checking = 1;
     w->last_span = NULL;
     mark.cycle++;
-    mark_roots(w);
+    mark_variables(w);
     Work item;
     while (pop_object(w, &item)) scan_work(w, item);
+    w->from = FROM_STACK;
+    cooper_scan_threads(scan_range, w, mark.cycle);
+    while (pop_object(w, &item)) scan_work(w, item);
     w->checking = 0;
+}
+
+static __attribute__((noinline)) void check_marks_with_registers(void) {
+    __builtin_unwind_init();
+    check_marks();
 }
 
 static void fill(void *memory, size_t bytes) {
@@ -1222,7 +1296,7 @@ static void sweep(void) {
             fill((void *)span->start, span->elemsize);
             *link = span->all_next;
             span->state = SPAN_FREE;
-            for (size_t page = 0; page < span->npages; page++) span->arena->spans[span->first_page + page] = NULL;
+            set_span_pages(span, NULL);
             free_pages(span->arena, span->first_page, span->npages);
             heap_bytes -= span->npages << PAGE_SHIFT;
             span_count--;
@@ -1244,7 +1318,7 @@ static void sweep(void) {
         if (live == 0) {
             *link = span->all_next;
             span->state = SPAN_FREE;
-            for (size_t page = 0; page < span->npages; page++) span->arena->spans[span->first_page + page] = NULL;
+            set_span_pages(span, NULL);
             free_pages(span->arena, span->first_page, span->npages);
             heap_bytes -= span->npages << PAGE_SHIFT;
             span_count--;
@@ -1290,40 +1364,199 @@ static void scavenge(void) {
     }
 }
 
-static void collect(void) {
-    if (heap_bytes > stats.peak_heap) stats.peak_heap = heap_bytes;
-    /* The cached spans are swept like the rest and go back to the lists. */
-    memset(caches, 0, (size_t)cooper_proc_count() * sizeof *caches);
-    size_t before = heap_used;
-    uint64_t start = instrument ? now_ns() : 0;
+/* --- cycles --- */
+
+/* With the world stopped and the heap lock held: what the Ps allocated since their refills counts, as the
+   allocating thread's check counted its own. */
+static void count_cached(void) {
+    for (int i = 0; i < cooper_proc_count(); i++) {
+        heap_used += caches[i].used;
+        caches[i].used = 0;
+    }
+}
+
+static void record_pause(uint64_t ns) {
+    stats.pause_ns += ns;
+    if (ns > stats.max_pause_ns) stats.max_pause_ns = ns;
+}
+
+/* For the scheduler: a range of a thread's stack or of its records, scanned with the running P's worker. What that
+   finds goes to the global lists, where idle Ps find it. */
+static void scan_for_scheduler(uintptr_t low, uintptr_t high) {
+    Worker *w = barrier_worker();
+    w->from = 0;
+    scan_range(w, low, high);
+    flush(w);
+}
+
+static bool idle_mark(bool (*stop)(void));
+
+/* With the world stopped and the heap lock held: turn on the barrier, scan the module-level variables, and have
+   the scheduler scan the rest. */
+static void begin_mark(void) {
+    mark.began = instrument ? now_ns() : 0;
     mark.worker_ns = 0;
-    int nworkers = mark_with_registers();
+    mark.cycle++;
+    __atomic_add_fetch(&cycles, 1, __ATOMIC_SEQ_CST);
+    for (int i = 0; i < cooper_proc_count(); i++) {
+        Worker *w = &workers[i];
+        w->last_span = NULL;
+        w->root_bytes = 0;
+        w->random = mark.cycle * (uint64_t)(2 * i + 1) | 1;
+        worker_ready(w);
+    }
+    c_worker.last_span = NULL;
+    __atomic_store_n(&phase, PHASE_MARK, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&pace_at, next_gc, __ATOMIC_RELAXED);
+    __atomic_store_n(&cooper_barrier_on, 1, __ATOMIC_SEQ_CST);
+    while (__atomic_load_n(&c_stores, __ATOMIC_SEQ_CST)) cpu_relax();
+    Worker *w = barrier_worker();
+    mark_variables(w);
+    flush(w);
+    cooper_mark_begin(mark.cycle, scan_for_scheduler, idle_mark);
+}
+
+/* With the world stopped and the heap lock held: finish marking, turn off the barrier, and sweep. `start` is when
+   the stop was asked for. */
+static void end_mark(uint64_t start) {
+    count_cached();
+    if (heap_bytes > stats.peak_heap) stats.peak_heap = heap_bytes;
+    size_t before = heap_used;
+    /* What the workers kept to themselves (the barrier's shading, mostly), and threads no worker has scanned. */
+    for (int i = 0; i < cooper_proc_count(); i++) flush(&workers[i]);
+    cooper_scan_threads(scan_range, &workers[0], mark.cycle);
+    flush(&workers[0]);
+    /* C does not stop: the barrier stays on until no work is left while no C store is shading. A store after that
+       finds what it shades marked and scanned, unless it is unreachable. */
+    for (;;) {
+        spin_lock(&c_worker_lock);
+        if (c_worker.objects) flush(&c_worker);
+        if (!work_available()) {
+            __atomic_store_n(&cooper_barrier_on, 0, __ATOMIC_SEQ_CST);
+            spin_unlock(&c_worker_lock);
+            break;
+        }
+        spin_unlock(&c_worker_lock);
+        mark_stopped();
+    }
+    /* Leave nothing queued: mark the garbage that stores which saw the barrier on shaded since. */
+    while (__atomic_load_n(&c_stores, __ATOMIC_SEQ_CST)) cpu_relax();
+    if (c_worker.objects) flush(&c_worker);
+    if (work_available()) mark_stopped();
+    cooper_mark_end();
+    __atomic_store_n(&phase, PHASE_OFF, __ATOMIC_SEQ_CST);
     size_t root_bytes = 0;
     for (int64_t i = 0; i < cooper_root_count; i++) root_bytes += cooper_roots[i].type->size;
-    for (int i = 0; i < nworkers; i++) root_bytes += workers[i].root_bytes;
-    if (checkmark) check_marks();
+    for (int i = 0; i < cooper_proc_count(); i++) root_bytes += workers[i].root_bytes;
     uint64_t marked = instrument ? now_ns() : 0;
+    if (checkmark) check_marks_with_registers();
+    uint64_t checked = instrument ? now_ns() : 0;
+    /* The cached spans are swept like the rest and go back to the lists. */
+    memset(caches, 0, (size_t)cooper_proc_count() * sizeof *caches);
     sweep();
-    uint64_t done = instrument ? now_ns() : 0;
-    /* Go's goal: what survived, plus a percentage of it and of the roots, but at least a minimum. */
-    next_gc = heap_used + (heap_used + root_bytes) / 100 * growth;
-    if (next_gc < MIN_HEAP / 100 * growth) next_gc = MIN_HEAP / 100 * growth;
+    set_goal(heap_used, root_bytes);
     scavenge();
+    uint64_t done = instrument ? now_ns() : 0;
     stats.collections++;
     stats.bytes_allocated += before > stats.last_live ? before - stats.last_live : 0;
     stats.last_live = heap_used;
     if (instrument) {
-        stats.mark_ns += marked - start;
+        stats.mark_ns += marked - mark.began;
         stats.mark_worker_ns += (uint64_t)mark.worker_ns;
-        stats.sweep_ns += done - marked;
-        if (done - start > stats.max_pause_ns) stats.max_pause_ns = done - start;
+        stats.sweep_ns += done - checked;
+        record_pause(done - start);
     }
     if (trace) {
         fprintf(stderr,
-                "gc %llu: mark %.2f ms (%.2f ms on %d workers), sweep %.2f ms, live %.1f MiB, next at %.1f MiB, heap %.1f MiB\n",
-                (unsigned long long)stats.collections, (marked - start) / 1e6, mark.worker_ns / 1e6, nworkers,
-                (done - marked) / 1e6, heap_used / 1048576.0, next_gc / 1048576.0, heap_bytes / 1048576.0);
+                "gc %llu: marked %.2f ms (%.2f ms on all workers), ending pause %.2f ms (sweep %.2f), live %.1f MiB, "
+                "next at %.1f MiB, heap %.1f MiB\n",
+                (unsigned long long)stats.collections, (marked - mark.began) / 1e6, mark.worker_ns / 1e6,
+                (done - start) / 1e6, (done - checked) / 1e6, heap_used / 1048576.0, next_gc / 1048576.0,
+                heap_bytes / 1048576.0);
     }
+}
+
+/* Begin a cycle, unless one is on or (unless `forced`) the heap does not need it any more. */
+static void begin_cycle(int forced) {
+    uint64_t start = instrument ? now_ns() : 0;
+    if (!cooper_stop_the_world()) return;
+    heap_lock();
+    count_cached();
+    int begin = phase == PHASE_OFF && (forced || stress || markstress || heap_used >= trigger);
+    if (begin) begin_mark();
+    heap_unlock();
+    if (begin && instrument) record_pause(now_ns() - start);
+    cooper_start_the_world();
+}
+
+/* End the cycle, unless another worker is ending it. */
+static void end_cycle(void) {
+    if (__atomic_exchange_n(&mark.ending, 1, __ATOMIC_SEQ_CST)) return;
+    uint64_t cycle = __atomic_load_n(&cycles, __ATOMIC_SEQ_CST);
+    uint64_t start = instrument ? now_ns() : 0;
+    if (cooper_stop_the_world()) {
+        heap_lock();
+        if (phase == PHASE_MARK && cycles == cycle) end_mark(start);
+        heap_unlock();
+        cooper_start_the_world();
+    }
+    __atomic_store_n(&mark.ending, 0, __ATOMIC_SEQ_CST);
+}
+
+/* Mark while the program runs, with the running P's worker, until `stop()` is true (or after `budget` items, see
+   drain) or no work is left, scanning the stacks of threads that are not running too. A worker that finds no work
+   while no other is marking ends the cycle. Gives whether it did any work. */
+static bool mark_running(bool (*stop)(void), long budget) {
+    if (__atomic_load_n(&phase, __ATOMIC_SEQ_CST) != PHASE_MARK) return false;
+    Worker *w = barrier_worker();
+    uint64_t items = w->items;
+    uint64_t start = instrument ? now_ns() : 0;
+    __atomic_add_fetch(&mark.working, 1, __ATOMIC_SEQ_CST);
+    int empty;
+    bool pending = true;
+    for (;;) {
+        empty = drain(w, stop, budget);
+        if (!empty) break;
+        pending = cooper_scan_waiting_threads();
+        if (!work_available()) break;
+    }
+    int64_t others = __atomic_sub_fetch(&mark.working, 1, __ATOMIC_SEQ_CST);
+    if (instrument) __atomic_add_fetch(&mark.worker_ns, (int64_t)(now_ns() - start), __ATOMIC_SEQ_CST);
+    if (empty && !pending && others == 0 && !work_available()) end_cycle();
+    return w->items != items;
+}
+
+static bool idle_mark(bool (*stop)(void)) {
+    return mark_running(stop, -1);
+}
+
+static bool stop_requested(void) {
+    return __atomic_load_n(&cooper_poll_word, __ATOMIC_RELAXED) != 0;
+}
+
+/* Help mark until the cycle ends, if one is on. */
+static void finish_cycle(void) {
+    uint64_t cycle = __atomic_load_n(&cycles, __ATOMIC_SEQ_CST);
+    for (int spins = 0; __atomic_load_n(&phase, __ATOMIC_SEQ_CST) == PHASE_MARK && __atomic_load_n(&cycles, __ATOMIC_SEQ_CST) == cycle; spins++) {
+        if (stop_requested()) cooper_poll_slow();
+        else if (mark_running(stop_requested, -1)) spins = 0;
+        else if (spins < 100) cpu_relax();
+        else sched_yield();
+    }
+}
+
+/* An allocation reached `pace_at`, or the collector is in a stress mode: begin a cycle, or help one end. Under
+   markstress an allocation marks a little until the heap reaches its goal. */
+static __attribute__((noinline)) void pace(void) {
+    if (__atomic_load_n(&phase, __ATOMIC_RELAXED) == PHASE_OFF) {
+        begin_cycle(0);
+        if (!stress) return;
+    } else if (markstress && __atomic_load_n(&heap_used, __ATOMIC_RELAXED) + caches[cooper_proc_id()].used <
+                                 __atomic_load_n(&pace_at, __ATOMIC_RELAXED)) {
+        mark_running(NULL, 16);
+        return;
+    }
+    finish_cycle();
 }
 
 void cooper_gc_init(void) {
@@ -1332,8 +1565,16 @@ void cooper_gc_init(void) {
     cooper_sched_init();
 }
 
-/* Collect now. */
+/* Collect now: finish the cycle that is on, if any, and run one more. */
 void cooper_gc_collect(void) {
     if (!ready) init_heap();
-    if (started) collect_stopped(1);
+    if (!started) return;
+    uint64_t target = __atomic_load_n(&cycles, __ATOMIC_SEQ_CST) + 1;
+    for (;;) {
+        uint64_t cycle = __atomic_load_n(&cycles, __ATOMIC_SEQ_CST);
+        int marking = __atomic_load_n(&phase, __ATOMIC_SEQ_CST) == PHASE_MARK;
+        if (cycle > target || (cycle == target && !marking)) return;
+        if (marking) finish_cycle();
+        else begin_cycle(1);
+    }
 }

@@ -102,6 +102,17 @@ _Noreturn void cooper_run_main(int (*entry)(void));
 void cooper_save_stack_pointer(void *sp);
 void cooper_scan_threads(void (*scan)(void *context, uintptr_t low, uintptr_t high), void *context, uint64_t cycle);
 void cooper_start_helpers(void (*helper)(void));
+/* Marking while the program runs, for the collector. Between cooper_mark_begin and cooper_mark_end, both called with
+   the world stopped, the scheduler has every thread's stack scanned once for `cycle` (which cooper_scan_threads
+   then counts as claimed), by `scan`, which scans a range of possible pointers with the running P's mark worker:
+   no thread runs Cooper code before its stack is scanned. `scan` also covers what a thread started or a timer set
+   meanwhile holds, and the timers, when marking begins. An M with nothing to run calls `idle_mark(stop)` before it
+   idles its P, which marks until `stop()` is true or no work is left, and gives whether it did any work.
+   cooper_scan_waiting_threads scans the stacks of threads that are not running and are not yet scanned, and gives
+   whether some may still need it. */
+void cooper_mark_begin(uint64_t cycle, void (*scan)(uintptr_t low, uintptr_t high), bool (*idle_mark)(bool (*stop)(void)));
+void cooper_mark_end(void);
+bool cooper_scan_waiting_threads(void);
 
 /* Safe points. Generated code polls cooper_poll_word at function entry and loop back-edges, and calls
    cooper_poll_slow when it is nonzero, which stops the running thread while the world is stopped, and switches

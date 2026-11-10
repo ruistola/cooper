@@ -408,6 +408,94 @@ static void test_parallel_marking_keeps_a_large_shared_heap(void) {
     }
 }
 
+/* Threads move pointers around a shared array while the collector marks, as generated code does: a store into
+   the heap goes through the barrier while it is on, and what a thread moves is meanwhile only in its frame,
+   which is scanned once in a cycle. Another thread stores from C the objects its Cooper frame holds, while
+   the collector scans that frame. The garbage they allocate keeps cycles going, each checked by checkmark. A
+   lost object shows as a value overwritten by poisoning. */
+enum { SHARED = 512, MOVERS = 4, MOVES = 300000 / SCALE, C_ROUNDS = 2000 / SCALE, MAGIC = 0x600d };
+static int64_t movers_finished, moved_while_marking, moved_wrong;
+
+static void store_shared(Tree **slot, Tree *value) {
+    if (__atomic_load_n(&cooper_barrier_on, __ATOMIC_RELAXED)) {
+        __atomic_add_fetch(&moved_while_marking, 1, __ATOMIC_RELAXED);
+        cooper_barrier_pointer(__atomic_load_n(slot, __ATOMIC_RELAXED), value);
+    }
+    __atomic_store_n(slot, value, __ATOMIC_RELEASE);
+}
+
+static Tree *new_pair(void) {
+    Tree *node = cooper_alloc(sizeof(Tree), (CooperType *)&tree_type);
+    node->left = cooper_alloc(sizeof(Tree), (CooperType *)&tree_type);
+    node->value = node->left->value = MAGIC;
+    return node;
+}
+
+static int intact(const Tree *node) {
+    return node->value == MAGIC && node->left->value == MAGIC;
+}
+
+static uint64_t next_random(uint64_t *state) {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    return *state;
+}
+
+static void mover(void *env) {
+    Tree **shared = env;
+    uint64_t random = (uint64_t)(uintptr_t)&random | 1;
+    for (int i = 0; i < MOVES; i++) {
+        if (__atomic_load_n(&cooper_poll_word, __ATOMIC_RELAXED)) cooper_poll_slow();
+        size_t a = next_random(&random) % SHARED, b = next_random(&random) % SHARED;
+        Tree *held = __atomic_load_n(&shared[a], __ATOMIC_ACQUIRE);
+        store_shared(&shared[a], __atomic_load_n(&shared[b], __ATOMIC_ACQUIRE));
+        store_shared(&shared[b], i % 16 ? held : new_pair());
+        if (!intact(held)) __atomic_add_fetch(&moved_wrong, 1, __ATOMIC_RELAXED);
+        volatile char *garbage = cooper_alloc(16 + (size_t)(i % 50) * 16, i & 1 ? NULL : (CooperType *)&node_type);
+        garbage[0] = 1;
+    }
+    __atomic_add_fetch(&movers_finished, 1, __ATOMIC_SEQ_CST);
+}
+
+/* In C: store what the caller's frame holds, as C may. The collector reads that frame meanwhile, so C keeps its
+   own state in its own frame. */
+static __attribute__((noinline)) uint64_t store_from_c(Tree **shared, Tree *const *mine, uint64_t random) {
+    for (int i = 0; i < 100; i++) {
+        size_t a = next_random(&random) % SHARED;
+        cooper_store_pointer((void **)&shared[a], mine[i % 4]);
+    }
+    return random;
+}
+
+static void c_mover(void *env) {
+    Tree **shared = env;
+    uint64_t random = 0x9e3779b97f4a7c15;
+    for (int round = 0; round < C_ROUNDS; round++) {
+        if (__atomic_load_n(&cooper_poll_word, __ATOMIC_RELAXED)) cooper_poll_slow();
+        Tree *mine[4] = {new_pair(), new_pair(), new_pair(), new_pair()};
+        int entered = cooper_enter_c();
+        random = store_from_c(shared, mine, random);
+        cooper_exit_c(entered);
+    }
+    __atomic_add_fetch(&movers_finished, 1, __ATOMIC_SEQ_CST);
+}
+
+static void test_mutators_move_pointers_while_marking(void) {
+    static Type pointer_type = {8, 8, 0, 1, 0, 0, {1}};
+    Tree **volatile shared = cooper_alloc(SHARED * sizeof(Tree *), (CooperType *)&pointer_type);
+    for (int i = 0; i < SHARED; i++) shared[i] = new_pair();
+    for (int i = 0; i < MOVERS; i++) cooper_spawn((void *)mover, shared);
+    cooper_spawn((void *)c_mover, shared);
+    while (__atomic_load_n(&movers_finished, __ATOMIC_SEQ_CST) < MOVERS + 1) cooper_yield();
+    cooper_gc_collect();
+    CHECK(moved_while_marking > 0);
+    CHECK(moved_wrong == 0);
+    for (int i = 0; i < SHARED; i++) {
+        if (!intact(shared[i])) { CHECK(0 && "a shared object was lost"); break; }
+    }
+}
+
 static int run_collector_tests(void) {
     test_parallel_marking_keeps_a_large_shared_heap();
     test_garbage_is_reclaimed();
@@ -418,6 +506,7 @@ static int run_collector_tests(void) {
     test_sum_type_scans_only_the_live_variant();
     test_barrier_shades_old_and_new_pointers();
     test_threads_allocate_in_parallel();
+    test_mutators_move_pointers_while_marking();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

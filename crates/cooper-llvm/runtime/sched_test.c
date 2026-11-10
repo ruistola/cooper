@@ -305,6 +305,71 @@ static void test_a_blocking_c_call_gives_up_its_p(void) {
     CHECK(cooper_load(&c_done) == 1);
 }
 
+/* While the collector marks with the program running, each thread's stack is scanned once in a cycle, and before
+   the thread runs again: one running when marking begins scans itself as it resumes from the stop, one waiting
+   to run or asleep is scanned before it is switched to or by an idle M, and one in C by an idle M or as it
+   leaves C. */
+enum { SCANNED = 6, CYCLES = 30 };
+static int64_t frame_of[SCANNED], scans_of[SCANNED], marking, ran_unscanned, stop_scanned;
+
+static void count_scan(uintptr_t low, uintptr_t high) {
+    for (int i = 0; i < SCANNED; i++) {
+        uintptr_t frame = (uintptr_t)cooper_load(&frame_of[i]);
+        if (frame && low <= frame && frame < high) cooper_add(&scans_of[i], 1);
+    }
+}
+
+static bool idle_scan(bool (*stop)(void)) {
+    (void)stop;
+    cooper_scan_waiting_threads();
+    return false;
+}
+
+static void scanned_thread(void *env) {
+    int me = (int)(intptr_t)env;
+    volatile char frame = 0;
+    cooper_store(&frame_of[me], (int64_t)(uintptr_t)&frame);
+    while (!cooper_load(&stop_scanned)) {
+        if (cooper_load(&cooper_poll_word)) cooper_poll_slow();
+        if (cooper_load(&marking) && cooper_load(&scans_of[me]) == 0) cooper_add(&ran_unscanned, 1);
+        if (me % 3 == 0) {
+            cooper_yield();
+        } else if (me % 3 == 1) {
+            cooper_sleep(200000);
+        } else {
+            int entered = cooper_enter_c();
+            usleep(200);
+            cooper_exit_c(entered);
+        }
+    }
+    finished();
+}
+
+static void test_marking_scans_each_stack_once_before_it_runs(void) {
+    start(SCANNED);
+    for (intptr_t i = 0; i < SCANNED; i++) cooper_spawn(scanned_thread, (void *)i);
+    for (int i = 0; i < SCANNED; i++) {
+        while (!cooper_load(&frame_of[i])) cooper_yield();
+    }
+    for (uint64_t cycle = 1; cycle <= CYCLES; cycle++) {
+        CHECK(cooper_stop_the_world());
+        for (int i = 0; i < SCANNED; i++) cooper_store(&scans_of[i], 0);
+        cooper_store(&marking, 1);
+        cooper_mark_begin(1000 + cycle, count_scan, idle_scan);
+        cooper_start_the_world();
+        cooper_sleep(1000000);
+        while (cooper_scan_waiting_threads()) cooper_yield();
+        CHECK(cooper_stop_the_world());
+        for (int i = 0; i < SCANNED; i++) CHECK(cooper_load(&scans_of[i]) == 1);
+        cooper_store(&marking, 0);
+        cooper_mark_end();
+        cooper_start_the_world();
+    }
+    CHECK(cooper_load(&ran_unscanned) == 0);
+    cooper_store(&stop_scanned, 1);
+    wait_all();
+}
+
 static int run_tests(void) {
     const char *threads = getenv("COOPER_THREADS");
     int one = threads && atoi(threads) == 1;
@@ -316,6 +381,7 @@ static int run_tests(void) {
     test_deep_recursion_on_a_thread_stack();
     test_a_spinning_thread_is_preempted();
     test_a_blocking_c_call_gives_up_its_p();
+    test_marking_scans_each_stack_once_before_it_runs();
     if (one) {
         test_scan_visits_every_stack();
     } else {

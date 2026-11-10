@@ -53,13 +53,14 @@ fn check_program(path: &Path, build_root: &Path) -> Result<(), String> {
     }
     let variables: Vec<(&str, &str)> = header(&source, "# env:").into_iter().filter_map(|v| v.split_once('=')).collect();
     let output = Command::new(&executable).envs(variables.clone()).output().map_err(|e| e.to_string())?;
-    // The same program collecting garbage at every allocation, with freed memory poisoned and every mark
-    // checked against a serial one, and on four processors (the default is one per core), must behave exactly
-    // as it does normally. A program's own `# env:` lines take precedence.
-    let reruns: [&[(&str, &str)]; 3] = [
+    // The same program collecting garbage at every allocation, or marking almost all the time while it runs, with
+    // freed memory poisoned and every mark checked against a serial one, and on four processors (the default is
+    // one per core), must behave exactly as it does normally. A program's own `# env:` lines take precedence.
+    let reruns: [&[(&str, &str)]; 4] = [
         &[("COOPER_GC", "stress,checkmark")],
         &[("COOPER_THREADS", "4")],
         &[("COOPER_THREADS", "4"), ("COOPER_GC", "stress,checkmark")],
+        &[("COOPER_THREADS", "4"), ("COOPER_GC", "markstress,checkmark")],
     ];
     for rerun in reruns {
         let again = Command::new(&executable)

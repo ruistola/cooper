@@ -39,21 +39,23 @@ If every thread is blocked (and none is sleeping, waiting on `after`, or in a C 
 deadlock error.
 
 Generated code checks a flag at each function entry and loop iteration (a safe point), as do the allocator and
-the scheduler. The collector raises it to stop every thread before it collects: a thread that sees it pauses
-until the collection is over, and its OS thread helps mark meanwhile. A monitor, an OS thread of the runtime's
+the scheduler. The collector raises it to stop every thread briefly, to begin marking and to end it: a thread
+that sees it pauses until the world restarts, and its OS thread helps finish the mark meanwhile. While the
+collector marks between the two stops, an OS thread with nothing to run marks instead of sleeping, and each
+thread's stack is scanned once, before the thread next runs. A monitor, an OS thread of the runtime's
 own, raises it to preempt: a thread that has run for 10 ms while other threads wait (in a queue, or for a timer
 that is due) switches at its next safe point and goes to the back of the global queue. Preemption waits while
 the thread is inside one of the runtime's short critical sections (the lock words inside `std.sync`, formatting
 a value), and code that runs without reaching a safe point, such as a long C call, is not preempted.
 
 A call to a C function (`extern func`) may block. The thread's OS thread then holds no processor: the call counts
-as stopped for the collector, and when it lasts (the monitor looks every 20 µs while calls are in progress,
-backing off to every 10 ms when there are none) the monitor gives its processor to another OS thread, so the
-other threads keep running even with `COOPER_THREADS=1`. When the call returns the thread takes a processor
-back, waiting for one if all are busy. A callback from C into Cooper code holds a processor while it runs. A C
-call made inside one of the runtime's critical sections keeps its processor: `print` writes under a lock, so
-writing to a full pipe holds one. Each C call costs about 10 ns for this; the runtime's own functions are called
-directly.
+as stopped for the collector (whose mark workers scan the thread's Cooper frames meanwhile), and when it lasts (the
+monitor looks every 20 µs while calls are in progress, backing off to every 10 ms when there are none) the monitor
+gives its processor to another OS thread, so the other threads keep running even with `COOPER_THREADS=1`. When the
+call returns the thread takes a processor back, waiting for one if all are busy. A callback from C into Cooper code
+holds a processor while it runs. A C call made inside one of the runtime's critical sections keeps its processor:
+`print` writes under a lock, so writing to a full pipe holds one. Each C call costs about 10 ns for this; the
+runtime's own functions are called directly.
 
 `std.sync.WaitGroup` waits for threads: `add(n)` before starting them, `done()` as each finishes, `wait()` to
 block until all have.

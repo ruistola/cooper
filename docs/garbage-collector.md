@@ -2,8 +2,9 @@
 
 Memory is reclaimed by a tracing collector modelled on Go's: a span-based allocator, a precise heap,
 conservative stacks, and Green Tea marking. It lives in the C runtime (`runtime/gc.c`, with the
-descriptor generation in `crates/cooper-llvm/src/gc.rs`). It stops the world, marks in parallel on every
-processor, and sweeps; concurrent marking is planned. Controls and measurements are in [Performance](./performance.md).
+descriptor generation in `crates/cooper-llvm/src/gc.rs`). It marks in parallel while the program runs, with
+two brief stops of the world, one to begin marking and one to end it and sweep. Controls and measurements are in
+[Performance](./performance.md).
 
 ## Typed allocation
 
@@ -37,54 +38,74 @@ cached spans to the lists.
 
 ## Collection
 
-Stop-the-world mark and sweep, started by the pacer when the allocated bytes reach the live bytes plus a growth
-percentage of the live bytes and roots (default 100%, at least 4 MiB). The roots counted are the module-level
-variables and the stacks of every thread.
+A cycle marks while the program runs, between two brief stops of the world, and sweeps in the second. The pacer
+sets a heap goal after each cycle: the live bytes plus a growth percentage of the live bytes and roots (default
+100%, at least 4 MiB). The roots counted are the module-level variables and the stacks of every thread. A cycle
+begins when the allocated bytes are seven tenths of the way from the live bytes to the goal.
 
-- **Stopping.** The allocating thread that reaches the heap goal stops every other thread at a safe point: generated
-  code polls a flag at each function entry and loop iteration, and the allocator, lock spins and the scheduler
-  check it too. A thread stopped in its code saves its registers on its stack, as a switch does. A thread in a C
-  call counts as stopped without waiting: it recorded its stack pointer and registers when the call began, and
-  waits for the collection to end if the call returns during one.
-- **Roots.** Module-level variables, precisely, from a table of addresses and descriptors the compiler emits
-  (`cooper_roots`). The stacks of every thread and the registers, conservatively, word by word (a suspended
-  thread's registers are saved on its stack, or with the thread record for one in C, and a thread that has not
-  started is reached through its closure): nothing moves, so an ambiguous word
-  only keeps alive what it appears to point into. Cooper never turns an integer back into a pointer.
+- **Stopping.** The allocating thread that reaches the trigger stops every other thread at a safe point:
+  generated code polls a flag at each function entry and loop iteration, and the allocator, lock spins and the
+  scheduler check it too. A thread stopped in its code saves its registers on its stack, as a switch does. A
+  thread in a C call counts as stopped without waiting: it recorded its stack pointer and registers when the call
+  began, and waits for the world to restart if the call returns while it is stopped.
+- **Beginning.** With the world stopped, the collector turns on the write barrier (below), waits for any C store
+  that may have missed it, scans the module-level variables precisely from a table of addresses and descriptors
+  the compiler emits (`cooper_roots`), and the timers, and restarts the world.
+- **Stacks.** Every thread's stack is scanned once in a cycle, conservatively, word by word, and before the
+  thread runs Cooper code again: a thread stopped to begin marking scans its own stack as it resumes, a thread is
+  scanned before the scheduler switches to it, and idle processors scan the threads that are waiting, and those in
+  C, whose Cooper frames are above the stack pointer they recorded (C changes them only through
+  `cooper_store_pointer`). A thread leaving C waits for a scan in progress. A suspended thread's registers are
+  saved on its stack, or with the thread record for one in C, and a thread that has not started is reached through
+  its closure. Nothing moves, so an ambiguous word only keeps alive what it appears to point into. Cooper never
+  turns an integer back into a pointer.
 - **Mark.** Green Tea: reaching a small object marks it and queues its span, first in first out; a span's
   marked-but-unscanned objects are scanned together from its mark and scan bits. Larger objects use an object
   work stack, and an object over 128 KiB is scanned in pieces that different workers can take. Interior pointers
-  resolve through the span table.
-- **Parallel marking.** Every processor marks, up to `COOPER_THREADS` OS threads: the collecting thread, the
-  threads stopped at safe points, and idle OS threads (started when the program has fewer) for the remaining
-  processors. A processor held by a thread in a C call gets an idle OS thread for the mark. Each worker has its own
-  span queue and object stack, publishes surplus work in fixed-size blocks to global lists, and steals half of
-  another worker's span queue when it runs out; the stacks are divided among the workers, each claiming a
-  thread's stack before scanning it. Marking ends when every worker is idle and no work is left. Mark and scan
-  bits are set by atomic OR, so each object is marked and scanned once.
-- **Sweep.** The marked objects become the allocated ones. Spans with nothing live return to a page heap that
-  merges neighbouring free runs, large free runs go back to the operating system, and spans with free slots
-  are listed per size class. Reused memory is zeroed when allocated.
-- **Write barrier.** Generated code puts Go's hybrid write barrier before every store that may write a pointer word
-  outside the storing function's own frame (fields, array elements, through pointers, module-level variables): an
-  inline test of a flag, and while it is set, a runtime call that shades the old and new pointers (for a sum type,
-  by the variant held before and the one stored). A store that initializes an object just allocated, with no safe
-  point since, needs none. The runtime's array growth copies with the barrier and applies it for the array's new
-  data pointer, and C uses `cooper_store_pointer`. The collector does not set the flag yet, since marking stops the world; the barrier is for
-  marking while the program runs.
+  resolve through the span table. Mark and scan bits are set by atomic OR, so each object is marked and scanned
+  once.
+- **Marking while the program runs.** Each processor has a mark worker, with its own span queue and object stack,
+  which publishes surplus work in fixed-size blocks to global lists and steals half of another worker's span
+  queue when it runs out. Whatever runs on the processor uses it: the write barrier of the code it runs, an
+  allocation that helps, and the processor's idle time, which the scheduler spends marking instead of sleeping
+  until a thread is ready to run. An allocation that reaches the heap goal while marking helps until the cycle
+  ends. Objects allocated while marking are marked already (allocated black), and survive the cycle.
+- **Ending.** A worker that finds no work, with no other worker marking and every stack scanned, stops the world
+  again. The collector gathers the work the workers kept to themselves (mostly the barrier's), scans the stack of
+  any thread not yet scanned, and if work is left, marks it on every processor: the threads stopped at safe
+  points and idle OS threads for the remaining processors. It turns off the barrier only once no work is left
+  while no C store is shading, so that a store from C after that finds what it shades marked already.
+- **Sweep.** With the world still stopped, the marked objects become the allocated ones. Spans with nothing live
+  return to a page heap that merges neighbouring free runs, large free runs go back to the operating system, and
+  spans with free slots are listed per size class. Reused memory is zeroed when allocated.
+- **Write barrier.** Generated code puts Go's hybrid write barrier before every store that may write a pointer
+  word outside the storing function's own frame (fields, array elements, through pointers, module-level
+  variables): an inline test of a flag, and while it is set, a runtime call that shades the old and new pointers
+  (for a sum type, by the variant held before and the one stored). With stacks scanned once and never again in a
+  cycle, the old pointer keeps alive what a thread may have copied to its stack, and the new one what it may store
+  from an unscanned stack. A store that initializes an object just allocated, with no safe point since, needs
+  none, since the object is allocated black. The runtime's array growth copies with the barrier and applies it
+  for the array's new data pointer, and C uses `cooper_store_pointer`.
 
 ## Testing
 
-`COOPER_GC=stress` collects at every allocation and poisons freed memory, and the golden-program harness runs
-every program again that way (with checkmark), on four processors (`COOPER_THREADS=4`), and both, requiring
+`COOPER_GC=stress` runs a whole cycle at every allocation, and `COOPER_GC=markstress` keeps a cycle on almost
+all the time: one begins at the first allocation after the last ended, and each allocation marks a little. Both
+poison freed memory. The golden-program harness runs every program again under stress (with checkmark), on four
+processors (`COOPER_THREADS=4`), under both, and under markstress on four processors (with checkmark), requiring
 the same output.
-`COOPER_GC=checkmark` (after Go's `gccheckmark`) marks a second time after every mark, serially and object by
-object into separate bits, and panics naming any object reached that way that the parallel mark missed, its
-size and kind, and the object or root it was reached from. `gc_test.c`, run by `tests/allocator.rs`,
+`COOPER_GC=checkmark` (after Go's `gccheckmark`) marks a second time at the end of every cycle, serially and
+object by object into separate bits, and panics naming any object reached that way that the mark missed, its
+size and kind, and the object or module-level variable it was reached from. An unmarked object reached only from
+a stack is passed over: a stack scanned early in the cycle may have exposed, by the end, words its frames left
+behind before the scan, which can name objects that died. `gc_test.c`, run by `tests/allocator.rs`,
 tests the allocator and collector alone: sizes, pointer bitmaps, reuse, interior pointers, reclamation,
 poisoning, that a sum type retains only the variant it holds, threads allocating on four Ps during
-collections, and a live tree and a large pointer array that the four mark workers must share, with checkmark
-on, and that the barrier functions shade the old and new pointers. It runs natively and under ThreadSanitizer.
+collections, a live tree and a large pointer array that the four mark workers must share, that the barrier
+functions shade the old and new pointers, and threads moving pointers around a shared array, and storing them
+from C, while the collector marks, all with checkmark on. It runs natively and under ThreadSanitizer.
+`sched_test.c`, run by `tests/scheduler.rs`, checks that while marking each thread's stack is scanned once and
+before the thread runs, whether it was running, waiting, asleep or in C.
 The golden harness also checks each program's LLVM IR for a store that may write a pointer outside its frame
 without the barrier before it.
 
@@ -92,6 +113,9 @@ without the barrier before it.
 
 Conservative scanning can retain what a stale stack word points at. Optimized builds may keep only a derived
 pointer (one past an object's end), which a stack scan would miss: not yet validated. The page heap is a
-first-fit list. Refills and large allocations take one heap lock, and the world stays stopped while the
-collector marks and sweeps, so pauses grow with the live heap. Sweeping is serial. Waking the helpers costs
-about 40 µs per collection with ten processors, which shows only when collections are small and frequent.
+first-fit list. Refills and large allocations take one heap lock. Sweeping is serial and stops the world, so
+the ending pause grows with the heap. Only idle processors and allocations that reach the goal mark: a program
+that keeps every processor busy marks in that allocation, which stalls it about as long as a stop-the-world mark
+would, and objects allocated black meanwhile survive the cycle (more cycles mark more). The barrier's slow path
+marks directly rather than buffering. Waking the helpers costs about 40 µs per stop with ten processors, which
+shows only when collections are small and frequent.

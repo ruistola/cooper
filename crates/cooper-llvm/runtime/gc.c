@@ -826,10 +826,24 @@ static int steal(Worker *w, int joined) {
     return 0;
 }
 
+/* PROBE: every place the mark finds a word pointing into [~probe_hidden, ~probe_hidden + probe_size). The
+   test sets the complement, so that it does not itself leave the address on its stack. */
+uintptr_t probe_hidden;
+size_t probe_size;
+static __attribute__((noinline, cold)) void probe_report(Worker *w, uintptr_t word, const uintptr_t *at, uintptr_t low, uintptr_t high) {
+    if (at) {
+        fprintf(stderr, "probe: root word %p = %p in [%p, %p), %zu bytes below its top\n", (void *)at, (void *)word,
+                (void *)low, (void *)high, (size_t)(high - (uintptr_t)at));
+    } else {
+        fprintf(stderr, "probe: %p reached from the object at %p\n", (void *)word, (void *)w->from);
+    }
+}
+
 static __attribute__((noinline, cold)) void check_mark(Worker *w, Span *span, uint32_t index);
 
 /* Mark the object `word` points into, if it points into an allocated one. */
 __attribute__((always_inline)) static inline void mark_word(Worker *w, uintptr_t word) {
+    if (!w->checking && w->from && word - ~probe_hidden < probe_size) probe_report(w, word, NULL, 0, 0);
     Span *span = w->last_span;
     if (!span || word - span->start >= span->npages << PAGE_SHIFT || span->state != SPAN_IN_USE) {
         span = span_of(word);
@@ -1006,6 +1020,7 @@ static void scan_range(void *context, uintptr_t low, uintptr_t high) {
     Worker *w = context;
     w->root_bytes += high - low;
     for (const uintptr_t *word = (const uintptr_t *)((low + 7) & ~(uintptr_t)7); (uintptr_t)word + 8 <= high; word++) {
+        if (!w->checking && *word - ~probe_hidden < probe_size) probe_report(w, *word, word, low, high);
         mark_word(w, *word);
     }
 }

@@ -224,7 +224,12 @@ static void test_large_objects_are_reused(void) {
     CHECK(heap_size() < (200u << 20));
 }
 
+/* PROBE */
+extern uintptr_t probe_hidden;
+extern size_t probe_size;
+
 static void test_freed_memory_is_poisoned(void) {
+    fprintf(stderr, "probe: poison test frame %p\n", __builtin_frame_address(0));
     volatile unsigned char *address;
     {
         address = cooper_alloc(256, NULL);
@@ -234,7 +239,9 @@ static void test_freed_memory_is_poisoned(void) {
     uintptr_t hidden = ~(uintptr_t)address;  /* not a pointer to the collector */
     address = NULL;
     scrub_stack();
+    probe_hidden = hidden, probe_size = 256;
     cooper_gc_collect();
+    probe_size = 0;
     /* Nothing refers to it any more; the poison is what a stale pointer would find. */
     unsigned char first = *(volatile unsigned char *)~hidden;
     if (!UNDER_TSAN) CHECK(first == 0xDB);
@@ -262,7 +269,10 @@ static void test_sum_type_scans_only_the_live_variant(void) {
     uintptr_t hidden_kept = ~(uintptr_t)kept, hidden_dropped = ~(uintptr_t)dropped;
     kept = dropped = NULL;
     scrub_stack();
+    fprintf(stderr, "probe: sum test frame %p\n", __builtin_frame_address(0));
+    probe_hidden = hidden_dropped, probe_size = 100;
     cooper_gc_collect();
+    probe_size = 0;
     CHECK(((unsigned char *)~hidden_kept)[50] == 0x11);
     if (!UNDER_TSAN) CHECK(((unsigned char *)~hidden_dropped)[50] == 0xDB);
 }

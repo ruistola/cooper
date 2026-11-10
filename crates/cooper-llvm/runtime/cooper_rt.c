@@ -74,21 +74,26 @@ int32_t cooper_string_eq(const char *a, uint64_t a_len, const char *b, uint64_t 
    elements' size rounded up to 8 bytes, the address of the slot after the last element any
    copy of the array has pushed. A push writes into spare capacity only when that slot is
    right after its own last element, so copies sharing the storage never write the same slot;
-   the generated push and reserve read and advance the word. */
+   the generated push and reserve read and advance the word. The write barrier for storing the
+   result over an array's pointer to `data` is applied here, which keeps it out of the generated
+   push and reserve. */
 void *cooper_array_grow(const void *data, uint64_t len, uint64_t capacity, uint64_t size,
                         const CooperType *elem) {
     if (size && capacity > (UINT64_MAX - 15) / size) {
         cooper_panic("array too large");
     }
+    char *grown;
     if (capacity == len) {
-        void *copy = cooper_alloc(capacity * size, elem);
-        if (len) memcpy(copy, data, len * size);
-        return copy;
+        grown = cooper_alloc(capacity * size, elem);
+    } else {
+        uint64_t word = (capacity * size + 7) & ~(uint64_t)7;
+        grown = cooper_alloc_with_word(word, elem);
+        *(char **)(grown + word) = grown + len * size;
     }
-    uint64_t word = (capacity * size + 7) & ~(uint64_t)7;
-    char *grown = cooper_alloc_with_word(word, elem);
-    if (len) memcpy(grown, data, len * size);
-    *(char **)(grown + word) = grown + len * size;
+    cooper_typed_copy(grown, data, len * size, elem);
+    if (__atomic_load_n(&cooper_barrier_on, __ATOMIC_RELAXED)) {
+        cooper_barrier_pointer((void *)data, grown);
+    }
     return grown;
 }
 

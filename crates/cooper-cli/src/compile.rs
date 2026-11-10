@@ -166,7 +166,10 @@ fn link(
         write(&shims_path, &emitted.c_shims)?;
     }
 
+    // A project's C sources include the runtime's `cooper_ffi.h` from the build directory.
     let output = Command::new(&cc)
+        .arg("-I")
+        .arg(build_dir)
         .arg("-o")
         .arg(&executable)
         .arg(&ir_path)

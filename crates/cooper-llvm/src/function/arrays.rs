@@ -200,6 +200,7 @@ impl Emitter<'_, '_> {
                     llvm: self.value_type(&elem, span)?,
                     ty: elem,
                     nullable: false,
+                    local: false,
                 };
                 match op {
                     Intrinsic::ArrayGet => Ok(self.load(&place)),
@@ -278,14 +279,25 @@ impl Emitter<'_, '_> {
             }
             return Ok(None);
         };
-        let grown = if op == Intrinsic::ArrayPush {
-            self.push(&data, &length, &capacity, &llvm, elem, arg.as_ref())
+        // The array is changed field by field: its data pointer, which needs a write barrier, only when the
+        // storage moves, so that pushing into spare capacity writes only the length.
+        let header = Place { ptr: self.access_ptr(&place, "@cooper.sink"), nullable: false, ..place };
+        if op == Intrinsic::ArrayPush {
+            self.push(&header, &data, &length, &capacity, &llvm, elem, arg.as_ref());
         } else {
             let count = arg.as_ref().expect("a count has a value");
-            self.reserve(&data, &length, &capacity, &llvm, elem, &count.operand)
-        };
-        self.store(&place, Some(&grown));
+            self.reserve(&header, &data, &length, &capacity, &llvm, elem, &count.operand);
+        }
         Ok(arg.filter(|_| op == Intrinsic::ArrayPush))
+    }
+
+    /// Point the array at `header` to `storage`, returned by `cooper_array_grow`, with room for
+    /// `capacity` elements. The runtime applied the write barrier for the data pointer, which keeps
+    /// the barrier's code out of every push.
+    fn rehome(&mut self, header: &Place, storage: &str, capacity: &str) {
+        self.inst(&format!("store ptr {storage}, ptr {}", header.ptr));
+        let room = self.assign(&format!("getelementptr {ARRAY}, ptr {}, i32 0, i32 2", header.ptr));
+        self.inst(&format!("store i64 {capacity}, ptr {room}"));
     }
 
     /// A `std.ffi` copy between Cooper and C data, of result type `result`.
@@ -451,15 +463,15 @@ impl Emitter<'_, '_> {
         Ok(self.array_value(storage, length.clone(), length))
     }
 
-    /// `reserve(n)` on the array of storage `data`, `length`, and `capacity`: the array
-    /// itself when `n` more elements fit in spare capacity it owns, otherwise a copy with
+    /// `reserve(n)` on the array at `header`, of storage `data`, `length`, and `capacity`: unchanged
+    /// when `n` more elements fit in spare capacity it owns, otherwise moved to a copy with
     /// capacity for the larger of `length + n` and twice the current capacity. A negative
     /// `n` reserves nothing.
-    fn reserve(&mut self, data: &str, length: &str, capacity: &str, llvm: &str, elem: &Type, count: &str) -> Value {
+    #[allow(clippy::too_many_arguments)]
+    fn reserve(&mut self, header: &Place, data: &str, length: &str, capacity: &str, llvm: &str, elem: &Type, count: &str) {
         let negative = self.assign(&format!("icmp slt i64 {count}, 0"));
         let wanted = self.assign(&format!("select i1 {negative}, i64 0, i64 {count}"));
         let nothing = self.assign(&format!("icmp eq i64 {wanted}, 0"));
-        let from = self.current.clone();
         let sized = self.fresh("sized");
         let grow = self.fresh("reserve");
         let ready = self.fresh("reserved");
@@ -467,22 +479,15 @@ impl Emitter<'_, '_> {
         self.start_block(&sized);
         let spare = self.assign(&format!("sub i64 {capacity}, {length}"));
         let fits = self.assign(&format!("icmp ule i64 {wanted}, {spare}"));
-        let (_, owned) = self.owned_room(data, length, capacity, llvm, &fits, &grow, &ready);
+        self.owned_room(data, length, capacity, llvm, &fits, &grow, &ready);
         self.start_block(&grow);
         let needed = self.assign(&format!("add i64 {length}, {wanted}"));
         let doubled = self.assign(&format!("shl i64 {capacity}, 1"));
         let more = self.assign(&format!("icmp ugt i64 {needed}, {doubled}"));
         let grown_capacity = self.assign(&format!("select i1 {more}, i64 {needed}, i64 {doubled}"));
         let grown = self.grown(data, length, &grown_capacity, llvm, elem);
-        let grown_from = self.current.clone();
+        self.rehome(header, &grown, &grown_capacity);
         self.start_block(&ready);
-        let storage = self.assign(&format!(
-            "phi ptr [ {data}, %{from} ], [ {data}, %{owned} ], [ {grown}, %{grown_from} ]"
-        ));
-        let room = self.assign(&format!(
-            "phi i64 [ {capacity}, %{from} ], [ {capacity}, %{owned} ], [ {grown_capacity}, %{grown_from} ]"
-        ));
-        self.array_value(storage, length.to_string(), room)
     }
 
     /// Branch to `ready` when `fits` holds and the spare capacity of storage `data` is this
@@ -533,10 +538,11 @@ impl Emitter<'_, '_> {
         self.aggregate(ARRAY, fields)
     }
 
-    /// `push(value)` on the array of storage `data`, `length`, and `capacity`: the array
-    /// with `value` appended. Spare capacity the array owns is written in place; otherwise
-    /// the elements are first copied into fresh storage of twice the length (at least four).
-    fn push(&mut self, data: &str, length: &str, capacity: &str, llvm: &str, elem: &Type, value: Option<&Value>) -> Value {
+    /// `push(value)` on the array at `header`, of storage `data`, `length`, and `capacity`:
+    /// `value` appended. Spare capacity the array owns is written in place; otherwise the array
+    /// first moves to a copy of its elements in fresh storage of twice the length (at least four).
+    #[allow(clippy::too_many_arguments)]
+    fn push(&mut self, header: &Place, data: &str, length: &str, capacity: &str, llvm: &str, elem: &Type, value: Option<&Value>) {
         let grow = self.fresh("grow");
         let ready = self.fresh("ready");
         let fits = self.assign(&format!("icmp ult i64 {length}, {capacity}"));
@@ -546,6 +552,7 @@ impl Emitter<'_, '_> {
         let doubled = self.assign(&format!("shl i64 {length}, 1"));
         let grown_capacity = self.assign(&format!("select i1 {empty}, i64 4, i64 {doubled}"));
         let grown = self.grown(data, length, &grown_capacity, llvm, elem);
+        self.rehome(header, &grown, &grown_capacity);
         let grown_slot = self.assign(&format!("getelementptr {llvm}, ptr {grown}, i64 {length}"));
         let grown_from = self.current.clone();
         self.start_block(&ready);
@@ -553,13 +560,17 @@ impl Emitter<'_, '_> {
         let room = self.assign(&format!("phi i64 [ {capacity}, %{owned} ], [ {grown_capacity}, %{grown_from} ]"));
         let slot = self.assign(&format!("phi ptr [ {slot}, %{owned} ], [ {grown_slot}, %{grown_from} ]"));
         if let Some(value) = value {
+            self.write_barrier(&slot, elem, value);
             self.inst(&format!("store {llvm} {}, ptr {slot}", value.operand));
         }
         let next = self.assign(&format!("getelementptr {llvm}, ptr {slot}, i64 1"));
         let word = self.ownership_word(&storage, &room, llvm);
-        self.inst(&format!("store ptr {next}, ptr {word}"));
+        // The word points into the same storage, so storing it never hides an object from the collector.
+        let next = self.assign(&format!("ptrtoint ptr {next} to i64"));
+        self.inst(&format!("store i64 {next}, ptr {word}"));
         let longer = self.assign(&format!("add i64 {length}, 1"));
-        self.array_value(storage, longer, room)
+        let count = self.assign(&format!("getelementptr {ARRAY}, ptr {}, i32 0, i32 1", header.ptr));
+        self.inst(&format!("store i64 {longer}, ptr {count}"));
     }
 
     /// Frame storage for one value of LLVM type `llvm`, reserved in the entry block.

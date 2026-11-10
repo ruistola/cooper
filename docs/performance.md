@@ -60,6 +60,15 @@ processors the time summed over the workers is 5 to 10 times the wall time, much
 work. Sweeping is serial: under 1% of collection time with one processor, but 17% on `alloc_parallel` with ten,
 whose collections mark little.
 
+The write barrier, with its flag never set, costs no more than the timer's 0.01 s on the `-O2` benchmarks (best of
+five runs against the build without the barrier). Unoptimized builds pay for the inline flag test: 12% on
+`alloc_parallel`, which stores two pointers into every tree node it allocates, and 3% or less on the others.
+Pushing into spare capacity writes only the array's length, and a store that initializes a fresh object needs no
+barrier, so neither pays for one. The barrier's slow path passes the runtime values rather than the address stored to, which
+keeps an inlined local in registers, and shades strings, arrays and closures word by word rather than from copies
+on the stack. Because stacks are scanned conservatively, extra frame slots can retain stale pointers and change the
+number of collections noticeably.
+
 ## Threads
 
 `benchmarks/threads.coop` (with a Go version, run with one OS thread) measures the scheduler. Cooper `-O2` with

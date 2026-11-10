@@ -14,8 +14,7 @@ impl Emitter<'_, '_> {
                     Some(init) => self.expr(init)?,
                     None => self.zero(ty, stmt.span)?,
                 };
-                let slot = self.bind(name, ty, stmt.span)?;
-                self.store(&slot, value.as_ref());
+                self.bind(name, ty, value.as_ref(), stmt.span)?;
             }
             IrStmtKind::Expr(expr) => {
                 self.expr(expr)?;
@@ -167,8 +166,7 @@ impl Emitter<'_, '_> {
             });
             let result = e.scoped(|e| {
                 let i = e.load(&counter).expect("a counter has a value");
-                let bound = e.bind(var, ty, span)?;
-                e.store(&bound, Some(&i));
+                e.bind(var, ty, Some(&i), span)?;
                 e.stmts(body)
             });
             e.loops.pop();
@@ -410,11 +408,9 @@ impl Emitter<'_, '_> {
                 }
                 None => None,
             };
-            let bound = e.bind(&elem.name, &elem.ty, span)?;
-            e.store(&bound, element.as_ref());
+            e.bind(&elem.name, &elem.ty, element.as_ref(), span)?;
             if let Some(index) = index {
-                let bound = e.bind(&index.name, &index.ty, span)?;
-                e.store(&bound, Some(&position));
+                e.bind(&index.name, &index.ty, Some(&position), span)?;
             }
             e.loops.push(Loop {
                 continue_to: step.clone(),
@@ -464,11 +460,9 @@ impl Emitter<'_, '_> {
                 "call i32 @cooper_decode_rune(ptr {data}, i64 {length}, i64 {}, ptr {})",
                 position.operand, width.ptr
             ));
-            let bound = e.bind(&elem.name, &elem.ty, span)?;
-            e.store(&bound, Some(&Value { ty: "i32".to_string(), operand: rune }));
+            e.bind(&elem.name, &elem.ty, Some(&Value { ty: "i32".to_string(), operand: rune }), span)?;
             if let Some(index) = index {
-                let bound = e.bind(&index.name, &index.ty, span)?;
-                e.store(&bound, Some(&position));
+                e.bind(&index.name, &index.ty, Some(&position), span)?;
             }
             e.loops.push(Loop {
                 continue_to: step.clone(),

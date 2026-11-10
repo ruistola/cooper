@@ -91,18 +91,19 @@ pub(crate) fn emit(module: &mut Module, function: &Function) -> Result<String, C
                 ty: captured.ty.clone(),
                 llvm,
                 nullable: false,
+                local: false,
             };
             emitter.scopes[0].insert(captured.name.clone(), place);
         }
         emitter.scopes.push(HashMap::new());
     }
     for (index, param) in function.receiver.iter().chain(&function.params).enumerate() {
-        let slot = emitter.bind(&param.name, &param.ty, param.span)?;
-        if let Some(ty) = &slot.llvm {
+        let value = emitter.value_type(&param.ty, param.span)?.map(|ty| {
             let operand = format!("%arg{index}");
             params.push(format!("{ty} {operand}"));
-            emitter.inst(&format!("store {ty} {operand}, ptr {}", slot.ptr));
-        }
+            Value { ty, operand }
+        });
+        emitter.bind(&param.name, &param.ty, value.as_ref(), param.span)?;
     }
     emitter.safe_point();
     for stmt in &function.body {
@@ -132,13 +133,15 @@ struct Value {
 
 /// A storage location: a pointer to a value of type `ty` (whose LLVM type is `llvm`,
 /// `None` for unit, which has no storage). A local's place is never null; a place
-/// reached through a pointer is `nullable`, and accessing it when null is inert.
+/// reached through a pointer is `nullable`, and accessing it when null is inert. A `local`
+/// place is in the frame's own storage, which a store needs no write barrier for.
 #[derive(Debug, Clone)]
 struct Place {
     ptr: String,
     ty: Type,
     llvm: Option<String>,
     nullable: bool,
+    local: bool,
 }
 
 /// The targets of `continue` and `break` in an enclosing loop.
@@ -274,9 +277,10 @@ impl Emitter<'_, '_> {
     /// the heap when that local's address is taken, in the frame otherwise.
     fn slot(&mut self, name: Option<&str>, ty: &Type, span: Span) -> Result<Place, CodegenError> {
         let llvm = self.value_type(ty, span)?;
+        let local = !name.is_some_and(|n| self.heap.contains(n));
         let ptr = match &llvm {
             None => String::new(),
-            Some(llvm) if name.is_some_and(|n| self.heap.contains(n)) => {
+            Some(llvm) if !local => {
                 let desc = self.module.type_descriptor(ty);
                 self.heap_alloc(llvm, desc.as_deref())
             }
@@ -292,17 +296,18 @@ impl Emitter<'_, '_> {
             ty: ty.clone(),
             llvm,
             nullable: false,
+            local,
         })
     }
 
-    /// Declare a new local named `name` in the innermost scope, shadowing any outer one.
-    fn bind(&mut self, name: &str, ty: &Type, span: Span) -> Result<Place, CodegenError> {
+    /// Declare a new local named `name` in the innermost scope, shadowing any outer one, holding `value`.
+    fn bind(&mut self, name: &str, ty: &Type, value: Option<&Value>, span: Span) -> Result<(), CodegenError> {
         let slot = self.slot(Some(name), ty, span)?;
-        self.scopes
-            .last_mut()
-            .expect("a function body has a scope")
-            .insert(name.to_string(), slot.clone());
-        Ok(slot)
+        // A heap local's storage was just allocated, with no safe point since, so the store that initializes it
+        // needs no write barrier: it overwrites nothing, and an object allocated during marking is marked.
+        self.store(&Place { local: true, ..slot.clone() }, value);
+        self.scopes.last_mut().expect("a function body has a scope").insert(name.to_string(), slot);
+        Ok(())
     }
 
     fn lookup(&self, name: &str) -> Place {
@@ -336,7 +341,55 @@ impl Emitter<'_, '_> {
     fn store(&mut self, place: &Place, value: Option<&Value>) {
         let Some(value) = value else { return };
         let ptr = self.access_ptr(place, "@cooper.sink");
+        if !place.local {
+            self.write_barrier(&ptr, &place.ty, value);
+        }
         self.inst(&format!("store {} {}, ptr {ptr}", value.ty, value.operand));
+    }
+
+    /// Go's hybrid write barrier, ahead of a store of `value` to `ptr`, which holds a value of type `ty` outside
+    /// this frame: while the collector marks (`cooper_barrier_on` is set), it shades the pointers of the value
+    /// `ptr` holds and those of `value`. A type that holds no pointers needs none. The runtime gets the values,
+    /// not `ptr`, so that the place's address does not escape: inlined into a caller whose local it is, the
+    /// place can still live in registers.
+    fn write_barrier(&mut self, ptr: &str, ty: &Type, value: &Value) {
+        let desc = match self.module.type_descriptor(ty) {
+            Some(desc) => desc,
+            None => return,
+        };
+        self.module.declare("@cooper_barrier_on = external global i32");
+        let on = self.assign("load atomic i32, ptr @cooper_barrier_on monotonic, align 4");
+        let marking = self.assign(&format!("icmp ne i32 {on}, 0"));
+        let shade = self.fresh("shade");
+        let shaded = self.fresh("shaded");
+        self.terminate(&format!("br i1 {marking}, label %{shade}, label %{shaded}"));
+        self.start_block(&shade);
+        let old = self.assign(&format!("load {}, ptr {ptr}", value.ty));
+        // A pointer, or a literal struct of pointers and integers (a string, an array, a closure), is shaded word by
+        // word; anything else by its descriptor, from copies in memory, which also gives a sum type's tag.
+        let fields: Vec<&str> = match value.ty.strip_prefix("{ ").and_then(|t| t.strip_suffix(" }")) {
+            Some(fields) => fields.split(", ").collect(),
+            None => vec![value.ty.as_str()],
+        };
+        if fields.iter().all(|field| *field == "ptr" || field.starts_with('i')) {
+            self.module.declare("declare void @cooper_barrier_pointer(ptr, ptr)");
+            for (i, _) in fields.iter().enumerate().filter(|(_, field)| **field == "ptr") {
+                let [old_word, new_word] = [&old, &value.operand].map(|operand| match value.ty.as_str() {
+                    "ptr" => operand.clone(),
+                    ty => self.assign(&format!("extractvalue {ty} {operand}, {i}")),
+                });
+                self.inst(&format!("call void @cooper_barrier_pointer(ptr {old_word}, ptr {new_word})"));
+            }
+        } else {
+            let [old_copy, new_copy] = [&old, &value.operand].map(|operand| {
+                let copy = self.stack_alloc(&value.ty);
+                self.inst(&format!("store {} {operand}, ptr {copy}", value.ty));
+                copy
+            });
+            self.module.declare("declare void @cooper_barrier_typed(ptr, ptr, ptr)");
+            self.inst(&format!("call void @cooper_barrier_typed(ptr {old_copy}, ptr {new_copy}, ptr {desc})"));
+        }
+        self.start_block(&shaded);
     }
 
     /// The place `expr` denotes, if it is one: a variable, a field of a place, an array
@@ -348,7 +401,7 @@ impl Emitter<'_, '_> {
                 let ty = expr.ty.clone();
                 let llvm = self.value_type(&ty, expr.span)?;
                 let ptr = format!("@{}", mangle::global_symbol(module, name));
-                Ok(Some(Place { ptr, ty, llvm, nullable: false }))
+                Ok(Some(Place { ptr, ty, llvm, nullable: false, local: false }))
             }
             IrExprKind::Deref(pointer) => self.pointee(pointer).map(Some),
             IrExprKind::Intrinsic {
@@ -363,6 +416,7 @@ impl Emitter<'_, '_> {
                     llvm: self.value_type(&expr.ty, expr.span)?,
                     ty: expr.ty.clone(),
                     nullable: false,
+                    local: false,
                 }))
             }
             IrExprKind::Field { target, name } => {
@@ -395,6 +449,7 @@ impl Emitter<'_, '_> {
             ty: (**target).clone(),
             llvm,
             nullable: !self.module.nil_panic,
+            local: false,
         })
     }
 
@@ -405,7 +460,7 @@ impl Emitter<'_, '_> {
         let (index, ty) = self.module.field(&base.ty, name);
         let llvm = self.value_type(&ty, span)?;
         if self.module.defs.is_extern_union(&base.ty) {
-            return Ok(Place { ptr: base.ptr.clone(), ty, llvm, nullable: base.nullable });
+            return Ok(Place { ptr: base.ptr.clone(), ty, llvm, nullable: base.nullable, local: base.local });
         }
         let aggregate = base.llvm.clone().expect("a struct has an LLVM type");
         let mut ptr = self.assign(&format!(
@@ -421,6 +476,7 @@ impl Emitter<'_, '_> {
             ty,
             llvm,
             nullable: base.nullable,
+            local: base.local,
         })
     }
 
@@ -567,8 +623,7 @@ impl Emitter<'_, '_> {
                 let tuple = self.expr(value)?.expect("a tuple has a value");
                 for (index, binder) in bindings.iter().enumerate() {
                     let component = self.extract(&tuple, index, &binder.ty, span)?;
-                    let slot = self.bind(&binder.name, &binder.ty, span)?;
-                    self.store(&slot, component.as_ref());
+                    self.bind(&binder.name, &binder.ty, component.as_ref(), span)?;
                 }
                 Ok(Some(tuple))
             }
@@ -580,8 +635,7 @@ impl Emitter<'_, '_> {
             IrExprKind::Let { name, value } => {
                 let value_ir = value;
                 let value = self.expr(value_ir)?;
-                let slot = self.bind(name, &value_ir.ty, span)?;
-                self.store(&slot, value.as_ref());
+                self.bind(name, &value_ir.ty, value.as_ref(), span)?;
                 Ok(value)
             }
             IrExprKind::Block { stmts, result } => self.scoped(|e| {

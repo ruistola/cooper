@@ -270,6 +270,51 @@ static void test_sum_type_scans_only_the_live_variant(void) {
     CHECK(reveal(hidden_dropped)[50] == 0xDB);
 }
 
+/* While the barrier is on, a store shades the pointers it overwrites and those it stores: their objects stay
+   marked until the next collection ends, whatever refers to them. Here nothing does once the stores are done, so
+   the objects shaded survive that collection and the others are freed. */
+enum { SHADED = 6, NOT_SHADED = 3 };
+
+static __attribute__((noinline)) void barrier_stores(uintptr_t shaded[SHADED], uintptr_t not_shaded[NOT_SHADED]) {
+    uint64_t word = 0;
+    shaded[0] = allocate_hidden(100, 0x31, &word);
+    shaded[1] = allocate_hidden(100, 0x32, NULL);
+    cooper_barrier_pointer((void *)word, reveal(shaded[1]));
+
+    /* A sum type's pointers are those of the variant it holds: before the store, and in the value stored. */
+    Sum old = {1, 0}, new = {0, 0};
+    shaded[2] = allocate_hidden(100, 0x33, &old.payload);
+    not_shaded[0] = allocate_hidden(100, 0x41, &new.payload);
+    cooper_barrier_typed(&old, &new, (const CooperType *)&sum_type);
+
+    Sum from[2] = {{1, 0}, {0, 0}}, to[2] = {{1, 0}, {1, 0}};
+    shaded[3] = allocate_hidden(100, 0x34, &from[0].payload);
+    not_shaded[1] = allocate_hidden(100, 0x42, &from[1].payload);
+    shaded[4] = allocate_hidden(100, 0x35, &to[1].payload);
+    cooper_barrier_on = 1;
+    cooper_typed_copy(to, from, sizeof to, (const CooperType *)&sum_type);
+    CHECK(memcmp(to, from, sizeof to) == 0);
+
+    /* C's store tests the flag itself. */
+    uint64_t slot = 0;
+    shaded[5] = allocate_hidden(100, 0x36, NULL);
+    cooper_store_pointer((void **)&slot, reveal(shaded[5]));
+    CHECK(slot == (uintptr_t)reveal(shaded[5]));
+    cooper_barrier_on = 0;
+    not_shaded[2] = allocate_hidden(100, 0x43, &slot);
+    cooper_store_pointer((void **)&slot, NULL);
+    CHECK(slot == 0);
+}
+
+static void test_barrier_shades_old_and_new_pointers(void) {
+    uintptr_t shaded[SHADED], not_shaded[NOT_SHADED];
+    barrier_stores(shaded, not_shaded);
+    scrub_stack();
+    cooper_gc_collect();
+    for (int i = 0; i < SHADED; i++) CHECK(reveal(shaded[i])[50] == 0x31 + i);
+    for (int i = 0; i < NOT_SHADED; i++) CHECK(reveal(not_shaded[i])[50] == 0xDB);
+}
+
 /* Threads on several Ps allocate from their own caches while collections stop them: each builds a list
    among garbage of every kind and checks it, and nothing a thread holds may be freed or handed out twice. */
 enum { WORKERS = 8, NODES = 30000 / SCALE };
@@ -371,6 +416,7 @@ static int run_collector_tests(void) {
     test_large_objects_are_reused();
     test_freed_memory_is_poisoned();
     test_sum_type_scans_only_the_live_variant();
+    test_barrier_shades_old_and_new_pointers();
     test_threads_allocate_in_parallel();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

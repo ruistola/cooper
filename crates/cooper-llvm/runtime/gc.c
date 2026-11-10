@@ -704,6 +704,15 @@ static Block *new_block(void) {
     return block;
 }
 
+/* Give a worker its blocks, the first time it is used. */
+static void worker_ready(Worker *w) {
+    if (w->objects) return;
+    spin_lock(&mark.lock);
+    w->objects = new_block();
+    w->fresh = new_block();
+    spin_unlock(&mark.lock);
+}
+
 static void push_object(Worker *w, uintptr_t slot, Span *span) {
     Block *block = w->objects;
     if (block->count == BLOCK_WORK) {
@@ -1053,12 +1062,7 @@ static __attribute__((noinline)) int mark_all(void) {
         w->last_span = NULL;
         w->root_bytes = 0;
         w->random = mark.cycle * (uint64_t)(2 * i + 1) | 1;
-        if (!w->objects) {
-            spin_lock(&mark.lock);
-            w->objects = new_block();
-            w->fresh = new_block();
-            spin_unlock(&mark.lock);
-        }
+        worker_ready(w);
     }
     mark.left = 0;
     __atomic_store_n(&mark.state, 1 + SEQ, __ATOMIC_SEQ_CST);
@@ -1080,6 +1084,80 @@ static __attribute__((noinline)) int mark_with_registers(void) {
     /* The callee-saved registers are spilled into this frame, which the scan covers. */
     __builtin_unwind_init();
     return mark_all();
+}
+
+/* --- the write barrier ---
+
+   Go's hybrid write barrier, for marking while the program runs: while cooper_barrier_on is set, a store that may
+   write a pointer word anywhere but the storing function's own frame first shades the pointers the destination
+   holds and those it stores, which marks their objects and queues them to be scanned. Generated code tests the
+   flag inline and before such a store passes both values to cooper_barrier_pointer or cooper_barrier_typed; the
+   runtime copies
+   values that hold pointers with cooper_typed_copy, and C stores a pointer with cooper_store_pointer. The
+   collector does not set the flag yet: it marks with the world stopped. */
+
+int32_t cooper_barrier_on;
+
+/* Code on a P shades into that P's worker, which nothing else on the P uses meanwhile. */
+static Worker *barrier_worker(void) {
+    Worker *w = &workers[cooper_proc_id()];
+    worker_ready(w);
+    return w;
+}
+
+void cooper_barrier_pointer(void *old, void *value) {
+    Worker *w = barrier_worker();
+    mark_word(w, (uintptr_t)old);
+    mark_word(w, (uintptr_t)value);
+}
+
+/* For a store of a value of `type`: copies of the value overwritten and of the one stored. A sum type's pointers
+   are found by the variant each holds. */
+void cooper_barrier_typed(const void *old, const void *value, const CooperType *type) {
+    Worker *w = barrier_worker();
+    scan_value(w, old, type);
+    scan_value(w, value, type);
+}
+
+void cooper_typed_copy(void *dst, const void *src, size_t bytes, const CooperType *type) {
+    if (type && __atomic_load_n(&cooper_barrier_on, __ATOMIC_RELAXED)) {
+        Worker *w = barrier_worker();
+        scan_tiled(w, dst, bytes, type);
+        scan_tiled(w, src, bytes, type);
+    }
+    memmove(dst, src, bytes);
+}
+
+/* C may run without a P, so it shades into a worker of its own, under a lock, and hands what that queued to the
+   global lists at once. */
+static Worker c_worker;
+static int64_t c_worker_lock;
+
+void cooper_store_pointer(void **slot, void *value) {
+    if (__atomic_load_n(&cooper_barrier_on, __ATOMIC_RELAXED)) {
+        spin_lock(&c_worker_lock);
+        Worker *w = &c_worker;
+        worker_ready(w);
+        mark_word(w, (uintptr_t)__atomic_load_n(slot, __ATOMIC_RELAXED));
+        mark_word(w, (uintptr_t)value);
+        spin_lock(&mark.lock);
+        if (w->objects->count) {
+            w->objects->next = mark.objects;
+            mark.objects = w->objects;
+            __atomic_add_fetch(&mark.nobjects, 1, __ATOMIC_SEQ_CST);
+            w->objects = new_block();
+        }
+        if (w->fresh->count) {
+            if (mark.spans_tail) mark.spans_tail->next = w->fresh;
+            else mark.spans = w->fresh;
+            mark.spans_tail = w->fresh;
+            __atomic_add_fetch(&mark.nspans, 1, __ATOMIC_SEQ_CST);
+            w->fresh = new_block();
+        }
+        spin_unlock(&mark.lock);
+        spin_unlock(&c_worker_lock);
+    }
+    __atomic_store_n(slot, value, __ATOMIC_RELAXED);
 }
 
 /* --- checkmark: COOPER_GC=checkmark marks again, serially and object by object, after every mark, and fails on

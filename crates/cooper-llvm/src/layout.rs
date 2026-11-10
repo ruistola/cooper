@@ -139,7 +139,17 @@ impl Module<'_> {
         };
         self.types
             .insert(name.clone(), format!("{name} = type {{ {body} }}"));
+        if self.defs.is_extern_union(ty) {
+            self.describe_hidden_pointers(ty);
+        }
         Ok(name)
+    }
+
+    /// Define the collector descriptor of `ty`, a type whose LLVM type does not show its pointer words (a sum
+    /// type or an `extern union`), if it holds any, so that the module itself says which stores of it may
+    /// write a pointer (and need a write barrier).
+    fn describe_hidden_pointers(&mut self, ty: &Type) {
+        self.type_descriptor(ty);
     }
 
     /// The named LLVM struct type of sum type instantiation `ty`, defined on first use:
@@ -159,6 +169,7 @@ impl Module<'_> {
         }
         self.types
             .insert(name.clone(), format!("{name} = type {{ i32, [{words} x i64] }}"));
+        self.describe_hidden_pointers(ty);
         Ok(name)
     }
 

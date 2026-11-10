@@ -3,7 +3,10 @@
 //! its first line. The header lines that follow may give `# stdout: text`, one line of
 //! the exact standard output each, `# stderr: text`, text its standard error must
 //! contain, and `# env: NAME=value`, a variable to run it with. Requires `clang` (or `COOPER_CC`).
+//!
+//! Each program's LLVM IR is also checked for stores that need a write barrier and lack one.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -43,6 +46,11 @@ fn check_program(path: &Path, build_root: &Path) -> Result<(), String> {
             ),
             other => other.to_string(),
         })?;
+    let ir = std::fs::read_to_string(executable.with_extension("ll")).map_err(|e| e.to_string())?;
+    let unguarded = unguarded_stores(&ir);
+    if !unguarded.is_empty() {
+        return Err(format!("stores without a write barrier:\n  {}", unguarded.join("\n  ")));
+    }
     let variables: Vec<(&str, &str)> = header(&source, "# env:").into_iter().filter_map(|v| v.split_once('=')).collect();
     let output = Command::new(&executable).envs(variables.clone()).output().map_err(|e| e.to_string())?;
     // The same program collecting garbage at every allocation, with freed memory poisoned and every mark
@@ -89,6 +97,116 @@ fn check_program(path: &Path, build_root: &Path) -> Result<(), String> {
         Some(missing) => Err(format!("stderr lacks {missing:?}: {stderr}")),
         None => Ok(()),
     }
+}
+
+/// The stores in the LLVM module `ir` that may write a pointer word outside the storing function's own frame
+/// (its `alloca`s and the addresses computed from them) with no write barrier on their address before them, each
+/// as `function: store`. A barrier is a block named `shade...`, which reads the value it overwrites, or else
+/// `cooper_array_grow`, which applies the barrier for storing its result over an array's data pointer. A store
+/// into an object `cooper_alloc` returned in the same block, with no call since, needs none: it overwrites
+/// nothing, and an object allocated during marking is marked.
+///
+/// A named type holds pointers if its definition mentions `ptr` or one that does, or if the module defines its
+/// collector descriptor (`@cooper.type.<name>`), as it does for every type whose pointer words its LLVM type does
+/// not show (sum types, `extern union`s).
+fn unguarded_stores(ir: &str) -> Vec<String> {
+    let mut bodies = HashMap::new();
+    let mut described = HashSet::new();
+    for line in ir.lines() {
+        if let Some((name, body)) = line.strip_prefix('%').and_then(|l| l.split_once(" = type ")) {
+            bodies.insert(name, body);
+        } else if let Some(rest) = line.strip_prefix("@cooper.type.") {
+            described.insert(rest.split(' ').next().unwrap_or_default());
+        }
+    }
+    let holds_pointers = |ty: &str| {
+        let mut pending = vec![ty];
+        let mut seen = HashSet::new();
+        while let Some(ty) = pending.pop() {
+            for token in ty.split(|c: char| !(c.is_alphanumeric() || "%._$".contains(c))) {
+                if token == "ptr" {
+                    return true;
+                }
+                if let Some(name) = token.strip_prefix('%') {
+                    if described.contains(name) {
+                        return true;
+                    }
+                    if let Some(body) = bodies.get(name).filter(|_| seen.insert(name)) {
+                        pending.push(body);
+                    }
+                }
+            }
+        }
+        false
+    };
+    let mut unguarded = Vec::new();
+    let mut function = "";
+    let mut frame = HashSet::new();
+    let mut guarded = HashSet::new();
+    let mut grown = HashSet::new();
+    let mut fresh = HashSet::new();
+    let mut block = "";
+    for line in ir.lines() {
+        if let Some(label) = line.strip_suffix(':') {
+            block = label;
+            fresh.clear();
+            continue;
+        }
+        if line.contains(" call ") || line.trim_start().starts_with("call ") {
+            fresh.clear();
+        }
+        if line.starts_with("define ") {
+            function = line.split('@').nth(1).and_then(|rest| rest.split('(').next()).unwrap_or(line);
+            frame.clear();
+            guarded.clear();
+            grown.clear();
+            continue;
+        }
+        let line = line.trim();
+        if let Some((name, rhs)) = line.split_once(" = ") {
+            let base = operand_after(rhs, ", ptr ").filter(|_| rhs.starts_with("getelementptr "));
+            if rhs.starts_with("alloca ") || base.is_some_and(|base| frame.contains(base)) {
+                frame.insert(name.to_string());
+            }
+            if rhs.starts_with("call ptr @cooper_alloc(") || base.is_some_and(|base| fresh.contains(base)) {
+                fresh.insert(name.to_string());
+            }
+            if block.starts_with("shade") && rhs.starts_with("load ") {
+                guarded.extend(operand_after(rhs, ", ptr ").map(str::to_string));
+            } else if rhs.starts_with("call ptr @cooper_array_grow(") {
+                grown.insert(name.to_string());
+            }
+        } else if let Some(stored) = line.strip_prefix("store ") {
+            let (ty, value) = split_type(stored);
+            let value = value.split(',').next().unwrap_or_default();
+            let destination = operand_after(stored, ", ptr ").unwrap_or_default();
+            let exempt = frame.contains(destination) || fresh.contains(destination) || grown.contains(value);
+            if holds_pointers(ty) && !exempt && !guarded.contains(destination) {
+                unguarded.push(format!("{function}: {line}"));
+            }
+        }
+    }
+    unguarded
+}
+
+/// The operand following the last `marker` in an instruction.
+fn operand_after<'l>(line: &'l str, marker: &str) -> Option<&'l str> {
+    let (_, rest) = line.rsplit_once(marker)?;
+    rest.split([',', ')', ' ']).next()
+}
+
+/// The leading LLVM type of `text` (a literal struct or array type is bracketed), and the rest.
+fn split_type(text: &str) -> (&str, &str) {
+    let mut depth = 0;
+    for (at, c) in text.char_indices() {
+        match c {
+            '{' | '[' | '<' => depth += 1,
+            '}' | ']' | '>' => depth -= 1,
+            ' ' if depth == 0 => return (&text[..at], &text[at + 1..]),
+            _ => {}
+        }
+    }
+    (text, "")
 }
 
 #[test]

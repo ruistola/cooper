@@ -30,10 +30,12 @@ use cooper_ir::{Function, Program};
 /// operations the IR's intrinsics lower to.
 pub const RUNTIME_C: &str = include_str!("../runtime/cooper_rt.c");
 
-/// The runtime's other C sources and its header, by file name, which the driver writes beside
-/// the program and compiles with it: the heap allocator and collector (`gc.c`), the scheduler (`sched.c`), and the shared declarations.
-pub const RUNTIME_FILES: [(&str, &str); 3] = [
+/// The runtime's other C sources and its headers, by file name, which the driver writes beside
+/// the program and compiles with it: the heap allocator and collector (`gc.c`), the scheduler (`sched.c`), the shared declarations,
+/// and the header for a project's own C sources (`cooper_ffi.h`).
+pub const RUNTIME_FILES: [(&str, &str); 4] = [
     ("cooper.h", include_str!("../runtime/cooper.h")),
+    ("cooper_ffi.h", include_str!("../runtime/cooper_ffi.h")),
     ("cooper_gc.c", include_str!("../runtime/gc.c")),
     ("cooper_sched.c", include_str!("../runtime/sched.c")),
 ];

@@ -128,6 +128,17 @@ void cooper_callback_leave(int entered, uintptr_t *saved);
 void cooper_acquire_m(void);
 void cooper_release_m(void);
 
+/* The write barrier (gc.c): while cooper_barrier_on is set, the stores of pointer words outside the storing
+   function's frame shade the old and the new pointers. Before such a store, generated code passes the value
+   overwritten and the one stored to cooper_barrier_pointer for a pointer, and to cooper_barrier_typed, as copies
+   in memory, for a value of `type`. cooper_typed_copy copies `bytes` bytes of values of `type` (null: they hold no pointers), with the
+   barrier. C uses cooper_store_pointer (cooper_ffi.h). */
+extern int32_t cooper_barrier_on;
+void cooper_barrier_pointer(void *old, void *value);
+void cooper_barrier_typed(const void *old, const void *value, const CooperType *type);
+void cooper_typed_copy(void *dst, const void *src, size_t bytes, const CooperType *type);
+#include "cooper_ffi.h"
+
 /* Start collecting: allocation may collect from now on, and the caller is on a thread of the scheduler. */
 void cooper_gc_init(void);
 

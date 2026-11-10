@@ -65,6 +65,13 @@ variables and the stacks of every thread.
 - **Sweep.** The marked objects become the allocated ones. Spans with nothing live return to a page heap that
   merges neighbouring free runs, large free runs go back to the operating system, and spans with free slots
   are listed per size class. Reused memory is zeroed when allocated.
+- **Write barrier.** Generated code puts Go's hybrid write barrier before every store that may write a pointer word
+  outside the storing function's own frame (fields, array elements, through pointers, module-level variables): an
+  inline test of a flag, and while it is set, a runtime call that shades the old and new pointers (for a sum type,
+  by the variant held before and the one stored). A store that initializes an object just allocated, with no safe
+  point since, needs none. The runtime's array growth copies with the barrier and applies it for the array's new
+  data pointer, and C uses `cooper_store_pointer`. The collector does not set the flag yet, since marking stops the world; the barrier is for
+  marking while the program runs.
 
 ## Testing
 
@@ -77,7 +84,9 @@ size and kind, and the object or root it was reached from. `gc_test.c`, run by `
 tests the allocator and collector alone: sizes, pointer bitmaps, reuse, interior pointers, reclamation,
 poisoning, that a sum type retains only the variant it holds, threads allocating on four Ps during
 collections, and a live tree and a large pointer array that the four mark workers must share, with checkmark
-on. It runs natively and under ThreadSanitizer.
+on, and that the barrier functions shade the old and new pointers. It runs natively and under ThreadSanitizer.
+The golden harness also checks each program's LLVM IR for a store that may write a pointer outside its frame
+without the barrier before it.
 
 ## Known limits
 

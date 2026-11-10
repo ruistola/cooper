@@ -104,6 +104,22 @@ home := string(getenv(CString("HOME")))
 Each copy is independent of its source: C may free or reuse its memory afterwards, and a
 `CString` stays valid however the Cooper string it came from is used.
 
+## Storing Cooper pointers from C
+
+C may read Cooper memory freely and write non-pointer data into it. C that stores a Cooper pointer into Cooper
+memory (a heap object, a module-level variable, or a Cooper frame it was given an address in) does it with
+`cooper_store_pointer(void **slot, void *value)`, declared in `cooper_ffi.h`, which a project's C sources include
+(the build provides it):
+
+```c
+#include "cooper_ffi.h"
+
+cooper_store_pointer((void **)&from->next, to);
+```
+
+C code that moves Cooper pointers around within Cooper memory itself, such as the C library's `qsort` over an array
+of pointers, is not supported: sort in Cooper.
+
 ## Linking
 
 The C standard library is always linked, so a single file can call it. A project names

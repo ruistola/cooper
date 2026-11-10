@@ -8,9 +8,9 @@ Environment variables read by every Cooper program's runtime:
 |---|---|
 | `COOPER_GC_STATS=1` | At exit, print the number of collections, time spent marking (wall time, and summed over the mark workers) and sweeping, the longest pause, bytes allocated, peak heap, live bytes after the last collection, and memory returned to the system |
 | `COOPER_GC=trace` | Print one line per collection: mark time (wall time, summed over the workers, and their number), sweep time, live bytes, the next collection's trigger, heap size |
-| `COOPER_GC=stress` | Collect at every allocation and poison freed memory (the test harness runs every golden program this way) |
+| `COOPER_GC=stress` | Collect at every allocation and poison freed memory |
 | `COOPER_GC=poison` | Fill freed memory with `0xDB`, so a missed root crashes instead of silently reusing memory |
-| `COOPER_GC=checkmark` | After every mark, mark again serially and panic on any object the mark missed (combine with `stress` as `stress,checkmark`) |
+| `COOPER_GC=checkmark` | After every mark, mark again serially and panic on any object the mark missed (combine with `stress` as `stress,checkmark`; the test harness runs every golden program this way) |
 | `COOPER_HEAP_GROWTH=n` or `off` | The heap may grow to `n` percent over what survived the last collection (default 100); `off` disables automatic collection |
 | `COOPER_STACK_KIB=n` | Reserve `n` KiB of stack for each thread (default 8192) |
 | `COOPER_THREADS=n` | Run threads on `n` processors, each an OS thread while busy (default: one per core); the collector marks on as many |

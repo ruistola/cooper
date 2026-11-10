@@ -19,6 +19,19 @@ _Noreturn void cooper_panic(const char *message) {
     exit(101);
 }
 
+/* Under ThreadSanitizer the tests that collect many times over a live list are some 20 times slower, so they
+   shrink; and, as in an optimized build, a dropped object's address survives somewhere the conservative scan
+   reaches, so the checks that it was freed cannot hold. */
+#ifndef __has_feature
+#define __has_feature(x) 0
+#endif
+#if defined(__SANITIZE_THREAD__) || __has_feature(thread_sanitizer)
+#define UNDER_TSAN 1
+#else
+#define UNDER_TSAN 0
+#endif
+#define SCALE (UNDER_TSAN ? 10 : 1)
+
 static int failures;
 #define CHECK(condition) do { if (!(condition)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #condition); failures++; } } while (0)
 
@@ -167,18 +180,18 @@ static void test_garbage_is_reclaimed(void) {
 
 static void test_reachable_objects_survive(void) {
     Node *volatile head = NULL;
-    for (uint64_t i = 0; i < 100000; i++) {
+    for (uint64_t i = 0; i < 100000 / SCALE; i++) {
         Node *node = cooper_alloc(16, (CooperType *)&node_type);
         node->value = i;
         node->next = head;
         head = node;
     }
-    for (int i = 0; i < 2000000; i++) {
+    for (int i = 0; i < 2000000 / SCALE; i++) {
         volatile char *p = cooper_alloc(48, NULL);
         p[0] = 1;
     }
     cooper_gc_collect();
-    uint64_t expect = 99999;
+    uint64_t expect = 100000 / SCALE - 1;
     for (Node *node = head; node; node = node->next, expect--) {
         if (node->value != expect) { CHECK(0 && "a list node was lost or reused"); return; }
     }
@@ -224,7 +237,7 @@ static void test_freed_memory_is_poisoned(void) {
     cooper_gc_collect();
     /* Nothing refers to it any more; the poison is what a stale pointer would find. */
     unsigned char first = *(volatile unsigned char *)~hidden;
-    CHECK(first == 0xDB);
+    if (!UNDER_TSAN) CHECK(first == 0xDB);
 }
 
 /* A sum type { Num(u64), Ref(ptr) } as the compiler lays it out: a u32 tag, then the payload at byte 8. */
@@ -251,12 +264,12 @@ static void test_sum_type_scans_only_the_live_variant(void) {
     scrub_stack();
     cooper_gc_collect();
     CHECK(((unsigned char *)~hidden_kept)[50] == 0x11);
-    CHECK(((unsigned char *)~hidden_dropped)[50] == 0xDB);
+    if (!UNDER_TSAN) CHECK(((unsigned char *)~hidden_dropped)[50] == 0xDB);
 }
 
 /* Threads on several Ps allocate from their own caches while collections stop them: each builds a list
    among garbage of every kind and checks it, and nothing a thread holds may be freed or handed out twice. */
-enum { WORKERS = 8, NODES = 30000 };
+enum { WORKERS = 8, NODES = 30000 / SCALE };
 static int64_t finished, worker_failures;
 
 static void worker(void *env) {
@@ -292,7 +305,63 @@ static void test_threads_allocate_in_parallel(void) {
     CHECK(worker_failures == 0);
 }
 
+/* A live heap big enough that the mark workers must share it: a binary tree (many small objects to hand out
+   in blocks and steal), and an array of pointers larger than an oblet (scanned in pieces by different
+   workers). Threads that allocate garbage meanwhile force collections, and every mark is checked by
+   checkmark. A mark that lost an object shows as a corrupt tree, an overwritten slot, or a checkmark panic. */
+typedef struct Tree { struct Tree *left, *right; uint64_t value; } Tree;
+static Type tree_type = {24, 24, 0, 3, 0, 0, {0x3, 0}};
+enum { DEPTH = 16, ARRAY_LENGTH = 40000 };
+
+static Tree *build(int depth, uint64_t *counter) {
+    Tree *node = cooper_alloc(sizeof(Tree), (CooperType *)&tree_type);
+    node->value = (*counter)++;
+    if (depth > 0) {
+        node->left = build(depth - 1, counter);
+        node->right = build(depth - 1, counter);
+    }
+    return node;
+}
+
+static int verify(const Tree *node, int depth, uint64_t *counter) {
+    if (!node || node->value != (*counter)++) return 0;
+    return depth == 0 ? !node->left && !node->right
+                      : verify(node->left, depth - 1, counter) && verify(node->right, depth - 1, counter);
+}
+
+static int64_t garbage_finished;
+
+static void garbage_worker(void *env) {
+    (void)env;
+    for (int i = 0; i < 100000; i++) {
+        volatile char *p = cooper_alloc(16 + (size_t)(i % 50) * 16, i & 1 ? NULL : (CooperType *)&node_type);
+        p[0] = 1;
+    }
+    __atomic_add_fetch(&garbage_finished, 1, __ATOMIC_SEQ_CST);
+}
+
+static void test_parallel_marking_keeps_a_large_shared_heap(void) {
+    static Type pointer_type = {8, 8, 0, 1, 0, 0, {1}};
+    uint64_t counter = 0;
+    Tree *volatile tree = build(DEPTH, &counter);
+    Tree **volatile array = cooper_alloc(ARRAY_LENGTH * sizeof(Tree *), (CooperType *)&pointer_type);
+    for (uint64_t i = 0; i < ARRAY_LENGTH; i++) {
+        array[i] = cooper_alloc(sizeof(Tree), (CooperType *)&tree_type);
+        array[i]->value = i;
+    }
+    for (int i = 0; i < 4; i++) cooper_spawn((void *)garbage_worker, NULL);
+    for (int round = 0; round < 3; round++) cooper_gc_collect();
+    while (__atomic_load_n(&garbage_finished, __ATOMIC_SEQ_CST) < 4) cooper_yield();
+    cooper_gc_collect();
+    counter = 0;
+    CHECK(verify(tree, DEPTH, &counter));
+    for (uint64_t i = 0; i < ARRAY_LENGTH; i++) {
+        if (array[i]->value != i) { CHECK(0 && "an array element was lost or reused"); break; }
+    }
+}
+
 static int run_collector_tests(void) {
+    test_parallel_marking_keeps_a_large_shared_heap();
     test_garbage_is_reclaimed();
     test_reachable_objects_survive();
     test_interior_pointer_keeps_an_object();

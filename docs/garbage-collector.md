@@ -69,13 +69,16 @@ variables and the stacks of every thread.
 ## Testing
 
 `COOPER_GC=stress` collects at every allocation and poisons freed memory, and the golden-program harness runs
-every program again that way, on four processors (`COOPER_THREADS=4`), and both, requiring the same output.
+every program again that way (with checkmark), on four processors (`COOPER_THREADS=4`), and both, requiring
+the same output.
 `COOPER_GC=checkmark` (after Go's `gccheckmark`) marks a second time after every mark, serially and object by
 object into separate bits, and panics naming any object reached that way that the parallel mark missed, its
 size and kind, and the object or root it was reached from. `gc_test.c`, run by `tests/allocator.rs`,
 tests the allocator and collector alone: sizes, pointer bitmaps, reuse, interior pointers, reclamation,
-poisoning, that a sum type retains only the variant it holds, and threads allocating on four Ps during
-collections, with checkmark on.
+poisoning, that a sum type retains only the variant it holds, threads allocating on four Ps during
+collections, and a live tree and a large pointer array that the four mark workers must share, with checkmark
+on. It runs natively and under ThreadSanitizer, where it skips the checks that a dropped object was freed
+(the conservative scan retains it there, as it does in an optimized build).
 
 ## Known limits
 

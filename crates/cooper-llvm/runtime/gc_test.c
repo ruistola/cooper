@@ -221,10 +221,6 @@ static void test_large_objects_are_reused(void) {
     CHECK(heap_size() < (200u << 20));
 }
 
-/* PROBE */
-extern uintptr_t probe_hidden;
-extern size_t probe_size;
-
 /* Allocate `size` bytes filled with `fill`, store their address in `*payload` unless that is NULL, and give
    the address complemented, which is not a pointer to the collector. The address is in hand only in this
    frame, below the caller's, which `scrub_stack` then overwrites: in the caller's own frame an optimizing
@@ -245,13 +241,10 @@ static unsigned char *reveal(uintptr_t hidden) {
 }
 
 static void test_freed_memory_is_poisoned(void) {
-    fprintf(stderr, "probe: poison test frame %p\n", __builtin_frame_address(0));
     uintptr_t hidden = allocate_hidden(256, 1, NULL);
     for (int i = 0; i < 10; i++) cooper_alloc(256, NULL);
     scrub_stack();
-    probe_hidden = hidden, probe_size = 256;
     cooper_gc_collect();
-    probe_size = 0;
     /* Nothing refers to it any more; the poison is what a stale pointer would find. */
     CHECK(*reveal(hidden) == 0xDB);
 }
@@ -272,10 +265,7 @@ static void test_sum_type_scans_only_the_live_variant(void) {
     holder[1].tag = 0;                      /* Num: an integer that happens to be an address */
     uintptr_t hidden_dropped = allocate_hidden(100, 0x22, &holder[1].payload);
     scrub_stack();
-    fprintf(stderr, "probe: sum test frame %p\n", __builtin_frame_address(0));
-    probe_hidden = hidden_dropped, probe_size = 100;
     cooper_gc_collect();
-    probe_size = 0;
     CHECK(reveal(hidden_kept)[50] == 0x11);
     CHECK(reveal(hidden_dropped)[50] == 0xDB);
 }

@@ -144,6 +144,8 @@ enum { P_IDLE, P_RUNNING, P_STOPPED, P_IN_C };
 #define P_STATUS(s) ((s) & 0xff)
 /* How long the monitor lets a thread run while other work waits, and an M stay in C with work waiting. */
 #define TIME_SLICE_NS 10000000
+/* How often the monitor looks while the collector marks, for Ps that should mark (hooks.worker_due). */
+#define MARK_LOOK_NS 1000000
 
 typedef struct M M;
 
@@ -201,7 +203,7 @@ struct M {
      per-M:      this_m (thread-local) and what it points to, the signal alternate stack
      per-P:      the fields of P not marked otherwise
      immutable after cooper_sched_init: nprocs, allp, stack_size, guard_size, page_size
-     set with the world stopped: scan_cycle (read atomically), scan_hook, idle_mark_hook, timers_scanned
+     set with the world stopped: scan_cycle (read atomically), hooks, mark_starting, timers_scanned
      atomic:     next_id, next_m_id, all_threads, pooled, cooper_poll_word, stacks_pending, and the fields of sched so
                  marked
      sched.lock: the rest of sched, P.m, P.idle_next, P's monitor fields, M.nextp, M.idle_next */
@@ -230,6 +232,7 @@ static struct {
     uint64_t helps;           /* requests for the collector's helper while the world is stopped */
     void (*helper)(void);
     pthread_cond_t stopped, restart;
+    pthread_cond_t sysmon_wake; /* the monitor waits on it between looks */
 } sched = {.lock = PTHREAD_MUTEX_INITIALIZER, .timer_next = INT64_MAX};
 
 static int nprocs = 1;
@@ -246,11 +249,12 @@ static size_t stack_size = (size_t)8 << 20, guard_size, page_size;
    each adds one. */
 int64_t cooper_poll_word;
 /* Marking while the program runs (cooper_mark_begin), all set with the world stopped: the cycle stacks are scanned
-   for, 0 when not marking; the collector's functions; whether some thread not running may still wait for a scan
-   (atomic); and the last cycle whose timers were scanned. */
+   for, 0 when not marking; the collector's functions; whether the restart that follows cooper_mark_begin is still to
+   come; whether some thread not running may still wait for a scan (atomic); and the last cycle whose timers were
+   scanned. */
 static uint64_t scan_cycle;
-static void (*scan_hook)(uintptr_t low, uintptr_t high);
-static bool (*idle_mark_hook)(bool (*stop)(void));
+static CooperMarkHooks hooks;
+static bool mark_starting;
 static bool stacks_pending;
 static uint64_t timers_scanned;
 
@@ -628,9 +632,9 @@ static void scan_unlock(Thread *thread) {
    if it is in C, and its code and environment. A finished thread's record holds nothing. */
 static void scan_waiting(Thread *thread, uint64_t cycle) {
     if (LOAD(&thread->state) != DEAD) {
-        scan_hook((uintptr_t)thread->sp, thread->stack_top);
-        if (LOAD(&thread->in_c)) scan_hook((uintptr_t)thread->regs, (uintptr_t)(thread->regs + C_SAVED_WORDS));
-        scan_hook((uintptr_t)&thread->code, (uintptr_t)(&thread->env + 1));
+        hooks.scan((uintptr_t)thread->sp, thread->stack_top);
+        if (LOAD(&thread->in_c)) hooks.scan((uintptr_t)thread->regs, (uintptr_t)(thread->regs + C_SAVED_WORDS));
+        hooks.scan((uintptr_t)&thread->code, (uintptr_t)(&thread->env + 1));
     }
     STORE(&thread->scanned, cycle);
 }
@@ -640,8 +644,8 @@ static __attribute__((noinline)) void scan_own_frames(Thread *thread, uint64_t c
     volatile char here = 0;
     scan_lock(thread);
     if (LOAD(&thread->scanned) != cycle) {
-        scan_hook((uintptr_t)&here, thread->stack_top);
-        scan_hook((uintptr_t)&thread->code, (uintptr_t)(&thread->env + 1));
+        hooks.scan((uintptr_t)&here, thread->stack_top);
+        hooks.scan((uintptr_t)&thread->code, (uintptr_t)(&thread->env + 1));
         STORE(&thread->scanned, cycle);
     }
     scan_unlock(thread);
@@ -664,13 +668,19 @@ static void switch_in(Thread *thread) {
     scan_unlock(thread);
 }
 
-void cooper_mark_begin(uint64_t cycle, void (*scan)(uintptr_t low, uintptr_t high), bool (*idle_mark)(bool (*stop)(void))) {
-    scan_hook = scan;
-    idle_mark_hook = idle_mark;
+static void start_sysmon(void);
+static pthread_once_t sysmon_once = PTHREAD_ONCE_INIT;
+
+void cooper_mark_begin(uint64_t cycle, const CooperMarkHooks *mark_hooks) {
+    hooks = *mark_hooks;
+    mark_starting = true;
     STORE(&stacks_pending, true);
     STORE(&scan_cycle, cycle);
     STORE(&timers_scanned, cycle);
-    if (sched.timer_count) scan((uintptr_t)sched.timers, (uintptr_t)(sched.timers + sched.timer_count));
+    if (sched.timer_count) hooks.scan((uintptr_t)sched.timers, (uintptr_t)(sched.timers + sched.timer_count));
+    /* The monitor has fractional workers run: it looks more often while marking. */
+    pthread_once(&sysmon_once, start_sysmon);
+    pthread_cond_signal(&sched.sysmon_wake);
 }
 
 void cooper_mark_end(void) {
@@ -748,7 +758,6 @@ static bool clear_preempt(M *m) {
 }
 
 static void switch_out(int action);
-static void start_sysmon(void);
 
 void cooper_poll_slow(void) {
     gc_poll();
@@ -802,10 +811,19 @@ void cooper_start_the_world(void) {
         else if (p->m->current && LOAD(&p->m->current->in_c)) STORE(&p->status, p_in_c(p->m));
         else STORE(&p->status, P_RUNNING);
     }
-    /* Idle Ps mark (find_runnable). */
+    /* Idle Ps mark (find_runnable), and as marking begins, Ps running threads leave them for the dedicated workers
+       that idle Ps do not run. */
+    int started = 0;
     if (LOAD(&scan_cycle)) {
-        for (P *p; (p = p_get_idle());) startm_locked(p, false);
+        for (P *p; (p = p_get_idle()); started++) startm_locked(p, false);
     }
+    for (int i = 0; mark_starting && i < nprocs && started < hooks.dedicated; i++) {
+        M *holder = allp[i].m;
+        if (LOAD(&allp[i].status) != P_RUNNING || !holder || !holder->current) continue;
+        if (CAS(&holder->preempt, 0, 1)) ADD(&cooper_poll_word, 1);
+        started++;
+    }
+    mark_starting = false;
     pthread_cond_broadcast(&sched.restart);
     pthread_mutex_unlock(&sched.lock);
     if (LOAD(&sched.global_count)) wakep();
@@ -911,6 +929,7 @@ static void wake_due(P *p) {
 
 /* Sleep until handed a P. The last M to sleep with nothing left to wake it finds a deadlock. */
 static void stopm(M *m) {
+    clear_preempt(m); /* a request the monitor made as the M's last thread left */
     pthread_mutex_lock(&sched.lock);
     m->idle_next = sched.idle_ms;
     sched.idle_ms = m;
@@ -969,6 +988,10 @@ static Thread *steal_work(M *m) {
     return NULL;
 }
 
+bool cooper_world_stopping(void) {
+    return LOAD(&sched.gcwaiting);
+}
+
 /* An idle P's marking gives way to a stop of the world, and to threads to run: on its own queue, the global one,
    or due timers. */
 static bool idle_mark_should_stop(void) {
@@ -980,6 +1003,7 @@ static bool idle_mark_should_stop(void) {
 static Thread *find_runnable(M *m) {
     for (;;) {
         if (LOAD(&sched.gcwaiting)) gc_park(m);
+        if (LOAD(&scan_cycle) && hooks.worker_mark(cooper_world_stopping)) continue;
         P *p = m->p;
         wake_due(p);
         uint32_t tick = p->schedtick + 1;
@@ -1021,7 +1045,7 @@ static Thread *find_runnable(M *m) {
                 m->spinning = 0;
                 ADD(&sched.nmspinning, -1);
             }
-            if (idle_mark_hook(idle_mark_should_stop)) continue;
+            if (hooks.idle_mark(idle_mark_should_stop)) continue;
         }
         /* Nothing to run: give the P back. */
         pthread_mutex_lock(&sched.lock);
@@ -1222,14 +1246,13 @@ static Thread *thread_get(P *p) {
 }
 
 int64_t cooper_spawn(void *code, void *env) {
-    static pthread_once_t monitor = PTHREAD_ONCE_INIT;
-    pthread_once(&monitor, start_sysmon);
+    pthread_once(&sysmon_once, start_sysmon);
     P *p = get_m()->p;
     Thread *thread = thread_get(p);
     thread->id = __atomic_fetch_add(&next_id, 1, __ATOMIC_SEQ_CST);
     thread_prepare(thread, code, env);
     /* The thread's record may have been scanned this cycle while it was free. */
-    if (LOAD(&scan_cycle)) scan_hook((uintptr_t)&thread->code, (uintptr_t)(&thread->env + 1));
+    if (LOAD(&scan_cycle)) hooks.scan((uintptr_t)&thread->code, (uintptr_t)(&thread->env + 1));
     runq_put(p, thread, false);
     wakep();
     return (int64_t)thread->id;
@@ -1311,7 +1334,7 @@ void cooper_sleep(int64_t ns) {
 
 void cooper_wake_at(CooperWaiter *waiter, int64_t index, int64_t deadline) {
     /* The timers were scanned when marking began. */
-    if (LOAD(&scan_cycle)) scan_hook((uintptr_t)&waiter, (uintptr_t)(&waiter + 1));
+    if (LOAD(&scan_cycle)) hooks.scan((uintptr_t)&waiter, (uintptr_t)(&waiter + 1));
     timer_push((Timer){.wake = deadline, .waiter = waiter, .index = index});
 }
 
@@ -1464,6 +1487,10 @@ static int retake(int64_t now) {
             handoff(p);
             busy++;
         } else if (status == P_RUNNING && p->m) {
+            if (LOAD(&scan_cycle) && hooks.worker_due(i)) {
+                if (CAS(&p->m->preempt, 0, 1)) ADD(&cooper_poll_word, 1);
+                continue;
+            }
             uint32_t tick = LOAD(&p->schedtick);
             if (tick != p->seen_schedtick) {
                 p->seen_schedtick = tick;
@@ -1478,20 +1505,16 @@ static int retake(int64_t now) {
     return busy;
 }
 
-/* Look every 20 µs while Ms stay in C, slowing to every 10 ms when none does. */
+/* Look every 20 µs while Ms stay in C, slowing to every 10 ms when none does, but every millisecond while the
+   collector marks. */
 static void *sysmon(void *arg) {
     (void)arg;
     int64_t delay = 20000;
     int idle = 0;
+    pthread_mutex_lock(&sched.lock);
     for (;;) {
-        struct timespec pause = {0, delay};
-        nanosleep(&pause, NULL);
-        int busy = 0;
-        if (!LOAD(&sched.gcwaiting)) {
-            pthread_mutex_lock(&sched.lock);
-            if (!sched.gcwaiting) busy = retake(now_ns());
-            pthread_mutex_unlock(&sched.lock);
-        }
+        wait_until(&sched.sysmon_wake, now_ns() + (LOAD(&scan_cycle) && delay > MARK_LOOK_NS ? MARK_LOOK_NS : delay));
+        int busy = sched.gcwaiting ? 0 : retake(now_ns());
         idle = busy ? 0 : idle + 1;
         if (idle == 0) delay = 20000;
         else if (idle > 50) delay = delay * 2 < TIME_SLICE_NS ? delay * 2 : TIME_SLICE_NS;
@@ -1643,6 +1666,7 @@ void cooper_sched_init(void) {
     cond_init(&m0.wake);
     cond_init(&sched.stopped);
     cond_init(&sched.restart);
+    cond_init(&sched.sysmon_wake);
     this_m = &m0;
     main_thread.state = DEAD;
     main_thread.all_next = all_threads;

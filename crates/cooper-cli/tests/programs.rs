@@ -7,8 +7,51 @@
 //! Each program's LLVM IR is also checked for stores that need a write barrier and lack one.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
+
+/// How long one run of a program may take, under any of the collector's stress modes, before it counts as hung.
+const RUN_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Run `command` to completion, as `Command::output` does, but kill it once it runs longer than RUN_TIMEOUT. A hung
+/// program's threads are sampled first (with macOS's `sample`, where it exists) into `stacks`, which the error names.
+fn run(command: &mut Command, stacks: &Path) -> Result<Output, String> {
+    let mut child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+    let read = |mut pipe: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = pipe.read_to_end(&mut bytes);
+            bytes
+        })
+    };
+    let stdout = read(Box::new(child.stdout.take().expect("piped")));
+    let stderr = read(Box::new(child.stderr.take().expect("piped")));
+    let deadline = Instant::now() + RUN_TIMEOUT;
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let sampled = Command::new("sample")
+                .args([&child.id().to_string(), "1", "-file"])
+                .arg(stacks)
+                .output()
+                .is_ok_and(|o| o.status.success());
+            let _ = child.kill();
+            let _ = child.wait();
+            let stderr = String::from_utf8_lossy(&stderr.join().unwrap_or_default()).into_owned();
+            return Err(format!(
+                "still running after {} s{}; stderr: {stderr}",
+                RUN_TIMEOUT.as_secs(),
+                if sampled { format!(", its threads sampled into {}", stacks.display()) } else { String::new() }
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    Ok(Output { status, stdout: stdout.join().unwrap_or_default(), stderr: stderr.join().unwrap_or_default() })
+}
 
 /// The exit status a program's first line declares.
 fn expected_exit(source: &str, path: &Path) -> i32 {
@@ -52,7 +95,9 @@ fn check_program(path: &Path, build_root: &Path) -> Result<(), String> {
         return Err(format!("stores without a write barrier:\n  {}", unguarded.join("\n  ")));
     }
     let variables: Vec<(&str, &str)> = header(&source, "# env:").into_iter().filter_map(|v| v.split_once('=')).collect();
-    let output = Command::new(&executable).envs(variables.clone()).output().map_err(|e| e.to_string())?;
+    let stacks = |run: &str| executable.with_extension(format!("{run}.stacks.txt"));
+    let output = run(Command::new(&executable).envs(variables.clone()), &stacks("default"))
+        .map_err(|e| format!("as is: {e}"))?;
     // The same program collecting garbage at every allocation, or marking almost all the time while it runs, with
     // freed memory poisoned and every mark checked against a serial one, and on four processors (the default is
     // one per core), must behave exactly as it does normally. A program's own `# env:` lines take precedence.
@@ -62,12 +107,12 @@ fn check_program(path: &Path, build_root: &Path) -> Result<(), String> {
         &[("COOPER_THREADS", "4"), ("COOPER_GC", "stress,checkmark")],
         &[("COOPER_THREADS", "4"), ("COOPER_GC", "markstress,checkmark")],
     ];
-    for rerun in reruns {
-        let again = Command::new(&executable)
-            .envs(rerun.iter().copied())
-            .envs(variables.iter().copied())
-            .output()
-            .map_err(|e| e.to_string())?;
+    for (i, rerun) in reruns.into_iter().enumerate() {
+        let again = run(
+            Command::new(&executable).envs(rerun.iter().copied()).envs(variables.iter().copied()),
+            &stacks(&format!("rerun{i}")),
+        )
+        .map_err(|e| format!("with {rerun:?}: {e}"))?;
         if again.status.code() != output.status.code() || again.stdout != output.stdout {
             return Err(format!(
                 "with {rerun:?}: exit {:?} (not {:?}); stdout {:?} (not {:?}); stderr: {}",

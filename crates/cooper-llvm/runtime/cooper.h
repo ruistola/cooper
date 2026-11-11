@@ -106,11 +106,22 @@ void cooper_start_helpers(void (*helper)(void));
    the world stopped, the scheduler has every thread's stack scanned once for `cycle` (which cooper_scan_threads
    then counts as claimed), by `scan`, which scans a range of possible pointers with the running P's mark worker:
    no thread runs Cooper code before its stack is scanned. `scan` also covers what a thread started or a timer set
-   meanwhile holds, and the timers, when marking begins. An M with nothing to run calls `idle_mark(stop)` before it
-   idles its P, which marks until `stop()` is true or no work is left, and gives whether it did any work.
+   meanwhile holds, and the timers, when marking begins. An M looking for a thread to run first calls
+   `worker_mark(stop)`, which marks as the P's dedicated or fractional mark worker if it is one; an M with nothing to
+   run calls `idle_mark(stop)` before it idles its P. Both mark until `stop()` is true (the world is stopping, or for
+   an idle P, a thread is ready) or their share is done, and give whether they did any work. As marking begins, the
+   scheduler has up to `dedicated` Ps leave the threads they run, idle ones first, and while marking, the monitor
+   has a P that runs a thread leave it when `worker_due(p)` says the P should mark.
    cooper_scan_waiting_threads scans the stacks of threads that are not running and are not yet scanned, and gives
    whether some may still need it. */
-void cooper_mark_begin(uint64_t cycle, void (*scan)(uintptr_t low, uintptr_t high), bool (*idle_mark)(bool (*stop)(void)));
+typedef struct {
+    void (*scan)(uintptr_t low, uintptr_t high);
+    bool (*worker_mark)(bool (*stop)(void));
+    bool (*idle_mark)(bool (*stop)(void));
+    bool (*worker_due)(int p);
+    int dedicated;
+} CooperMarkHooks;
+void cooper_mark_begin(uint64_t cycle, const CooperMarkHooks *hooks);
 void cooper_mark_end(void);
 bool cooper_scan_waiting_threads(void);
 
@@ -123,6 +134,9 @@ void cooper_poll_slow(void);
    there first, this one stops at a safe point instead until the world restarts, and the result is false. */
 bool cooper_stop_the_world(void);
 void cooper_start_the_world(void);
+/* Whether a stop of the world was asked for (so the running thread should reach a safe point soon). Unlike a
+   nonzero cooper_poll_word, it leaves out preemption, which a thread holding a lock word does not honour. */
+bool cooper_world_stopping(void);
 
 /* A call to a C function the program declares runs between cooper_enter_c, which records the thread's stack
    pointer and callee-saved registers (so the collector scans it as stopped) and lets the monitor hand its P to
@@ -143,7 +157,7 @@ void cooper_release_m(void);
    function's frame shade the old and the new pointers. Before such a store, generated code passes the value
    overwritten and the one stored to cooper_barrier_pointer for a pointer, and to cooper_barrier_typed, as copies
    in memory, for a value of `type`. cooper_typed_copy copies `bytes` bytes of values of `type` (null: they hold no pointers), with the
-   barrier. C uses cooper_store_pointer (cooper_ffi.h). */
+   barrier, between memory that does not overlap; it is a safe point. C uses cooper_store_pointer (cooper_ffi.h). */
 extern int32_t cooper_barrier_on;
 void cooper_barrier_pointer(void *old, void *value);
 void cooper_barrier_typed(const void *old, const void *value, const CooperType *type);

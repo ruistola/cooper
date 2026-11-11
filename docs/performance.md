@@ -6,8 +6,8 @@ Environment variables read by every Cooper program's runtime:
 
 | Variable | Effect |
 |---|---|
-| `COOPER_GC_STATS=1` | At exit, print the number of collections, the time the world was stopped (in all, sweeping, and the longest pause), how long marking ran and the time summed over the mark workers, bytes allocated, peak heap, live bytes after the last collection, and memory returned to the system |
-| `COOPER_GC=trace` | Print one line per collection: how long marking ran and the time summed over the workers, the ending pause and the sweep in it, live bytes, the next heap goal, heap size |
+| `COOPER_GC_STATS=1` | At exit, print the number of collections and of stops of the world, the time the world was stopped (in all, sweeping, and the longest pause), how long marking ran and the time summed over the mark workers (assists, with the longest an allocation spent assisting; background workers; idle processors), bytes allocated, peak heap and the most the heap went over its goal, live bytes after the last collection, and memory returned to the system |
+| `COOPER_GC=trace` | Print one line per collection: how long marking ran and the time summed over the workers (assists, with the longest; background workers; idle processors), the cycle's stops (how many, the longest, the last with its sweep and scavenging), the heap when marking began, when it ended, and its goal, then live bytes, the next trigger and goal, and heap size |
 | `COOPER_GC=stress` | Run a whole collection at every allocation and poison freed memory |
 | `COOPER_GC=markstress` | Keep marking on almost all the time (a collection begins at the first allocation after one ends, and each allocation marks a little), and poison freed memory |
 | `COOPER_GC=poison` | Fill freed memory with `0xDB`, so a missed root crashes instead of silently reusing memory |
@@ -16,13 +16,13 @@ Environment variables read by every Cooper program's runtime:
 | `COOPER_STACK_KIB=n` | Reserve `n` KiB of stack for each thread (default 8192) |
 | `COOPER_THREADS=n` | Run threads on `n` processors, each an OS thread while busy (default: one per core); the collector marks on as many |
 
-The pacer follows Go's goal: the heap may reach the live bytes plus the growth percentage of the live bytes and
-the roots (stack and module-level variables), but at least 4 MiB scaled by the percentage. Marking begins seven
-tenths of the way there from the live bytes, and an allocation that reaches the goal while marking helps until
-the collection ends.
-Statistics cost nothing while allocating: bytes allocated are derived at each collection, and the clock is
-read only when statistics or tracing are on. After each
-collection, free runs of 128 KiB or more are returned to the operating system (`madvise`).
+The pacer follows Go's: the heap may reach the live bytes plus the growth percentage of the live bytes and the
+roots (stack and module-level variables), but at least 4 MiB scaled by the percentage. Marking begins early enough
+to end at the goal with a quarter of the processors' time, and allocations assist in proportion to their bytes
+([Garbage Collector](./garbage-collector.md)).
+Statistics cost nothing while allocating: bytes allocated are derived at each collection. After each collection,
+free runs of 128 KiB or more are returned to the operating system (`madvise`) while the heap keeps more than a
+tenth over its next goal.
 
 ## Benchmarks
 
@@ -48,32 +48,32 @@ are allocated in the order they are traced, it makes no difference, since a coll
 6 ns per object there, the cost of chasing pointers across a heap bigger than the cache.
 
 Concurrent marking against marking with the world stopped (the same collector otherwise, interleaved runs, best
-wall time of three, `-O2`), by the number of processors. The stall is the longest an allocation spent helping
-to finish a cycle that reached its heap goal, during which that thread does no other work:
+wall time of three, `-O2`), by the number of processors. The assist is the longest an allocation spent paying
+for itself in scan work, during which that thread does no other work:
 
-| Benchmark | Processors | Wall time | Longest pause | Longest stall | Collections |
+| Benchmark | Processors | Wall time | Longest pause | Longest assist | Collections |
 |---|---|---|---|---|---|
-| `live_heap` | 1 | 0.74 s (0.76 s) | 1.2 ms (60 ms) | 62 ms | 9 (10) |
-| | 4 | 0.52 s (0.54 s) | 1.2 ms (20 ms) | 7.5 ms | 10 (10) |
-| | 10 | 0.49 s (0.49 s) | 0.8 ms (12 ms) | none | 12 (10) |
-| `scattered` | 1 | 6.37 s (7.63 s) | 0.7 ms (82 ms) | 86 ms | 73 (105) |
-| | 4 | 3.06 s (3.64 s) | 0.8 ms (26 ms) | 21 ms | 73 (105) |
-| | 10 | 2.52 s (3.16 s) | 0.8 ms (21 ms) | 16 ms | 73 (105) |
-| `binary_trees` | 1 | 0.48 s (0.46 s) | 0.1 ms (3.4 ms) | 6.7 ms | 45 (64) |
-| | 10 | 0.36 s (0.34 s) | 0.1 ms (0.7 ms) | none | 75 (64) |
-| `alloc_parallel` | 1 | 2.87 s (2.41 s) | 0.02 ms (0.3 ms) | | 1489 (1142) |
-| | 4 | 1.13 s (0.95 s) | 0.06 ms (0.15 ms) | | 1484 (1137) |
-| | 10 | 0.96 s (0.78 s) | 0.08 ms (0.26 ms) | | 1487 (1146) |
+| `live_heap` | 1 | 0.81 s (0.76 s) | 0.3 ms (61 ms) | 0.6 ms | 10 (10) |
+| | 4 | 0.54 s (0.55 s) | 0.3 ms (20 ms) | 2.1 ms | 11 (10) |
+| | 10 | 0.50 s (0.49 s) | 0.3 ms (12 ms) | 0.7 ms | 12 (10) |
+| `scattered` | 1 | 6.49 s (7.69 s) | 0.4 ms (81 ms) | 15 ms | 75 (105) |
+| | 4 | 3.10 s (3.58 s) | 0.5 ms (26 ms) | 19 ms | 81 (105) |
+| | 10 | 3.16 s (3.14 s) | 0.7 ms (20 ms) | 20 ms | 106 (105) |
+| `binary_trees` | 1 | 0.48 s (0.46 s) | 0.08 ms (3.4 ms) | 0.2 ms | 51 (64) |
+| | 10 | 0.34 s (0.35 s) | 0.06 ms (0.7 ms) | 0.3 ms | 71 (64) |
+| `alloc_parallel` | 1 | 2.54 s (2.42 s) | 0.01 ms (0.3 ms) | 0.02 ms | 1266 (1155) |
+| | 4 | 0.90 s (0.87 s) | 0.04 ms (0.12 ms) | 0.1 ms | 1197 (1136) |
+| | 10 | 0.80 s (0.76 s) | 0.11 ms (0.14 ms) | 0.3 ms | 1237 (1144) |
 
 The pauses no longer grow with the live heap: what remains in them is the sweep and stopping the threads. These
 benchmarks run one thread (except `alloc_parallel`), so with several processors the idle ones do most of the
-marking. With one processor nothing marks until an allocation reaches the goal and finishes the whole mark, so
-the program stalls about as long as the stop-the-world pause did. Objects allocated while marking survive the
-cycle, which raises the live heap the next goal is computed from: the peak heap of `live_heap` on one processor
-is 362 MiB against 260 MiB. On `alloc_parallel`, whose eight threads keep a 4 MiB heap that is mostly garbage,
-this means 30% more collections, each with two stops instead of one, and 19% to 23% more wall time (35% in the
-default build). `scattered` gains from the same effect: its higher goals mean 73 collections instead of 105.
-Within a stop, every processor marks; marking with the world stopped scaled to 2.9x faster at four processors
+marking. Objects allocated while marking survive the cycle, which raises the live heap the next goal is computed
+from: the peak heap of `live_heap` on one processor is 354 MiB against 260 MiB, and its wall time 7% more. On
+`alloc_parallel`, whose eight threads keep a 4 MiB heap that is mostly garbage, collections rise 5% to 10% and wall
+time 4% to 5%; unoptimized builds pay 16% to 21%, as marking takes longer against their slower mutator. A large
+array's allocation pays its share of the mark at once, which on `scattered` stalls up to 20 ms (34 ms
+unoptimized), and its heap reaches up to 20% over the goal; its higher goals on fewer processors mean fewer
+collections. Within a stop, every processor marks; marking with the world stopped scaled to 2.9x faster at four processors
 and 3.4x at ten on `scattered`, bound by memory latency beyond four.
 
 The write barrier, while its flag is off (outside marking), costs no more than the timer's 0.01 s on the `-O2`
@@ -107,6 +107,6 @@ little where the work is in calls, and most in tight loops they keep LLVM from r
 
 `benchmarks/alloc_parallel.coop` has 8 threads each allocate 33M short-lived 16-byte nodes (`-O2`, Apple M5, ten
 cores; Go's version is not written). Each P allocates from its own spans without a lock: 2.4 s with one P, 0.89 s
-with four, 0.75 s with ten, measured with the world stopped for marking (with concurrent marking: 2.9 s, 1.1 s
-and 0.96 s, above). Beyond four Ps, a collection of the 4 MiB heap every few milliseconds limits the gain; with
+with four, 0.75 s with ten, measured with the world stopped for marking (with concurrent marking: 2.5 s, 0.90 s
+and 0.80 s, above). Beyond four Ps, a collection of the 4 MiB heap every few milliseconds limits the gain; with
 collections made rare (`COOPER_HEAP_GROWTH=5000`) eight Ps take 0.68 s.

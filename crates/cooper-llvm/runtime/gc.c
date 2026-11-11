@@ -12,9 +12,10 @@
  *   - an object with a span of its own has the type in the span.
  *
  * The collector marks while the program runs, after Go's: a short stop of the world begins marking (it turns on
- * the write barrier and scans the module-level variables), mark workers on otherwise idle Ps and allocations that
- * reach the heap goal do the marking, each thread's stack is scanned once as the scheduler arranges (sched.c), and
- * a second short stop ends it (it finishes what the Ps' workers hold, turns off the barrier) and sweeps.
+ * the write barrier and scans the module-level variables), background mark workers on a quarter of the Ps' time,
+ * idle Ps and allocations (in proportion, as the pacer sets) do the marking, each thread's stack is scanned once as
+ * the scheduler arranges (sched.c), and a second short stop ends it (it gathers what the Ps' workers hold, turns
+ * off the barrier) and sweeps.
  * The heap is precise: an object's pointers are found from the record above. The roots are the module-level variables
  * (a table the compiler emits, with their types), and the stack and registers, which are scanned
  * conservatively: any word that points into an allocated object keeps it. Nothing moves, so an
@@ -164,11 +165,14 @@ static int gc_off;
 /* --- measurements: COOPER_GC=trace prints a line per collection, COOPER_GC_STATS=1 a summary at exit --- */
 
 static struct {
-    uint64_t collections, bytes_allocated;
+    uint64_t collections, bytes_allocated, pauses;
     uint64_t mark_ns;        /* from the beginning of marking to its end, while the program ran */
     uint64_t mark_worker_ns; /* spent marking, summed over the workers, assists and the end's helpers */
+    uint64_t by_ns[3];       /* of that, while the program ran: by assists, background workers, idle Ps */
+    uint64_t max_assist_ns;  /* the longest an allocation spent assisting */
     uint64_t pause_ns, max_pause_ns, sweep_ns;
     size_t peak_heap, last_live;
+    double max_overshoot;    /* the most the heap went over its goal in a cycle, as a fraction of the goal */
 } stats;
 static int trace, instrument; /* instrument: trace or statistics are on */
 static size_t released_bytes; /* memory returned to the operating system, in all */
@@ -355,11 +359,13 @@ enum { KIND_BITS = 0, KIND_NOSCAN = 1, KIND_HEADER = 2, KINDS = 3 };
 
 static Span *partial[NUM_CLASSES * KINDS];
 
-/* A P's allocation cache (Go's mcache): the span it is allocating from for each span class, and the bytes it
-   has allocated that heap_used does not count yet. Padded so that two Ps' caches never share a cache line. */
+/* A P's allocation cache (Go's mcache): the span it is allocating from for each span class, the bytes it
+   has allocated that heap_used does not count yet, and while marking, the bytes it may allocate before it assists.
+   Padded so that two Ps' caches never share a cache line. */
 typedef struct {
     Span *spans[NUM_CLASSES * KINDS];
     size_t used;
+    int64_t credit;
 } __attribute__((aligned(128))) AllocCache;
 
 static AllocCache caches[COOPER_MAX_PROCS];
@@ -494,20 +500,63 @@ static void heap_unlock(void) {
 
 static void print_stats(void) {
     fprintf(stderr,
-            "gc: %llu collections, pauses %.1f ms in all (sweeping %.1f), longest pause %.2f ms\n"
-            "gc: marking ran %.1f ms, and took %.1f ms on all workers together\n"
-            "gc: %.1f MiB allocated, peak heap %.1f MiB, %.1f MiB live after the last collection, %.1f MiB returned to the system\n",
-            (unsigned long long)stats.collections, stats.pause_ns / 1e6, stats.sweep_ns / 1e6, stats.max_pause_ns / 1e6,
-            stats.mark_ns / 1e6, stats.mark_worker_ns / 1e6, stats.bytes_allocated / 1048576.0,
-            stats.peak_heap / 1048576.0, stats.last_live / 1048576.0, released_bytes / 1048576.0);
+            "gc: %llu collections, %llu pauses %.1f ms in all (sweeping %.1f), longest pause %.2f ms\n"
+            "gc: marking ran %.1f ms, and took %.1f ms on all workers together: %.1f ms in assists (longest %.2f ms), "
+            "%.1f ms in background workers, %.1f ms on idle Ps\n"
+            "gc: %.1f MiB allocated, peak heap %.1f MiB (at most %.1f%% over its goal), %.1f MiB live after the last "
+            "collection, %.1f MiB returned to the system\n",
+            (unsigned long long)stats.collections, (unsigned long long)stats.pauses, stats.pause_ns / 1e6,
+            stats.sweep_ns / 1e6, stats.max_pause_ns / 1e6, stats.mark_ns / 1e6, stats.mark_worker_ns / 1e6,
+            stats.by_ns[0] / 1e6, stats.max_assist_ns / 1e6, stats.by_ns[1] / 1e6, stats.by_ns[2] / 1e6,
+            stats.bytes_allocated / 1048576.0, stats.peak_heap / 1048576.0, stats.max_overshoot * 100,
+            stats.last_live / 1048576.0, released_bytes / 1048576.0);
 }
 
-/* Go's goal: what survived, plus a percentage of it and of the roots, but at least a minimum. Marking begins
-   seven tenths of the way there. */
+/* --- the pacer, after Go's ---
+
+   Marking should end as the heap reaches its goal, with the mark workers taking a quarter of the processors' time
+   meanwhile: dedicated workers on whole Ps, and on each P a fractional worker for what is left of the quarter (all
+   of it with one P). Marking begins early enough for that, judged from the bytes the program allocated per byte of
+   scan work in recent cycles (cons/mark), scaled to that division of the time; but anywhere from seven tenths to
+   nineteen twentieths of the way from the live bytes to the goal. Scan work is counted in bytes scanned. While
+   marking, allocation pays for itself in scan work (an assist), at the rate that would finish the work expected
+   as the heap reaches the goal; scan work the background workers did is credit that an assist uses first. The last
+   of the work an assist does whole. An allocation that reaches the hard goal, a tenth more of the runway past the
+   goal, helps until the cycle ends. */
+
+#define UTILIZATION 0.25
+#define ASSIST_MIN_WORK 65536 /* scan work an assist does at least, so that it does not assist again at once */
+#define FINISH_WORK 1048576   /* scan work left that an assist does all of (see assist) */
+#define HISTORY 4
+#define QUIET_NS 1000000 /* how long no worker may mark before a P is asked to look (see worker_due) */
+
+enum { BY_ASSIST, BY_WORKER, BY_IDLE }; /* who marks while the program runs */
+
+static struct {
+    double expected_work;      /* the scan work of this cycle, as the last one took */
+    double cons_mark[HISTORY]; /* recent cycles' bytes allocated per byte of scan work, scaled as above */
+    size_t triggered;          /* heap_used as this cycle began */
+    size_t hard_goal;
+    int dedicated;             /* the dedicated workers of this cycle */
+    double fractional;         /* the share of its time each P's fractional worker marks */
+    int64_t dedicated_free;    /* atomic: dedicated workers not running */
+    int64_t credit;            /* atomic: scan work background workers did that no assist has claimed */
+    int64_t ns[3];             /* atomic: time spent marking while the program ran, by whom */
+    uint64_t longest_assist;   /* atomic */
+} pacer;
+
+/* Go's goal: what survived, plus a percentage of it and of the roots, but at least a minimum. */
 static void set_goal(size_t live, size_t root_bytes) {
     next_gc = live + (live + root_bytes) / 100 * growth;
     if (next_gc < MIN_HEAP / 100 * growth) next_gc = MIN_HEAP / 100 * growth;
-    trigger = live + (next_gc - live) / 10 * 7;
+    size_t runway = next_gc - live;
+    size_t low = live + runway / 20 * 14, high = live + runway / 20 * 19;
+    if (next_gc > MIN_HEAP && next_gc - MIN_HEAP > high) high = next_gc - MIN_HEAP;
+    double cons_mark = 0;
+    for (int i = 0; i < HISTORY; i++) cons_mark = pacer.cons_mark[i] > cons_mark ? pacer.cons_mark[i] : cons_mark;
+    double needed = cons_mark * (1 - UTILIZATION) / UTILIZATION * pacer.expected_work;
+    trigger = needed >= (double)(next_gc - low) ? low : next_gc - (size_t)needed;
+    if (trigger > high) trigger = high;
     __atomic_store_n(&pace_at, gc_off ? SIZE_MAX : trigger, __ATOMIC_RELAXED);
 }
 
@@ -542,6 +591,7 @@ static void init_heap(void) {
 
 static void *allocate(size_t size, const CooperType *type);
 static void pace(void);
+static void assist(void);
 
 static void check_size(size_t size, const CooperType *type) {
     if (type && (type->size != type->layout_size || size % type->size != 0)) {
@@ -571,6 +621,11 @@ static void *allocate(size_t size, const CooperType *type) {
         cache = &caches[cooper_proc_id()]; /* it may have switched */
     }
     int black = __atomic_load_n(&phase, __ATOMIC_RELAXED) == PHASE_MARK;
+    if (black && (cache->credit -= (int64_t)size) < 0) {
+        assist();
+        cache = &caches[cooper_proc_id()];
+        black = __atomic_load_n(&phase, __ATOMIC_RELAXED) == PHASE_MARK;
+    }
     int noscan = type == NULL;
     int kind = noscan ? KIND_NOSCAN : (type->nsites || size > MIN_SIZE_FOR_HEADER) ? KIND_HEADER : KIND_BITS;
     size_t total = size;
@@ -666,16 +721,16 @@ void cooper_heap_stats(size_t *bytes, size_t *spans) {
 /* A cycle: an allocation that reaches the trigger stops the world to begin marking (begin_mark): it turns on the
    write barrier, scans the module-level variables and the timers, and has the scheduler scan every thread's stack
    once as the program runs (sched.c). Each P has a worker, which whatever runs on the P uses: the barrier of the
-   code it runs, an allocation that helps mark, or the P's idle time (mark_running). Each worker has an object
-   stack and a span queue of its own, and shares surplus work through global lists of fixed-size blocks; a worker
-   that runs out steals from the others' span rings. Mark and scan bits change by atomic OR and a span's `queued`
-   flag by exchange, so each object is marked once and scanned once. Objects allocated meanwhile are black.
+   code it runs, an allocation that assists, or the P's background worker or idle time (mark_running). Each worker
+   has an object stack and a span queue of its own, and shares surplus work through global lists of fixed-size
+   blocks; a worker that runs out steals from the others' span rings. Mark and scan bits change by atomic OR and a
+   span's `queued` flag by exchange, so each object is marked once and scanned once. Objects allocated meanwhile are
+   black.
 
    A worker that finds no work while no other is marking ends the cycle (end_mark): with the world stopped again it
    hands the work every worker kept to itself (the barrier's, mostly) to the global lists, scans the stacks of any
-   threads not yet scanned, and if any work is left, marks it on every P, as a stopped world's helpers join
-   (mark_stopped). Then it turns off the barrier and sweeps. An allocation that reaches the heap goal while marking
-   helps until the cycle ends.
+   threads not yet scanned, and if that finds work, restarts the world to mark it. Otherwise it turns off the
+   barrier and sweeps. The pacer (below) decides when cycles begin and how much allocations assist.
 
    The runtime is compiled with the program, unoptimized by default: the functions on the path of every word
    and span are inlined even then. */
@@ -706,13 +761,22 @@ typedef struct {
     Block *fresh;    /* spans queued most recently, until a full block of them goes to the global list */
     Span *last_span; /* the span the previous word pointed into: the next often does too */
     uint64_t random;
-    size_t root_bytes; /* stack and register bytes this worker scanned, for the pacer */
-    uint64_t items;  /* objects and spans scanned, to tell whether a turn found work */
+    size_t root_bytes; /* stack and register bytes this worker scanned, for the goal */
+    uint64_t work;     /* atomic (written by the owner): bytes scanned this cycle, for the pacer */
+    uint64_t credited; /* of which this much counts as background credit (or was an assist's) */
+    int background;    /* a background worker or idle P marks with it: its work is credit */
+    int64_t marking;   /* atomic: the P marks while the program runs */
+    uint64_t deadline; /* when a fractional worker stops, or 0 */
+    int64_t fractional_ns; /* atomic: the time the P's fractional worker marked this cycle */
     int checking;    /* checkmark: verify marks instead of making them */
     uintptr_t from;  /* checkmark: the object being scanned, 0 for a module-level variable, FROM_STACK */
 } __attribute__((aligned(128))) Worker;
 
 static Worker workers[COOPER_MAX_PROCS];
+
+static void add_work(Worker *w, size_t bytes) {
+    __atomic_store_n(&w->work, w->work + bytes, __ATOMIC_RELAXED);
+}
 
 /* The state word of marking with the world stopped: the workers that joined, those of them idle, whether marking
    is done, and a sequence number that changes with every update, so a compare-and-swap cannot succeed on a word
@@ -736,8 +800,11 @@ static struct {
     uint64_t cycle;            /* each mark's number: a thread's stack is claimed for scanning by setting it */
     int64_t worker_ns;         /* atomic: time spent by all workers, for statistics */
     int64_t working;           /* atomic: workers marking while the program runs */
+    uint64_t quiet_since;      /* atomic: when the last of them stopped */
+    int64_t check;             /* atomic: the P asked to look for work after a quiet spell, or -1 */
     int64_t ending;            /* atomic: a worker is ending the cycle */
-    uint64_t began;            /* when the cycle began, for statistics */
+    uint64_t began;            /* when the cycle began */
+    uint64_t pauses, longest_pause; /* this cycle's stops, for statistics */
 } mark = {.state = DONE};
 
 static uint64_t cycles; /* atomic: the cycles begun */
@@ -985,6 +1052,7 @@ static void scan_work(Worker *w, Work item) {
     Span *span = item.span;
     if (!span->large) {
         scan_object(w, item.slot, span);
+        add_work(w, span->elemsize);
         return;
     }
     const CooperType *type = span->large_type;
@@ -996,12 +1064,13 @@ static void scan_work(Worker *w, Work item) {
     }
     size_t bytes = end - item.slot < oblet ? end - item.slot : oblet;
     scan_tiled(w, (const uint64_t *)item.slot, bytes, type);
+    add_work(w, bytes);
 }
 
 /* Scan the objects of a small span that were marked and not yet scanned. Scanning may mark more of
    them (and requeue the span), which a later turn picks up. */
 static void scan_span(Worker *w, Span *span) {
-    size_t words = (span->nelems + 63) / 64;
+    size_t words = (span->nelems + 63) / 64, scanned = 0;
     for (size_t word = 0; word < words; word++) {
         uint64_t pending = __atomic_load_n(&span->mark_bits[word], __ATOMIC_SEQ_CST) &
                            ~__atomic_load_n(&span->scan_bits[word], __ATOMIC_RELAXED);
@@ -1011,26 +1080,38 @@ static void scan_span(Worker *w, Span *span) {
             size_t index = word * 64 + (size_t)__builtin_ctzll(pending);
             pending &= pending - 1;
             scan_object(w, span->start + index * span->elemsize, span);
+            scanned++;
         }
     }
+    add_work(w, scanned * span->elemsize);
+}
+
+static void flush_credit(Worker *w) {
+    if (w->work == w->credited) return;
+    __atomic_add_fetch(&pacer.credit, (int64_t)(w->work - w->credited), __ATOMIC_SEQ_CST);
+    w->credited = w->work;
 }
 
 /* Scan until this worker finds no work: its own, the global lists', or another's to steal. Marking while the
-   program runs, it also stops when `stop` says so (asked every few items) or after `budget` items (-1: no limit).
-   Gives whether it ran out of work. */
-static int drain(Worker *w, bool (*stop)(void), long budget) {
+   program runs, it also stops when `stop` says so or the worker's deadline passes (both asked every few items, and
+   often enough by scan work that a stop of the world waits little), or after `budget` bytes of scan work (-1: no
+   limit). Gives whether it ran out of work. */
+static int drain(Worker *w, bool (*stop)(void), int64_t budget) {
+    uint64_t start = w->work, checked = start;
     for (long n = 1;; n++) {
-        if (n > budget && budget >= 0) return 0;
-        if (stop && n % 64 == 0 && stop()) return 0;
+        if (budget >= 0 && (int64_t)(w->work - start) >= budget) return 0;
+        if (n % 64 == 0 || w->work - checked >= 32768) {
+            checked = w->work;
+            if (w->background) flush_credit(w);
+            if ((stop && stop()) || (w->deadline && now_ns() >= w->deadline)) return 0;
+        }
         Work item;
         if (pop_object(w, &item)) {
-            w->items++;
             scan_work(w, item);
             continue;
         }
         Span *span = pop_span(w);
         if (span) {
-            w->items++;
             __atomic_exchange_n(&span->queued, 0, __ATOMIC_SEQ_CST);
             /* The span after this one will be scanned soon: start bringing in what that takes. */
             uint32_t head = __atomic_load_n(&w->head, __ATOMIC_RELAXED);
@@ -1104,6 +1185,7 @@ static void work(Worker *w) {
 static void scan_range(void *context, uintptr_t low, uintptr_t high) {
     Worker *w = context;
     w->root_bytes += high - low;
+    add_work(w, high - low);
     for (const uint64_t *word = (const uint64_t *)((low + 7) & ~(uintptr_t)7); (uintptr_t)word + 8 <= high; word++) {
         mark_word(w, read_word(word));
     }
@@ -1121,6 +1203,7 @@ static void mark_variables(Worker *w) {
     w->from = 0;
     for (int64_t i = 0; i < cooper_root_count; i++) {
         scan_tiled(w, cooper_roots[i].address, cooper_roots[i].type->size, cooper_roots[i].type);
+        add_work(w, cooper_roots[i].type->size);
     }
 }
 
@@ -1185,13 +1268,19 @@ void cooper_barrier_typed(const void *old, const void *value, const CooperType *
     scan_value(w, value, type);
 }
 
+/* In pieces, with a safe point after each, so that a large copy does not hold up a stop of the world. */
 void cooper_typed_copy(void *dst, const void *src, size_t bytes, const CooperType *type) {
-    if (type && __atomic_load_n(&cooper_barrier_on, __ATOMIC_RELAXED)) {
-        Worker *w = barrier_worker();
-        scan_tiled(w, dst, bytes, type);
-        scan_tiled(w, src, bytes, type);
+    size_t piece = type && type->size < OBLET_BYTES ? OBLET_BYTES / type->size * type->size : bytes;
+    for (size_t at = 0; at < bytes; at += piece) {
+        size_t n = bytes - at < piece ? bytes - at : piece;
+        if (type && __atomic_load_n(&cooper_barrier_on, __ATOMIC_RELAXED)) {
+            Worker *w = barrier_worker();
+            scan_tiled(w, (const uint64_t *)((char *)dst + at), n, type);
+            scan_tiled(w, (const uint64_t *)((const char *)src + at), n, type);
+        }
+        memcpy((char *)dst + at, (const char *)src + at, n);
+        if (__atomic_load_n(&cooper_poll_word, __ATOMIC_RELAXED)) cooper_poll_slow();
     }
-    memmove(dst, src, bytes);
 }
 
 /* C may run without a P, so it shades into a worker of its own, under a lock, and hands what that queued to the
@@ -1342,13 +1431,17 @@ static void sweep(void) {
     }
 }
 
-/* Give the memory of large free runs back to the operating system, once each. The runs are dirty
+/* Give the memory of large free runs back to the operating system, once each, while the heap keeps more than a
+   tenth over its next goal, as Go's scavenger does: memory the heap will soon use again stays. The runs are dirty
    anyway (allocation zeroes what it hands out), so whatever the system leaves in them does not matter. */
 #define SCAVENGE_MIN_PAGES 16
 
-
 static void scavenge(void) {
+    size_t retained = heap_bytes, keep = next_gc + next_gc / 10;
     for (Run *run = free_runs; run; run = run->next) {
+        if (!run->released) retained += run->npages << PAGE_SHIFT;
+    }
+    for (Run *run = free_runs; run && retained > keep; run = run->next) {
         if (run->released || run->npages < SCAVENGE_MIN_PAGES) continue;
         void *start = (void *)(run->arena->base + (run->first_page << PAGE_SHIFT));
         size_t bytes = run->npages << PAGE_SHIFT;
@@ -1361,6 +1454,7 @@ static void scavenge(void) {
 #endif
         run->released = 1;
         released_bytes += bytes;
+        retained -= bytes;
     }
 }
 
@@ -1376,12 +1470,15 @@ static void count_cached(void) {
 }
 
 static void record_pause(uint64_t ns) {
+    stats.pauses++;
     stats.pause_ns += ns;
     if (ns > stats.max_pause_ns) stats.max_pause_ns = ns;
+    mark.pauses++;
+    if (ns > mark.longest_pause) mark.longest_pause = ns;
 }
 
 /* For the scheduler: a range of a thread's stack or of its records, scanned with the running P's worker. What that
-   finds goes to the global lists, where idle Ps find it. */
+   finds goes to the global lists, where the other workers find it. */
 static void scan_for_scheduler(uintptr_t low, uintptr_t high) {
     Worker *w = barrier_worker();
     w->from = 0;
@@ -1389,91 +1486,133 @@ static void scan_for_scheduler(uintptr_t low, uintptr_t high) {
     flush(w);
 }
 
+static bool worker_mark(bool (*stop)(void));
 static bool idle_mark(bool (*stop)(void));
+static bool worker_due(int p);
 
 /* With the world stopped and the heap lock held: turn on the barrier, scan the module-level variables, and have
-   the scheduler scan the rest. */
+   the scheduler scan the rest. Allocation now assists from a zero credit, and the background workers of a quarter
+   of the processors' time are set up, as Go divides them. */
 static void begin_mark(void) {
-    mark.began = instrument ? now_ns() : 0;
+    mark.began = mark.quiet_since = now_ns();
+    mark.check = -1;
     mark.worker_ns = 0;
+    mark.pauses = mark.longest_pause = 0;
     mark.cycle++;
     __atomic_add_fetch(&cycles, 1, __ATOMIC_SEQ_CST);
-    for (int i = 0; i < cooper_proc_count(); i++) {
+    int procs = cooper_proc_count();
+    for (int i = 0; i < procs; i++) {
         Worker *w = &workers[i];
         w->last_span = NULL;
         w->root_bytes = 0;
+        w->work = w->credited = 0;
+        w->fractional_ns = 0;
         w->random = mark.cycle * (uint64_t)(2 * i + 1) | 1;
         worker_ready(w);
+        caches[i].credit = 0;
     }
     c_worker.last_span = NULL;
+    double share = procs * UTILIZATION;
+    pacer.dedicated = (int)(share + 0.5);
+    pacer.fractional = 0;
+    if (pacer.dedicated / share - 1 > 0.3 || pacer.dedicated / share - 1 < -0.3) {
+        if (pacer.dedicated > share) pacer.dedicated--;
+        pacer.fractional = (share - pacer.dedicated) / procs;
+    }
+    pacer.dedicated_free = pacer.dedicated;
+    pacer.triggered = heap_used;
+    size_t base = heap_used < next_gc ? heap_used : next_gc;
+    pacer.hard_goal = next_gc + (next_gc - base) / 10;
+    pacer.credit = 0;
+    pacer.longest_assist = 0;
+    memset(pacer.ns, 0, sizeof pacer.ns);
     __atomic_store_n(&phase, PHASE_MARK, __ATOMIC_SEQ_CST);
-    __atomic_store_n(&pace_at, next_gc, __ATOMIC_RELAXED);
+    __atomic_store_n(&pace_at, gc_off ? SIZE_MAX : pacer.hard_goal, __ATOMIC_RELAXED);
     __atomic_store_n(&cooper_barrier_on, 1, __ATOMIC_SEQ_CST);
     while (__atomic_load_n(&c_stores, __ATOMIC_SEQ_CST)) cpu_relax();
     Worker *w = barrier_worker();
     mark_variables(w);
     flush(w);
-    cooper_mark_begin(mark.cycle, scan_for_scheduler, idle_mark);
+    cooper_mark_begin(mark.cycle, &(CooperMarkHooks){scan_for_scheduler, worker_mark, idle_mark, worker_due, pacer.dedicated});
 }
 
-/* With the world stopped and the heap lock held: finish marking, turn off the barrier, and sweep. `start` is when
-   the stop was asked for. */
-static void end_mark(uint64_t start) {
-    count_cached();
-    if (heap_bytes > stats.peak_heap) stats.peak_heap = heap_bytes;
-    size_t before = heap_used;
-    /* What the workers kept to themselves (the barrier's shading, mostly), and threads no worker has scanned. */
-    for (int i = 0; i < cooper_proc_count(); i++) flush(&workers[i]);
+/* With the world stopped and the heap lock held: end marking, unless gathering the work the workers kept to
+   themselves (the barrier's, mostly) and scanning the stacks of threads not yet scanned finds work, which is left
+   to marking with the program running (Go's mark termination). Then turn off the barrier, measure the cycle for the
+   pacer, and sweep. Gives whether marking ended. `start` is when the stop was asked for. */
+static bool end_mark(uint64_t start) {
+    int procs = cooper_proc_count();
+    for (int i = 0; i < procs; i++) flush(&workers[i]);
     cooper_scan_threads(scan_range, &workers[0], mark.cycle);
     flush(&workers[0]);
-    /* C does not stop: the barrier stays on until no work is left while no C store is shading. A store after that
-       finds what it shades marked and scanned, unless it is unreachable. */
-    for (;;) {
-        spin_lock(&c_worker_lock);
-        if (c_worker.objects) flush(&c_worker);
-        if (!work_available()) {
-            __atomic_store_n(&cooper_barrier_on, 0, __ATOMIC_SEQ_CST);
-            spin_unlock(&c_worker_lock);
-            break;
-        }
-        spin_unlock(&c_worker_lock);
-        mark_stopped();
-    }
+    /* C does not stop: the barrier goes off only once no work is left while no C store is shading. A store after
+       that finds what it shades marked and scanned, unless it is unreachable. */
+    spin_lock(&c_worker_lock);
+    if (c_worker.objects) flush(&c_worker);
+    bool left = work_available();
+    if (!left) __atomic_store_n(&cooper_barrier_on, 0, __ATOMIC_SEQ_CST);
+    spin_unlock(&c_worker_lock);
+    if (left) return false;
     /* Leave nothing queued: mark the garbage that stores which saw the barrier on shaded since. */
     while (__atomic_load_n(&c_stores, __ATOMIC_SEQ_CST)) cpu_relax();
     if (c_worker.objects) flush(&c_worker);
     if (work_available()) mark_stopped();
     cooper_mark_end();
     __atomic_store_n(&phase, PHASE_OFF, __ATOMIC_SEQ_CST);
+    uint64_t marked = now_ns();
+    count_cached();
+    if (heap_bytes > stats.peak_heap) stats.peak_heap = heap_bytes;
+    size_t before = heap_used, goal = next_gc;
+    /* Cons/mark, as Go measures it: the bytes allocated while marking per byte of scan work, scaled by the share of
+       the time the program ran against the share the collector took, idle Ps included. */
     size_t root_bytes = 0;
     for (int64_t i = 0; i < cooper_root_count; i++) root_bytes += cooper_roots[i].type->size;
-    for (int i = 0; i < cooper_proc_count(); i++) root_bytes += workers[i].root_bytes;
-    uint64_t marked = instrument ? now_ns() : 0;
+    double work = 0, elapsed = (double)(marked - mark.began) * procs;
+    for (int i = 0; i < procs; i++) {
+        root_bytes += workers[i].root_bytes;
+        work += (double)workers[i].work;
+    }
+    double used = (pacer.ns[BY_ASSIST] + pacer.ns[BY_WORKER]) / elapsed, idle = pacer.ns[BY_IDLE] / elapsed;
+    if (work > 0 && elapsed > 0 && used < 1) {
+        double allocated = before > pacer.triggered ? (double)(before - pacer.triggered) : 0;
+        pacer.cons_mark[stats.collections % HISTORY] = allocated * (used + idle) / (work * (1 - used));
+    }
+    pacer.expected_work = work;
     if (checkmark) check_marks_with_registers();
     uint64_t checked = instrument ? now_ns() : 0;
     /* The cached spans are swept like the rest and go back to the lists. */
-    memset(caches, 0, (size_t)cooper_proc_count() * sizeof *caches);
+    memset(caches, 0, (size_t)procs * sizeof *caches);
     sweep();
     set_goal(heap_used, root_bytes);
+    uint64_t swept = instrument ? now_ns() : 0;
     scavenge();
     uint64_t done = instrument ? now_ns() : 0;
     stats.collections++;
     stats.bytes_allocated += before > stats.last_live ? before - stats.last_live : 0;
     stats.last_live = heap_used;
-    if (instrument) {
-        stats.mark_ns += marked - mark.began;
-        stats.mark_worker_ns += (uint64_t)mark.worker_ns;
-        stats.sweep_ns += done - checked;
-        record_pause(done - start);
-    }
+    double overshoot = before > goal ? (double)(before - goal) / goal : 0;
+    if (overshoot > stats.max_overshoot) stats.max_overshoot = overshoot;
+    if (!instrument) return true;
+    stats.mark_ns += marked - mark.began;
+    stats.mark_worker_ns += (uint64_t)mark.worker_ns;
+    for (int i = 0; i < 3; i++) stats.by_ns[i] += (uint64_t)pacer.ns[i];
+    if (pacer.longest_assist > stats.max_assist_ns) stats.max_assist_ns = pacer.longest_assist;
+    stats.sweep_ns += done - checked;
+    record_pause(done - start);
     if (trace) {
         fprintf(stderr,
-                "gc %llu: marked %.2f ms (%.2f ms on all workers), ending pause %.2f ms (sweep %.2f), live %.1f MiB, "
-                "next at %.1f MiB, heap %.1f MiB\n",
+                "gc %llu: marked %.2f ms, %.2f ms on all workers (assists %.2f, longest %.2f; background %.2f; "
+                "idle Ps %.2f); %llu pauses, longest %.2f ms, the last %.2f ms (sweep %.2f, scavenge %.2f); "
+                "began at %.1f MiB, reached %.1f MiB, goal %.1f MiB; live %.1f MiB, next trigger %.1f MiB, goal %.1f "
+                "MiB; heap %.1f MiB\n",
                 (unsigned long long)stats.collections, (marked - mark.began) / 1e6, mark.worker_ns / 1e6,
-                (done - start) / 1e6, (done - checked) / 1e6, heap_used / 1048576.0, next_gc / 1048576.0,
-                heap_bytes / 1048576.0);
+                pacer.ns[BY_ASSIST] / 1e6, pacer.longest_assist / 1e6, pacer.ns[BY_WORKER] / 1e6,
+                pacer.ns[BY_IDLE] / 1e6, (unsigned long long)mark.pauses, mark.longest_pause / 1e6,
+                (done - start) / 1e6, (swept - checked) / 1e6, (done - swept) / 1e6, pacer.triggered / 1048576.0,
+                before / 1048576.0, goal / 1048576.0, heap_used / 1048576.0, trigger / 1048576.0,
+                next_gc / 1048576.0, heap_bytes / 1048576.0);
     }
+    return true;
 }
 
 /* Begin a cycle, unless one is on or (unless `forced`) the heap does not need it any more. */
@@ -1489,74 +1628,185 @@ static void begin_cycle(int forced) {
     cooper_start_the_world();
 }
 
-/* End the cycle, unless another worker is ending it. */
+/* End the cycle, unless another worker is ending it, or the stop finds work left. */
 static void end_cycle(void) {
     if (__atomic_exchange_n(&mark.ending, 1, __ATOMIC_SEQ_CST)) return;
     uint64_t cycle = __atomic_load_n(&cycles, __ATOMIC_SEQ_CST);
     uint64_t start = instrument ? now_ns() : 0;
     if (cooper_stop_the_world()) {
         heap_lock();
-        if (phase == PHASE_MARK && cycles == cycle) end_mark(start);
+        if (phase == PHASE_MARK && cycles == cycle && !end_mark(start) && instrument) record_pause(now_ns() - start);
         heap_unlock();
         cooper_start_the_world();
     }
     __atomic_store_n(&mark.ending, 0, __ATOMIC_SEQ_CST);
 }
 
-/* Mark while the program runs, with the running P's worker, until `stop()` is true (or after `budget` items, see
-   drain) or no work is left, scanning the stacks of threads that are not running too. A worker that finds no work
-   while no other is marking ends the cycle. Gives whether it did any work. */
-static bool mark_running(bool (*stop)(void), long budget) {
-    if (__atomic_load_n(&phase, __ATOMIC_SEQ_CST) != PHASE_MARK) return false;
+/* Mark while the program runs, with the running P's worker, until `stop()` is true (or after `budget` bytes of scan
+   work, see drain) or no work is left, scanning the stacks of threads that are not running too. A worker that finds
+   no work while no other is marking ends the cycle: the stop that ends it scans the stacks of running threads that
+   have not scanned their own yet, and takes the work Ps keep to themselves. A background worker that stops with
+   work left shares it. `by` says who marks. Gives the scan work done. */
+static uint64_t mark_running(bool (*stop)(void), int64_t budget, int by) {
+    if (__atomic_load_n(&phase, __ATOMIC_SEQ_CST) != PHASE_MARK) return 0;
     Worker *w = barrier_worker();
-    uint64_t items = w->items;
-    uint64_t start = instrument ? now_ns() : 0;
+    uint64_t work = w->work, start = now_ns();
+    w->credited = work;
+    w->background = by != BY_ASSIST;
+    __atomic_store_n(&w->marking, 1, __ATOMIC_SEQ_CST);
     __atomic_add_fetch(&mark.working, 1, __ATOMIC_SEQ_CST);
     int empty;
-    bool pending = true;
     for (;;) {
-        empty = drain(w, stop, budget);
+        empty = drain(w, stop, budget < 0 ? -1 : budget - (int64_t)(w->work - work));
         if (!empty) break;
-        pending = cooper_scan_waiting_threads();
+        cooper_scan_waiting_threads();
         if (!work_available()) break;
     }
+    if (!empty && w->background) flush(w);
     int64_t others = __atomic_sub_fetch(&mark.working, 1, __ATOMIC_SEQ_CST);
-    if (instrument) __atomic_add_fetch(&mark.worker_ns, (int64_t)(now_ns() - start), __ATOMIC_SEQ_CST);
-    if (empty && !pending && others == 0 && !work_available()) end_cycle();
-    return w->items != items;
+    if (others == 0) __atomic_store_n(&mark.quiet_since, now_ns(), __ATOMIC_SEQ_CST);
+    if (w->background) flush_credit(w);
+    w->background = 0;
+    __atomic_store_n(&w->marking, 0, __ATOMIC_SEQ_CST);
+    int64_t ns = (int64_t)(now_ns() - start);
+    __atomic_add_fetch(&pacer.ns[by], ns, __ATOMIC_SEQ_CST);
+    if (instrument) __atomic_add_fetch(&mark.worker_ns, ns, __ATOMIC_SEQ_CST);
+    uint64_t done = w->work - work;
+    if (empty && others == 0 && !work_available()) end_cycle();
+    return done;
 }
 
 static bool idle_mark(bool (*stop)(void)) {
-    return mark_running(stop, -1);
+    return mark_running(stop, -1, BY_IDLE) > 0;
 }
 
-static bool stop_requested(void) {
-    return __atomic_load_n(&cooper_poll_word, __ATOMIC_RELAXED) != 0;
+/* For the monitor, of a P that runs a thread: whether it should mark instead. It should if its fractional worker
+   is due: it has marked less than its share of the time since marking began, and there is work to share. One P
+   also should if no worker has marked for a while: work may be left where only its P sees it, or none at all, and
+   no worker would find out and end the cycle. */
+static bool worker_due(int p) {
+    if (__atomic_load_n(&phase, __ATOMIC_SEQ_CST) != PHASE_MARK) return false;
+    Worker *w = &workers[p];
+    if (__atomic_load_n(&w->marking, __ATOMIC_SEQ_CST)) return false;
+    uint64_t now = now_ns();
+    if (__atomic_load_n(&mark.working, __ATOMIC_SEQ_CST) == 0 &&
+        now - __atomic_load_n(&mark.quiet_since, __ATOMIC_SEQ_CST) > QUIET_NS) {
+        int64_t asked = -1;
+        if (__atomic_compare_exchange_n(&mark.check, &asked, p, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST) || asked == p) return true;
+    }
+    if (pacer.fractional == 0 || !work_available()) return false;
+    return (double)__atomic_load_n(&w->fractional_ns, __ATOMIC_SEQ_CST) < pacer.fractional * (double)(now - mark.began);
+}
+
+/* For the scheduler, before it runs a thread on the P: mark as a dedicated worker, if one is wanted, until `stop()`
+   or no work is left; or as the P's fractional worker, if it is due, until it has marked 1.2 times its share of
+   the time since marking began (Go's bound). */
+static bool worker_mark(bool (*stop)(void)) {
+    if (__atomic_load_n(&phase, __ATOMIC_SEQ_CST) != PHASE_MARK) return false;
+    for (int64_t free = __atomic_load_n(&pacer.dedicated_free, __ATOMIC_SEQ_CST); free > 0;) {
+        if (__atomic_compare_exchange_n(&pacer.dedicated_free, &free, free - 1, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+            uint64_t done = mark_running(stop, -1, BY_WORKER);
+            __atomic_add_fetch(&pacer.dedicated_free, 1, __ATOMIC_SEQ_CST);
+            return done > 0;
+        }
+    }
+    int p = cooper_proc_id();
+    int64_t asked = p;
+    if (__atomic_compare_exchange_n(&mark.check, &asked, -1, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+        return mark_running(stop, ASSIST_MIN_WORK, BY_WORKER) > 0;
+    }
+    if (!worker_due(p)) return false;
+    Worker *w = &workers[p];
+    uint64_t start = now_ns();
+    /* The deadline at which marked time over elapsed time reaches the bound. */
+    double bound = 1.2 * pacer.fractional, since = (double)(start - mark.began);
+    w->deadline = mark.began + (uint64_t)((since - (double)w->fractional_ns) / (1 - bound));
+    uint64_t done = mark_running(stop, -1, BY_WORKER);
+    w->deadline = 0;
+    __atomic_add_fetch(&w->fractional_ns, (int64_t)(now_ns() - start), __ATOMIC_SEQ_CST);
+    return done > 0;
+}
+
+static void record_assist(uint64_t ns) {
+    uint64_t longest = __atomic_load_n(&pacer.longest_assist, __ATOMIC_RELAXED);
+    while (ns > longest && !__atomic_compare_exchange_n(&pacer.longest_assist, &longest, ns, false, __ATOMIC_RELAXED,
+                                                         __ATOMIC_RELAXED)) {
+    }
+}
+
+/* The scan work an allocated byte pays for: what is left of the work expected, over what is left of the runway to
+   the goal. Once the work done exceeds the expected, all of the heap may be live: the hard goal applies, and the
+   heap as it is bounds the work. */
+static double assist_ratio(const AllocCache *cache, double *work_left) {
+    double done = 0;
+    for (int i = 0; i < cooper_proc_count(); i++) done += (double)__atomic_load_n(&workers[i].work, __ATOMIC_RELAXED);
+    double live = (double)(__atomic_load_n(&heap_used, __ATOMIC_RELAXED) + cache->used);
+    double expected = pacer.expected_work, goal = (double)next_gc;
+    if (done > expected) {
+        expected = live > done ? live : done;
+        goal = (double)pacer.hard_goal;
+    }
+    *work_left = expected - done > 1000 ? expected - done : 1000;
+    return *work_left / (goal > live ? goal - live : 1);
+}
+
+/* An allocation while marking ran out of credit: pay the debt in scan work, from the background workers' credit
+   first, and keep what is paid beyond it as credit. With no work to be found, the debt is forgiven; while the
+   world is stopping, it stays for a later allocation. Assists give way only to a stop of the world: a preemption
+   asked of a thread that holds a lock word stays pending, and would keep it from paying. When little work is left, the assist does all of it: that stalls
+   the allocation for a fraction of a millisecond, and ends the cycle before the program allocates much more, all
+   of which would survive it (allocated black). */
+static __attribute__((noinline)) void assist(void) {
+    if (cooper_world_stopping()) return;
+    uint64_t start = now_ns();
+    AllocCache *cache = &caches[cooper_proc_id()];
+    double left, per_byte = assist_ratio(cache, &left);
+    int64_t debt = -cache->credit, done = 0;
+    if (left <= FINISH_WORK) {
+        done = (int64_t)mark_running(cooper_world_stopping, -1, BY_ASSIST);
+    } else {
+        int64_t wanted = (int64_t)(debt * per_byte);
+        if (wanted < ASSIST_MIN_WORK) wanted = ASSIST_MIN_WORK;
+        for (int64_t credit = __atomic_load_n(&pacer.credit, __ATOMIC_SEQ_CST); credit > 0;) {
+            int64_t take = credit < wanted ? credit : wanted;
+            if (__atomic_compare_exchange_n(&pacer.credit, &credit, credit - take, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+                done = take;
+                break;
+            }
+        }
+        if (done < wanted) done += (int64_t)mark_running(cooper_world_stopping, wanted - done, BY_ASSIST);
+    }
+    cache = &caches[cooper_proc_id()]; /* it may have switched */
+    cache->credit = (int64_t)(done / per_byte) - debt;
+    if (cache->credit < 0 && !cooper_world_stopping()) cache->credit = 0;
+    record_assist(now_ns() - start);
 }
 
 /* Help mark until the cycle ends, if one is on. */
 static void finish_cycle(void) {
     uint64_t cycle = __atomic_load_n(&cycles, __ATOMIC_SEQ_CST);
     for (int spins = 0; __atomic_load_n(&phase, __ATOMIC_SEQ_CST) == PHASE_MARK && __atomic_load_n(&cycles, __ATOMIC_SEQ_CST) == cycle; spins++) {
-        if (stop_requested()) cooper_poll_slow();
-        else if (mark_running(stop_requested, -1)) spins = 0;
+        if (cooper_world_stopping()) cooper_poll_slow();
+        else if (mark_running(cooper_world_stopping, -1, BY_ASSIST)) spins = 0;
         else if (spins < 100) cpu_relax();
         else sched_yield();
     }
 }
 
-/* An allocation reached `pace_at`, or the collector is in a stress mode: begin a cycle, or help one end. Under
-   markstress an allocation marks a little until the heap reaches its goal. */
+/* An allocation reached `pace_at`, or the collector is in a stress mode: begin a cycle, or help one end (at the hard
+   goal). Under markstress an allocation marks a little until the heap reaches the hard goal. */
 static __attribute__((noinline)) void pace(void) {
     if (__atomic_load_n(&phase, __ATOMIC_RELAXED) == PHASE_OFF) {
         begin_cycle(0);
         if (!stress) return;
     } else if (markstress && __atomic_load_n(&heap_used, __ATOMIC_RELAXED) + caches[cooper_proc_id()].used <
                                  __atomic_load_n(&pace_at, __ATOMIC_RELAXED)) {
-        mark_running(NULL, 16);
+        mark_running(NULL, 1024, BY_ASSIST);
         return;
     }
+    uint64_t start = now_ns();
     finish_cycle();
+    record_assist(now_ns() - start);
 }
 
 void cooper_gc_init(void) {

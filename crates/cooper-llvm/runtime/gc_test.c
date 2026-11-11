@@ -356,7 +356,8 @@ static void test_threads_allocate_in_parallel(void) {
 /* A live heap big enough that the mark workers must share it: a binary tree (many small objects to hand out
    in blocks and steal), and an array of pointers larger than an oblet (scanned in pieces by different
    workers). Threads that allocate garbage meanwhile force collections, and every mark is checked by
-   checkmark. A mark that lost an object shows as a corrupt tree, an overwritten slot, or a checkmark panic. */
+   checkmark. A mark that lost an object shows as a corrupt tree, an overwritten slot, or a checkmark panic. The
+   stores are atomic, as a worker may scan the objects meanwhile (generated code is not checked for races). */
 typedef struct Tree { struct Tree *left, *right; uint64_t value; } Tree;
 static Type tree_type = {24, 24, 0, 3, 0, 0, {0x3, 0}};
 enum { DEPTH = 16, ARRAY_LENGTH = 40000 };
@@ -365,8 +366,8 @@ static Tree *build(int depth, uint64_t *counter) {
     Tree *node = cooper_alloc(sizeof(Tree), (CooperType *)&tree_type);
     node->value = (*counter)++;
     if (depth > 0) {
-        node->left = build(depth - 1, counter);
-        node->right = build(depth - 1, counter);
+        __atomic_store_n(&node->left, build(depth - 1, counter), __ATOMIC_RELAXED);
+        __atomic_store_n(&node->right, build(depth - 1, counter), __ATOMIC_RELAXED);
     }
     return node;
 }
@@ -394,8 +395,9 @@ static void test_parallel_marking_keeps_a_large_shared_heap(void) {
     Tree *volatile tree = build(DEPTH, &counter);
     Tree **volatile array = cooper_alloc(ARRAY_LENGTH * sizeof(Tree *), (CooperType *)&pointer_type);
     for (uint64_t i = 0; i < ARRAY_LENGTH; i++) {
-        array[i] = cooper_alloc(sizeof(Tree), (CooperType *)&tree_type);
-        array[i]->value = i;
+        Tree *node = cooper_alloc(sizeof(Tree), (CooperType *)&tree_type);
+        node->value = i;
+        __atomic_store_n(&array[i], node, __ATOMIC_RELAXED);
     }
     for (int i = 0; i < 4; i++) cooper_spawn((void *)garbage_worker, NULL);
     for (int round = 0; round < 3; round++) cooper_gc_collect();
@@ -496,6 +498,45 @@ static void test_mutators_move_pointers_while_marking(void) {
     }
 }
 
+/* Marking that began ends without any more allocation, while threads keep every P busy: the background workers
+   take Ps from them (a dedicated worker, or with one P, the fractional worker the monitor makes room for). */
+enum { SPINNERS = 4, LIVE_NODES = 200000 / SCALE };
+static int64_t spinning, stop_spinning;
+
+static void spinner(void *env) {
+    (void)env;
+    __atomic_add_fetch(&spinning, 1, __ATOMIC_SEQ_CST);
+    while (!__atomic_load_n(&stop_spinning, __ATOMIC_SEQ_CST)) {
+        if (__atomic_load_n(&cooper_poll_word, __ATOMIC_RELAXED)) cooper_poll_slow();
+    }
+    __atomic_add_fetch(&spinning, -1, __ATOMIC_SEQ_CST);
+}
+
+static void test_marking_ends_while_threads_keep_every_p_busy(void) {
+    Node *volatile live = NULL;
+    for (int i = 0; i < LIVE_NODES; i++) {
+        Node *node = cooper_alloc(16, (CooperType *)&node_type);
+        __atomic_store_n(&node->next, live, __ATOMIC_RELAXED);
+        live = node;
+    }
+    for (int i = 0; i < SPINNERS; i++) cooper_spawn((void *)spinner, NULL);
+    while (__atomic_load_n(&spinning, __ATOMIC_SEQ_CST) < SPINNERS) cooper_yield();
+    while (!__atomic_load_n(&cooper_barrier_on, __ATOMIC_SEQ_CST)) {
+        volatile char *garbage = cooper_alloc(64, NULL);
+        garbage[0] = 1;
+    }
+    int64_t deadline = cooper_now() + 5000000000;
+    while (__atomic_load_n(&cooper_barrier_on, __ATOMIC_SEQ_CST) && cooper_now() < deadline) {
+        if (__atomic_load_n(&cooper_poll_word, __ATOMIC_RELAXED)) cooper_poll_slow();
+    }
+    CHECK(!__atomic_load_n(&cooper_barrier_on, __ATOMIC_SEQ_CST));
+    __atomic_store_n(&stop_spinning, 1, __ATOMIC_SEQ_CST);
+    while (__atomic_load_n(&spinning, __ATOMIC_SEQ_CST)) cooper_yield();
+    int n = 0;
+    for (Node *node = live; node; node = node->next) n++;
+    CHECK(n == LIVE_NODES);
+}
+
 static int run_collector_tests(void) {
     test_parallel_marking_keeps_a_large_shared_heap();
     test_garbage_is_reclaimed();
@@ -507,6 +548,7 @@ static int run_collector_tests(void) {
     test_barrier_shades_old_and_new_pointers();
     test_threads_allocate_in_parallel();
     test_mutators_move_pointers_while_marking();
+    test_marking_ends_while_threads_keep_every_p_busy();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
@@ -524,7 +566,7 @@ int main(void) {
     test_reuse_of_slots_clears_bits();
     test_foreign_addresses();
     test_many_arenas();
-    setenv("COOPER_THREADS", "4", 1);
+    setenv("COOPER_THREADS", "4", 0);
     cooper_gc_init();
     cooper_run_main(run_collector_tests);
 }

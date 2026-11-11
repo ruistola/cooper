@@ -325,6 +325,16 @@ static bool idle_scan(bool (*stop)(void)) {
     return false;
 }
 
+static bool no_worker(bool (*stop)(void)) {
+    (void)stop;
+    return false;
+}
+
+static bool never_due(int p) {
+    (void)p;
+    return false;
+}
+
 static void scanned_thread(void *env) {
     int me = (int)(intptr_t)env;
     volatile char frame = 0;
@@ -355,7 +365,7 @@ static void test_marking_scans_each_stack_once_before_it_runs(void) {
         CHECK(cooper_stop_the_world());
         for (int i = 0; i < SCANNED; i++) cooper_store(&scans_of[i], 0);
         cooper_store(&marking, 1);
-        cooper_mark_begin(1000 + cycle, count_scan, idle_scan);
+        cooper_mark_begin(1000 + cycle, &(CooperMarkHooks){count_scan, no_worker, idle_scan, never_due, 0});
         cooper_start_the_world();
         cooper_sleep(1000000);
         while (cooper_scan_waiting_threads()) cooper_yield();

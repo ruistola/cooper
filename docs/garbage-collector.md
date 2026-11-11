@@ -40,8 +40,11 @@ cached spans to the lists.
 
 A cycle marks while the program runs, between two brief stops of the world, and sweeps in the second. The pacer
 sets a heap goal after each cycle: the live bytes plus a growth percentage of the live bytes and roots (default
-100%, at least 4 MiB). The roots counted are the module-level variables and the stacks of every thread. A cycle
-begins when the allocated bytes are seven tenths of the way from the live bytes to the goal.
+100%, at least 4 MiB). The roots counted are the module-level variables and the stacks of every thread. The
+pacer, after Go's, also begins each cycle early enough that marking ends as the heap reaches the goal, with
+background workers taking a quarter of the processors' time. It judges that from the bytes allocated per byte of
+scan work in the last four cycles (cons/mark, as Go measures it), and begins between seven tenths and nineteen
+twentieths of the way from the live bytes to the goal.
 
 - **Stopping.** The allocating thread that reaches the trigger stops every other thread at a safe point:
   generated code polls a flag at each function entry and loop iteration, and the allocator, lock spins and the
@@ -67,17 +70,29 @@ begins when the allocated bytes are seven tenths of the way from the live bytes 
 - **Marking while the program runs.** Each processor has a mark worker, with its own span queue and object stack,
   which publishes surplus work in fixed-size blocks to global lists and steals half of another worker's span
   queue when it runs out. Whatever runs on the processor uses it: the write barrier of the code it runs, an
-  allocation that helps, and the processor's idle time, which the scheduler spends marking instead of sleeping
-  until a thread is ready to run. An allocation that reaches the heap goal while marking helps until the cycle
-  ends. Objects allocated while marking are marked already (allocated black), and survive the cycle.
-- **Ending.** A worker that finds no work, with no other worker marking and every stack scanned, stops the world
-  again. The collector gathers the work the workers kept to themselves (mostly the barrier's), scans the stack of
-  any thread not yet scanned, and if work is left, marks it on every processor: the threads stopped at safe
-  points and idle OS threads for the remaining processors. It turns off the barrier only once no work is left
-  while no C store is shading, so that a store from C after that finds what it shades marked already.
+  allocation that assists, and the background workers. As Go divides a quarter of the processors' time, a quarter
+  of the processors (rounded) are dedicated workers, which mark until no work is left; when rounding would be off
+  by more than 30% (fewer than four processors), each processor instead has a fractional worker that marks for its
+  share of the time. As marking begins, the scheduler takes processors for the dedicated workers, idle ones first,
+  and the monitor preempts a thread whose processor's fractional worker is due (it looks every millisecond while
+  marking). A processor with no thread to run marks instead of sleeping, until a thread is ready.
+- **Assists.** While marking, each allocated byte owes scan work: what is left of the work the last cycle took,
+  over what is left of the bytes to the goal. A processor that runs out of credit pays its debt, first from the
+  scan work the background workers did and nobody claimed, then by marking itself, at least 64 KiB of scan work
+  at a time, and what it pays beyond the debt is credit. When at most 1 MiB of the expected work is left, an assist
+  does all of it, which ends the cycle sooner. An allocation that reaches the hard goal (the goal plus a tenth of
+  the way to it) helps until the cycle ends. Objects allocated while marking are marked already (allocated black),
+  and survive the cycle.
+- **Ending.** A worker that finds no work, with no other worker marking, stops the world again. The collector
+  gathers the work the workers kept to themselves (mostly the barrier's) and scans the stack of any thread not yet
+  scanned. If that finds work, the world restarts and marking goes on (Go's mark termination); otherwise the
+  collector turns off the barrier, once no work is left while no C store is shading, so that a store from C after
+  that finds what it shades marked already. If no worker has marked for a millisecond, the monitor has one
+  processor look for work, so that work only one processor sees, or none at all, still ends the cycle.
 - **Sweep.** With the world still stopped, the marked objects become the allocated ones. Spans with nothing live
-  return to a page heap that merges neighbouring free runs, large free runs go back to the operating system, and
-  spans with free slots are listed per size class. Reused memory is zeroed when allocated.
+  return to a page heap that merges neighbouring free runs, and spans with free slots are listed per size class.
+  While the heap keeps more than a tenth over its next goal, large free runs go back to the operating system.
+  Reused memory is zeroed when allocated.
 - **Write barrier.** Generated code puts Go's hybrid write barrier before every store that may write a pointer
   word outside the storing function's own frame (fields, array elements, through pointers, module-level
   variables): an inline test of a flag, and while it is set, a runtime call that shades the old and new pointers
@@ -85,7 +100,7 @@ begins when the allocated bytes are seven tenths of the way from the live bytes 
   cycle, the old pointer keeps alive what a thread may have copied to its stack, and the new one what it may store
   from an unscanned stack. A store that initializes an object just allocated, with no safe point since, needs
   none, since the object is allocated black. The runtime's array growth copies with the barrier and applies it
-  for the array's new data pointer, and C uses `cooper_store_pointer`.
+  for the array's new data pointer, in pieces with a safe point between them, and C uses `cooper_store_pointer`.
 
 ## Testing
 
@@ -102,8 +117,10 @@ behind before the scan, which can name objects that died. `gc_test.c`, run by `t
 tests the allocator and collector alone: sizes, pointer bitmaps, reuse, interior pointers, reclamation,
 poisoning, that a sum type retains only the variant it holds, threads allocating on four Ps during
 collections, a live tree and a large pointer array that the four mark workers must share, that the barrier
-functions shade the old and new pointers, and threads moving pointers around a shared array, and storing them
-from C, while the collector marks, all with checkmark on. It runs natively and under ThreadSanitizer.
+functions shade the old and new pointers, threads moving pointers around a shared array, and storing them from C,
+while the collector marks, and that marking ends while threads keep every processor busy without allocating, all
+with checkmark on. It runs natively on four processors and on two (fractional workers only), and under
+ThreadSanitizer.
 `sched_test.c`, run by `tests/scheduler.rs`, checks that while marking each thread's stack is scanned once and
 before the thread runs, whether it was running, waiting, asleep or in C.
 The golden harness also checks each program's LLVM IR for a store that may write a pointer outside its frame
@@ -114,8 +131,8 @@ without the barrier before it.
 Conservative scanning can retain what a stale stack word points at. Optimized builds may keep only a derived
 pointer (one past an object's end), which a stack scan would miss: not yet validated. The page heap is a
 first-fit list. Refills and large allocations take one heap lock. Sweeping is serial and stops the world, so
-the ending pause grows with the heap. Only idle processors and allocations that reach the goal mark: a program
-that keeps every processor busy marks in that allocation, which stalls it about as long as a stop-the-world mark
-would, and objects allocated black meanwhile survive the cycle (more cycles mark more). The barrier's slow path
-marks directly rather than buffering. Waking the helpers costs about 40 µs per stop with ten processors, which
+the ending pause grows with the heap. An assist pays for an allocation's bytes at once, so allocating a large
+array while much work is left stalls the thread for that array's share of the mark (up to 20 ms on `scattered`).
+Objects allocated black survive the cycle, so a program whose heap is mostly garbage collects more often than with
+the world stopped. The barrier's slow path marks directly rather than buffering. Waking the helpers costs about 40 µs per stop with ten processors, which
 shows only when collections are small and frequent.

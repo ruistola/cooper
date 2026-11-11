@@ -169,7 +169,7 @@ static struct {
     uint64_t mark_ns;        /* from the beginning of marking to its end, while the program ran */
     uint64_t mark_worker_ns; /* spent marking, summed over the workers, assists and the end's helpers */
     uint64_t by_ns[3];       /* of that, while the program ran: by assists, background workers, idle Ps */
-    uint64_t max_assist_ns;  /* the longest an allocation spent assisting */
+    uint64_t max_assist_ns;  /* atomic: the longest an allocation spent assisting */
     uint64_t pause_ns, max_pause_ns, sweep_ns;
     size_t peak_heap, last_live;
     double max_overshoot;    /* the most the heap went over its goal in a cycle, as a fraction of the goal */
@@ -360,8 +360,8 @@ enum { KIND_BITS = 0, KIND_NOSCAN = 1, KIND_HEADER = 2, KINDS = 3 };
 static Span *partial[NUM_CLASSES * KINDS];
 
 /* A P's allocation cache (Go's mcache): the span it is allocating from for each span class, the bytes it
-   has allocated that heap_used does not count yet, and while marking, the bytes it may allocate before it assists.
-   Padded so that two Ps' caches never share a cache line. */
+   has allocated that heap_used does not count yet, and while marking, the bytes code that runs on no thread may
+   allocate before it assists (a thread has credit of its own). Padded so that two Ps' caches never share a cache line. */
 typedef struct {
     Span *spans[NUM_CLASSES * KINDS];
     size_t used;
@@ -448,6 +448,7 @@ static int ready;
 
 static int phase; /* PHASE_OFF or PHASE_MARK */
 enum { PHASE_OFF, PHASE_MARK };
+static uint64_t cycles; /* atomic: the cycles begun */
 
 /* With the heap lock held. Allocated black while marking, as next_free does. */
 static void *allocate_large(size_t size, const CooperType *type) {
@@ -521,12 +522,18 @@ static void print_stats(void) {
    nineteen twentieths of the way from the live bytes to the goal. Scan work is counted in bytes scanned. While
    marking, allocation pays for itself in scan work (an assist), at the rate that would finish the work expected
    as the heap reaches the goal; scan work the background workers did is credit that an assist uses first. The last
-   of the work an assist does whole. An allocation that reaches the hard goal, a tenth more of the runway past the
-   goal, helps until the cycle ends. */
+   of the work an assist does whole. Credit and debt are each thread's, so a thread pays only for what it allocates,
+   and an assist stalls an allocation for at most ASSIST_MAX_NS: what is left of the debt is paid by later
+   allocations, or forgiven when the cycle ends. Once the heap is past the goal (the hard goal, a tenth more of the
+   runway, once the work exceeds what was expected), each byte owes so much work that every allocation assists for
+   that long, which slows a thread that outruns the marking without stopping it. Only at the limit, a whole runway
+   past the goal, does a thread in debt wait for the cycle to end, which bounds the heap. */
 
 #define UTILIZATION 0.25
 #define ASSIST_MIN_WORK 65536 /* scan work an assist does at least, so that it does not assist again at once */
 #define FINISH_WORK 1048576   /* scan work left that an assist does all of (see assist) */
+#define ASSIST_MAX_NS 500000  /* the longest an assist stalls an allocation */
+#define ASSIST_SLICE 262144   /* scan work an assist does between claims of background credit */
 #define HISTORY 4
 #define QUIET_NS 1000000 /* how long no worker may mark before a P is asked to look (see worker_due) */
 
@@ -536,7 +543,7 @@ static struct {
     double expected_work;      /* the scan work of this cycle, as the last one took */
     double cons_mark[HISTORY]; /* recent cycles' bytes allocated per byte of scan work, scaled as above */
     size_t triggered;          /* heap_used as this cycle began */
-    size_t hard_goal;
+    size_t hard_goal, limit;
     int dedicated;             /* the dedicated workers of this cycle */
     double fractional;         /* the share of its time each P's fractional worker marks */
     int64_t dedicated_free;    /* atomic: dedicated workers not running */
@@ -591,7 +598,19 @@ static void init_heap(void) {
 
 static void *allocate(size_t size, const CooperType *type);
 static void pace(void);
-static void assist(void);
+static void assist(int64_t *credit);
+
+/* The running thread's allocation credit in this cycle, or the P's for code that runs on no thread. */
+static int64_t *credit_of(AllocCache *cache) {
+    int64_t *own = cooper_thread_gc_credit();
+    if (!own) return &cache->credit;
+    int64_t cycle = (int64_t)__atomic_load_n(&cycles, __ATOMIC_RELAXED);
+    if (own[1] != cycle) {
+        own[0] = 0;
+        own[1] = cycle;
+    }
+    return own;
+}
 
 static void check_size(size_t size, const CooperType *type) {
     if (type && (type->size != type->layout_size || size % type->size != 0)) {
@@ -621,10 +640,13 @@ static void *allocate(size_t size, const CooperType *type) {
         cache = &caches[cooper_proc_id()]; /* it may have switched */
     }
     int black = __atomic_load_n(&phase, __ATOMIC_RELAXED) == PHASE_MARK;
-    if (black && (cache->credit -= (int64_t)size) < 0) {
-        assist();
-        cache = &caches[cooper_proc_id()];
-        black = __atomic_load_n(&phase, __ATOMIC_RELAXED) == PHASE_MARK;
+    if (black) {
+        int64_t *credit = credit_of(cache);
+        if ((*credit -= (int64_t)size) < 0) {
+            assist(credit);
+            cache = &caches[cooper_proc_id()];
+            black = __atomic_load_n(&phase, __ATOMIC_RELAXED) == PHASE_MARK;
+        }
     }
     int noscan = type == NULL;
     int kind = noscan ? KIND_NOSCAN : (type->nsites || size > MIN_SIZE_FOR_HEADER) ? KIND_HEADER : KIND_BITS;
@@ -806,8 +828,6 @@ static struct {
     uint64_t began;            /* when the cycle began */
     uint64_t pauses, longest_pause; /* this cycle's stops, for statistics */
 } mark = {.state = DONE};
-
-static uint64_t cycles; /* atomic: the cycles begun */
 
 /* An empty block, with mark.lock held. */
 static Block *new_block(void) {
@@ -1100,7 +1120,7 @@ static int drain(Worker *w, bool (*stop)(void), int64_t budget) {
     uint64_t start = w->work, checked = start;
     for (long n = 1;; n++) {
         if (budget >= 0 && (int64_t)(w->work - start) >= budget) return 0;
-        if (n % 64 == 0 || w->work - checked >= 32768) {
+        if (n % 64 == 0 || w->work - checked >= (w->deadline ? 8192 : 32768)) {
             checked = w->work;
             if (w->background) flush_credit(w);
             if ((stop && stop()) || (w->deadline && now_ns() >= w->deadline)) return 0;
@@ -1523,11 +1543,12 @@ static void begin_mark(void) {
     pacer.triggered = heap_used;
     size_t base = heap_used < next_gc ? heap_used : next_gc;
     pacer.hard_goal = next_gc + (next_gc - base) / 10;
+    pacer.limit = next_gc + (next_gc - base);
     pacer.credit = 0;
     pacer.longest_assist = 0;
     memset(pacer.ns, 0, sizeof pacer.ns);
     __atomic_store_n(&phase, PHASE_MARK, __ATOMIC_SEQ_CST);
-    __atomic_store_n(&pace_at, gc_off ? SIZE_MAX : pacer.hard_goal, __ATOMIC_RELAXED);
+    __atomic_store_n(&pace_at, gc_off ? SIZE_MAX : pacer.limit, __ATOMIC_RELAXED);
     __atomic_store_n(&cooper_barrier_on, 1, __ATOMIC_SEQ_CST);
     while (__atomic_load_n(&c_stores, __ATOMIC_SEQ_CST)) cpu_relax();
     Worker *w = barrier_worker();
@@ -1596,7 +1617,6 @@ static bool end_mark(uint64_t start) {
     stats.mark_ns += marked - mark.began;
     stats.mark_worker_ns += (uint64_t)mark.worker_ns;
     for (int i = 0; i < 3; i++) stats.by_ns[i] += (uint64_t)pacer.ns[i];
-    if (pacer.longest_assist > stats.max_assist_ns) stats.max_assist_ns = pacer.longest_assist;
     stats.sweep_ns += done - checked;
     record_pause(done - start);
     if (trace) {
@@ -1727,11 +1747,16 @@ static bool worker_mark(bool (*stop)(void)) {
     return done > 0;
 }
 
-static void record_assist(uint64_t ns) {
-    uint64_t longest = __atomic_load_n(&pacer.longest_assist, __ATOMIC_RELAXED);
-    while (ns > longest && !__atomic_compare_exchange_n(&pacer.longest_assist, &longest, ns, false, __ATOMIC_RELAXED,
-                                                         __ATOMIC_RELAXED)) {
+static void raise_to(uint64_t *longest, uint64_t ns) {
+    uint64_t seen = __atomic_load_n(longest, __ATOMIC_RELAXED);
+    while (ns > seen && !__atomic_compare_exchange_n(longest, &seen, ns, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
     }
+}
+
+/* The statistics take it directly: a wait at the limit ends with the cycle, after end_mark read the cycle's. */
+static void record_assist(uint64_t ns) {
+    raise_to(&pacer.longest_assist, ns);
+    if (instrument) raise_to(&stats.max_assist_ns, ns);
 }
 
 /* The scan work an allocated byte pays for: what is left of the work expected, over what is left of the runway to
@@ -1750,35 +1775,53 @@ static double assist_ratio(const AllocCache *cache, double *work_left) {
     return *work_left / (goal > live ? goal - live : 1);
 }
 
-/* An allocation while marking ran out of credit: pay the debt in scan work, from the background workers' credit
-   first, and keep what is paid beyond it as credit. With no work to be found, the debt is forgiven; while the
-   world is stopping, it stays for a later allocation. Assists give way only to a stop of the world: a preemption
-   asked of a thread that holds a lock word stays pending, and would keep it from paying. When little work is left, the assist does all of it: that stalls
-   the allocation for a fraction of a millisecond, and ends the cycle before the program allocates much more, all
-   of which would survive it (allocated black). */
-static __attribute__((noinline)) void assist(void) {
-    if (cooper_world_stopping()) return;
-    uint64_t start = now_ns();
-    AllocCache *cache = &caches[cooper_proc_id()];
-    double left, per_byte = assist_ratio(cache, &left);
-    int64_t debt = -cache->credit, done = 0;
-    if (left <= FINISH_WORK) {
-        done = (int64_t)mark_running(cooper_world_stopping, -1, BY_ASSIST);
-    } else {
-        int64_t wanted = (int64_t)(debt * per_byte);
-        if (wanted < ASSIST_MIN_WORK) wanted = ASSIST_MIN_WORK;
-        for (int64_t credit = __atomic_load_n(&pacer.credit, __ATOMIC_SEQ_CST); credit > 0;) {
-            int64_t take = credit < wanted ? credit : wanted;
-            if (__atomic_compare_exchange_n(&pacer.credit, &credit, credit - take, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
-                done = take;
-                break;
-            }
+/* Background credit, up to `wanted` scan work of it. */
+static int64_t claim_credit(int64_t wanted) {
+    for (int64_t credit = __atomic_load_n(&pacer.credit, __ATOMIC_SEQ_CST); credit > 0;) {
+        int64_t take = credit < wanted ? credit : wanted;
+        if (__atomic_compare_exchange_n(&pacer.credit, &credit, credit - take, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+            return take;
         }
-        if (done < wanted) done += (int64_t)mark_running(cooper_world_stopping, wanted - done, BY_ASSIST);
     }
-    cache = &caches[cooper_proc_id()]; /* it may have switched */
-    cache->credit = (int64_t)(done / per_byte) - debt;
-    if (cache->credit < 0 && !cooper_world_stopping()) cache->credit = 0;
+    return 0;
+}
+
+/* An allocation while marking ran out of credit: pay the debt in scan work, from the background workers' credit
+   (which they keep adding to meanwhile, so that with idle Ps marking the debt is paid sooner) and by marking, and
+   keep what is paid beyond it as credit. After ASSIST_MAX_NS, what is left stays as debt. With no work to be found,
+   the debt is forgiven; while the world is stopping, it stays for a later allocation. Assists give way only to a
+   stop of the world: a preemption asked of a thread that holds a lock word stays pending, and would keep it from
+   paying. When little work is left, the assist does as much of it as it can in its time: that ends the cycle before
+   the program allocates much more, all of which would survive it (allocated black). */
+static __attribute__((noinline)) void assist(int64_t *credit) {
+    if (cooper_world_stopping()) return;
+    uint64_t start = now_ns(), deadline = start + ASSIST_MAX_NS;
+    double left, per_byte = assist_ratio(&caches[cooper_proc_id()], &left);
+    int finish = left <= FINISH_WORK;
+    int64_t wanted = finish ? INT64_MAX : (int64_t)((double)-*credit * per_byte), done = 0;
+    if (wanted < ASSIST_MIN_WORK) wanted = ASSIST_MIN_WORK;
+    int timed_out = 0;
+    while (done < wanted && !cooper_world_stopping()) {
+        int64_t claimed = finish ? 0 : claim_credit(wanted - done);
+        done += claimed;
+        if (done >= wanted) break;
+        if (now_ns() >= deadline) {
+            timed_out = 1;
+            break;
+        }
+        Worker *w = barrier_worker();
+        w->deadline = deadline;
+        int64_t marked = (int64_t)mark_running(cooper_world_stopping, wanted - done < ASSIST_SLICE ? wanted - done : ASSIST_SLICE, BY_ASSIST);
+        w->deadline = 0;
+        done += marked;
+        if (now_ns() >= deadline) {
+            timed_out = done < wanted;
+            break;
+        }
+        if (!marked && !claimed) break;
+    }
+    *credit += (int64_t)((double)done / per_byte);
+    if (*credit < 0 && !timed_out && !cooper_world_stopping()) *credit = 0;
     record_assist(now_ns() - start);
 }
 
@@ -1793,8 +1836,9 @@ static void finish_cycle(void) {
     }
 }
 
-/* An allocation reached `pace_at`, or the collector is in a stress mode: begin a cycle, or help one end (at the hard
-   goal). Under markstress an allocation marks a little until the heap reaches the hard goal. */
+/* An allocation reached `pace_at`, or the collector is in a stress mode: begin a cycle, or at the limit, help it end
+   if the thread is in debt (one that paid its way allocates and assists as before). Under markstress an allocation
+   marks a little until the heap reaches the limit. */
 static __attribute__((noinline)) void pace(void) {
     if (__atomic_load_n(&phase, __ATOMIC_RELAXED) == PHASE_OFF) {
         begin_cycle(0);
@@ -1802,6 +1846,8 @@ static __attribute__((noinline)) void pace(void) {
     } else if (markstress && __atomic_load_n(&heap_used, __ATOMIC_RELAXED) + caches[cooper_proc_id()].used <
                                  __atomic_load_n(&pace_at, __ATOMIC_RELAXED)) {
         mark_running(NULL, 1024, BY_ASSIST);
+        return;
+    } else if (!stress && *credit_of(&caches[cooper_proc_id()]) >= 0) {
         return;
     }
     uint64_t start = now_ns();

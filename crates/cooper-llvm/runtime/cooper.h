@@ -51,6 +51,9 @@ int64_t cooper_spawn(void *code, void *env);
 void cooper_yield(void);
 void cooper_sleep(int64_t nanoseconds);
 void *cooper_current_thread(void);
+/* The running thread's two words for the collector (its allocation credit, and the cycle it is for), or null when
+   no thread runs. */
+int64_t *cooper_thread_gc_credit(void);
 /* Stop the current thread until cooper_ready is called on its handle. A ready that comes first leaves a
    permit, which the next park consumes by returning at once; a park may also return for no reason, so every
    caller loops on its own condition. */

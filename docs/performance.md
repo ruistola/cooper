@@ -10,20 +10,24 @@ shorter on the tree benchmarks and in the same range on the others:
 | Benchmark | Live heap | Cooper longest stop | Go longest stop | Cooper longest assist |
 |---|---|---|---|---|
 | `binary_trees` | 10 MiB | 0.08 to 0.09 ms | 0.03 ms | 0.3 to 0.4 ms |
-| `live_heap` | 140 MiB | 0.3 to 0.5 ms | 0.02 to 0.03 ms | 1 to 3 ms |
-| `strings` | 1.4 MiB | 0.06 to 0.11 ms | 0.08 to 0.14 ms | 0.04 ms |
-| `scattered` | 65 MiB | 0.7 ms | 0.6 to 1.2 ms | 19 to 21 ms |
+| `live_heap` | 140 MiB | 0.3 to 0.5 ms | 0.02 to 0.03 ms | 0.5 ms |
+| `strings` | 1.4 MiB | 0.06 to 0.11 ms | 0.08 to 0.14 ms | 0.14 to 0.23 ms |
+| `scattered` | 65 MiB | 0.5 to 0.7 ms | 0.6 to 1.2 ms | 12 ms (while building the graph), 0.6 to 1.8 ms after |
 
-With one processor the stops are about as long. Two things hold a thread up for longer:
+With one processor the stops are about as long. A thread is held up for longer in two cases:
 
 - The sweep runs in the ending stop, so that stop grows with the heap. It is most of the stop on `live_heap`,
   where Go, which sweeps concurrently, stops for a tenth as long.
-- An allocation made while marking assists in proportion to its size, so a large array pays its whole share of
-  the mark at once (the assist column, up to 21 ms on `scattered`). Only the allocating thread waits.
+- An allocation made while marking pays for itself in marking work (an assist). The cost lands only on the thread
+  that allocates, in proportion to what it allocates, and one assist stops after 0.5 ms, leaving the rest as debt.
+  A thread that does not allocate while marking never assists. The exception is an allocation that takes the heap a
+  whole runway past its goal: the thread then waits for the cycle to end. `scattered` does this while it builds
+  its graph, when growing its array of 3M nodes takes the heap past the limit (12 ms with ten processors, 19 ms
+  with one).
 
 The wall times below include marking. With one program thread on ten processors, most marking runs on idle
 processors, so the wall time does not show its CPU cost. The CPU time is close to Go's (user time on `-O2`:
-`binary_trees` 0.75 s for both, `live_heap` 1.37 s against 1.22 s, `scattered` 21 s against 29 s). A program
+`binary_trees` 0.75 s for both, `live_heap` 1.37 s against 1.22 s, `scattered` 17 s against 29 s). A program
 that keeps every processor busy gives a quarter of the processors' time to marking while a cycle runs.
 
 ## Garbage collector controls
@@ -56,7 +60,7 @@ tenth over its next goal.
 `clang -O2`), Go, and Java when a JDK is installed, reporting the best of three wall times and the peak
 resident memory. Every implementation prints the same output. The compiler builds unoptimized by default, and
 most of the difference to Go is that: built with `-O2`, Cooper takes 1.2x Go's time on the tree benchmarks, 2x
-on `strings`, and 0.8x on `scattered`.
+on `strings`, and 0.6x on `scattered`.
 
 Apple M5 with ten cores, Go 1.27, and Cooper with one processor per core:
 
@@ -65,7 +69,7 @@ Apple M5 with ten cores, Go 1.27, and Cooper with one processor per core:
 | `binary_trees`: 33M short-lived 16-byte nodes, one 8 MB long-lived tree | 0.98 s, 22 MiB | 0.35 s, 22 MiB | 0.29 s, 28 MiB |
 | `live_heap`: 128 MB live tree, 50M short-lived allocations | 1.39 s, 262 MiB | 0.50 s, 265 MiB | 0.43 s, 278 MiB |
 | `strings`: building, joining, and splitting 1.2M small strings | 0.50 s, 9 MiB | 0.18 s, 7 MiB | 0.09 s, 10 MiB |
-| `scattered`: 3M-node random graph, 120M short-lived allocations | 5.60 s, 327 MiB | 3.13 s, 167 MiB | 4.06 s, 193 MiB |
+| `scattered`: 3M-node random graph, 120M short-lived allocations | 5.54 s, 341 MiB | 2.58 s, 186 MiB | 4.11 s, 228 MiB |
 
 Marking works a span at a time, after Go's Green Tea collector ([Garbage Collector](./garbage-collector.md)). On
 `scattered`, where tracing jumps around memory, this makes marking 2.6x faster than scanning object by object. On

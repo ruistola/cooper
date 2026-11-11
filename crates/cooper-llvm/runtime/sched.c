@@ -115,6 +115,7 @@ typedef struct Thread {
     int64_t running;          /* atomic: switched to and not yet away (set with scan_lock held) */
     int64_t scan_lock;        /* atomic: held to scan the stack while marking concurrently, and to switch to the
                                  thread meanwhile */
+    int64_t gc_credit[2];     /* the collector's: allocation credit, and the cycle it is for */
     void *fiber;              /* ThreadSanitizer's */
 } Thread;
 
@@ -1199,6 +1200,7 @@ static void thread_entry(void) {
 static void thread_prepare(Thread *thread, void *code, void *env) {
     thread->code = code;
     thread->env = env;
+    thread->gc_credit[0] = thread->gc_credit[1] = 0;
     if (thread->stack_low) {
         ADD(&pooled, -1);
     } else {
@@ -1280,6 +1282,11 @@ void cooper_yield(void) {
 
 void *cooper_current_thread(void) {
     return get_m()->current;
+}
+
+int64_t *cooper_thread_gc_credit(void) {
+    M *m = get_m();
+    return m && m->current ? m->current->gc_credit : NULL;
 }
 
 void cooper_park(void) {

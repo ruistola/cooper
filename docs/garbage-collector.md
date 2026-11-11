@@ -77,12 +77,16 @@ twentieths of the way from the live bytes to the goal.
   and the monitor preempts a thread whose processor's fractional worker is due (it looks every millisecond while
   marking). A processor with no thread to run marks instead of sleeping, until a thread is ready.
 - **Assists.** While marking, each allocated byte owes scan work: what is left of the work the last cycle took,
-  over what is left of the bytes to the goal. A processor that runs out of credit pays its debt, first from the
-  scan work the background workers did and nobody claimed, then by marking itself, at least 64 KiB of scan work
-  at a time, and what it pays beyond the debt is credit. When at most 1 MiB of the expected work is left, an assist
-  does all of it, which ends the cycle sooner. An allocation that reaches the hard goal (the goal plus a tenth of
-  the way to it) helps until the cycle ends. Objects allocated while marking are marked already (allocated black),
-  and survive the cycle.
+  over what is left of the bytes to the goal. Credit and debt are each thread's, so a thread pays only for what it
+  allocates, and one that does not allocate while marking never assists. A thread that runs out of credit pays its
+  debt from the scan work the background workers did and nobody claimed, which it keeps claiming as they add to it,
+  and by marking itself, at least 64 KiB of scan work at a time; what it pays beyond the debt is credit. An assist
+  stops after 0.5 ms and leaves the rest as debt, for later allocations to pay or for the cycle's end to forgive.
+  When at most 1 MiB of the expected work is left, an assist does as much of it as it can, which ends the cycle
+  sooner. Past the goal each byte owes so much work that every allocation assists for the full 0.5 ms. At the
+  limit, a whole runway past the goal, a thread in debt waits until the cycle ends, which bounds the heap; a
+  thread that is not in debt goes on. Objects allocated while marking are marked already (allocated black), and
+  survive the cycle.
 - **Ending.** A worker that finds no work, with no other worker marking, stops the world again. The collector
   gathers the work the workers kept to themselves (mostly the barrier's) and scans the stack of any thread not yet
   scanned. If that finds work, the world restarts and marking goes on (Go's mark termination); otherwise the
@@ -131,8 +135,9 @@ without the barrier before it.
 Conservative scanning can retain what a stale stack word points at. Optimized builds may keep only a derived
 pointer (one past an object's end), which a stack scan would miss: not yet validated. The page heap is a
 first-fit list. Refills and large allocations take one heap lock. Sweeping is serial and stops the world, so
-the ending pause grows with the heap. An assist pays for an allocation's bytes at once, so allocating a large
-array while much work is left stalls the thread for that array's share of the mark (up to 20 ms on `scattered`).
-Objects allocated black survive the cycle, so a program whose heap is mostly garbage collects more often than with
-the world stopped. The barrier's slow path marks directly rather than buffering. Waking the helpers costs about 40 µs per stop with ten processors, which
+the ending pause grows with the heap. An allocation that takes the heap a whole runway past its goal, such as
+growing a large array while every allocation survives, makes the allocating thread wait for the cycle to end (up to
+12 ms on `scattered` with ten processors, 19 ms with one).
+Objects allocated black survive the cycle, so a program whose heap is mostly garbage collects more often than its
+live bytes alone would need. The barrier's slow path marks directly rather than buffering. Waking the helpers costs about 40 µs per stop with ten processors, which
 shows only when collections are small and frequent.

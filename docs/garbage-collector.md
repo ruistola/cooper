@@ -3,8 +3,8 @@
 Memory is reclaimed by a tracing collector modelled on Go's: a span-based allocator, a precise heap,
 conservative stacks, and Green Tea marking. It lives in the C runtime (`runtime/gc.c`, with the
 descriptor generation in `crates/cooper-llvm/src/gc.rs`). It marks in parallel while the program runs, with
-two brief stops of the world, one to begin marking and one to end it and sweep. Controls and measurements are in
-[Performance](./performance.md).
+two brief stops of the world, one to begin marking and one to end it and sweep; each stop is under 1 ms on the
+benchmarks. Pause measurements against Go, controls and other measurements are in [Performance](./performance.md).
 
 ## Typed allocation
 

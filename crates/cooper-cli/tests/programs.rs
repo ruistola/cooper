@@ -4,7 +4,9 @@
 //! the exact standard output each, `# stderr: text`, text its standard error must
 //! contain, and `# env: NAME=value`, a variable to run it with. Requires `clang` (or `COOPER_CC`).
 //!
-//! Each program's LLVM IR is also checked for stores that need a write barrier and lack one.
+//! Each program is built twice, unoptimized and with `--release`, since some faults in the runtime show only when
+//! optimized code keeps pointers in registers. Its LLVM IR is also checked for stores that need a write barrier and
+//! lack one.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -76,12 +78,14 @@ fn header<'s>(source: &'s str, prefix: &str) -> Vec<&'s str> {
 }
 
 /// Build and run one program, describing how it failed, if it did.
-fn check_program(path: &Path, build_root: &Path) -> Result<(), String> {
+fn check_program(path: &Path, build_root: &Path, release: bool) -> Result<(), String> {
     let source = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let expected = expected_exit(&source, path);
     let loaded = cooper_cli::load(path).map_err(|e| e.to_string())?;
-    let stem = path.file_stem().expect("a program file has a name");
-    let executable = cooper_cli::build(&loaded.project, &loaded.native, &build_root.join(stem), Default::default())
+    let stem = path.file_stem().expect("a program file has a name").to_string_lossy();
+    let build_dir = build_root.join(if release { format!("{stem}-release") } else { stem.into_owned() });
+    let options = cooper_cli::Options { release, ..Default::default() };
+    let executable = cooper_cli::build(&loaded.project, &loaded.native, &build_dir, options)
         .map_err(|e| match e {
             cooper_cli::BuildError::Diagnostics(diags) => format!(
                 "diagnostics: {:?}",
@@ -259,22 +263,24 @@ fn split_type(text: &str) -> (&str, &str) {
 fn golden_programs_run_with_their_expected_exit_status() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/programs");
     let build_root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("programs");
-    let mut programs: Vec<PathBuf> = std::fs::read_dir(&dir)
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
         .expect("tests/programs exists")
         .map(|entry| entry.expect("directory entry").path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "coop"))
         .collect();
-    programs.sort();
-    assert!(!programs.is_empty(), "no programs in {}", dir.display());
+    paths.sort();
+    assert!(!paths.is_empty(), "no programs in {}", dir.display());
+    let programs: Vec<(&PathBuf, bool)> = paths.iter().flat_map(|path| [(path, false), (path, true)]).collect();
     // The programs run a few at a time; each may itself use several OS threads.
     let next = std::sync::atomic::AtomicUsize::new(0);
     let failures = std::sync::Mutex::new(Vec::new());
     std::thread::scope(|scope| {
         for _ in 0..4 {
             scope.spawn(|| {
-                while let Some(path) = programs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
-                    if let Err(why) = check_program(path, &build_root) {
-                        failures.lock().unwrap().push(format!("{}: {why}", path.display()));
+                while let Some(&(path, release)) = programs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
+                    if let Err(why) = check_program(path, &build_root, release) {
+                        let build = if release { " (--release)" } else { "" };
+                        failures.lock().unwrap().push(format!("{}{build}: {why}", path.display()));
                     }
                 }
             });

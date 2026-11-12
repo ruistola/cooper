@@ -6,10 +6,13 @@ use {
     std.sync.WaitGroup,
 }
 
+extern func getpid(): i32
+
+# The indexes depend on the process id, so that an optimized build keeps the array.
 func big(): i64 {
     let a: i64[3000000]
-    a[2999999] = 7
-    return a[2999999]
+    a[i64(getpid()) % 3000000] = 7
+    return a[i64(getpid()) * 7 % 3000000]
 }
 
 func run(wg: WaitGroup^) {

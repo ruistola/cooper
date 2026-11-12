@@ -23,6 +23,17 @@ const DEFAULT_CC: &str = "clang";
 const RUNTIME_FILE: &str = "cooper_rt.c";
 const SHIMS_FILE: &str = "cooper_shims.c";
 
+/// How a program is built, beyond what its source says.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Options {
+    /// Dereferencing nil stops the program with a panic, instead of being inert (a load
+    /// yields the zero value and a store is discarded).
+    pub nil_panic: bool,
+    /// Optimize the program and the C sources it links (`-O2`). The runtime is optimized either way, as a
+    /// distributed one would be.
+    pub release: bool,
+}
+
 /// Why a program could not be built.
 #[derive(Debug)]
 pub enum BuildError {
@@ -67,7 +78,7 @@ impl std::error::Error for BuildError {}
 /// Build `project` into an executable in `build_dir`, returning the executable's path.
 /// The emitted IR (`<name>.ll`) and the runtime source are left beside it. The program
 /// is linked with the C code `native` names.
-pub fn build(project: &Project, native: &Native, build_dir: &Path, options: cooper_llvm::Options) -> Result<PathBuf, BuildError> {
+pub fn build(project: &Project, native: &Native, build_dir: &Path, options: Options) -> Result<PathBuf, BuildError> {
     if project.manifest.kind == ProjectKind::Library {
         return Err(BuildError::Library);
     }
@@ -88,7 +99,7 @@ pub struct TestBuild {
 /// Build the test program of `project`, which holds its `*_test.coop` sources: every function
 /// `testName()` of those files is a test. The executable runs one test, chosen by the
 /// `COOPER_TEST` environment variable, and exits with status 0 if it returns.
-pub fn build_tests(project: &Project, native: &Native, build_dir: &Path, options: cooper_llvm::Options) -> Result<TestBuild, BuildError> {
+pub fn build_tests(project: &Project, native: &Native, build_dir: &Path, options: Options) -> Result<TestBuild, BuildError> {
     let project = &cooper_frontend::stdlib::with_source_modules(project);
     let checked = cooper_frontend::check_project(project).map_err(BuildError::Diagnostics)?;
     let tests = discover_tests(&checked)?;
@@ -138,12 +149,13 @@ fn link(
     program: &cooper_ir::Program,
     native: &Native,
     build_dir: &Path,
-    options: cooper_llvm::Options,
+    options: Options,
     name: &str,
 ) -> Result<PathBuf, BuildError> {
     let cc = std::env::var(CC_VAR).unwrap_or_else(|_| DEFAULT_CC.to_string());
     let triple = target_triple(&cc)?;
-    let emitted = cooper_llvm::emit(program, &triple, project, options).map_err(BuildError::Codegen)?;
+    let codegen = cooper_llvm::Options { nil_panic: options.nil_panic };
+    let emitted = cooper_llvm::emit(program, &triple, project, codegen).map_err(BuildError::Codegen)?;
 
     let ir_path = build_dir.join(format!("{name}.ll"));
     let runtime_path = build_dir.join(RUNTIME_FILE);
@@ -151,14 +163,14 @@ fn link(
     create_dir(build_dir)?;
     write(&ir_path, &emitted.ir)?;
     write(&runtime_path, cooper_llvm::RUNTIME_C)?;
-    let mut runtime_sources = Vec::new();
+    let mut runtime_sources = vec![RUNTIME_FILE];
     for (file, text) in cooper_llvm::RUNTIME_FILES {
-        let path = build_dir.join(file);
-        write(&path, text)?;
+        write(&build_dir.join(file), text)?;
         if file.ends_with(".c") {
-            runtime_sources.push(path);
+            runtime_sources.push(file);
         }
     }
+    let runtime_objects = compile_runtime(&cc, build_dir, &runtime_sources)?;
     // Wrappers for C functions that pass structs by value, compiled with the program.
     let shims_path = build_dir.join(SHIMS_FILE);
     let shims = (!emitted.c_shims.is_empty()).then_some(&shims_path);
@@ -168,13 +180,13 @@ fn link(
 
     // A project's C sources include the runtime's `cooper_ffi.h` from the build directory.
     let output = Command::new(&cc)
+        .args(options.release.then_some("-O2"))
         .arg("-I")
         .arg(build_dir)
         .arg("-o")
         .arg(&executable)
         .arg(&ir_path)
-        .arg(&runtime_path)
-        .args(&runtime_sources)
+        .args(&runtime_objects)
         .args(shims)
         .args(&native.sources)
         .args(native.libraries.iter().map(|library| format!("-l{library}")))
@@ -190,6 +202,23 @@ fn link(
         )));
     }
     Ok(executable)
+}
+
+/// Compile the runtime's C `sources` in `build_dir` with optimization, giving their object files.
+fn compile_runtime(cc: &str, build_dir: &Path, sources: &[&str]) -> Result<Vec<PathBuf>, BuildError> {
+    let output = Command::new(cc)
+        .current_dir(build_dir)
+        .args(["-O2", "-c"])
+        .args(sources)
+        .output()
+        .map_err(|e| BuildError::Toolchain(format!("cannot run `{cc}`: {e}")))?;
+    if !output.status.success() {
+        return Err(BuildError::Toolchain(format!(
+            "`{cc}` failed to compile the runtime:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    Ok(sources.iter().map(|source| build_dir.join(Path::new(source).with_extension("o"))).collect())
 }
 
 /// The target triple `cc` compiles for by default: the host.

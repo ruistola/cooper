@@ -160,8 +160,10 @@ under whatever memory and concurrency model it adopts, so those choices need no 
 
 `cooper build <file | project-dir>` checks, lowers, and monomorphizes the program, emits one
 LLVM IR module, and compiles it with the runtime using the system `clang` (overridable with
-`COOPER_CC`). The IR, runtime source, and executable are written to a `build/` directory beside
-the file or in the project. `cooper run` builds and runs, exiting with the program's status.
+`COOPER_CC`). The runtime is always compiled with `-O2`, as a distributed runtime would be; the
+program, and the C sources of a project, are optimized with `--release`. The IR, runtime source,
+and executable are written to a `build/` directory beside the file or in the project. `cooper run`
+builds and runs, exiting with the program's status.
 
 The runtime owns the process entry point: its C `main` calls `cooper_main`, which the backend
 exports as a wrapper around the program's `main` (returning `i32`, or unit for status 0).

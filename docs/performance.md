@@ -55,7 +55,7 @@ more than a tenth over its next goal.
 ## Benchmarks
 
 `benchmarks/run.sh [name ...]` builds and times each benchmark in Cooper (as built by default, and with
-`clang -O2`), Go, and Java when a JDK is installed, reporting the best of three wall times and the peak
+`--release`, which compiles it with `clang -O2`), Go, and Java when a JDK is installed, reporting the best of three wall times and the peak
 resident memory. Every implementation prints the same output. The compiler builds unoptimized by default, and
 most of the difference to Go is that: built with `-O2`, Cooper takes 1.2x Go's time on the tree benchmarks, 2x
 on `strings`, and 0.6x on `scattered`.

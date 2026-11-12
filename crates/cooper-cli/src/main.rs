@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use cooper_cli::{BuildError, Loaded, Options};
 use cooper_frontend::{Diagnostic, Project};
 
-const USAGE: &str = "usage: cooper <check|build|run> [--nil-panic] <source-file.coop | project-dir>\n       cooper test [--nil-panic] <project-dir | file_test.coop> [name-filter]";
+const USAGE: &str = "usage: cooper <check|build|run> [--nil-panic] [--release] <source-file.coop | project-dir>\n       cooper test [--nil-panic] [--release] <project-dir | file_test.coop> [name-filter]";
 
 /// The command-line driver. `check` reports diagnostics, `build` produces an
 /// executable in the build directory, and `run` builds and then runs it, exiting with
@@ -16,6 +16,7 @@ fn main() -> ExitCode {
     for flag in &flags {
         match flag.as_str() {
             "--nil-panic" => options.nil_panic = true,
+            "--release" => options.release = true,
             _ => {
                 eprintln!("unknown option {flag}\n{USAGE}");
                 return ExitCode::FAILURE;

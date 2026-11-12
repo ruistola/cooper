@@ -93,7 +93,7 @@ impl Emitter<'_, '_> {
     }
 
     /// The size in bytes of one value of LLVM type `llvm`, as an `i64` operand.
-    fn size_of(&mut self, llvm: &str) -> String {
+    pub(super) fn size_of(&mut self, llvm: &str) -> String {
         let end = self.assign(&format!("getelementptr {llvm}, ptr null, i32 1"));
         self.assign(&format!("ptrtoint ptr {end} to i64"))
     }

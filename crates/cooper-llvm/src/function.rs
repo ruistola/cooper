@@ -344,7 +344,19 @@ impl Emitter<'_, '_> {
         if !place.local {
             self.write_barrier(&ptr, &place.ty, value);
         }
-        self.inst(&format!("store {} {}, ptr {ptr}", value.ty, value.operand));
+        if value.operand == "zeroinitializer" {
+            self.store_zero(&value.ty, &ptr);
+        } else {
+            self.inst(&format!("store {} {}, ptr {ptr}", value.ty, value.operand));
+        }
+    }
+
+    /// Zero the value of LLVM type `llvm` at `ptr`. A memset, because LLVM's optimizer splits a store of
+    /// `zeroinitializer` into a store per element, which takes minutes for a large array.
+    fn store_zero(&mut self, llvm: &str, ptr: &str) {
+        self.module.declare("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)");
+        let size = self.size_of(llvm);
+        self.inst(&format!("call void @llvm.memset.p0.i64(ptr {ptr}, i8 0, i64 {size}, i1 false)"));
     }
 
     /// Go's hybrid write barrier, ahead of a store of `value` to `ptr`, which holds a value of type `ty` outside
@@ -594,7 +606,7 @@ impl Emitter<'_, '_> {
                 if self.module.defs.is_extern_union(&expr.ty) {
                     // The one member set is written over zeroed storage.
                     let temp = self.slot(None, &expr.ty, span)?;
-                    self.inst(&format!("store {llvm} zeroinitializer, ptr {}", temp.ptr));
+                    self.store_zero(&llvm, &temp.ptr);
                     for (name, value) in members {
                         let value = self.expr(value)?;
                         let member = self.field_place(&temp, name, span)?;
@@ -715,7 +727,7 @@ impl Emitter<'_, '_> {
         let temp = self.slot(None, ty, span)?;
         let llvm = temp.llvm.clone().expect("a sum type has an LLVM type");
         let (tag, slots) = self.module.variant(ty, variant);
-        self.inst(&format!("store {llvm} zeroinitializer, ptr {}", temp.ptr));
+        self.store_zero(&llvm, &temp.ptr);
         let tag_ptr = self.assign(&format!("getelementptr {llvm}, ptr {}, i32 0, i32 0", temp.ptr));
         self.inst(&format!("store i32 {tag}, ptr {tag_ptr}"));
         if !slots.is_empty() {

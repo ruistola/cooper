@@ -14,6 +14,7 @@ cargo run -- check examples/demo         # check a project
 cargo run -- build examples/demo         # build an executable into examples/demo/build/
 cargo run -- test examples/demo          # run a project's *_test.coop tests
 cargo run -- run --nil-panic file.coop   # dereferencing nil panics instead of being inert
+cargo run -- run --release file.coop     # optimize the program (clang -O2)
 ```
 
 Building needs `clang` on the `PATH` (or a compatible compiler named by `COOPER_CC`).

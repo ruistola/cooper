@@ -1,6 +1,6 @@
 # Testing
 
-`cooper test <project-dir> [name-filter]` builds and runs a project's tests.
+`cooper test <project-dir> [name-filter]` builds and runs a project's tests (optimized with `--release`).
 
 ## Writing tests
 

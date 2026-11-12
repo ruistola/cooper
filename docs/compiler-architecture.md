@@ -168,11 +168,9 @@ builds and runs, exiting with the program's status.
 The runtime owns the process entry point: its C `main` calls `cooper_main`, which the backend
 exports as a wrapper around the program's `main` (returning `i32`, or unit for status 0).
 Structs are named LLVM struct types laid out in declaration order, and tuples are literal
-struct types; both are first-class values. Locals live in stack slots, except a local whose
-address is taken (with `&`, or as the receiver of a pointer-receiver method), which is
-allocated on the heap where it is bound. This stands in for Go-style escape analysis, which
-will keep such locals on the stack whenever their address does not outlive the frame. Heap
-memory is not yet reclaimed. Inert nil costs no
+struct types; both are first-class values. Locals live in stack slots, except a local that
+escape analysis moves to the heap, where it is allocated when it is bound; the collector
+reclaims the heap ([Garbage Collector](./garbage-collector.md)). Inert nil costs no
 branch: an access through a pointer that is null is redirected to a zero-filled buffer for
 loads and to a discard buffer for stores.
 

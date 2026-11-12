@@ -119,7 +119,8 @@ twentieths of the way from the live bytes to the goal.
 
 `COOPER_GC=stress` runs a whole cycle at every allocation, and `COOPER_GC=markstress` keeps a cycle on almost
 all the time: one begins at the first allocation after the last ended, and each allocation marks a little. Both
-poison freed memory. The golden-program harness runs every program again under stress (with checkmark), on four
+poison freed memory. The golden-program harness builds every program unoptimized and with `--release`, and runs
+each build again under stress (with checkmark), on four
 processors (`COOPER_THREADS=4`), under both, and under markstress on four processors (with checkmark), requiring
 the same output.
 `COOPER_GC=checkmark` (after Go's `gccheckmark`) marks a second time at the end of every cycle, serially and

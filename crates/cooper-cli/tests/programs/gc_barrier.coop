@@ -1,0 +1,78 @@
+# exit: 0
+# stdout: 4 threads keep 400 nodes, values sum 19800, labels intact
+# Threads move nodes between the lists of a heap array while other threads make garbage, so the collector marks
+# while they move: a node is unlinked from one list, held only in a local, and linked into another list that
+# marking may already have passed. The write barrier must shade it, or the node is freed while reachable. (The
+# harness also runs this with marking on almost all the time, checking every mark.)
+use {
+    std.io.println,
+    std.threads.yield,
+    std.sync.{ Atomic, WaitGroup },
+}
+
+struct Node {
+    value: i64,
+    label: string,
+    next: Node^,
+}
+
+func shuffle(seed: i64, done: Atomic^, wg: WaitGroup^, nodes: Atomic^, values: Atomic^, bad: Atomic^) {
+    let lists: Node^[]
+    for i in 0..4 do lists.push(nil)
+    for i in 0..100 do {
+        let node: Node = Node{value: i, label: "node {i}", next: lists[0]}
+        lists[0] = &node
+    }
+    state := seed
+    step := 0
+    while done.load() == 0 do {
+        state = (state * 1103515245 + 12345) % 2147483648
+        from := state % 4
+        to := state / 4 % 4
+        node := lists[from]
+        if node != nil then {
+            lists[from] = node.next
+            node.next = lists[to]
+            lists[to] = node
+        }
+        step += 1
+        if step % 100 == 0 then yield()
+    }
+    for list in lists do {
+        while list != nil do {
+            nodes.add(1)
+            values.add(list.value)
+            if list.label != "node {list.value}" then bad.add(1)
+            list = list.next
+        }
+    }
+    wg.done()
+}
+
+func churn(wg: WaitGroup^) {
+    for round in 0..300 do {
+        let junk: string[]
+        for j in 0..20 do junk.push("garbage {round} {j} padded out to a reasonable length")
+        yield()
+    }
+    wg.done()
+}
+
+func main() {
+    let movers: WaitGroup
+    let churners: WaitGroup
+    let done: Atomic
+    let nodes: Atomic
+    let values: Atomic
+    let bad: Atomic
+    movers.add(4)
+    churners.add(2)
+    for id in 0..4 do thread shuffle(i64(id) + 1, &done, &movers, &nodes, &values, &bad)
+    thread churn(&churners)
+    thread churn(&churners)
+    churners.wait()
+    done.store(1)
+    movers.wait()
+    labels := if bad.load() == 0 then "intact" else "damaged"
+    println("4 threads keep {nodes.load()} nodes, values sum {values.load()}, labels {labels}")
+}

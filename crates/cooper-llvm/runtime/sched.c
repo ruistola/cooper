@@ -662,6 +662,7 @@ static __attribute__((noinline)) void scan_own_stack(void) {
     Thread *thread = get_m()->current;
     uint64_t cycle = LOAD(&scan_cycle);
     if (thread && cycle && LOAD(&thread->scanned) != cycle) scan_own_frames(thread, cycle);
+    COOPER_NOT_TAIL();
 }
 
 /* Before switching to `thread`. */
@@ -755,6 +756,7 @@ static __attribute__((noinline)) void stop_thread(M *m) {
 static __attribute__((noinline)) void gc_poll(void) {
     __builtin_unwind_init();
     if (LOAD(&sched.gcwaiting)) stop_thread(get_m());
+    COOPER_NOT_TAIL();
 }
 
 /* Take back the monitor's request to preempt `m`'s thread, if there is one. */

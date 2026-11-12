@@ -144,8 +144,12 @@ without the barrier before it.
 
 Conservative scanning can retain what a stale stack word points at. The scan of a thread's own stack as it begins
 a cycle reads the runtime's frames too, words those frames have not written included: on `scattered`, they keep
-the previous buffer of the growing array alive for a cycle, a fifth of the live heap. Optimized builds may keep only a derived
-pointer (one past an object's end), which a stack scan would miss: not yet validated. The page heap is a
+the previous buffer of the growing array alive for a cycle, a fifth of the live heap. Optimized builds (`-O2` for
+the program and the runtime) pass the golden programs in every stress mode with checkmark, and the benchmarks
+with poison. Their loops index arrays from the base pointer (bounds checks keep the index), so the base stays
+live across a safe point. A pointer one past an object's end appears only as the data of an empty slice, which
+reads nothing through it and at worst keeps or shades the neighbouring object. That validation was a manual run:
+the test suites build unoptimized. The page heap is a
 first-fit list. Refills, large allocations and sweeping take one heap lock, and one processor at a time sweeps
 when idle. An allocation that takes the heap a whole runway past its goal, such as
 growing a large array while every allocation survives, makes the allocating thread wait for the cycle to end (25

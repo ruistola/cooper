@@ -9,6 +9,11 @@
 
 typedef struct CooperType CooperType;
 
+/* After a call from a function that spilled the callee-saved registers to its frame (__builtin_unwind_init) so that
+   a stack scan below it finds them: keeps the call from becoming a tail call, which would restore the registers and
+   leave the frame before the callee scans the stack or stops the thread. */
+#define COOPER_NOT_TAIL() __asm__ volatile("" ::: "memory")
+
 /* A sum type value whose pointer words depend on its variant: where its tag (a u32) and payload
    are in the value, and a descriptor for the payload of each variant (null: it holds no pointers). */
 typedef struct {

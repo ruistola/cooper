@@ -1448,6 +1448,7 @@ static __attribute__((noinline)) void check_marks(size_t counted) {
 static __attribute__((noinline)) void check_marks_with_registers(size_t counted) {
     __builtin_unwind_init();
     check_marks(counted);
+    COOPER_NOT_TAIL();
 }
 
 static void fill(void *memory, size_t bytes) {

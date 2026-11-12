@@ -3,8 +3,8 @@
 Memory is reclaimed by a tracing collector modelled on Go's: a span-based allocator, a precise heap,
 conservative stacks, and Green Tea marking. It lives in the C runtime (`runtime/gc.c`, with the
 descriptor generation in `crates/cooper-llvm/src/gc.rs`). It marks in parallel while the program runs, with
-two brief stops of the world, one to begin marking and one to end it and sweep; each stop is under 1 ms on the
-benchmarks. Pause measurements against Go, controls and other measurements are in [Performance](./performance.md).
+two brief stops of the world, one to begin marking and one to end it, and sweeps while the program runs; each stop
+is under 1 ms on the benchmarks. Pause measurements against Go, controls and other measurements are in [Performance](./performance.md).
 
 ## Typed allocation
 
@@ -33,12 +33,13 @@ the span.
 Each P has an allocation cache holding the span it is allocating from for each class and kind, so the common
 allocation takes no lock. Taking a new span (a partly free one, or fresh pages), a large object, and anything else
 that changes the span structure take one heap lock. The bytes a P has allocated count toward the collection
-threshold when it refills, and the collector adds them when a collection starts; the sweep then returns the
-cached spans to the lists.
+threshold when it refills, and the collector adds them when a collection starts; the end of marking empties the
+caches, and their spans are swept like the rest.
 
 ## Collection
 
-A cycle marks while the program runs, between two brief stops of the world, and sweeps in the second. The pacer
+A cycle marks while the program runs, between two brief stops of the world, and then sweeps while the program
+runs. The pacer
 sets a heap goal after each cycle: the live bytes plus a growth percentage of the live bytes and roots (default
 100%, at least 4 MiB). The roots counted are the module-level variables and the stacks of every thread. The
 pacer, after Go's, also begins each cycle early enough that marking ends as the heap reaches the goal, with
@@ -93,9 +94,17 @@ twentieths of the way from the live bytes to the goal.
   collector turns off the barrier, once no work is left while no C store is shading, so that a store from C after
   that finds what it shades marked already. If no worker has marked for a millisecond, the monitor has one
   processor look for work, so that work only one processor sees, or none at all, still ends the cycle.
-- **Sweep.** With the world still stopped, the marked objects become the allocated ones. Spans with nothing live
-  return to a page heap that merges neighbouring free runs, and spans with free slots are listed per size class.
-  While the heap keeps more than a tenth over its next goal, large free runs go back to the operating system.
+- **Sweep.** After Go's, while the program runs. The ending stop leaves every span unswept: its mark bits say
+  which objects survived, and its allocation bits still say which were allocated. Sweeping a span makes the marked
+  objects the allocated ones, returns the span to a page heap that merges neighbouring free runs if nothing in it
+  is live, and otherwise lists it per size class, with free slots or without. An allocation that needs a span
+  sweeps spans of its size class until one has a free slot (up to 100) before it takes new pages. Allocations also
+  sweep spans of any class in proportion to the bytes they allocate, so that sweeping ends 1 MiB before the heap
+  reaches the next trigger, and a processor with no thread to run sweeps until a thread is ready. Marking needs
+  every span swept, so the allocation that begins the next cycle sweeps what is left first. `cooper_gc_collect`
+  also finishes the sweep. The ending stop sets the live bytes from what the mark workers counted as they marked,
+  plus the bytes allocated while marking, which checkmark compares with the mark bits. Once all spans are swept,
+  large free runs go back to the operating system while the heap keeps more than a tenth over its next goal.
   Reused memory is zeroed when allocated.
 - **Write barrier.** Generated code puts Go's hybrid write barrier before every store that may write a pointer
   word outside the storing function's own frame (fields, array elements, through pointers, module-level
@@ -115,7 +124,8 @@ processors (`COOPER_THREADS=4`), under both, and under markstress on four proces
 the same output.
 `COOPER_GC=checkmark` (after Go's `gccheckmark`) marks a second time at the end of every cycle, serially and
 object by object into separate bits, and panics naming any object reached that way that the mark missed, its
-size and kind, and the object or module-level variable it was reached from. An unmarked object reached only from
+size and kind, and the object or module-level variable it was reached from. It also panics if the bytes the mark
+bits hold differ from the live bytes the workers counted. An unmarked object reached only from
 a stack is passed over: a stack scanned early in the cycle may have exposed, by the end, words its frames left
 behind before the scan, which can name objects that died. `gc_test.c`, run by `tests/allocator.rs`,
 tests the allocator and collector alone: sizes, pointer bitmaps, reuse, interior pointers, reclamation,
@@ -134,8 +144,8 @@ without the barrier before it.
 
 Conservative scanning can retain what a stale stack word points at. Optimized builds may keep only a derived
 pointer (one past an object's end), which a stack scan would miss: not yet validated. The page heap is a
-first-fit list. Refills and large allocations take one heap lock. Sweeping is serial and stops the world, so
-the ending pause grows with the heap. An allocation that takes the heap a whole runway past its goal, such as
+first-fit list. Refills, large allocations and sweeping take one heap lock, and one processor at a time sweeps
+when idle. An allocation that takes the heap a whole runway past its goal, such as
 growing a large array while every allocation survives, makes the allocating thread wait for the cycle to end (up to
 12 ms on `scattered` with ten processors, 19 ms with one).
 Objects allocated black survive the cycle, so a program whose heap is mostly garbage collects more often than its

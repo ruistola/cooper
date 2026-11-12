@@ -116,7 +116,9 @@ void cooper_start_helpers(void (*helper)(void));
    scheduler has up to `dedicated` Ps leave the threads they run, idle ones first, and while marking, the monitor
    has a P that runs a thread leave it when `worker_due(p)` says the P should mark.
    cooper_scan_waiting_threads scans the stacks of threads that are not running and are not yet scanned, and gives
-   whether some may still need it. */
+   whether some may still need it. cooper_mark_end hands over sweeping, unless `sweep` is null: a P with nothing to
+   run calls `sweep(stop)` until it gives false, which it does unless it stopped because `stop()` was true; and
+   as the world restarts, an idle P is woken for it. */
 typedef struct {
     void (*scan)(uintptr_t low, uintptr_t high);
     bool (*worker_mark)(bool (*stop)(void));
@@ -125,7 +127,7 @@ typedef struct {
     int dedicated;
 } CooperMarkHooks;
 void cooper_mark_begin(uint64_t cycle, const CooperMarkHooks *hooks);
-void cooper_mark_end(void);
+void cooper_mark_end(bool (*sweep)(bool (*stop)(void)));
 bool cooper_scan_waiting_threads(void);
 
 /* Safe points. Generated code polls cooper_poll_word at function entry and loop back-edges, and calls

@@ -372,7 +372,7 @@ static void test_marking_scans_each_stack_once_before_it_runs(void) {
         CHECK(cooper_stop_the_world());
         for (int i = 0; i < SCANNED; i++) CHECK(cooper_load(&scans_of[i]) == 1);
         cooper_store(&marking, 0);
-        cooper_mark_end();
+        cooper_mark_end(NULL);
         cooper_start_the_world();
     }
     CHECK(cooper_load(&ran_unscanned) == 0);

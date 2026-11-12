@@ -3,7 +3,7 @@
 ## Pauses
 
 The collector marks while the program runs and stops the world twice per collection: once to begin marking, and
-once to end it and sweep. On the benchmarks below (`-O2`, ten processors, Apple M5, ranges over three runs) the
+once to end it. Sweeping follows while the program runs. On the benchmarks below (`-O2`, ten processors, Apple M5, ranges over three runs) the
 longest stop is under 1 ms. Go's stops (measured with `GODEBUG=gctrace=1`, the longer of a cycle's two) are
 shorter on the tree benchmarks and in the same range on the others:
 
@@ -14,16 +14,12 @@ shorter on the tree benchmarks and in the same range on the others:
 | `strings` | 1.4 MiB | 0.06 to 0.11 ms | 0.08 to 0.14 ms | 0.14 to 0.23 ms |
 | `scattered` | 65 MiB | 0.5 to 0.7 ms | 0.6 to 1.2 ms | 12 ms (while building the graph), 0.6 to 1.8 ms after |
 
-With one processor the stops are about as long. A thread is held up for longer in two cases:
-
-- The sweep runs in the ending stop, so that stop grows with the heap. It is most of the stop on `live_heap`,
-  where Go, which sweeps concurrently, stops for a tenth as long.
-- An allocation made while marking pays for itself in marking work (an assist). The cost lands only on the thread
-  that allocates, in proportion to what it allocates, and one assist stops after 0.5 ms, leaving the rest as debt.
-  A thread that does not allocate while marking never assists. The exception is an allocation that takes the heap a
-  whole runway past its goal: the thread then waits for the cycle to end. `scattered` does this while it builds
-  its graph, when growing its array of 3M nodes takes the heap past the limit (12 ms with ten processors, 19 ms
-  with one).
+With one processor the stops are about as long. A thread is held up for longer by an assist: an allocation made
+while marking pays for itself in marking work. The cost lands only on the thread that allocates, in proportion to
+what it allocates, and one assist stops after 0.5 ms, leaving the rest as debt. A thread that does not allocate
+while marking never assists. The exception is an allocation that takes the heap a whole runway past its goal: the
+thread then waits for the cycle to end. `scattered` does this while it builds its graph, when growing its array
+of 3M nodes takes the heap past the limit (12 ms with ten processors, 19 ms with one).
 
 The wall times below include marking. With one program thread on ten processors, most marking runs on idle
 processors, so the wall time does not show its CPU cost. The CPU time is close to Go's (user time on `-O2`:
@@ -36,8 +32,8 @@ Environment variables read by every Cooper program's runtime:
 
 | Variable | Effect |
 |---|---|
-| `COOPER_GC_STATS=1` | At exit, print the number of collections and of stops of the world, the time the world was stopped (in all, sweeping, and the longest pause), how long marking ran and the time summed over the mark workers (assists, with the longest an allocation spent assisting; background workers; idle processors), bytes allocated, peak heap and the most the heap went over its goal, live bytes after the last collection, and memory returned to the system |
-| `COOPER_GC=trace` | Print one line per collection: how long marking ran and the time summed over the workers (assists, with the longest; background workers; idle processors), the cycle's stops (how many, the longest, the last with its sweep and scavenging), the heap when marking began, when it ended, and its goal, then live bytes, the next trigger and goal, and heap size |
+| `COOPER_GC_STATS=1` | At exit, print the number of collections and of stops of the world, the time the world was stopped (in all, and the longest pause), the time spent sweeping, how long marking ran and the time summed over the mark workers (assists, with the longest an allocation spent assisting; background workers; idle processors), bytes allocated, peak heap and the most the heap went over its goal, live bytes after the last collection, and memory returned to the system |
+| `COOPER_GC=trace` | Print one line per collection: how long marking ran and the time summed over the workers (assists, with the longest; background workers; idle processors), the cycle's stops (how many, the longest, the last), the heap when marking began, when it ended, and its goal, then live bytes, the next trigger and goal, and heap size |
 | `COOPER_GC=stress` | Run a whole collection at every allocation and poison freed memory |
 | `COOPER_GC=markstress` | Keep marking on almost all the time (a collection begins at the first allocation after one ends, and each allocation marks a little), and poison freed memory |
 | `COOPER_GC=poison` | Fill freed memory with `0xDB`, so a missed root crashes instead of silently reusing memory |
@@ -50,9 +46,9 @@ The pacer follows Go's: the heap may reach the live bytes plus the growth percen
 roots (stack and module-level variables), but at least 4 MiB scaled by the percentage. Marking begins early enough
 to end at the goal with a quarter of the processors' time, and allocations assist in proportion to their bytes
 ([Garbage Collector](./garbage-collector.md)).
-Statistics cost nothing while allocating: bytes allocated are derived at each collection. After each collection,
-free runs of 128 KiB or more are returned to the operating system (`madvise`) while the heap keeps more than a
-tenth over its next goal.
+Statistics cost nothing while allocating: bytes allocated are derived at each collection. Once a collection's
+sweep is done, free runs of 128 KiB or more are returned to the operating system (`madvise`) while the heap keeps
+more than a tenth over its next goal.
 
 ## Benchmarks
 

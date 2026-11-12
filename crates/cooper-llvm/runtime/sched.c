@@ -204,7 +204,7 @@ struct M {
      per-M:      this_m (thread-local) and what it points to, the signal alternate stack
      per-P:      the fields of P not marked otherwise
      immutable after cooper_sched_init: nprocs, allp, stack_size, guard_size, page_size
-     set with the world stopped: scan_cycle (read atomically), hooks, mark_starting, timers_scanned
+     set with the world stopped: scan_cycle (read atomically), hooks, mark_starting, timers_scanned, idle_sweep
      atomic:     next_id, next_m_id, all_threads, pooled, cooper_poll_word, stacks_pending, and the fields of sched so
                  marked
      sched.lock: the rest of sched, P.m, P.idle_next, P's monitor fields, M.nextp, M.idle_next */
@@ -258,6 +258,10 @@ static CooperMarkHooks hooks;
 static bool mark_starting;
 static bool stacks_pending;
 static uint64_t timers_scanned;
+/* Sweeping after marking (cooper_mark_end): the collector's function, and whether an idle P should call it
+   (atomic). */
+static bool (*idle_sweep)(bool (*stop)(void));
+static bool sweeping;
 
 /* The running M. A thread may resume on another M after any switch, so code on a thread's stack reads this
    afresh after each one; the call keeps the compiler from keeping the thread-local's address across it. */
@@ -684,8 +688,10 @@ void cooper_mark_begin(uint64_t cycle, const CooperMarkHooks *mark_hooks) {
     pthread_cond_signal(&sched.sysmon_wake);
 }
 
-void cooper_mark_end(void) {
+void cooper_mark_end(bool (*sweep)(bool (*stop)(void))) {
     STORE(&scan_cycle, 0);
+    idle_sweep = sweep;
+    STORE(&sweeping, sweep != NULL);
 }
 
 bool cooper_scan_waiting_threads(void) {
@@ -813,10 +819,13 @@ void cooper_start_the_world(void) {
         else STORE(&p->status, P_RUNNING);
     }
     /* Idle Ps mark (find_runnable), and as marking begins, Ps running threads leave them for the dedicated workers
-       that idle Ps do not run. */
+       that idle Ps do not run. After marking, one idle P sweeps. */
     int started = 0;
     if (LOAD(&scan_cycle)) {
         for (P *p; (p = p_get_idle()); started++) startm_locked(p, false);
+    } else if (LOAD(&sweeping)) {
+        P *p = p_get_idle();
+        if (p) startm_locked(p, false);
     }
     for (int i = 0; mark_starting && i < nprocs && started < hooks.dedicated; i++) {
         M *holder = allp[i].m;
@@ -1040,13 +1049,20 @@ static Thread *find_runnable(M *m) {
             thread = steal_work(m);
             if (thread) return thread;
         }
-        /* Nothing to run: mark while the collector has work, rather than give the P back. */
-        if (LOAD(&scan_cycle)) {
+        /* Nothing to run: mark while the collector has work, or sweep while it has spans left that no other P
+           sweeps, rather than give the P back. */
+        if (LOAD(&scan_cycle) || LOAD(&sweeping)) {
             if (m->spinning) {
                 m->spinning = 0;
                 ADD(&sched.nmspinning, -1);
             }
-            if (hooks.idle_mark(idle_mark_should_stop)) continue;
+            if (LOAD(&scan_cycle)) {
+                if (hooks.idle_mark(idle_mark_should_stop)) continue;
+            } else if (idle_sweep(idle_mark_should_stop)) {
+                continue;
+            } else {
+                STORE(&sweeping, false);
+            }
         }
         /* Nothing to run: give the P back. */
         pthread_mutex_lock(&sched.lock);

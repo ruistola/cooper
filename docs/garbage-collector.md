@@ -142,12 +142,14 @@ without the barrier before it.
 
 ## Known limits
 
-Conservative scanning can retain what a stale stack word points at. Optimized builds may keep only a derived
+Conservative scanning can retain what a stale stack word points at. The scan of a thread's own stack as it begins
+a cycle reads the runtime's frames too, words those frames have not written included: on `scattered`, they keep
+the previous buffer of the growing array alive for a cycle, a fifth of the live heap. Optimized builds may keep only a derived
 pointer (one past an object's end), which a stack scan would miss: not yet validated. The page heap is a
 first-fit list. Refills, large allocations and sweeping take one heap lock, and one processor at a time sweeps
 when idle. An allocation that takes the heap a whole runway past its goal, such as
-growing a large array while every allocation survives, makes the allocating thread wait for the cycle to end (up to
-12 ms on `scattered` with ten processors, 19 ms with one).
+growing a large array while every allocation survives, makes the allocating thread wait for the cycle to end (25
+to 53 ms on `scattered` with ten processors, 22 ms with one).
 Objects allocated black survive the cycle, so a program whose heap is mostly garbage collects more often than its
 live bytes alone would need. The barrier's slow path marks directly rather than buffering. Waking the helpers costs about 40 µs per stop with ten processors, which
 shows only when collections are small and frequent.

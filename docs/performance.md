@@ -4,22 +4,24 @@
 
 The collector marks while the program runs and stops the world twice per collection: once to begin marking, and
 once to end it. Sweeping follows while the program runs. On the benchmarks below (`-O2`, ten processors, Apple M5, ranges over three runs) the
-longest stop is under 1 ms. Go's stops (measured with `GODEBUG=gctrace=1`, the longer of a cycle's two) are
-shorter on the tree benchmarks and in the same range on the others:
+longest stop is under 0.25 ms. Go's stops (measured with `GODEBUG=gctrace=1`, the longer of a cycle's two) are
+slightly shorter on the tree benchmarks, about as long on `strings`, and longer on `scattered`:
 
 | Benchmark | Live heap | Cooper longest stop | Go longest stop | Cooper longest assist |
 |---|---|---|---|---|
-| `binary_trees` | 10 MiB | 0.08 to 0.09 ms | 0.03 ms | 0.3 to 0.4 ms |
-| `live_heap` | 140 MiB | 0.3 to 0.5 ms | 0.02 to 0.03 ms | 0.5 ms |
-| `strings` | 1.4 MiB | 0.06 to 0.11 ms | 0.08 to 0.14 ms | 0.14 to 0.23 ms |
-| `scattered` | 65 MiB | 0.5 to 0.7 ms | 0.6 to 1.2 ms | 12 ms (while building the graph), 0.6 to 1.8 ms after |
+| `binary_trees` | 10 MiB | 0.04 to 0.05 ms | 0.03 ms | 0.3 to 0.6 ms |
+| `live_heap` | 140 MiB | 0.04 ms | 0.02 to 0.03 ms | 0.5 ms |
+| `strings` | 1.4 MiB | 0.04 to 0.09 ms | 0.08 to 0.14 ms | 0.12 to 0.14 ms |
+| `scattered` | 65 MiB | 0.12 to 0.21 ms | 0.6 to 1.2 ms | 25 to 53 ms (while building the graph), 0.6 to 1.8 ms after |
 
 With one processor the stops are about as long. A thread is held up for longer by an assist: an allocation made
 while marking pays for itself in marking work. The cost lands only on the thread that allocates, in proportion to
 what it allocates, and one assist stops after 0.5 ms, leaving the rest as debt. A thread that does not allocate
 while marking never assists. The exception is an allocation that takes the heap a whole runway past its goal: the
 thread then waits for the cycle to end. `scattered` does this while it builds its graph, when growing its array
-of 3M nodes takes the heap past the limit (12 ms with ten processors, 19 ms with one).
+of 3M nodes takes the heap past the limit (25 to 53 ms with ten processors, 22 ms with one). Those cycles also
+mark the array's previous buffer, which stale words in the runtime's stack frames point at (conservative stack
+scanning), so they mark about a fifth more than is live and take that much longer.
 
 The wall times below include marking. With one program thread on ten processors, most marking runs on idle
 processors, so the wall time does not show its CPU cost. The CPU time is close to Go's (user time on `-O2`:

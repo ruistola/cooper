@@ -50,6 +50,7 @@
 #define TABLE_BITS 11
 #define MIN_HEAP ((size_t)4 << 20) /* the smallest heap that is worth collecting */
 #define REFILL_SWEEPS 100 /* the most spans of its class a refill sweeps for free slots before it takes new pages */
+#define SWEEP_BATCH 16    /* the spans swept in one hold of the heap lock, outside refills */
 
 enum { SPAN_FREE = 0, SPAN_IN_USE = 1 };
 
@@ -469,8 +470,7 @@ enum { PHASE_OFF, PHASE_MARK };
 static uint64_t cycles; /* atomic: the cycles begun */
 
 static void sweep_paced(void);
-static Span *take_unswept(int spanclass);
-static void sweep_span(Span *span);
+static Span *sweep_class(int spanclass);
 
 /* With the heap lock held. Allocated black while marking, as next_free does. */
 static void *allocate_large(size_t size, const CooperType *type) {
@@ -653,6 +653,32 @@ void *cooper_alloc_with_word(size_t size, const CooperType *type) {
     return allocate(size + 8, type);
 }
 
+/* The cache's span of the class has no free slot: give it one that has, and take a slot from it. Out of line, as
+   Go's mcache.refill is, so that the allocation's fast path keeps a small frame. */
+static __attribute__((noinline)) void *refill(AllocCache *cache, int class, int kind, int black) {
+    int spanclass = class * KINDS + kind;
+    void *slot;
+    heap_lock();
+    __atomic_store_n(&heap_used, heap_used + cache->used, __ATOMIC_RELAXED);
+    cache->used = 0;
+    sweep_paced();
+    do {
+        /* A swept span with free slots, or one found by sweeping the class, or a new one. */
+        Span *span = partial[spanclass];
+        if (!span) span = sweep_class(spanclass);
+        if (span) {
+            partial[spanclass] = span->next;
+            push(&full[spanclass], span);
+        } else {
+            span = new_small_span(class, kind);
+        }
+        cache->spans[spanclass] = span;
+        slot = next_free(span, black);
+    } while (!slot);
+    heap_unlock();
+    return slot;
+}
+
 static void *allocate(size_t size, const CooperType *type) {
     if (size == 0) return &zerobase;
     if (!ready) init_heap();
@@ -687,30 +713,8 @@ static void *allocate(size_t size, const CooperType *type) {
     Span *span = cache->spans[spanclass];
     void *slot = span ? next_free(span, black) : NULL;
     if (!slot) {
-        heap_lock();
-        __atomic_store_n(&heap_used, heap_used + cache->used, __ATOMIC_RELAXED);
-        cache->used = 0;
-        sweep_paced();
-        do {
-            /* A swept span with free slots; or one found by sweeping the class, as long as that does not take
-               long; or a new one. */
-            span = partial[spanclass];
-            for (int n = 0; !span && n < REFILL_SWEEPS; n++) {
-                Span *unswept_span = take_unswept(spanclass);
-                if (!unswept_span) break;
-                sweep_span(unswept_span);
-                span = partial[spanclass];
-            }
-            if (span) {
-                partial[spanclass] = span->next;
-                push(&full[spanclass], span);
-            } else {
-                span = new_small_span(class, kind);
-            }
-            cache->spans[spanclass] = span;
-            slot = next_free(span, black);
-        } while (!slot);
-        heap_unlock();
+        slot = refill(cache, class, kind, black);
+        span = cache->spans[spanclass];
     }
     cache->used += span->elemsize;
     /* The bitmap words are shared with neighbouring slots of the span, which is this P's. */
@@ -1512,7 +1516,6 @@ static Span *take_unswept(int spanclass) {
 
 /* With the heap lock held: sweep a span taken off an unswept list. Freed objects are poisoned in a poison mode. */
 static void sweep_span(Span *span) {
-    uint64_t start = instrument ? now_ns() : 0;
     sweeper.pages_swept += span->npages;
     if (span->large) {
         if (span->mark_bits[0] & 1) {
@@ -1549,7 +1552,6 @@ static void sweep_span(Span *span) {
     }
     size_t left = sweeper.left - 1;
     __atomic_store_n(&sweeper.left, left, __ATOMIC_RELAXED);
-    if (instrument) stats.sweep_ns += now_ns() - start;
     if (left == 0) scavenge();
 }
 
@@ -1565,11 +1567,38 @@ static bool sweep_one(void) {
     return false;
 }
 
+/* With the heap lock held: sweep up to `max` spans. Gives whether any are left. Sweeping is timed a batch at a time,
+   as reading the clock costs about as much as sweeping a span. */
+static bool sweep_some(size_t max) {
+    uint64_t start = instrument ? now_ns() : 0;
+    for (size_t n = 0; n < max && sweep_one(); n++) {
+    }
+    if (instrument) stats.sweep_ns += now_ns() - start;
+    return sweeper.left != 0;
+}
+
+/* With the heap lock held, for a refill that found no partial span: sweep spans of its class until one has free
+   slots, as long as that does not take long. Gives the partial span, or null. */
+static Span *sweep_class(int spanclass) {
+    if (!unswept[0][spanclass] && !unswept[1][spanclass]) return NULL;
+    uint64_t start = instrument ? now_ns() : 0;
+    for (int n = 0; !partial[spanclass] && n < REFILL_SWEEPS; n++) {
+        Span *span = take_unswept(spanclass);
+        if (!span) break;
+        sweep_span(span);
+    }
+    if (instrument) stats.sweep_ns += now_ns() - start;
+    return partial[spanclass];
+}
+
 /* With the heap lock held, after heap_used grew: sweep as many pages as the bytes allocated since owe. */
 static void sweep_paced(void) {
     double owed = sweeper.pages_per_byte * (double)(heap_used - sweeper.basis);
+    if ((double)sweeper.pages_swept >= owed || !sweeper.left) return;
+    uint64_t start = instrument ? now_ns() : 0;
     while ((double)sweeper.pages_swept < owed && sweep_one()) {
     }
+    if (instrument) stats.sweep_ns += now_ns() - start;
 }
 
 /* With the world stopped and the heap lock held, as marking ends and heap_used is set to the bytes marked: every
@@ -1591,11 +1620,11 @@ static void begin_sweep(void) {
     if (!span_count) scavenge();
 }
 
-/* Sweep what is left, with a safe point after each span. */
+/* Sweep what is left, with a safe point after each batch. */
 static void finish_sweep(void) {
     while (__atomic_load_n(&sweeper.left, __ATOMIC_RELAXED)) {
         heap_lock();
-        sweep_one();
+        sweep_some(SWEEP_BATCH);
         heap_unlock();
         if (__atomic_load_n(&cooper_poll_word, __ATOMIC_RELAXED)) cooper_poll_slow();
     }
@@ -1608,10 +1637,10 @@ static bool idle_sweep(bool (*stop)(void)) {
     if (!__atomic_load_n(&sweeper.left, __ATOMIC_RELAXED) || __atomic_exchange_n(&sweeper.idle, 1, __ATOMIC_ACQUIRE)) {
         return false;
     }
-    bool stopped = false, swept = true;
-    while (swept && !(stopped = stop())) {
+    bool stopped = false, left = true;
+    while (left && !(stopped = stop())) {
         heap_lock();
-        swept = sweep_one();
+        left = sweep_some(SWEEP_BATCH);
         heap_unlock();
     }
     __atomic_store_n(&sweeper.idle, 0, __ATOMIC_RELEASE);
@@ -1789,8 +1818,7 @@ static void begin_cycle(int forced) {
     count_cached();
     int begin = phase == PHASE_OFF && (forced || stress || markstress || heap_used >= trigger);
     if (begin) {
-        while (sweep_one()) {
-        }
+        sweep_some(SIZE_MAX);
         begin_mark();
     }
     heap_unlock();

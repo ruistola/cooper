@@ -110,6 +110,10 @@ _Noreturn void cooper_run_main(int (*entry)(void));
 void cooper_save_stack_pointer(void *sp);
 void cooper_scan_threads(void (*scan)(void *context, uintptr_t low, uintptr_t high), void *context, uint64_t cycle);
 void cooper_start_helpers(void (*helper)(void));
+/* Run `f(arg)` with the running thread's stack scanned, meanwhile, from this call up: for the collector's slow
+   paths, whose own frames hold no pointer the program needs, but may hold words left there by earlier calls that
+   would keep dead objects alive. `f` must keep any heap pointer it needs elsewhere than its frames. */
+void cooper_call_scanned_above(void (*f)(void *), void *arg);
 /* Marking while the program runs, for the collector. Between cooper_mark_begin and cooper_mark_end, both called with
    the world stopped, the scheduler has every thread's stack scanned once for `cycle` (which cooper_scan_threads
    then counts as claimed), by `scan`, which scans a range of possible pointers with the running P's mark worker:
@@ -179,5 +183,15 @@ void cooper_gc_init(void);
 
 /* Collect garbage now. */
 void cooper_gc_collect(void);
+
+/* Let the heap grow to `percent` over what survived the last collection before the next begins, or (negative)
+   turn automatic collection off. Gives the previous setting, -1 for off. */
+int64_t cooper_gc_set_growth(int64_t percent);
+
+/* The collector's statistics, as std.gc's `Stats` lays them out: times in nanoseconds, sizes in bytes. */
+typedef struct {
+    int64_t collections, pauses, pause_ns, longest_pause_ns, allocated, live, heap, peak_heap;
+} CooperGcStats;
+void cooper_gc_read_stats(CooperGcStats *out);
 
 #endif

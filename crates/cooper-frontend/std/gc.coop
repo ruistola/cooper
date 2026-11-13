@@ -1,0 +1,52 @@
+# The standard `gc` module: control of the garbage collector from the program, after Go's `runtime.GC` and
+# `debug.SetGCPercent`. A game, for one, can turn automatic collection off during a level and collect at a
+# transition. The collector and its pacing are described in docs/garbage-collector.md.
+
+extern func cooper_gc_collect()
+extern func cooper_gc_set_growth(percent: i64): i64
+extern func cooper_gc_read_stats(out: Stats^)
+extern func cooper_fail(message: u8^)
+
+# What the collector has done since the program started. Times are in nanoseconds, sizes in bytes.
+struct Stats {
+    # Collections completed.
+    collections: i64,
+    # Stops of the world, two or more for each collection, and the time they took in all and the longest of them.
+    pauses: i64,
+    pauseTotal: i64,
+    longestPause: i64,
+    # Bytes allocated, counted as each processor takes memory for its allocations from the heap.
+    allocated: i64,
+    # Bytes that survived the last collection.
+    live: i64,
+    # Bytes the heap holds for objects now, and the most it has held.
+    heap: i64,
+    peakHeap: i64,
+}
+
+# Collects garbage now: completes the collection under way, if there is one, then runs a whole one. Returns once
+# the memory found free is ready for reuse. It collects even with automatic collection off.
+func collect() {
+    cooper_gc_collect()
+}
+
+# Sets how far the heap may grow past what survived the last collection, in percent, before the next collection
+# begins: `Some(100)` (the default, unless COOPER_HEAP_GROWTH sets another) lets it double. `None` turns automatic
+# collection off, leaving only `collect`. Returns the previous setting, to restore it with.
+func setGrowth(percent: Maybe i64): Maybe i64 {
+    previous := cooper_gc_set_growth(match percent with {
+        Some(p) => {
+            if p < 1 then cooper_fail("heap growth must be at least 1 percent\0".data())
+            p
+        }
+        None => -1
+    })
+    return if previous < 0 then None else Some(previous)
+}
+
+# The collector's statistics so far.
+func stats(): Stats {
+    let s: Stats
+    cooper_gc_read_stats(&s)
+    return s
+}

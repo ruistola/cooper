@@ -163,7 +163,8 @@ static int started;            /* cooper_gc_init has run: collections may begin 
 static unsigned growth = 100;  /* the heap may grow to this percent over what survived: COOPER_HEAP_GROWTH */
 static int gc_off;
 
-/* --- measurements: COOPER_GC=trace prints a line per collection, COOPER_GC_STATS=1 a summary at exit --- */
+/* --- measurements: COOPER_GC=trace prints a line per collection, COOPER_GC_STATS=1 a summary at exit; the counts
+   and the pauses are kept without them too, for cooper_gc_read_stats --- */
 
 static struct {
     uint64_t collections, bytes_allocated, pauses;
@@ -174,6 +175,7 @@ static struct {
     uint64_t pause_ns, max_pause_ns;
     uint64_t sweep_ns;       /* spent sweeping, while the program ran */
     size_t peak_heap, last_live;
+    size_t last_roots;       /* stack, register and module-level variable bytes the last collection scanned */
     double max_overshoot;    /* the most the heap went over its goal in a cycle, as a fraction of the goal */
 } stats;
 static int trace, instrument; /* instrument: trace or statistics are on */
@@ -621,7 +623,7 @@ static void init_heap(void) {
 }
 
 static void *allocate(size_t size, const CooperType *type);
-static void pace(void);
+static void pace(void *unused);
 static void assist(int64_t *credit);
 
 /* The running thread's allocation credit in this cycle, or the P's for code that runs on no thread. */
@@ -686,7 +688,7 @@ static void *allocate(size_t size, const CooperType *type) {
     AllocCache *cache = &caches[cooper_proc_id()];
     size_t used = __atomic_load_n(&heap_used, __ATOMIC_RELAXED) + cache->used;
     if (started && (stress || markstress || used >= __atomic_load_n(&pace_at, __ATOMIC_RELAXED))) {
-        pace();
+        cooper_call_scanned_above(pace, NULL);
         cache = &caches[cooper_proc_id()]; /* it may have switched */
     }
     int black = __atomic_load_n(&phase, __ATOMIC_RELAXED) == PHASE_MARK;
@@ -1783,17 +1785,18 @@ static bool end_mark(uint64_t start) {
     __atomic_store_n(&heap_used, marked, __ATOMIC_RELAXED);
     set_goal(heap_used, root_bytes);
     begin_sweep();
-    uint64_t done = instrument ? now_ns() : 0;
+    uint64_t done = now_ns();
+    record_pause(done - start);
     stats.collections++;
     stats.bytes_allocated += before > stats.last_live ? before - stats.last_live : 0;
     stats.last_live = heap_used;
+    stats.last_roots = root_bytes;
     double overshoot = before > goal ? (double)(before - goal) / goal : 0;
     if (overshoot > stats.max_overshoot) stats.max_overshoot = overshoot;
     if (!instrument) return true;
     stats.mark_ns += marked_at - mark.began;
     stats.mark_worker_ns += (uint64_t)mark.worker_ns;
     for (int i = 0; i < 3; i++) stats.by_ns[i] += (uint64_t)pacer.ns[i];
-    record_pause(done - start);
     if (trace) {
         fprintf(stderr,
                 "gc %llu: marked %.2f ms, %.2f ms on all workers (assists %.2f, longest %.2f; background %.2f; "
@@ -1813,7 +1816,7 @@ static bool end_mark(uint64_t start) {
    swept: the caller sweeps what is left first, and the stop sweeps any that a cycle ending meanwhile left. */
 static void begin_cycle(int forced) {
     finish_sweep();
-    uint64_t start = instrument ? now_ns() : 0;
+    uint64_t start = now_ns();
     if (!cooper_stop_the_world()) return;
     heap_lock();
     count_cached();
@@ -1823,7 +1826,7 @@ static void begin_cycle(int forced) {
         begin_mark();
     }
     heap_unlock();
-    if (begin && instrument) record_pause(now_ns() - start);
+    if (begin) record_pause(now_ns() - start);
     cooper_start_the_world();
 }
 
@@ -1831,10 +1834,10 @@ static void begin_cycle(int forced) {
 static void end_cycle(void) {
     if (__atomic_exchange_n(&mark.ending, 1, __ATOMIC_SEQ_CST)) return;
     uint64_t cycle = __atomic_load_n(&cycles, __ATOMIC_SEQ_CST);
-    uint64_t start = instrument ? now_ns() : 0;
+    uint64_t start = now_ns();
     if (cooper_stop_the_world()) {
         heap_lock();
-        if (phase == PHASE_MARK && cycles == cycle && !end_mark(start) && instrument) record_pause(now_ns() - start);
+        if (phase == PHASE_MARK && cycles == cycle && !end_mark(start)) record_pause(now_ns() - start);
         heap_unlock();
         cooper_start_the_world();
     }
@@ -2018,7 +2021,8 @@ static void finish_cycle(void) {
 /* An allocation reached `pace_at`, or the collector is in a stress mode: begin a cycle, or at the limit, help it end
    if the thread is in debt (one that paid its way allocates and assists as before). Under markstress an allocation
    marks a little until the heap reaches the limit. */
-static __attribute__((noinline)) void pace(void) {
+static void pace(void *unused) {
+    (void)unused;
     if (__atomic_load_n(&phase, __ATOMIC_RELAXED) == PHASE_OFF) {
         begin_cycle(0);
         if (!stress) return;
@@ -2041,9 +2045,8 @@ void cooper_gc_init(void) {
 }
 
 /* Collect now: finish the cycle that is on, if any, run one more, and sweep, as Go's runtime.GC does. */
-void cooper_gc_collect(void) {
-    if (!ready) init_heap();
-    if (!started) return;
+static void collect(void *unused) {
+    (void)unused;
     uint64_t target = __atomic_load_n(&cycles, __ATOMIC_SEQ_CST) + 1;
     for (;;) {
         uint64_t cycle = __atomic_load_n(&cycles, __ATOMIC_SEQ_CST);
@@ -2053,4 +2056,38 @@ void cooper_gc_collect(void) {
         else begin_cycle(1);
     }
     finish_sweep();
+}
+
+void cooper_gc_collect(void) {
+    if (!ready) init_heap();
+    if (started) cooper_call_scanned_above(collect, NULL);
+}
+
+/* A cycle that is marking keeps its goal; the next is paced by the new growth. */
+int64_t cooper_gc_set_growth(int64_t percent) {
+    if (!ready) init_heap();
+    heap_lock();
+    int64_t previous = gc_off ? -1 : (int64_t)growth;
+    gc_off = percent < 0;
+    if (percent > 0) growth = percent > UINT32_MAX ? UINT32_MAX : (unsigned)percent;
+    if (__atomic_load_n(&phase, __ATOMIC_SEQ_CST) == PHASE_OFF) set_goal(stats.last_live, stats.last_roots);
+    heap_unlock();
+    return previous;
+}
+
+void cooper_gc_read_stats(CooperGcStats *out) {
+    if (!ready) init_heap();
+    heap_lock();
+    size_t used = __atomic_load_n(&heap_used, __ATOMIC_RELAXED);
+    *out = (CooperGcStats){
+        .collections = (int64_t)stats.collections,
+        .pauses = (int64_t)stats.pauses,
+        .pause_ns = (int64_t)stats.pause_ns,
+        .longest_pause_ns = (int64_t)stats.max_pause_ns,
+        .allocated = (int64_t)(stats.bytes_allocated + (used > stats.last_live ? used - stats.last_live : 0)),
+        .live = (int64_t)stats.last_live,
+        .heap = (int64_t)heap_bytes,
+        .peak_heap = (int64_t)(heap_bytes > stats.peak_heap ? heap_bytes : stats.peak_heap),
+    };
+    heap_unlock();
 }

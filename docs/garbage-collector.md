@@ -62,7 +62,10 @@ twentieths of the way from the live bytes to the goal.
   `cooper_store_pointer`). A thread leaving C waits for a scan in progress. A suspended thread's registers are
   saved on its stack, or with the thread record for one in C, and a thread that has not started is reached through
   its closure. Nothing moves, so an ambiguous word only keeps alive what it appears to point into. Cooper never
-  turns an integer back into a pointer.
+  turns an integer back into a pointer. A thread in the collector's slow path (an allocation that begins a cycle,
+  or `cooper_gc_collect`) is scanned from where it entered it, with its registers spilled there: the runtime's
+  frames below hold no pointer the program needs, but words left in them by earlier calls would keep dead objects
+  alive.
 - **Mark.** Green Tea: reaching a small object marks it and queues its span, first in first out; a span's
   marked-but-unscanned objects are scanned together from its mark and scan bits. Larger objects use an object
   work stack, and an object over 128 KiB is scanned in pieces that different workers can take. Interior pointers
@@ -143,17 +146,16 @@ without the barrier before it.
 
 ## Known limits
 
-Conservative scanning can retain what a stale stack word points at. The scan of a thread's own stack as it begins
-a cycle reads the runtime's frames too, words those frames have not written included: on `scattered`, they keep
-the previous buffer of the growing array alive for a cycle, a fifth of the live heap. Optimized code could keep
+Conservative scanning can retain what a stale stack word points at: unoptimized code leaves frame slots unwritten
+for longer, and on `scattered` an unoptimized build keeps more than half again as much alive. Optimized code could keep
 only a derived pointer to an object, which the scan would miss, but its loops index arrays from the base pointer
 (bounds checks keep the index), so the base stays live across a safe point. A pointer one past an object's end
 appears only as the data of an empty slice, which reads nothing through it and at worst keeps or shades the
 neighbouring object. The golden programs run unoptimized and with `--release` to keep checking this. The page heap is a
 first-fit list. Refills, large allocations and sweeping take one heap lock, and one processor at a time sweeps
 when idle. An allocation that takes the heap a whole runway past its goal, such as
-growing a large array while every allocation survives, makes the allocating thread wait for the cycle to end (25
-to 53 ms on `scattered` with ten processors, 22 ms with one).
+growing a large array while every allocation survives, makes the allocating thread wait for the cycle to end (12
+to 14 ms on `scattered` with ten processors, 19 ms with one).
 Objects allocated black survive the cycle, so a program whose heap is mostly garbage collects more often than its
 live bytes alone would need. The barrier's slow path marks directly rather than buffering. Waking the helpers costs about 40 µs per stop with ten processors, which
 shows only when collections are small and frequent.

@@ -116,6 +116,7 @@ typedef struct Thread {
     int64_t scan_lock;        /* atomic: held to scan the stack while marking concurrently, and to switch to the
                                  thread meanwhile */
     int64_t gc_credit[2];     /* the collector's: allocation credit, and the cycle it is for */
+    uintptr_t scan_floor;     /* atomic: while nonzero, the stack is scanned from here up (cooper_call_scanned_above) */
     void *fiber;              /* ThreadSanitizer's */
 } Thread;
 
@@ -633,11 +634,17 @@ static void scan_unlock(Thread *thread) {
     STORE(&thread->scan_lock, 0);
 }
 
+/* Where a scan of `thread`'s stack begins, given its stack pointer. */
+static uintptr_t scan_low(Thread *thread, uintptr_t sp) {
+    uintptr_t floor = LOAD(&thread->scan_floor);
+    return floor ? floor : sp;
+}
+
 /* With its scan lock held, a thread that does not run: its stack from its saved stack pointer up, its registers
    if it is in C, and its code and environment. A finished thread's record holds nothing. */
 static void scan_waiting(Thread *thread, uint64_t cycle) {
     if (LOAD(&thread->state) != DEAD) {
-        hooks.scan((uintptr_t)thread->sp, thread->stack_top);
+        hooks.scan(scan_low(thread, (uintptr_t)thread->sp), thread->stack_top);
         if (LOAD(&thread->in_c)) hooks.scan((uintptr_t)thread->regs, (uintptr_t)(thread->regs + C_SAVED_WORDS));
         hooks.scan((uintptr_t)&thread->code, (uintptr_t)(&thread->env + 1));
     }
@@ -649,7 +656,7 @@ static __attribute__((noinline)) void scan_own_frames(Thread *thread, uint64_t c
     volatile char here = 0;
     scan_lock(thread);
     if (LOAD(&thread->scanned) != cycle) {
-        hooks.scan((uintptr_t)&here, thread->stack_top);
+        hooks.scan(scan_low(thread, (uintptr_t)&here), thread->stack_top);
         hooks.scan((uintptr_t)&thread->code, (uintptr_t)(&thread->env + 1));
         STORE(&thread->scanned, cycle);
     }
@@ -1601,6 +1608,25 @@ int64_t cooper_random(int64_t n) {
 
 /* --- for the collector --- */
 
+static __attribute__((noinline)) void call_with_floor(void (*f)(void *), void *arg) {
+    volatile char here = 0;
+    Thread *thread = get_m()->current;
+    if (!thread || LOAD(&thread->scan_floor)) {
+        f(arg);
+        return;
+    }
+    STORE(&thread->scan_floor, (uintptr_t)&here);
+    f(arg);
+    STORE(&thread->scan_floor, 0);
+}
+
+/* The registers are spilled in this frame, above the floor that call_with_floor sets. */
+void cooper_call_scanned_above(void (*f)(void *), void *arg) {
+    __builtin_unwind_init();
+    call_with_floor(f, arg);
+    COOPER_NOT_TAIL();
+}
+
 int cooper_proc_count(void) {
     return nprocs;
 }
@@ -1632,7 +1658,7 @@ void cooper_scan_threads(void (*scan)(void *context, uintptr_t low, uintptr_t hi
         seen = LOAD(&thread->scanned);
         if (seen == cycle || !CAS(&thread->scanned, seen, cycle)) continue;
         if (LOAD(&thread->state) == DEAD) continue;
-        scan(context, (uintptr_t)thread->sp, thread->stack_top);
+        scan(context, scan_low(thread, (uintptr_t)thread->sp), thread->stack_top);
         if (LOAD(&thread->in_c)) scan(context, (uintptr_t)thread->regs, (uintptr_t)(thread->regs + C_SAVED_WORDS));
         scan(context, (uintptr_t)&thread->code, (uintptr_t)(&thread->env + 1));
     }

@@ -156,6 +156,8 @@ has the room an OS thread would. Stacks do not move or grow. `COOPER_STACK_KIB` 
 
 A thread that overflows its stack reaches the guard page, and the program stops with
 `panic: stack overflow in thread N`. Large frames are probed a page at a time so they cannot step over the guard.
+The runtime runs on the thread's stack too (an allocation, the collector's work it does, and the mark work of a
+thread stopped for the collector), so a thread close to its limit may overflow there; it is reported the same way.
 Finished threads' stacks are kept for reuse (up to 4096), so starting a thread costs about 0.4 µs.
 
 ## Memory model

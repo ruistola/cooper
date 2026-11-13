@@ -12,16 +12,14 @@ slightly shorter on the tree benchmarks, about as long on `strings`, and longer 
 | `binary_trees` | 10 MiB | 0.04 to 0.05 ms | 0.03 ms | 0.3 to 0.6 ms |
 | `live_heap` | 140 MiB | 0.04 ms | 0.02 to 0.03 ms | 0.5 ms |
 | `strings` | 1.4 MiB | 0.04 to 0.09 ms | 0.08 to 0.14 ms | 0.12 to 0.14 ms |
-| `scattered` | 65 MiB | 0.12 to 0.21 ms | 0.6 to 1.2 ms | 25 to 53 ms (while building the graph), 0.6 to 1.8 ms after |
+| `scattered` | 65 MiB | 0.12 to 0.21 ms | 0.6 to 1.2 ms | 12 to 14 ms (while building the graph), 0.6 to 1.8 ms after |
 
 With one processor the stops are about as long. A thread is held up for longer by an assist: an allocation made
 while marking pays for itself in marking work. The cost lands only on the thread that allocates, in proportion to
 what it allocates, and one assist stops after 0.5 ms, leaving the rest as debt. A thread that does not allocate
 while marking never assists. The exception is an allocation that takes the heap a whole runway past its goal: the
 thread then waits for the cycle to end. `scattered` does this while it builds its graph, when growing its array
-of 3M nodes takes the heap past the limit (25 to 53 ms with ten processors, 22 ms with one). Those cycles also
-mark the array's previous buffer, which stale words in the runtime's stack frames point at (conservative stack
-scanning), so they mark about a fifth more than is live and take that much longer.
+of 3M nodes takes the heap past the limit (12 to 14 ms with ten processors, 19 ms with one).
 
 The wall times below include marking. With one program thread on ten processors, most marking runs on idle
 processors, so the wall time does not show its CPU cost. The CPU time is close to Go's (user time with `--release`:
@@ -29,6 +27,12 @@ processors, so the wall time does not show its CPU cost. The CPU time is close t
 that keeps every processor busy gives a quarter of the processors' time to marking while a cycle runs.
 
 ## Garbage collector controls
+
+A program controls the collector with `std.gc`, after Go's `runtime.GC` and `debug.SetGCPercent`: `collect()`
+collects now, `setGrowth(Some(n))` sets the growth percentage, `setGrowth(None)` turns automatic collection off
+(`collect` still works), each giving the previous setting, and `stats()` gives the collections, the stops of the
+world and their time, and the bytes allocated, live, and in the heap. A game, for one, can turn collection off
+during a level and collect at a transition.
 
 Environment variables read by every Cooper program's runtime:
 
@@ -61,7 +65,7 @@ build pays only for its own code: 1.2x to 2x the time of `--release`. With `--re
 on the tree benchmarks, 2x on `strings`, and 0.6x on `scattered`. The unoptimized `scattered` is faster than its
 `--release` build: its frames keep more stale pointers, so about half again as much survives each collection
 (138 MiB against 86 MiB at the end), the heap goal grows with it, and it collects 54 times instead of 82, with a
-peak heap of 300 MiB instead of 195 MiB.
+peak heap of 300 MiB instead of 180 MiB.
 
 Apple M5 with ten cores, Go 1.27, and Cooper with one processor per core:
 
@@ -70,7 +74,7 @@ Apple M5 with ten cores, Go 1.27, and Cooper with one processor per core:
 | `binary_trees`: 33M short-lived 16-byte nodes, one 8 MB long-lived tree | 0.42 s, 22 MiB | 0.34 s, 22 MiB | 0.29 s, 27 MiB |
 | `live_heap`: 128 MB live tree, 50M short-lived allocations | 0.61 s, 262 MiB | 0.51 s, 262 MiB | 0.44 s, 277 MiB |
 | `strings`: building, joining, and splitting 1.2M small strings | 0.34 s, 9 MiB | 0.17 s, 8 MiB | 0.08 s, 10 MiB |
-| `scattered`: 3M-node random graph, 120M short-lived allocations | 2.06 s, 296 MiB | 2.62 s, 199 MiB | 4.14 s, 189 MiB |
+| `scattered`: 3M-node random graph, 120M short-lived allocations | 2.06 s, 296 MiB | 2.62 s, 187 MiB | 4.14 s, 189 MiB |
 
 Marking works a span at a time, after Go's Green Tea collector ([Garbage Collector](./garbage-collector.md)). On
 `scattered`, where tracing jumps around memory, this makes marking 2.6x faster than scanning object by object. On

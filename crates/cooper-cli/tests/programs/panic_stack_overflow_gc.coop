@@ -1,0 +1,16 @@
+# exit: 101
+# stderr: panic: stack overflow in the main thread
+# env: COOPER_STACK_KIB=256
+# A recursion that allocates in every frame. Under COOPER_GC=stress each allocation runs a whole collection on
+# the thread's stack, so the overflow happens in the collector's frames, which must report it the same way.
+func deeper(n: i64, all: i64[][]): i64 {
+    let xs: i64[]
+    xs.push(n)
+    all.push(xs)
+    return deeper(n + 1, all) + all.length()
+}
+
+func main() {
+    let all: i64[][]
+    deeper(0, all)
+}

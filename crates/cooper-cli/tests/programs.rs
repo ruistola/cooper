@@ -150,7 +150,8 @@ fn check_program(path: &Path, build_root: &Path, release: bool) -> Result<(), St
 }
 
 /// The stores in the LLVM module `ir` that may write a pointer word outside the storing function's own frame
-/// (its `alloca`s and the addresses computed from them) with no write barrier on their address before them, each
+/// (its `alloca`s and the addresses computed from them, and in a C callback's `.run` function the `%frame` it is
+/// given, which is on its thread's stack) with no write barrier on their address before them, each
 /// as `function: store`. A barrier is a block named `shade...`, which reads the value it overwrites, or else
 /// `cooper_array_grow`, which applies the barrier for storing its result over an array's data pointer. A store
 /// into an object `cooper_alloc` returned in the same block, with no call since, needs none: it overwrites
@@ -210,6 +211,9 @@ fn unguarded_stores(ir: &str) -> Vec<String> {
             frame.clear();
             guarded.clear();
             grown.clear();
+            if function.ends_with(".c.run") {
+                frame.insert("%frame".to_string());
+            }
             continue;
         }
         let line = line.trim();

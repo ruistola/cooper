@@ -18,7 +18,8 @@ t := thread fetch(url)             # the value is the new thread's handle
 `thread` must be followed by a call. The function and its arguments are evaluated at once, as with Go's `go`,
 and the new thread runs the call later; the call's result is discarded. The expression's value is a `Thread`
 (`struct Thread { id: i64 }`, in scope everywhere like `Maybe`), the new thread's handle; the main thread's id is
-0 and others count up from 1. Anything the thread may use after the starting function returns, such as a
+0 and others count up from 1. `std.sync.doneEvent(t)` is the event of the thread finishing (see below). Anything
+the thread may use after the starting function returns, such as a
 variable whose address was passed, moves to the heap automatically (escape analysis treats `thread` as a place
 values escape to).
 
@@ -36,7 +37,8 @@ appears: making a thread runnable wakes an idle M only when a P is free and no M
 an M that finds nothing sleeps. A thread switches where it blocks: `std.threads.yield()`, `std.threads.sleep(ms)`,
 and waiting in `std.sync`. When the main function returns the program ends, whatever the other threads are doing.
 If every thread is blocked (and none is sleeping, waiting on `after`, or in a C call) the program stops with a
-deadlock error.
+deadlock error. A program that passes a Cooper function to C as a callback never does, since C may call it
+from a thread of its own at any time (see [C Interop](c-interop.md#callbacks)).
 
 Generated code checks a flag at each function entry and loop iteration (a safe point), as do the allocator and
 the scheduler. The collector raises it to stop every thread briefly, to begin marking and to end it: a thread
@@ -98,6 +100,7 @@ can combine it with others, which Go's `select` statement cannot do.
 | `guard(f)` | the event `f()` returns, with `f` run afresh at each `sync` |
 | `withNack(f)` | as `guard`, but `f` also gets an event that commits if the sync chooses something else |
 | `after(ms)` | commits `ms` milliseconds after the `sync` begins |
+| `doneEvent(t)` | commits once the thread `t` has finished, its starting function returned |
 | `always(v)`, `never()` | commits at once with `v`; never commits |
 
 ```

@@ -124,6 +124,7 @@ pub fn emit(program: &Program, triple: &str, project: &Project, options: Options
         c_types: Vec::new(),
         shims: String::new(),
         nil_size: 0,
+        c_callbacks: false,
     };
     for declared in &program.externs {
         module.declare_extern(declared).map_err(|what| CodegenError::Unsupported {
@@ -205,7 +206,7 @@ pub fn emit(program: &Program, triple: &str, project: &Project, options: Options
         out.push_str(t);
     });
     out.push('\n');
-    out.push_str(&entry(&program.functions, &program.initializers, &program.tests)?);
+    out.push_str(&entry(&program.functions, &program.initializers, &program.tests, module.c_callbacks)?);
     let c_shims = module.c_source();
     Ok(Emitted { ir: out, c_shims })
 }
@@ -239,6 +240,8 @@ struct Module<'p> {
     /// The size of the zero buffer and sink that loads and stores through nil use: the
     /// largest type accessed through a pointer.
     nil_size: usize,
+    /// Whether the program passes a Cooper function to C as a callback.
+    c_callbacks: bool,
 }
 
 impl Module<'_> {
@@ -280,12 +283,20 @@ impl Module<'_> {
 }
 
 /// The `cooper_main` export the runtime calls: the module-level variable initializers,
-/// then the program's `main`, with a unit result turned into exit status 0.
-fn entry(functions: &[Function], initializers: &[Callable], tests: &[Callable]) -> Result<String, CodegenError> {
-    let initializations: String = initializers
-        .iter()
-        .map(|item| format!("  call void @{}()\n", mangle::symbol(item, &[])))
-        .collect();
+/// then the program's `main`, with a unit result turned into exit status 0. A program
+/// passing callbacks to C tells the runtime first, since C may call them from a
+/// thread of its own.
+fn entry(
+    functions: &[Function],
+    initializers: &[Callable],
+    tests: &[Callable],
+    c_callbacks: bool,
+) -> Result<String, CodegenError> {
+    let mut initializations = String::new();
+    if c_callbacks {
+        initializations.push_str("  call void @cooper_expect_callbacks()\n");
+    }
+    initializations.extend(initializers.iter().map(|item| format!("  call void @{}()\n", mangle::symbol(item, &[]))));
     if !tests.is_empty() {
         // A test program runs the one test the runtime's `COOPER_TEST` selects.
         let labels: String = (0..tests.len()).map(|i| format!(" i32 {i}, label %test{i}")).collect();

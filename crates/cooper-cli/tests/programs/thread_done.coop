@@ -1,0 +1,42 @@
+# exit: 0
+# stdout: waited: 42
+# stdout: done again
+# stdout: timed out, then done
+# stdout: 200 threads done, total 20100
+# `doneEvent(t)` commits once the thread `t` has finished: at once if it has, and it can be chosen
+# against other events, such as a timeout.
+use {
+    std.io.println,
+    std.sync.{ after, choose, doneEvent, sync, wrap },
+    std.threads.sleep,
+}
+
+func store(slot: i64^, value: i64, ms: i64) {
+    sleep(ms)
+    slot^ = value
+}
+
+func main() {
+    let result = 0
+    t := thread store(&result, 42, 20)
+    sync(doneEvent(t))
+    println("waited: {result}")
+    sync(doneEvent(t))
+    println("done again")
+
+    slow := thread store(&result, 1, 200)
+    late := sync(choose(
+        wrap(doneEvent(slow), func(d: ()): bool { return false }),
+        wrap(after(10), func(d: ()): bool { return true }),
+    ))
+    sync(doneEvent(slow))
+    if late and result == 1 then println("timed out, then done")
+
+    let slots: i64[200]
+    let threads: Thread[] = []
+    for i in 0..200 do threads.push(thread store(&slots[i], i + 1, i % 3))
+    for t in threads do sync(doneEvent(t))
+    total := 0
+    for v in slots do total += v
+    println("{threads.length()} threads done, total {total}")
+}

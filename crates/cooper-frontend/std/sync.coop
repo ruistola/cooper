@@ -13,6 +13,7 @@ extern func cooper_yield()
 extern func cooper_fail(message: u8^)
 extern func cooper_now(): i64
 extern func cooper_wake_at(waiter: Waiter^, index: i64, deadline: i64)
+extern func cooper_wake_when_done(waiter: Waiter^, index: i64, id: i64): bool
 extern func cooper_cas(word: i64^, old: i64, new: i64): bool
 extern func cooper_load(word: i64^): i64
 extern func cooper_store(word: i64^, value: i64)
@@ -312,6 +313,15 @@ func after(ms: i64): Event () {
         }
         return Leaf(Base{word: nil, step: step}, func() {})
     })
+}
+
+# An event that commits once the thread `t` has finished, its starting function returned.
+func doneEvent(t: Thread): Event () {
+    step := func(w: Waiter^, index: i64): Outcome {
+        if cooper_wake_when_done(w, index, t.id) then return Blocked
+        return commitNow(w, index)
+    }
+    return Leaf(Base{word: nil, step: step}, func() {})
 }
 
 # The event of `holds()` becoming true, checked under the lock `word`. A sync that blocks on it waits in

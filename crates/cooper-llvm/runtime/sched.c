@@ -107,6 +107,7 @@ typedef struct Thread {
     struct Thread *next;      /* the global run queue or a free list */
     struct Thread *all_next;  /* every thread record ever made; set once */
     uint64_t id;
+    uint64_t alive;           /* atomic: id + 1 from the start until its code returns, then 0 */
     uintptr_t stack_low, stack_top; /* 0 when a finished thread's stack was returned to the system */
     int64_t state;            /* atomic: a state, with PERMIT possibly set */
     int64_t in_c;             /* atomic: in a C call, with `sp` and `regs` recorded on entry */
@@ -206,8 +207,8 @@ struct M {
      per-P:      the fields of P not marked otherwise
      immutable after cooper_sched_init: nprocs, allp, stack_size, guard_size, page_size
      set with the world stopped: scan_cycle (read atomically), hooks, mark_starting, timers_scanned, idle_sweep
-     atomic:     next_id, next_m_id, all_threads, pooled, cooper_poll_word, stacks_pending, and the fields of sched so
-                 marked
+     atomic:     next_id, next_m_id, all_threads, pooled, cooper_poll_word, stacks_pending, foreign_callbacks, and
+                 the fields of sched so marked
      sched.lock: the rest of sched, P.m, P.idle_next, P's monitor fields, M.nextp, M.idle_next */
 static struct {
     pthread_mutex_t lock;
@@ -237,6 +238,20 @@ static struct {
     pthread_cond_t sysmon_wake; /* the monitor waits on it between looks */
 } sched = {.lock = PTHREAD_MUTEX_INITIALIZER, .timer_next = INT64_MAX};
 
+/* Syncs waiting for a thread to finish, as those waiting for a deadline wait in the timers. */
+typedef struct {
+    uint64_t id;
+    CooperWaiter *waiter;
+    int64_t index;
+} Watch;
+
+static struct {
+    pthread_mutex_t lock;
+    Watch *items;
+    size_t count;             /* atomic (written under the lock) */
+    size_t capacity;
+} watches = {.lock = PTHREAD_MUTEX_INITIALIZER};
+
 static int nprocs = 1;
 static P *allp;
 static Thread main_thread;
@@ -246,14 +261,17 @@ static Thread *all_threads;
 static uint64_t next_id = 1;
 static int next_m_id = 1;
 static int64_t pooled;        /* finished threads holding a stack */
+/* Set when the program passes callbacks to C, which C may call from a thread of its own at any time: then
+   threads all blocked are not a deadlock. */
+static bool foreign_callbacks;
 static size_t stack_size = (size_t)8 << 20, guard_size, page_size;
 /* Nonzero while the world is stopping or stopped, and while the monitor's preemption requests are pending:
    each adds one. */
 int64_t cooper_poll_word;
 /* Marking while the program runs (cooper_mark_begin), all set with the world stopped: the cycle stacks are scanned
    for, 0 when not marking; the collector's functions; whether the restart that follows cooper_mark_begin is still to
-   come; whether some thread not running may still wait for a scan (atomic); and the last cycle whose timers were
-   scanned. */
+   come; whether some thread not running may still wait for a scan (atomic); and the last cycle whose timers and
+   watches were scanned. */
 static uint64_t scan_cycle;
 static CooperMarkHooks hooks;
 static bool mark_starting;
@@ -682,6 +700,8 @@ static void switch_in(Thread *thread) {
 }
 
 static void start_sysmon(void);
+static void timers_purge(void);
+static void watches_purge(void);
 static pthread_once_t sysmon_once = PTHREAD_ONCE_INIT;
 
 void cooper_mark_begin(uint64_t cycle, const CooperMarkHooks *mark_hooks) {
@@ -690,7 +710,14 @@ void cooper_mark_begin(uint64_t cycle, const CooperMarkHooks *mark_hooks) {
     STORE(&stacks_pending, true);
     STORE(&scan_cycle, cycle);
     STORE(&timers_scanned, cycle);
+    pthread_mutex_lock(&sched.lock);
+    timers_purge();
+    pthread_mutex_unlock(&sched.lock);
     if (sched.timer_count) hooks.scan((uintptr_t)sched.timers, (uintptr_t)(sched.timers + sched.timer_count));
+    pthread_mutex_lock(&watches.lock);
+    watches_purge();
+    pthread_mutex_unlock(&watches.lock);
+    if (watches.count) hooks.scan((uintptr_t)watches.items, (uintptr_t)(watches.items + watches.count));
     /* The monitor has fractional workers run: it looks more often while marking. */
     pthread_once(&sysmon_once, start_sysmon);
     pthread_cond_signal(&sched.sysmon_wake);
@@ -897,20 +924,38 @@ static void timer_push(Timer timer) {
     pthread_mutex_unlock(&sched.lock);
 }
 
-static void timer_pop(void) {
+/* Place `timer` at `i` or below, where its children wake no earlier. */
+static void timer_sift_down(size_t i, Timer timer) {
     Timer *timers = sched.timers;
-    Timer last = timers[--sched.timer_count];
-    size_t i = 0;
     for (;;) {
         size_t child = 2 * i + 1;
         if (child >= sched.timer_count) break;
         if (child + 1 < sched.timer_count && timer_before(&timers[child + 1], &timers[child])) child++;
-        if (!timer_before(&timers[child], &last)) break;
+        if (!timer_before(&timers[child], &timer)) break;
         timers[i] = timers[child];
         i = child;
     }
-    if (sched.timer_count) timers[i] = last;
-    STORE(&sched.timer_next, sched.timer_count ? timers[0].wake : INT64_MAX);
+    timers[i] = timer;
+}
+
+static void timer_pop(void) {
+    Timer last = sched.timers[--sched.timer_count];
+    if (sched.timer_count) timer_sift_down(0, last);
+    STORE(&sched.timer_next, sched.timer_count ? sched.timers[0].wake : INT64_MAX);
+}
+
+/* With sched.lock held: drop the timers of syncs that committed otherwise, which would
+   keep their waiters alive, and the program from finding a deadlock, until due. */
+static void timers_purge(void) {
+    size_t kept = 0;
+    for (size_t i = 0; i < sched.timer_count; i++) {
+        Timer timer = sched.timers[i];
+        if (timer.thread || cooper_load(&timer.waiter->state) != COOPER_SYNCED) sched.timers[kept++] = timer;
+    }
+    if (kept == sched.timer_count) return;
+    sched.timer_count = kept;
+    for (size_t i = kept / 2; i-- > 0;) timer_sift_down(i, sched.timers[i]);
+    STORE(&sched.timer_next, kept ? sched.timers[0].wake : INT64_MAX);
 }
 
 /* Run the timers that are due onto `p`, which the running M holds. */
@@ -944,6 +989,69 @@ static void wake_due(P *p) {
     if (n) wakep();
 }
 
+/* --- waiting for a thread to finish --- */
+
+/* With watches.lock held: drop the watches of syncs that committed otherwise, which would keep their waiters
+   alive until the thread finishes. */
+static void watches_purge(void) {
+    size_t kept = 0;
+    for (size_t i = 0; i < watches.count; i++) {
+        if (cooper_load(&watches.items[i].waiter->state) != COOPER_SYNCED) watches.items[kept++] = watches.items[i];
+    }
+    STORE(&watches.count, kept);
+}
+
+bool cooper_wake_when_done(CooperWaiter *waiter, int64_t index, int64_t id) {
+    pthread_mutex_lock(&watches.lock);
+    if (waiter) {
+        if (watches.count == watches.capacity) {
+            watches.capacity = watches.capacity ? watches.capacity * 2 : 64;
+            watches.items = realloc(watches.items, watches.capacity * sizeof *watches.items);
+            if (!watches.items) cooper_panic("out of memory");
+        }
+        /* Added before looking whether the thread runs, which it marks finished before it looks for watches. */
+        watches.items[watches.count] = (Watch){.id = (uint64_t)id, .waiter = waiter, .index = index};
+        STORE(&watches.count, watches.count + 1);
+    }
+    bool alive = false;
+    for (Thread *thread = LOAD(&all_threads); thread && !alive; thread = thread->all_next) {
+        alive = LOAD(&thread->alive) == (uint64_t)id + 1;
+    }
+    if (waiter && !alive) STORE(&watches.count, watches.count - 1);
+    /* The watches were scanned when marking began. */
+    else if (waiter && LOAD(&scan_cycle)) hooks.scan((uintptr_t)&waiter, (uintptr_t)(&waiter + 1));
+    pthread_mutex_unlock(&watches.lock);
+    return alive;
+}
+
+/* As the running thread finishes: commit the syncs waiting for it. A waiter its owner has claimed is settled
+   within a few instructions; it stays watched until then. */
+static void finish_watched(Thread *thread) {
+    STORE(&thread->alive, 0);
+    while (LOAD(&watches.count)) {
+        bool claimed = false;
+        pthread_mutex_lock(&watches.lock);
+        size_t kept = 0;
+        for (size_t i = 0; i < watches.count; i++) {
+            Watch watch = watches.items[i];
+            if (watch.id == thread->id) {
+                if (cooper_cas(&watch.waiter->state, COOPER_WAITING, COOPER_SYNCED)) {
+                    cooper_store(&watch.waiter->chosen, watch.index);
+                    cooper_ready(watch.waiter->owner);
+                    continue;
+                }
+                if (cooper_load(&watch.waiter->state) == COOPER_SYNCED) continue;
+                claimed = true;
+            }
+            watches.items[kept++] = watch;
+        }
+        STORE(&watches.count, kept);
+        pthread_mutex_unlock(&watches.lock);
+        if (!claimed) break;
+        cooper_yield();
+    }
+}
+
 /* --- the scheduler --- */
 
 /* Sleep until handed a P. The last M to sleep with nothing left to wake it finds a deadlock. */
@@ -963,9 +1071,10 @@ static void stopm(M *m) {
             sched.idle_ms = m;
             continue;
         }
-        if (sched.npidle == nprocs && !sched.timer_count && !sched.global_count && !sched.gcwaiting &&
-            !LOAD(&sched.nincall)) {
-            cooper_panic("all threads are blocked: deadlock");
+        if (sched.npidle == nprocs && !sched.global_count && !sched.gcwaiting && !LOAD(&sched.nincall) &&
+            !LOAD(&foreign_callbacks)) {
+            timers_purge();
+            if (!sched.timer_count) cooper_panic("all threads are blocked: deadlock");
         }
         if (sched.timer_count && !timers_late && (!sched.timer_m || sched.timer_m == m)) {
             sched.timer_m = m;
@@ -1216,13 +1325,15 @@ static void switch_out(int action) {
 static void thread_entry(void) {
     Thread *thread = get_m()->current;
     ((void (*)(void *))thread->code)(thread->env);
+    finish_watched(thread);
     STORE(&thread->state, DEAD);
     switch_out(ACT_DEAD);
     __builtin_trap(); /* a dead thread is never resumed */
 }
 
-/* Give `thread` a stack (unless it kept one), and a first frame that starts `code(env)`. */
-static void thread_prepare(Thread *thread, void *code, void *env) {
+/* Give `thread` a stack (unless it kept one), and a first frame that starts `code(env)`, below `reserve` bytes
+   at the top of the stack, which the result points to. */
+static char *thread_prepare(Thread *thread, void *code, void *env, size_t reserve) {
     thread->code = code;
     thread->env = env;
     thread->gc_credit[0] = thread->gc_credit[1] = 0;
@@ -1235,12 +1346,25 @@ static void thread_prepare(Thread *thread, void *code, void *env) {
         thread->stack_low = (uintptr_t)memory;
         thread->stack_top = thread->stack_low + stack_size;
     }
-    char *frame = (char *)thread->stack_top - FRAME_BYTES;
+    char *frame = (char *)thread->stack_top - reserve - FRAME_BYTES;
     memset(frame, 0, FRAME_BYTES);
     *(void (**)(void))(frame + FRAME_ENTRY_OFFSET) = thread_entry;
     thread->sp = frame;
     TSAN_FIBER(thread->fiber);
+    STORE(&thread->alive, thread->id + 1);
     STORE(&thread->state, RUNNABLE);
+    return frame + FRAME_BYTES;
+}
+
+static Thread *thread_new(void) {
+    Thread *thread = calloc(1, sizeof *thread);
+    if (!thread) cooper_panic("out of memory");
+    thread->state = DEAD;
+    thread->all_next = LOAD(&all_threads);
+    while (!__atomic_compare_exchange_n(&all_threads, &thread->all_next, thread, false, __ATOMIC_SEQ_CST,
+                                        __ATOMIC_SEQ_CST)) {
+    }
+    return thread;
 }
 
 /* A finished thread to reuse, or a new record. */
@@ -1262,14 +1386,7 @@ static Thread *thread_get(P *p) {
         p->nfree--;
         return thread;
     }
-    thread = calloc(1, sizeof *thread);
-    if (!thread) cooper_panic("out of memory");
-    thread->state = DEAD;
-    thread->all_next = LOAD(&all_threads);
-    while (!__atomic_compare_exchange_n(&all_threads, &thread->all_next, thread, false, __ATOMIC_SEQ_CST,
-                                        __ATOMIC_SEQ_CST)) {
-    }
-    return thread;
+    return thread_new();
 }
 
 int64_t cooper_spawn(void *code, void *env) {
@@ -1277,7 +1394,7 @@ int64_t cooper_spawn(void *code, void *env) {
     P *p = get_m()->p;
     Thread *thread = thread_get(p);
     thread->id = __atomic_fetch_add(&next_id, 1, __ATOMIC_SEQ_CST);
-    thread_prepare(thread, code, env);
+    thread_prepare(thread, code, env, 0);
     /* The thread's record may have been scanned this cycle while it was free. */
     if (LOAD(&scan_cycle)) hooks.scan((uintptr_t)&thread->code, (uintptr_t)(&thread->env + 1));
     runq_put(p, thread, false);
@@ -1292,7 +1409,7 @@ static void main_entry(void *entry) {
 }
 
 _Noreturn void cooper_run_main(int (*entry)(void)) {
-    thread_prepare(&main_thread, main_entry, (void *)entry);
+    thread_prepare(&main_thread, main_entry, (void *)entry, 0);
     runq_put(m0.p, &main_thread, false);
     scheduler(&m0);
 }
@@ -1443,10 +1560,12 @@ void cooper_exit_c(int entered) {
 }
 
 /* A call from C into Cooper code leaves the C state for its duration, keeping the C call's stack pointer and
-   registers in `saved` meanwhile. */
+   registers in `saved` meanwhile. On an OS thread the runtime did not start it returns -1, for the caller to
+   use cooper_callback_foreign instead. */
 int cooper_callback_enter(uintptr_t *saved) {
     M *m = this_m;
-    if (!m || !m->current) cooper_panic("a C callback on an OS thread the Cooper runtime did not start");
+    if (!m) return -1;
+    if (!m->current) cooper_panic("a C callback from the Cooper runtime's own code");
     Thread *thread = m->current;
     if (!LOAD(&thread->in_c)) return 0;
     saved[0] = (uintptr_t)thread->sp;
@@ -1462,6 +1581,64 @@ void cooper_callback_leave(int entered, uintptr_t *saved) {
     thread->sp = (void *)saved[0];
     memcpy(thread->regs, saved + 1, sizeof thread->regs);
     enter_c_state(m, thread);
+}
+
+void cooper_expect_callbacks(void) {
+    STORE(&foreign_callbacks, true);
+}
+
+/* A callback on an OS thread the runtime did not start, waiting for the Cooper thread that runs it. */
+typedef struct {
+    void (*run)(void *);
+    void *frame;
+    size_t bytes;
+    pthread_mutex_t lock;
+    pthread_cond_t wake;
+    bool done;
+} Foreign;
+
+/* The Cooper thread's start: `env` holds the request and, after it, the copy of the frame. */
+static void foreign_entry(void *env) {
+    Foreign *request = *(Foreign **)env;
+    char *copy = (char *)env + 16;
+    request->run(copy);
+    memcpy(request->frame, copy, request->bytes);
+    pthread_mutex_lock(&request->lock);
+    request->done = true;
+    pthread_cond_signal(&request->wake);
+    pthread_mutex_unlock(&request->lock);
+}
+
+/* The frame is copied onto the new thread's stack, where the collector sees the Cooper pointers among the
+   arguments, and back once `run` has stored the result. */
+void cooper_callback_foreign(void (*run)(void *), void *frame, size_t bytes) {
+    pthread_once(&sysmon_once, start_sysmon);
+    Foreign request = {.run = run, .frame = frame, .bytes = bytes};
+    pthread_mutex_init(&request.lock, NULL);
+    pthread_cond_init(&request.wake, NULL);
+
+    pthread_mutex_lock(&sched.lock);
+    Thread *thread = sched.free;
+    if (thread) __atomic_store_n(&sched.free, thread->next, __ATOMIC_RELAXED);
+    pthread_mutex_unlock(&sched.lock);
+    if (!thread) thread = thread_new();
+    thread->id = __atomic_fetch_add(&next_id, 1, __ATOMIC_SEQ_CST);
+    char *env = thread_prepare(thread, foreign_entry, NULL, 16 + ((bytes + 15) & ~(size_t)15));
+    *(Foreign **)env = &request;
+    memcpy(env + 16, frame, bytes);
+    thread->env = env;
+    /* Scanned with its stack, not before: the record may have been scanned this cycle while it was free. */
+    scan_lock(thread);
+    STORE(&thread->scanned, 0);
+    scan_unlock(thread);
+    global_put(thread);
+    wakep();
+
+    pthread_mutex_lock(&request.lock);
+    while (!request.done) pthread_cond_wait(&request.wake, &request.lock);
+    pthread_mutex_unlock(&request.lock);
+    pthread_cond_destroy(&request.wake);
+    pthread_mutex_destroy(&request.lock);
 }
 
 void cooper_acquire_m(void) {
@@ -1647,12 +1824,19 @@ void cooper_save_stack_pointer(void *sp) {
 
 /* With the world stopped: the stack of every thread, from its saved stack pointer up; its registers saved on
    entering C; the code and environment words of each thread, which may be the only reference to a thread
-   that has not started; and the timers, which refer to waiters. The schedulers' own stacks hold no heap
+   that has not started; and the timers and watches, which refer to waiters. The schedulers' own stacks hold no heap
    pointers. Each thread is scanned by whichever caller claims it first for `cycle`. */
 void cooper_scan_threads(void (*scan)(void *context, uintptr_t low, uintptr_t high), void *context, uint64_t cycle) {
     uint64_t seen = LOAD(&timers_scanned);
-    if (seen != cycle && CAS(&timers_scanned, seen, cycle) && sched.timer_count) {
-        scan(context, (uintptr_t)sched.timers, (uintptr_t)(sched.timers + sched.timer_count));
+    if (seen != cycle && CAS(&timers_scanned, seen, cycle)) {
+        pthread_mutex_lock(&sched.lock);
+        timers_purge();
+        pthread_mutex_unlock(&sched.lock);
+        if (sched.timer_count) scan(context, (uintptr_t)sched.timers, (uintptr_t)(sched.timers + sched.timer_count));
+        pthread_mutex_lock(&watches.lock);
+        watches_purge();
+        pthread_mutex_unlock(&watches.lock);
+        if (watches.count) scan(context, (uintptr_t)watches.items, (uintptr_t)(watches.items + watches.count));
     }
     for (Thread *thread = LOAD(&all_threads); thread; thread = thread->all_next) {
         seen = LOAD(&thread->scanned);

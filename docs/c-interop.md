@@ -164,9 +164,10 @@ qsort(&nums[0], 5, 4, descending)
 ```
 
 A callback runs on the caller's thread during the C call, or later if C keeps the pointer
-(`atexit`). Deferred code and panics behave as anywhere else. C must call it on the thread
-that called C (or on the thread running exit handlers): a call from an OS thread that C
-started itself stops the program.
+(`atexit`). Deferred code and panics behave as anywhere else. C may also call it from an OS
+thread of its own: the callback then runs on a new Cooper thread while that OS thread waits
+for its result. Since such a call can come at any time, a program that passes callbacks to C
+is not stopped as deadlocked when all its threads are blocked.
 
 ## Blocking calls
 

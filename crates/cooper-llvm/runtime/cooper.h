@@ -66,7 +66,7 @@ void cooper_park(void);
 void cooper_ready(void *thread);
 
 /* A thread blocked in `std.sync`'s `sync`, mirroring its `Waiter` struct. `state` goes WAITING -> SYNCED
-   when something commits it (a peer, a source, a timer), or WAITING -> CLAIMED -> SYNCED (or back to
+   when something commits it (a peer, a source, a timer, a thread finishing), or WAITING -> CLAIMED -> SYNCED (or back to
    WAITING) while its own thread commits a match. Whoever wins the move to SYNCED then sets `chosen`
    (from -1) to the index of the event it commits, and readies `owner`, which waits for `chosen`. */
 typedef struct {
@@ -78,6 +78,9 @@ enum { COOPER_WAITING, COOPER_CLAIMED, COOPER_SYNCED };
 
 /* At `deadline` (cooper_now), commit `waiter` to `index` if it is still waiting. */
 void cooper_wake_at(CooperWaiter *waiter, int64_t index, int64_t deadline);
+/* Whether the thread `id` still runs; if so, and `waiter` is not NULL, commit `waiter` to `index` when it
+   finishes, if it is still waiting then. */
+bool cooper_wake_when_done(CooperWaiter *waiter, int64_t index, int64_t id);
 
 /* Sequentially consistent atomics on a word. cooper_add gives the new value. */
 bool cooper_cas(int64_t *word, int64_t old, int64_t new_value);
@@ -156,12 +159,18 @@ bool cooper_world_stopping(void);
    pointer and callee-saved registers (so the collector scans it as stopped) and lets the monitor hand its P to
    another M if the call blocks, and cooper_exit_c, given what cooper_enter_c returned, which takes a P back,
    waiting for one if need be. A C callback into Cooper code brackets itself with cooper_callback_enter and
-   cooper_callback_leave, which keep the C call's state in `saved` (COOPER_CALLBACK_WORDS words) meanwhile. */
+   cooper_callback_leave, which keep the C call's state in `saved` (COOPER_CALLBACK_WORDS words) meanwhile. On an
+   OS thread the runtime did not start, cooper_callback_enter returns -1, and the callback calls
+   cooper_callback_foreign instead, which runs `run(copy)` on a new Cooper thread, `copy` holding the `bytes`
+   bytes of `frame` (copied back after), and waits for it. A program that passes callbacks to C calls
+   cooper_expect_callbacks as it starts, since C may then call one from a thread of its own at any time. */
 int cooper_enter_c(void);
 void cooper_exit_c(int entered);
 #define COOPER_CALLBACK_WORDS 13
 int cooper_callback_enter(uintptr_t *saved);
 void cooper_callback_leave(int entered, uintptr_t *saved);
+void cooper_callback_foreign(void (*run)(void *), void *frame, size_t bytes);
+void cooper_expect_callbacks(void);
 /* Between these, the running thread neither switches nor enters the C state: it stays on its M (it may stop
    for the collector). For state kept per M, such as formatting's. */
 void cooper_acquire_m(void);

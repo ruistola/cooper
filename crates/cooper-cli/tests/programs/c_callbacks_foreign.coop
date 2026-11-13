@@ -1,0 +1,46 @@
+# exit: 0
+# stdout: 4 results, total 439980000
+# stdout: joined 4
+# C may call a Cooper callback from an OS thread of its own, here one `pthread_create` starts: the callback
+# runs on a new Cooper thread while the OS thread waits for its result. The main thread meanwhile waits on a
+# channel, not in C, which is not a deadlock while C may still call back.
+use {
+    std.io.println,
+    std.sync.{ Channel, channel },
+}
+
+extern func pthread_create(handle: u64^, attributes: u8^, start: func(i64^): i64^, argument: i64^): i32
+extern func pthread_join(handle: u64, result: (i64^)^): i32
+
+let results: Channel i64 = channel(0)
+
+func work(from: i64^): i64^ {
+    let values: i64[] = []
+    for i in 0..10000 do values.push(from^ + i)
+    total := 0
+    for v in values do total += v
+    results.send(total)
+    return from
+}
+
+func main(): i32 {
+    let starts: i64[4] = [0, 4000, 8000, 12000]
+    let handles: u64[4]
+    for i in 0..4 do {
+        if pthread_create(&handles[i], nil, work, &starts[i]) != 0 then return 1
+    }
+    received := 0
+    sum := 0
+    for i in 0..4 do if results.recv() is Some(total) then {
+        received += 1
+        sum += total
+    }
+    println("{received} results, total {sum}")
+    joined := 0
+    for i in 0..4 do {
+        let result: i64^ = nil
+        if pthread_join(handles[i], &result) == 0 and result == &starts[i] then joined += 1
+    }
+    println("joined {joined}")
+    return 0
+}

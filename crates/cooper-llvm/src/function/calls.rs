@@ -166,8 +166,11 @@ impl Emitter<'_, '_> {
     /// The C function pointer for the function `arg` names: the function itself when it is
     /// a C function, otherwise a wrapper with the C calling convention (which extends
     /// small integers), defined on first use, that leaves the C state for the call (see
-    /// `cooper_callback_enter`). Only a function named directly qualifies, since
-    /// a C callback has nowhere to keep a closure's environment.
+    /// `cooper_callback_enter`). On an OS thread the runtime did not start, the wrapper
+    /// stores the arguments in a frame that `cooper_callback_foreign` hands to a
+    /// `.run` function on a new Cooper thread, which stores the result there. Only a
+    /// function named directly qualifies, since a C callback has nowhere to keep a
+    /// closure's environment.
     fn callback(&mut self, arg: &IrExpr, span: Span) -> Result<String, CodegenError> {
         let IrExprKind::FuncRef { item, type_args } = &arg.kind else {
             return self.unsupported("a C callback that is not the name of a function", span);
@@ -188,25 +191,66 @@ impl Emitter<'_, '_> {
         let c_ret = if ret == "void" { ret.clone() } else { self.module.c_return(return_type).map_err(|w| unsupported(self, w))? };
         let mut params = Vec::new();
         let mut args = Vec::new();
+        let mut fields = Vec::new();
         for (index, ty) in param_types.iter().enumerate() {
             let llvm = self.value_type(ty, span)?.expect("a callback parameter has a value");
             params.push(format!("{} %a{index}", self.module.c_param(ty).map_err(|w| unsupported(self, w))?));
             args.push(format!("{llvm} %a{index}"));
+            fields.push(llvm);
         }
         let call = format!("call {ret} @{symbol}({})", args.join(", "));
-        let leave = "  call void @cooper_callback_leave(i32 %entered, ptr %saved)\n";
-        let body = if ret == "void" {
-            format!("  {call}\n{leave}  ret void\n")
-        } else {
-            format!("  %r = {call}\n{leave}  ret {ret} %r\n")
+        let result = fields.len();
+        if ret != "void" {
+            fields.push(ret.clone());
+        }
+        let frame = format!("{{ {} }}", fields.join(", "));
+        let field = |index: usize, pointer: &str| {
+            format!("  %f{index} = getelementptr {frame}, ptr {pointer}, i32 0, i32 {index}\n")
         };
+
+        let leave = "  call void @cooper_callback_leave(i32 %entered, ptr %saved)\n";
+        let mut here = if ret == "void" {
+            format!("here:\n  {call}\n{leave}  ret void\n")
+        } else {
+            format!("here:\n  %r = {call}\n{leave}  ret {ret} %r\n")
+        };
+        let mut away = format!("away:\n  %frame = alloca {frame}\n");
+        let mut run = String::new();
+        for (index, arg) in args.iter().enumerate() {
+            away.push_str(&field(index, "%frame"));
+            away.push_str(&format!("  store {arg}, ptr %f{index}\n"));
+            run.push_str(&field(index, "%frame"));
+            run.push_str(&format!("  %a{index} = load {}, ptr %f{index}\n", fields[index]));
+        }
+        let size = format!("ptrtoint (ptr getelementptr ({frame}, ptr null, i32 1) to i64)");
+        away.push_str(&format!("  call void @cooper_callback_foreign(ptr {name}.run, ptr %frame, i64 {size})\n"));
+        if ret == "void" {
+            away.push_str("  ret void\n");
+            run.push_str(&format!("  {call}\n"));
+        } else {
+            away.push_str(&field(result, "%frame"));
+            away.push_str(&format!("  %r.away = load {ret}, ptr %f{result}\n  ret {ret} %r.away\n"));
+            run.push_str(&format!("  %r = {call}\n"));
+            run.push_str(&field(result, "%frame"));
+            run.push_str(&format!("  store {ret} %r, ptr %f{result}\n"));
+        }
+        here.push_str(&away);
+
         self.module.declare("declare i32 @cooper_callback_enter(ptr)");
         self.module.declare("declare void @cooper_callback_leave(i32, ptr)");
+        self.module.declare("declare void @cooper_callback_foreign(ptr, ptr, i64)");
+        self.module.declare("declare void @cooper_expect_callbacks()");
+        self.module.c_callbacks = true;
         // The C call's saved state: COOPER_CALLBACK_WORDS (cooper.h) words.
-        let enter = "  %saved = alloca [13 x i64]\n  %entered = call i32 @cooper_callback_enter(ptr %saved)\n";
+        let enter = "  %saved = alloca [13 x i64]\n  %entered = call i32 @cooper_callback_enter(ptr %saved)\n  \
+                     %foreign = icmp slt i32 %entered, 0\n  br i1 %foreign, label %away, label %here\n";
         self.module.thunks.insert(
             name.clone(),
-            format!("define private {c_ret} {name}({}) {{\n{enter}{body}}}\n", params.join(", ")),
+            format!(
+                "define private {c_ret} {name}({}) {{\n{enter}{here}}}\n\n\
+                 define private void {name}.run(ptr %frame) {{\n{run}  ret void\n}}\n",
+                params.join(", ")
+            ),
         );
         Ok(name)
     }

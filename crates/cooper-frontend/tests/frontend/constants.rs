@@ -29,6 +29,23 @@ func main() {
 }
 
 #[test]
+fn a_local_constant_is_scoped_like_a_variable() {
+    ok("const Size: i64 = 8
+func main() {
+  const Size: i64 = 2 * 3
+  let buf: u8[Size]
+  show := func(): i64 {
+    const Inner: i64 = Size + 1
+    let more: i32[Inner]
+    return buf.length() + more.length()
+  }
+  n := show()
+}");
+    err("func main() {\n  x := Limit\n  const Limit: i32 = 1\n}", "undefined variable: Limit");
+    err("func main() {\n  n := 3\n  const N: i32 = n\n}", "a constant's initializer uses only literals");
+}
+
+#[test]
 fn a_constant_is_evaluated_in_its_declared_type() {
     err("const Big: i8 = 100 + 28", "constant overflows i8");
     err("const Zero: i32 = 0\nconst Bad: i32 = 1 / Zero", "division by zero");
@@ -47,6 +64,7 @@ fn a_constant_initializer_is_a_constant_expression() {
 fn a_constant_is_a_named_value_not_storage() {
     err("const N: i32 = 1\nfunc main() {\n  N = 2\n}", "cannot assign to constant N");
     err("const N: i32 = 1\nfunc main() {\n  p := &N\n}", "cannot take the address");
+    err("func main() {\n  const N: i32 = 1\n  N += 1\n}", "cannot assign to constant N");
     err("const Sizes: i32[] = 1", "a constant is a number, bool, rune, or string");
     err("const size: i32 = 1", "a constant's name is PascalCase");
 }

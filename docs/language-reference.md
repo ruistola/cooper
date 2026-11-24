@@ -171,6 +171,7 @@ funcType   ::= "func" "(" type* ")" (":" type)?       # `()` is unit; `(A, B)` a
 block      ::= "{" stmt* "}"
 body       ::= block | stmt
 stmt       ::= "let" ident (":" type)? ("=" expr)?
+             | "const" ident ":" type "=" expr
              | "let" "(" ident+ ")" (":" type)? "=" expr
              | ident ":=" expr | "(" ident+ ")" ":=" expr
              | "if" expr "then" body ("else" body)?
@@ -266,11 +267,12 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
   every variable its initializer reaches, directly or through the functions it calls. An
   initializer that reaches its own variable is an error. Another module's variable is reached
   as `module.name` or bound by `use { module.name }`.
-* `const BufSize: i64 = 4 * 1024` is a module-level constant: a typed value computed at compile
-  time, not a variable. Its initializer uses literals, operators, numeric conversions, and other
-  constants (`module.Name` too), and overflow there is a compile error. A constant is a number,
-  `bool`, `rune`, or `string`, cannot be assigned or have its address taken, and may give a
-  static array's length or, if an integer, rune, or `bool`, be a pattern.
+* `const BufSize: i64 = 4 * 1024` is a constant: a typed value computed at compile time, not a
+  variable. It is declared at module level, or in a body, where it is scoped like a variable. Its
+  initializer uses literals, operators, numeric conversions, and other constants (`module.Name`
+  too), and overflow there is a compile error. A constant is a number, `bool`, `rune`, or
+  `string`, cannot be assigned or have its address taken, and may give a static array's length
+  or, if an integer, rune, or `bool`, be a pattern.
 * `value is pattern` is a `bool`: whether the value matches, as `match value with { pattern =>
   true; _ => false }` would say. The names the pattern binds are in scope where the test is
   known to have held: the `then` branch of an `if`, the body of a `while`, and the operands of
@@ -313,7 +315,6 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
 These are designed or reserved but rejected today. Do not write them:
 
 * Named-field variant payloads, nested patterns inside variant payloads, or-patterns, guards.
-* `const` inside a function body.
 
 ## Where to read more
 

@@ -15,7 +15,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
-use crate::consts::ConstValue;
+use crate::consts::{ConstValue, Constant};
 use crate::diag::{Diagnostic, Span};
 use crate::infer::{InferKind, InferTable};
 use crate::resolve::{self, Callable, Globals, Signature};
@@ -53,6 +53,9 @@ pub struct Typed {
     /// The value of each use of a constant, in an expression or as a pattern, keyed by the
     /// span of the use.
     pub constants: HashMap<Span, ConstValue>,
+    /// The resolved type of each annotation in a body whose array length names a local
+    /// constant, keyed by the annotation's span.
+    pub annotations: HashMap<Span, Type>,
     /// Every use of a generic nested function, keyed by span.
     pub local_refs: HashMap<Span, LocalRef>,
     /// The unique name each use of an `is`-bound variable stands for, keyed by span.
@@ -111,6 +114,8 @@ struct Binding {
     /// The unique name of a variable an `is` test binds (see [`is_binder`]): its uses
     /// are lowered under it, so it never collides with another variable of its name.
     alias: Option<String>,
+    /// The value of a local constant, which a use takes in place of a variable.
+    constant: Option<ConstValue>,
 }
 
 /// The unique name of the variable the `is` test at `test` binds for the pattern name `name`.
@@ -234,6 +239,7 @@ pub fn check(
         captures: tc.captures,
         variables: tc.variables,
         constants: tc.constants,
+        annotations: tc.annotations,
         local_refs: tc.local_refs,
         aliases: tc.aliases,
         dispatch: tc.dispatch,
@@ -271,6 +277,7 @@ struct TypeChecker<'g> {
     /// Every use of a module-level variable, keyed by span: the lowering handoff.
     variables: HashMap<Span, VarRef>,
     constants: HashMap<Span, ConstValue>,
+    annotations: HashMap<Span, Type>,
     /// Every use of a generic nested function, keyed by span: the lowering handoff.
     local_refs: HashMap<Span, LocalRef>,
     /// The method each variant of a sum type supplies to a call across its variants, keyed
@@ -311,6 +318,7 @@ impl<'g> TypeChecker<'g> {
             captures: HashMap::new(),
             variables: HashMap::new(),
             constants: HashMap::new(),
+            annotations: HashMap::new(),
             local_refs: HashMap::new(),
             variadic: HashMap::new(),
             packed: HashMap::new(),
@@ -391,14 +399,14 @@ impl<'g> TypeChecker<'g> {
     // --- variable scope stack ---
 
     fn define_var(&mut self, name: &str, ty: Type) {
-        self.scopes.last_mut().unwrap().insert(name.to_string(), Binding { ty, generic: None, alias: None });
+        self.scopes.last_mut().unwrap().insert(name.to_string(), Binding { ty, generic: None, alias: None, constant: None });
     }
 
     /// Bind `name` to the generic nested function declared at `decl`, of type `ty`
     /// generalized over `binders`.
     fn define_generic(&mut self, name: &str, ty: Type, decl: Span, binders: Vec<String>) {
         let generic = Some((decl, binders));
-        self.scopes.last_mut().unwrap().insert(name.to_string(), Binding { ty, generic, alias: None });
+        self.scopes.last_mut().unwrap().insert(name.to_string(), Binding { ty, generic, alias: None, constant: None });
     }
 
     fn lookup_var(&self, name: &str) -> Option<&Type> {
@@ -409,12 +417,16 @@ impl<'g> TypeChecker<'g> {
     /// body (not at module level) outside a closure being checked is captured by that
     /// closure, and by every closure between it and the use.
     fn use_var(&mut self, name: &str, span: Span) -> Option<Type> {
-        let (depth, Binding { ty, generic, alias }) = self
+        let (depth, Binding { ty, generic, alias, constant }) = self
             .scopes
             .iter()
             .enumerate()
             .rev()
             .find_map(|(depth, scope)| scope.get(name).map(|binding| (depth, binding.clone())))?;
+        if let Some(value) = constant {
+            self.constants.insert(span, value);
+            return Some(ty);
+        }
         let name = alias.as_deref().unwrap_or(name);
         if let Some(alias) = &alias {
             self.aliases.insert(span, alias.clone());
@@ -447,8 +459,64 @@ impl<'g> TypeChecker<'g> {
         Some(self.infer.resolve(&ty.substitute(&subst)))
     }
 
+    /// Resolve a type annotation in a body. One whose array length names a local constant
+    /// resolves against the module's declarations plus the local constants in scope, and is
+    /// recorded for lowering, which sees only the module's declarations.
     fn resolve_local_type(&mut self, type_expr: &TypeExpr) -> Option<Type> {
-        resolve::resolve_type(type_expr, &self.type_params, self.globals, &mut self.diags)
+        let mut names = Vec::new();
+        resolve::named_in(type_expr, &mut names);
+        let local = |name: &String| self.scopes.iter().rev().find_map(|scope| scope.get(name)).is_some_and(|b| b.constant.is_some());
+        if !names.iter().any(local) {
+            return resolve::resolve_type(type_expr, &self.type_params, self.globals, &mut self.diags);
+        }
+        let mut globals = self.globals.clone();
+        globals.consts.extend(self.local_constants());
+        let ty = resolve::resolve_type(type_expr, &self.type_params, &globals, &mut self.diags)?;
+        self.annotations.insert(type_expr.span, ty.clone());
+        Some(ty)
+    }
+
+    /// The local constants in scope, by name.
+    fn local_constants(&self) -> HashMap<String, Constant> {
+        let mut constants = HashMap::new();
+        for (name, binding) in self.scopes.iter().flatten() {
+            match &binding.constant {
+                Some(value) => constants.insert(name.clone(), Constant { ty: binding.ty.clone(), value: value.clone() }),
+                None => constants.remove(name),
+            };
+        }
+        constants
+    }
+
+    /// The constant `name` names where a pattern is checked: the innermost local binding of
+    /// the name if it is a constant, or else a module-level constant.
+    fn constant_named(&self, name: &str) -> Option<Constant> {
+        match self.scopes.iter().rev().find_map(|scope| scope.get(name)) {
+            Some(binding) => binding.constant.clone().map(|value| Constant { ty: binding.ty.clone(), value }),
+            None => self.globals.consts.get(name).cloned(),
+        }
+    }
+
+    /// Evaluate a constant declared in a body and bind it in the current scope. One whose
+    /// initializer has an error is bound to its type's zero value, so that its uses report
+    /// nothing further.
+    fn check_local_const(&mut self, stmt: &Stmt) {
+        let StmtKind::ConstDecl { name, ty, .. } = &stmt.kind else {
+            unreachable!("called with a constant declaration");
+        };
+        let locals = self.local_constants();
+        let constant = match crate::consts::evaluate_local(stmt, self.globals, self.modules, &locals) {
+            Ok(constant) => constant,
+            Err(diag) => {
+                self.diags.push(diag);
+                let Some(ty) = resolve::resolve_type(ty, &self.type_params, self.globals, &mut Vec::new()) else {
+                    return;
+                };
+                Constant { value: ConstValue::zero(&ty), ty }
+            }
+        };
+        let binding = Binding { ty: constant.ty, generic: None, alias: None, constant: Some(constant.value) };
+        self.scopes.last_mut().unwrap().insert(name.clone(), binding);
     }
 
     // --- statements ---
@@ -468,6 +536,7 @@ impl<'g> TypeChecker<'g> {
                     self.err(stmt.span, "a type alias must be declared at module level");
                 }
             }
+            StmtKind::ConstDecl { .. } if self.current_return.is_some() => self.check_local_const(stmt),
             StmtKind::ConstDecl { .. } | StmtKind::StructDecl { .. } | StmtKind::UnionDecl { .. } => {}
             StmtKind::FuncDecl(func) if self.current_return.is_some() => self.check_nested_func(func),
             StmtKind::FuncDecl(func) => self.check_func_decl(func),
@@ -742,7 +811,7 @@ impl<'g> TypeChecker<'g> {
             // Lowering reads every parameter's type here, annotated or inferred.
             self.body.spans.push(param_span);
             self.types.insert(param_span, ty.clone());
-            bound.insert(param.to_string(), Binding { ty: ty.clone(), generic: None, alias: None });
+            bound.insert(param.to_string(), Binding { ty: ty.clone(), generic: None, alias: None, constant: None });
             param_types.push(ty);
         }
         let inferred_return = return_type.is_none() && name.is_none();

@@ -24,6 +24,18 @@ pub enum ConstValue {
     Str(String),
 }
 
+impl ConstValue {
+    /// The zero value of the constant type `ty`.
+    pub(crate) fn zero(ty: &Type) -> ConstValue {
+        match ty {
+            Type::Primitive(name) if is_float_name(name) => ConstValue::Float(0.0),
+            Type::Primitive(name) if name == "bool" => ConstValue::Bool(false),
+            Type::Primitive(name) if name == "string" => ConstValue::Str(String::new()),
+            _ => ConstValue::Int(0),
+        }
+    }
+}
+
 /// A constant: its declared type and its value.
 #[derive(Debug, Clone)]
 pub struct Constant {
@@ -52,19 +64,18 @@ pub(crate) fn array_length(name: &str, span: Span, globals: &Globals, diags: &mu
 /// with the index of its file.
 pub(crate) fn evaluate(
     decls: &[(usize, &Stmt)],
-    files: &[(Globals, &HashMap<Vec<String>, Globals>)],
+    files: &[(&Globals, &HashMap<Vec<String>, Globals>)],
 ) -> (HashMap<String, Constant>, Vec<(usize, Diagnostic)>) {
-    let mut evaluator = Evaluator { decls: HashMap::new(), files, done: HashMap::new(), active: Vec::new() };
+    let locals = HashMap::new();
+    let mut evaluator = Evaluator { decls: HashMap::new(), files, locals: &locals, done: HashMap::new(), active: Vec::new() };
     let mut errors = Vec::new();
     for &(file, stmt) in decls {
         let StmtKind::ConstDecl { name, name_span, .. } = &stmt.kind else { continue };
-        let globals = &files[file].0;
-        let message = if !name.starts_with(|c: char| c.is_ascii_uppercase()) {
-            Some(format!("a constant's name is PascalCase, as in BufSize: {name}"))
-        } else if evaluator.decls.contains_key(name.as_str()) || globals.type_name_taken(name) {
+        let globals = files[file].0;
+        let message = if evaluator.decls.contains_key(name.as_str()) || globals.type_name_taken(name) {
             Some(format!("redeclared name {name} in the same scope"))
         } else {
-            None
+            misnamed(name)
         };
         match message {
             Some(message) => errors.push((file, Diagnostic::error(*name_span, message))),
@@ -86,12 +97,38 @@ pub(crate) fn evaluate(
     (constants, errors)
 }
 
+/// Evaluate the constant declaration `stmt` in a function body, where `locals` are the
+/// constants declared in the enclosing blocks before it.
+pub(crate) fn evaluate_local(
+    stmt: &Stmt,
+    globals: &Globals,
+    modules: &HashMap<Vec<String>, Globals>,
+    locals: &HashMap<String, Constant>,
+) -> Result<Constant, Diagnostic> {
+    let StmtKind::ConstDecl { name, name_span, ty, value } = &stmt.kind else {
+        unreachable!("called with a constant declaration");
+    };
+    if let Some(message) = misnamed(name) {
+        return Err(Diagnostic::error(*name_span, message));
+    }
+    let files = [(globals, modules)];
+    let mut evaluator = Evaluator { decls: HashMap::new(), files: &files, locals, done: HashMap::new(), active: Vec::new() };
+    evaluator.initializer(0, ty, value).map_err(|(_, diag)| diag)
+}
+
+fn misnamed(name: &str) -> Option<String> {
+    (!name.starts_with(|c: char| c.is_ascii_uppercase()))
+        .then(|| format!("a constant's name is PascalCase, as in BufSize: {name}"))
+}
+
 type Eval<T> = Result<T, (usize, Diagnostic)>;
 
 struct Evaluator<'a> {
     /// The module's constant declarations, by name, with the index of each one's file.
     decls: HashMap<&'a str, (usize, &'a Stmt)>,
-    files: &'a [(Globals, &'a HashMap<Vec<String>, Globals>)],
+    files: &'a [(&'a Globals, &'a HashMap<Vec<String>, Globals>)],
+    /// The local constants in scope, when evaluating one in a function body.
+    locals: &'a HashMap<String, Constant>,
     /// The constants evaluated so far; `None` for one whose initializer has an error,
     /// reported once.
     done: HashMap<String, Option<Constant>>,
@@ -123,7 +160,7 @@ impl<'a> Evaluator<'a> {
 
     fn initializer(&mut self, file: usize, ty: &crate::ast::TypeExpr, value: &Expr) -> Eval<Constant> {
         let mut diags = Vec::new();
-        let Some(declared) = resolve::resolve_type(ty, &Default::default(), &self.files[file].0, &mut diags) else {
+        let Some(declared) = resolve::resolve_type(ty, &Default::default(), self.files[file].0, &mut diags) else {
             return Err((file, diags.remove(0)));
         };
         if !matches!(&declared, Type::Primitive(_)) {
@@ -185,8 +222,9 @@ impl<'a> Evaluator<'a> {
     /// The constant an identifier or a qualified name `module.Name` refers to, if any:
     /// one of the module's own, or one a `use` brings into the file.
     fn reference(&mut self, file: usize, expr: &Expr) -> Eval<Option<Constant>> {
-        let (globals, modules) = &self.files[file];
+        let (globals, modules) = self.files[file];
         match &expr.kind {
+            ExprKind::Ident(name) if self.locals.contains_key(name) => Ok(self.locals.get(name).cloned()),
             ExprKind::Ident(name) => match self.decls.get_key_value(name.as_str()) {
                 Some((&name, _)) => match self.constant(name)? {
                     Some(constant) => Ok(Some(constant)),

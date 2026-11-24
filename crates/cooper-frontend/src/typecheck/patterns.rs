@@ -80,8 +80,7 @@ impl<'g> TypeChecker<'g> {
         // A bare uppercase name without binders is a constant when one is in scope, as in
         // an expression, and otherwise a variant.
         if let PatternKind::Variant { type_name: None, variant, binders } = &pattern.kind {
-            if let (true, Some(constant)) = (binders.is_empty(), self.globals.consts.get(variant)) {
-                let constant = constant.clone();
+            if let (true, Some(constant)) = (binders.is_empty(), self.constant_named(variant)) {
                 if !matches!(constant.value, ConstValue::Int(_) | ConstValue::Bool(_)) {
                     let message = format!("a constant pattern is an integer, rune, or bool, but {variant} is {}", constant.ty);
                     self.err(pattern.span, message);

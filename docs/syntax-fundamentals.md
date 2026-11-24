@@ -327,8 +327,11 @@ such as overflow or division by zero, is a compile error. A constant is a number
 
 A constant is a value, not a variable: it cannot be assigned, and `&PageSize` is an error. An
 integer constant may give a static array's length, `u8[BufSize]`, and an integer, rune, or
-`bool` constant may be a pattern, where it matches its value. Constants are declared at module
-level.
+`bool` constant may be a pattern, where it matches its value.
+
+A constant declared in a function body is in scope from its declaration to the end of its
+block, as a variable is, and may shadow another name. Its initializer may use the constants
+in scope there, but not variables.
 
 ## Logical and bitwise operators
 

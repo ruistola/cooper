@@ -467,6 +467,7 @@ fn analyze_module(
     let consts: Vec<_> = (module.files.iter().enumerate())
         .flat_map(|(i, file)| file.decls.iter().filter(|d| matches!(d.kind, StmtKind::ConstDecl { .. })).map(move |d| (i, d)))
         .collect();
+    let overlays: Vec<_> = overlays.iter().map(|(globals, modules)| (globals, *modules)).collect();
     let (consts, const_diags) = crate::consts::evaluate(&consts, &overlays);
     interface.consts = consts;
     diags.extend(const_diags.into_iter().map(|(i, d)| d.in_file(&module.files[i].name)));

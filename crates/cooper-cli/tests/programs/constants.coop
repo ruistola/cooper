@@ -2,6 +2,7 @@
 # stdout: 4096 4 kilo buffer other
 # stdout: -128 127 18446744073709551615 44 -21 21
 # stdout: 0.5 1365.3333333333333 true x hello, world
+# stdout: 6 7 1 6 small big
 
 use {
     std.io,
@@ -33,9 +34,32 @@ func kind(n: i64): string {
     }
 }
 
+func locals(): string {
+    const BufSize: i64 = 2 * 3
+    let buf: u8[BufSize]
+    more := func(): i64 {
+        const Inner: i64 = BufSize + 1
+        let more: i32[Inner]
+        return more.length()
+    }
+    let inner: i64 = 0
+    if true then {
+        const BufSize: i64 = 1
+        let one: u8[BufSize]
+        inner = one.length()
+    }
+    let outer: u8[BufSize]
+    const Small: i32 = 3
+    const Big: i32 = Small * 10
+    small := match 3 with { Small => "small"; _ => "other" }
+    big := match 30 with { Small => "small"; Big => "big"; _ => "other" }
+    return "{buf.length()} {more()} {inner} {outer.length()} {small} {big}"
+}
+
 func main() {
     let b: Buffer
     std.io.println("{b.bytes.length()} {b.sides.length()} {kind(1024)} {kind(4096)} {kind(5)}")
     std.io.println("{Min} {Max} {Big} {Narrow} {Neg} {-Neg}")
     std.io.println("{Half} {Ratio} {Verbose} {Letter} {Greeting}")
+    std.io.println(locals())
 }

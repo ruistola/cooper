@@ -38,6 +38,7 @@ impl Parser {
             Defer => self.parse_defer_stmt(),
             Struct => self.parse_struct_decl_stmt(),
             Type => self.parse_type_alias(),
+            Const => self.parse_const_decl(),
             Union => self.parse_union_decl_stmt(),
             _ => self.parse_expression_stmt(),
         }

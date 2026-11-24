@@ -349,6 +349,7 @@ fn lower_initializer(
         captures: &checked.captures,
         variables: &checked.variables,
         constants: &checked.constants,
+        annotations: &checked.annotations,
         local_refs: &checked.local_refs,
         aliases: &checked.aliases,
         dispatch: &checked.dispatch,
@@ -421,6 +422,7 @@ fn lower_function(
         captures: &checked.captures,
         variables: &checked.variables,
         constants: &checked.constants,
+        annotations: &checked.annotations,
         local_refs: &checked.local_refs,
         aliases: &checked.aliases,
         dispatch: &checked.dispatch,
@@ -491,6 +493,7 @@ pub fn lower_expr(expr: &Expr, globals: &Globals, checked: &Typed) -> Result<IrE
         captures: &checked.captures,
         variables: &checked.variables,
         constants: &checked.constants,
+        annotations: &checked.annotations,
         local_refs: &checked.local_refs,
         aliases: &checked.aliases,
         dispatch: &checked.dispatch,
@@ -512,6 +515,7 @@ struct Lower<'a> {
     captures: &'a HashMap<Span, Vec<(String, Type)>>,
     variables: &'a HashMap<Span, VarRef>,
     constants: &'a HashMap<Span, ConstValue>,
+    annotations: &'a HashMap<Span, Type>,
     local_refs: &'a HashMap<Span, LocalRef>,
     aliases: &'a HashMap<Span, String>,
     dispatch: &'a HashMap<(Span, usize), ItemRef>,
@@ -558,6 +562,9 @@ impl Lower<'_> {
     /// Resolve a signature or binding annotation. Lowering runs after a clean type
     /// check, so an unresolved annotation is an internal inconsistency.
     fn resolve(&self, ty: &TypeExpr) -> Result<Type, LowerError> {
+        if let Some(resolved) = self.annotations.get(&ty.span) {
+            return Ok(resolved.clone());
+        }
         let mut diags = Vec::new();
         resolve_type(ty, &self.type_params.borrow(), self.globals, &mut diags)
             .ok_or(LowerError::UnresolvedType(ty.span))
@@ -1022,7 +1029,8 @@ impl Lower<'_> {
             }
             StmtKind::ExternFunc { .. } => unreachable!("the checker rejects a local extern"),
             StmtKind::TypeAlias { .. } => unreachable!("the checker rejects a local type alias"),
-            StmtKind::ConstDecl { .. } => unreachable!("the parser rejects a local constant"),
+            // Each use of a constant is lowered to its value.
+            StmtKind::ConstDecl { .. } => IrStmtKind::Block(Vec::new()),
         };
         Ok(IrStmt {
             kind,

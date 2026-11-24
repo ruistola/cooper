@@ -260,12 +260,17 @@ pub fn resolve_aliases(globals: &mut Globals, decls: &[Stmt], diags: &mut Vec<Di
     }
 }
 
-/// The names a type expression mentions.
-fn named_in(ty: &TypeExpr, out: &mut Vec<String>) {
+/// The names a type expression mentions, the constants of its array lengths included.
+pub(crate) fn named_in(ty: &TypeExpr, out: &mut Vec<String>) {
     match &ty.kind {
         TypeExprKind::Named(name) => out.push(name.clone()),
+        TypeExprKind::StaticArray(elem, length) => {
+            if let ArrayLength::Const(name) = length {
+                out.push(name.clone());
+            }
+            named_in(elem, out);
+        }
         TypeExprKind::Array(elem)
-        | TypeExprKind::StaticArray(elem, _)
         | TypeExprKind::Variadic(elem)
         | TypeExprKind::Pointer(elem) => named_in(elem, out),
         TypeExprKind::Func { params, ret } => {

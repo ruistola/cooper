@@ -350,7 +350,10 @@ impl<'g> TypeChecker<'g> {
     /// a place only on a built-in array, whose element lives in the backing buffer.
     fn is_addressable(&mut self, expr: &Expr) -> bool {
         match &expr.kind {
-            ExprKind::Ident(name) => self.lookup_var(name).is_some() || self.globals.vars.contains_key(name),
+            ExprKind::Ident(name) => match self.scopes.iter().rev().find_map(|scope| scope.get(name)) {
+                Some(binding) => binding.constant.is_none(),
+                None => self.globals.vars.contains_key(name),
+            },
             ExprKind::Deref(_) => true,
             ExprKind::Field { target, .. } => match self.check_expr(target) {
                 Some(Type::Pointer(_)) => true,

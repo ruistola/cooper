@@ -273,7 +273,10 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
   `match` or the `else` of an `if` expression, and it fits any type. There is no `?`
   operator; an error can be given context on the way out:
   `x := if m is Some(x) then x else return None`, or
-  `v := match step() with { Ok(v) => v; Err(err) => return Err("step: {err}") }`.
+  `v := match step() with { Ok(v) => v; Err(err) => return Err("step: {err}") }`. Checks
+  that should fail as one, such as a login that must not reveal whether the user or the
+  password was wrong, share one `else`: `user := if findUser(name) is Some(user) and
+  passwordMatches(user, password) then user else return Err(LoginFailed)`.
 * A method name may not collide with a field name, functions are never overloaded, and a
   module's top-level names share one unordered namespace across its files.
 * `==` works on comparable types only: not function types, arrays (static ones included), or

@@ -159,6 +159,19 @@ n := match parse(text) with {
 }
 ```
 
+When the checks only make sense together and the caller should learn only that they
+failed, chain them with `and` and give the chain one `else`. A login is the typical case:
+an unknown user and a wrong password must produce the same answer, so that the reply does
+not reveal which user names exist.
+
+```
+user := if findUser(name) is Some(user) and passwordMatches(user, password) then user
+        else return Err(LoginFailed)
+```
+
+The `else` binds nothing and receives no value from the step that failed, so the steps need
+not share a type: here a pattern test and a plain `bool` are combined.
+
 ## Planned
 
 * Named-field payloads.

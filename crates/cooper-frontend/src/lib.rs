@@ -12,6 +12,7 @@
 
 pub mod ast;
 mod builtins;
+pub mod consts;
 pub mod diag;
 mod infer;
 pub mod index;

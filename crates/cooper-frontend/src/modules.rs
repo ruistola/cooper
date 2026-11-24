@@ -376,6 +376,7 @@ struct Imports {
     aliases: HashMap<String, crate::types::Type>,
     funcs: HashMap<String, Signature>,
     vars: HashMap<String, GlobalVar>,
+    consts: HashMap<String, crate::consts::Constant>,
     methods: HashMap<TypeId, HashMap<String, Signature>>,
     /// Module bindings keyed by local spelling (`["std", "io"]`, or `["web"]` when
     /// aliased), each mapped to that module's interface for qualified access.
@@ -402,6 +403,7 @@ impl Imports {
         globals.aliases.extend(self.aliases.clone());
         globals.funcs.extend(self.funcs.clone());
         globals.vars.extend(self.vars.clone());
+        globals.consts.extend(self.consts.clone());
         for (owner, methods) in &self.methods {
             globals
                 .methods
@@ -461,6 +463,13 @@ fn analyze_module(
         resolve::declare_types(&mut interface, &file.decls, file.private, &mut file_diags);
         diags.extend(file_diags.into_iter().map(|d| d.in_file(&file.name)));
     }
+    let overlays: Vec<_> = file_imports.iter().map(|imports| (imports.overlay(&interface), &imports.modules)).collect();
+    let consts: Vec<_> = (module.files.iter().enumerate())
+        .flat_map(|(i, file)| file.decls.iter().filter(|d| matches!(d.kind, StmtKind::ConstDecl { .. })).map(move |d| (i, d)))
+        .collect();
+    let (consts, const_diags) = crate::consts::evaluate(&consts, &overlays);
+    interface.consts = consts;
+    diags.extend(const_diags.into_iter().map(|(i, d)| d.in_file(&module.files[i].name)));
     type Phase = fn(&mut Globals, &[Stmt], &mut Vec<Diagnostic>);
     let size_check: Phase = |globals, decls, diags| resolve::check_type_sizes(globals, decls, diags);
     let phases: [Phase; 5] = [
@@ -504,7 +513,7 @@ fn analyze_module(
 }
 
 /// The interface other modules see of a module whose declarations resolved into
-/// `interface`: without the functions, variables, and aliases its `#private` files
+/// `interface`: without the functions, variables, constants, and aliases its `#private` files
 /// declare, and without their methods. The private files' types stay, abstract (see
 /// [`TypeDefs::is_abstract_in`]).
 fn exported(mut interface: Globals, files: &[ParsedFile]) -> Globals {
@@ -525,6 +534,9 @@ fn exported(mut interface: Globals, files: &[ParsedFile]) -> Globals {
             }
             StmtKind::VarDecl { name, .. } => {
                 interface.vars.remove(name);
+            }
+            StmtKind::ConstDecl { name, .. } => {
+                interface.consts.remove(name);
             }
             StmtKind::TypeAlias { name, .. } => {
                 interface.aliases.remove(name);
@@ -552,7 +564,7 @@ fn receiver_owner(ty: &TypeExpr, interface: &Globals) -> Option<TypeId> {
 }
 
 /// The names a module declares across all its files: its top-level structs, sum
-/// types, free functions, and module-level variables. Methods are keyed by receiver,
+/// types, free functions, module-level variables, and constants. Methods are keyed by receiver,
 /// not by a bare name, so they never collide with an import. Used to reject an import
 /// whose local name would shadow one of the module's own declarations.
 fn declared_names(files: &[ParsedFile]) -> HashSet<String> {
@@ -563,6 +575,7 @@ fn declared_names(files: &[ParsedFile]) -> HashSet<String> {
                 StmtKind::StructDecl { name, .. }
                 | StmtKind::UnionDecl { name, .. }
                 | StmtKind::VarDecl { name, .. }
+                | StmtKind::ConstDecl { name, .. }
                 | StmtKind::TypeAlias { name, .. }
                 | StmtKind::ExternFunc { name, .. } => {
                     names.insert(name.clone());
@@ -645,6 +658,8 @@ fn build_file_imports(
                     imports.funcs.insert(local, sig.clone());
                 } else if let Some(var) = interface.vars.get(&item) {
                     imports.vars.insert(local, var.clone());
+                } else if let Some(constant) = interface.consts.get(&item) {
+                    imports.consts.insert(local, constant.clone());
                 } else {
                     diags.push(
                         Diagnostic::error(
@@ -678,6 +693,9 @@ fn strip_imports(mut globals: Globals, imports: &Imports) -> Globals {
     }
     for name in imports.vars.keys() {
         globals.vars.remove(name);
+    }
+    for name in imports.consts.keys() {
+        globals.consts.remove(name);
     }
     globals.unions.retain(|_, id| id.module != crate::stdlib::PRELUDE_MODULE);
     for owner in imports.methods.keys() {

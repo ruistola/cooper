@@ -127,7 +127,7 @@ kind := match n with {               # integer, bool, tuple, struct, or sum-type
   camelCase. Casing matters to the compiler only in patterns (below).
 * A final parameter `vals: ...T` receives its arguments as a `T[]`; `f(xs...)` passes an array
   as them ([Methods and Functions](./methods-and-functions.md#variadic-parameters)).
-* Reserved words: `and as break continue defer do else extern false for func if in is let match nil or
+* Reserved words: `and as break const continue defer do else extern false for func if in is let match nil or
   repeat return struct then thread true type union until use while with xor`.
 * `thread f(args)` starts a green thread running the call and gives its `Thread` handle ([Concurrency](./concurrency.md)).
 * `type Name = T` names a type, transparently ([Syntax Fundamentals](./syntax-fundamentals.md#type-aliases)). A comment block directly above a declaration is its documentation.
@@ -153,6 +153,7 @@ useItem    ::= path ("as" ident)? | path "." "{" (ident ("as" ident)?)* "}"
 path       ::= ident ("." ident)*
 
 decl       ::= struct | union | func | extern | "let" ident ":" type ("=" expr)?   # a module-level variable
+             | "const" ident ":" type "=" expr        # a compile-time constant
 struct     ::= "struct" ident ident* "{" member* "}"  # ident* are type-parameter binders
 member     ::= ident ":" type
 union      ::= "union" ident ident* "{" variant* "}"
@@ -204,7 +205,8 @@ pattern    ::= "_" | ident | "true" | "false" | "-"? number
              | ident "{" (ident ":" pattern)* "}"             # struct: `Point { x: a }`
 ```
 
-In a pattern, a lowercase identifier alone binds the value and an uppercase one is a variant.
+In a pattern, a lowercase identifier alone binds the value. An uppercase one is a constant if
+one is in scope, and otherwise a variant.
 
 ## Operators
 
@@ -237,8 +239,8 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
 ## Types
 
 * Primitives: `i8 i16 i32 i64`, `u8 u16 u32 u64`, `f32 f64`, `bool`, `rune` (a Unicode scalar value), `string`. Unit is `()`.
-* Composites: tuple `(A, B)`, array `T[]`, static array `T[3]` (a copied value; `a[..]` slices
-  it to a `T[]`), pointer `T^`, function `func(A, B): R`.
+* Composites: tuple `(A, B)`, array `T[]`, static array `T[3]` or `T[Size]` with a constant (a
+  copied value; `a[..]` slices it to a `T[]`), pointer `T^`, function `func(A, B): R`.
 * Declared types are nominal: `struct` and `union`, optionally generic (`Box T`, `Result T E`).
 * There is no implicit numeric conversion. Arithmetic needs both operands to share one type,
   and a literal takes the type its uses give it ([Numeric Types](./numeric-types.md)).
@@ -264,6 +266,11 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
   every variable its initializer reaches, directly or through the functions it calls. An
   initializer that reaches its own variable is an error. Another module's variable is reached
   as `module.name` or bound by `use { module.name }`.
+* `const BufSize: i64 = 4 * 1024` is a module-level constant: a typed value computed at compile
+  time, not a variable. Its initializer uses literals, operators, numeric conversions, and other
+  constants (`module.Name` too), and overflow there is a compile error. A constant is a number,
+  `bool`, `rune`, or `string`, cannot be assigned or have its address taken, and may give a
+  static array's length or, if an integer, rune, or `bool`, be a pattern.
 * `value is pattern` is a `bool`: whether the value matches, as `match value with { pattern =>
   true; _ => false }` would say. The names the pattern binds are in scope where the test is
   known to have held: the `then` branch of an `if`, the body of a `while`, and the operands of
@@ -306,6 +313,7 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
 These are designed or reserved but rejected today. Do not write them:
 
 * Named-field variant payloads, nested patterns inside variant payloads, or-patterns, guards.
+* `const` inside a function body.
 
 ## Where to read more
 

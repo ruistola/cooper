@@ -50,7 +50,8 @@ The final path segment decides what is bound:
 
 * **A module binding** brings the module into scope, and its members are reached qualified:
   `use { std.io }` then `std.io.print("hello")`.
-* **A name binding** brings one exported item (a type or function) into scope for bare use:
+* **A name binding** brings one exported item (a type, function, variable, or constant) into
+  scope for bare use:
   `use { geometry.Point }` then `let p: Point`. Several names from one module are grouped:
   `use { geometry.{ Point, Shape } }`.
 
@@ -95,7 +96,7 @@ func isSpace(c: u8): bool { … }
 ```
 
 A private file's declarations are visible to every file of its module, tests included, and to
-no other module. Its functions, methods, variables, and aliases do not exist outside the module.
+no other module. Its functions, methods, variables, constants, and aliases do not exist outside the module.
 Its structs and sum types are **abstract** there: other modules can name them, hold, copy, pass,
 compare, and format their values, take their zero values, and call the methods the module's other
 files declare on them, but cannot read or write fields, write struct literals, construct variants,

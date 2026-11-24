@@ -15,6 +15,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
+use crate::consts::ConstValue;
 use crate::diag::{Diagnostic, Span};
 use crate::infer::{InferKind, InferTable};
 use crate::resolve::{self, Callable, Globals, Signature};
@@ -49,6 +50,9 @@ pub struct Typed {
     /// The module-level variable each use names, keyed by the span of the expression
     /// (a bare name, or a qualified `module.name`).
     pub variables: HashMap<Span, VarRef>,
+    /// The value of each use of a constant, in an expression or as a pattern, keyed by the
+    /// span of the use.
+    pub constants: HashMap<Span, ConstValue>,
     /// Every use of a generic nested function, keyed by span.
     pub local_refs: HashMap<Span, LocalRef>,
     /// The unique name each use of an `is`-bound variable stands for, keyed by span.
@@ -229,6 +233,7 @@ pub fn check(
         refs: tc.refs,
         captures: tc.captures,
         variables: tc.variables,
+        constants: tc.constants,
         local_refs: tc.local_refs,
         aliases: tc.aliases,
         dispatch: tc.dispatch,
@@ -265,6 +270,7 @@ struct TypeChecker<'g> {
     captures: HashMap<Span, Vec<(String, Type)>>,
     /// Every use of a module-level variable, keyed by span: the lowering handoff.
     variables: HashMap<Span, VarRef>,
+    constants: HashMap<Span, ConstValue>,
     /// Every use of a generic nested function, keyed by span: the lowering handoff.
     local_refs: HashMap<Span, LocalRef>,
     /// The method each variant of a sum type supplies to a call across its variants, keyed
@@ -304,6 +310,7 @@ impl<'g> TypeChecker<'g> {
             closures: Vec::new(),
             captures: HashMap::new(),
             variables: HashMap::new(),
+            constants: HashMap::new(),
             local_refs: HashMap::new(),
             variadic: HashMap::new(),
             packed: HashMap::new(),
@@ -461,7 +468,7 @@ impl<'g> TypeChecker<'g> {
                     self.err(stmt.span, "a type alias must be declared at module level");
                 }
             }
-            StmtKind::StructDecl { .. } | StmtKind::UnionDecl { .. } => {}
+            StmtKind::ConstDecl { .. } | StmtKind::StructDecl { .. } | StmtKind::UnionDecl { .. } => {}
             StmtKind::FuncDecl(func) if self.current_return.is_some() => self.check_nested_func(func),
             StmtKind::FuncDecl(func) => self.check_func_decl(func),
             StmtKind::ExternFunc { .. } => {
@@ -1008,6 +1015,10 @@ impl<'g> TypeChecker<'g> {
             self.variables.insert(span, VarRef { module, name: name.to_string() });
             return Some(ty);
         }
+        if let Some(constant) = self.globals.consts.get(name) {
+            self.constants.insert(span, constant.value.clone());
+            return Some(constant.ty.clone());
+        }
         if let Some(t) = self.globals.lookup_type_value(name) {
             return Some(t);
         }
@@ -1065,6 +1076,10 @@ impl<'g> TypeChecker<'g> {
                 let (module, ty) = (var.module.clone(), var.ty.clone());
                 self.variables.insert(span, VarRef { module, name: field.to_string() });
                 return Some(ty);
+            }
+            if let Some(constant) = interface.consts.get(field) {
+                self.constants.insert(span, constant.value.clone());
+                return Some(constant.ty.clone());
             }
             self.err(
                 span,

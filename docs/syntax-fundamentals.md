@@ -130,7 +130,8 @@ no visibility meaning. The visibility mechanism is still to be designed.
 `T[]` is the default sequence type: a growable run of elements with a length and capacity. An
 array value is a small header that refers to its elements, so assigning or passing an array, or
 slicing one, copies the header and shares the elements; `copy()` makes an independent copy. A
-**static array** `T[N]` has a fixed length, written as an integer literal, and is covered
+**static array** `T[N]` has a fixed length, written as an integer literal or a
+[constant](#constants), and is covered
 [below](#static-arrays).
 
 ```
@@ -306,6 +307,28 @@ not inside the pattern. The same shape on the left of `=` reassigns existing var
 let (a, b): (i32, string) = row
 (a, b) = (b, a)
 ```
+
+## Constants
+
+`const` names a value computed at compile time:
+
+```
+const PageSize: i64 = 4096
+const BufSize: i64 = 4 * PageSize
+const Greeting: string = "hello, " + "world"
+```
+
+A constant has a declared type, and its name is PascalCase. Its initializer may use literals,
+operators, numeric conversions such as `f64(PageSize)`, and other constants, including another
+module's (`sizes.PageSize`), in any declaration order. It cannot call a function. The arithmetic
+is the run-time arithmetic of the declared type, and what would stop the program at run time,
+such as overflow or division by zero, is a compile error. A constant is a number, `bool`,
+`rune`, or `string`.
+
+A constant is a value, not a variable: it cannot be assigned, and `&PageSize` is an error. An
+integer constant may give a static array's length, `u8[BufSize]`, and an integer, rune, or
+`bool` constant may be a pattern, where it matches its value. Constants are declared at module
+level.
 
 ## Logical and bitwise operators
 

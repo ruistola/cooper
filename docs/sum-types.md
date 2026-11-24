@@ -120,6 +120,7 @@ until another use determines the scrutinee type. Patterns:
 | `Type.Variant(…)` | the same, qualified |
 | `true`, `false` | a `bool` constant |
 | `42`, `-1` | an integer constant |
+| `Limit` | the value of a [constant](./syntax-fundamentals.md#constants) in scope |
 | `(p, q)` | a tuple, component-wise |
 | `Point { x: p, y: _ }` | a struct's listed fields; unlisted fields are ignored |
 

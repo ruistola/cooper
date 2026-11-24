@@ -374,8 +374,27 @@ fn the_standard_io_module_is_provided_by_the_compiler() {
     );
 }
 
+#[test]
+fn constants_are_used_across_modules_by_qualified_and_bound_names() {
+    project_ok(&[
+        ("sizes", "const Page: i64 = 4096\nconst Pages: i64 = 4"),
+        (
+            "main",
+            "use {\n  sizes,\n  sizes.Page,\n}
+const Total: i64 = sizes.Pages * Page
+struct Buffer {
+  bytes: u8[Total],
+}
+func main() {
+  let b: Buffer
+  n := b.bytes.length() + sizes.Page
+}",
+        ),
+    ]);
+}
+
 /// The `geo` module of the visibility tests: a public file, and a `#private` file holding
-/// an abstract struct, an abstract sum type, a helper function, and a helper method.
+/// an abstract struct, an abstract sum type, a helper function, a helper method, and a constant.
 const GEO_PUBLIC: &str = "func area(s: Shape): i32 {
   return match s with {
     Square(side) => side * side
@@ -389,7 +408,7 @@ func square(side: i32): Shape {
   return r.w
 }
 func doubled(n: i32): i32 {
-  return twice(n)
+  return twice(n) + Offset
 }";
 const GEO_PRIVATE: &str = "#private
 struct Rect {
@@ -400,6 +419,7 @@ union Shape {
   Square(i32),
   Rect(Rect),
 }
+const Offset: i32 = 0
 func twice(n: i32): i32 {
   return n * 2
 }
@@ -429,6 +449,8 @@ fn a_private_file_is_visible_to_its_module_only() {
     assert!(geo_diags(&main).iter().any(|m| m.contains("module `geo` exports no item named `twice`")));
     let main = "use {\n  geo.twice,\n}\nfunc main() {\n}";
     assert!(geo_diags(main).iter().any(|m| m.contains("module `geo` exports no item named `twice`")));
+    let main = format!("{use_geo}func f(): i32 {{\n  return geo.Offset\n}}");
+    assert!(geo_diags(&main).iter().any(|m| m.contains("module `geo` exports no item named `Offset`")));
 }
 
 #[test]

@@ -68,13 +68,17 @@ impl Parser {
                         let Some(crate::typecheck::LiteralValue::Int(value)) =
                             crate::typecheck::decode_number_literal(&length.text)
                         else {
-                            return Err(self.error(length.span, "an array length is an integer literal"));
+                            return Err(self.error(length.span, "an array length is an integer literal or a constant"));
                         };
                         let Ok(value) = u64::try_from(value) else {
                             return Err(self.error(length.span, "array length out of range"));
                         };
                         self.expect(CloseBracket)?;
-                        TypeExprKind::StaticArray(Box::new(ty), value)
+                        TypeExprKind::StaticArray(Box::new(ty), ArrayLength::Literal(value))
+                    } else if self.peek().kind == Identifier {
+                        let name = self.expect(Identifier)?.text;
+                        self.expect(CloseBracket)?;
+                        TypeExprKind::StaticArray(Box::new(ty), ArrayLength::Const(name))
                     } else {
                         self.expect(CloseBracket)?;
                         TypeExprKind::Array(Box::new(ty))
@@ -181,6 +185,22 @@ impl Parser {
         self.consume_statement_terminator()?;
         Ok(Stmt {
             kind: StmtKind::TypeAlias { name: name_token.text, name_span: name_token.span, ty },
+            span: start.to(self.prev_token().span),
+        })
+    }
+
+    /// `const Name: T = value`.
+    pub(super) fn parse_const_decl(&mut self) -> PResult<Stmt> {
+        let start = self.peek().span;
+        self.expect(Const)?;
+        let name_token = self.expect(Identifier)?;
+        self.expect(Colon)?;
+        let ty = self.parse_type_expr()?;
+        self.expect(Equals)?;
+        let value = self.parse_expr(0)?;
+        self.consume_statement_terminator()?;
+        Ok(Stmt {
+            kind: StmtKind::ConstDecl { name: name_token.text, name_span: name_token.span, ty, value },
             span: start.to(self.prev_token().span),
         })
     }

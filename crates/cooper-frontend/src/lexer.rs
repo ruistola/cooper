@@ -121,6 +121,8 @@ pub enum TokenKind {
     As,
     #[token("break")]
     Break,
+    #[token("const")]
+    Const,
     #[token("continue")]
     Continue,
     #[token("thread")]
@@ -232,6 +234,7 @@ impl std::fmt::Display for TokenKind {
             And => "'and'",
             As => "'as'",
             Break => "'break'",
+            Const => "'const'",
             Continue => "'continue'",
             Thread => "'thread'",
             Defer => "'defer'",

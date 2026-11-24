@@ -33,6 +33,7 @@ use cooper_frontend::ast::{
     StrPart,
     TypeExpr, TypeExprKind, TypedIdent, UnaryOp,
 };
+use cooper_frontend::consts::ConstValue;
 use cooper_frontend::diag::Span;
 use cooper_frontend::resolve::{
     receiver_pattern_params, resolve_type, underlying_struct_name, Callable, Globals, Signature,
@@ -229,6 +230,21 @@ struct Variable {
     initialized: bool,
 }
 
+/// The use of a constant: its value as a literal of the constant's type.
+fn constant(value: &ConstValue, ty: Type, span: Span) -> IrExpr {
+    let node = |kind, ty| IrExpr { kind, ty, span };
+    match value {
+        ConstValue::Int(v) if *v < 0 => node(
+            IrExprKind::Unary { op: UnaryOp::Neg, operand: Box::new(node(IrExprKind::Int(v.unsigned_abs()), ty.clone())) },
+            ty,
+        ),
+        ConstValue::Int(v) => node(IrExprKind::Int(v.unsigned_abs()), ty),
+        ConstValue::Float(v) => node(IrExprKind::Float(*v), ty),
+        ConstValue::Bool(b) => node(IrExprKind::Bool(*b), ty),
+        ConstValue::Str(text) => node(IrExprKind::Str(text.clone()), ty),
+    }
+}
+
 /// The module-level variables a file's top-level declarations declare.
 fn file_variables(file: &str, decls: &[Stmt], globals: &Globals) -> Vec<Variable> {
     decls
@@ -294,6 +310,7 @@ pub fn lower_module(
             StmtKind::StructDecl { .. }
             | StmtKind::UnionDecl { .. }
             | StmtKind::TypeAlias { .. }
+            | StmtKind::ConstDecl { .. }
             | StmtKind::ExternFunc { .. } => {}
             StmtKind::VarDecl { init: None, .. } => {}
             StmtKind::VarDecl { name, init: Some(init), .. } => {
@@ -331,6 +348,7 @@ fn lower_initializer(
         refs: &checked.refs,
         captures: &checked.captures,
         variables: &checked.variables,
+        constants: &checked.constants,
         local_refs: &checked.local_refs,
         aliases: &checked.aliases,
         dispatch: &checked.dispatch,
@@ -402,6 +420,7 @@ fn lower_function(
         refs: &checked.refs,
         captures: &checked.captures,
         variables: &checked.variables,
+        constants: &checked.constants,
         local_refs: &checked.local_refs,
         aliases: &checked.aliases,
         dispatch: &checked.dispatch,
@@ -471,6 +490,7 @@ pub fn lower_expr(expr: &Expr, globals: &Globals, checked: &Typed) -> Result<IrE
         refs: &checked.refs,
         captures: &checked.captures,
         variables: &checked.variables,
+        constants: &checked.constants,
         local_refs: &checked.local_refs,
         aliases: &checked.aliases,
         dispatch: &checked.dispatch,
@@ -491,6 +511,7 @@ struct Lower<'a> {
     refs: &'a HashMap<Span, ItemRef>,
     captures: &'a HashMap<Span, Vec<(String, Type)>>,
     variables: &'a HashMap<Span, VarRef>,
+    constants: &'a HashMap<Span, ConstValue>,
     local_refs: &'a HashMap<Span, LocalRef>,
     aliases: &'a HashMap<Span, String>,
     dispatch: &'a HashMap<(Span, usize), ItemRef>,
@@ -1001,6 +1022,7 @@ impl Lower<'_> {
             }
             StmtKind::ExternFunc { .. } => unreachable!("the checker rejects a local extern"),
             StmtKind::TypeAlias { .. } => unreachable!("the checker rejects a local type alias"),
+            StmtKind::ConstDecl { .. } => unreachable!("the parser rejects a local constant"),
         };
         Ok(IrStmt {
             kind,
@@ -1040,6 +1062,9 @@ impl Lower<'_> {
             .ok_or(LowerError::MissingType(expr.span))?;
         if matches!(ty, Type::Infer(_)) {
             unreachable!("inference variables are resolved before lowering");
+        }
+        if let Some(value) = self.constants.get(&expr.span) {
+            return Ok(constant(value, ty, expr.span));
         }
         if let Some(var) = self.variables.get(&expr.span) {
             return Ok(IrExpr {
@@ -1549,6 +1574,11 @@ impl Lower<'_> {
                     negative: *negative,
                 }
             }
+            PatternKind::Variant { .. } if self.constants.contains_key(&pattern.span) => match self.constants[&pattern.span] {
+                ConstValue::Int(v) => IrPatternKind::Int { value: v.unsigned_abs(), negative: v < 0 },
+                ConstValue::Bool(b) => IrPatternKind::Bool(b),
+                _ => unreachable!("a checked constant pattern is an integer, rune, or bool"),
+            },
             PatternKind::Variant { variant, binders, .. } => {
                 let payload = self
                     .globals

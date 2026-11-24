@@ -28,8 +28,8 @@ The compiler is a Rust Cargo workspace.
 * **modules.rs** — Module-graph analysis. It parses every file, resolves `use` bindings,
   orders modules topologically (rejecting cycles), and analyzes each module against its
   dependencies' exported interfaces, never their bodies. Imports are file-scoped and
-  stripped from the interface a module exports, as are the functions, methods, variables, and
-  aliases of its `#private` files. Their types stay in it, flagged in `TypeDefs`, and the
+  stripped from the interface a module exports, as are the functions, methods, variables,
+  constants, and aliases of its `#private` files. Their types stay in it, flagged in `TypeDefs`, and the
   checker rejects field access, literals, variants, and patterns of them in other modules.
 * **lexer.rs** — Tokenization with [`logos`].
 * **parser.rs** — Hand-written recursive descent with Pratt expression parsing. It recovers at
@@ -45,6 +45,9 @@ The compiler is a Rust Cargo workspace.
   literal classes, deep resolution, and literal defaulting.
 * **builtins.rs** — The fixed method sets of built-in types (array `length`, `get`, `set`,
   `push`).
+* **consts.rs** — Evaluates a module's `const` initializers, after type names are registered and
+  before any type is resolved, since a constant may give a static array's length. The checker
+  records each use of a constant by span, and lowering emits its value as a literal.
 * **diag.rs** — Diagnostics, each with the [`Span`] and file it refers to.
 * The semantic passes run per module, each only if the previous one reported no errors:
   1. **resolve.rs** — Builds the symbol table (`Globals`) and checks declaration signatures.

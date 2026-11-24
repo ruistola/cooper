@@ -172,3 +172,9 @@ fn string_formats_any_value() {
     ok("func f(n: u8, x: f64, b: bool): string {\n  return string(n) + string(x) + string(b)\n}");
     ok("struct P {\n  x: i32,\n}\nfunc f T (p: P, xs: T[]): string {\n  return string(p) + string(xs)\n}");
 }
+
+#[test]
+fn an_assignment_writes_to_a_place() {
+    ok("func main() {\n  a := 1\n  b := 2\n  (a, b) = (b, a)\n}");
+    err("func f() {\n}\nfunc main() {\n  f = f\n}", "cannot assign to a non-addressable expression");
+}

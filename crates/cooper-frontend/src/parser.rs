@@ -133,6 +133,7 @@ fn can_follow_semicolon(kind: TokenKind) -> bool {
             | Dash
             | Break
             | Continue
+            | Const
             | Thread
             | Defer
             | Do
@@ -299,7 +300,7 @@ impl Parser {
                     self.advance();
                     return;
                 }
-                For | Func | Extern | If | Let | Match | Return | Struct | Union | Type | Use | While
+                For | Func | Const | Extern | If | Let | Match | Return | Struct | Union | Type | Use | While
                 | Until | Do | Repeat | Break | Continue | Defer
                     if depth == 0 =>
                 {
@@ -431,6 +432,7 @@ impl Parser {
             Struct => self.parse_struct_decl_stmt(),
             Union => self.parse_union_decl_stmt(),
             Type => self.parse_type_alias(),
+            Const => self.parse_const_decl(),
             Let => self.parse_var_decl_stmt(),
             _ => {
                 let token = self.peek();

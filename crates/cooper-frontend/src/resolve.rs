@@ -16,7 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{FuncDecl, Stmt, StmtKind, TypeExpr, TypeExprKind, TypedIdent, VariantDef};
+use crate::ast::{ArrayLength, FuncDecl, Stmt, StmtKind, TypeExpr, TypeExprKind, TypedIdent, VariantDef};
 use crate::diag::{Diagnostic, Span};
 use crate::types::{is_primitive_name, StructDef, Type, TypeDefs, TypeId, UnionDef};
 
@@ -93,6 +93,8 @@ pub struct Globals {
     /// predecessor — the module namespace is an unordered union across a module's
     /// files, so a repeated name is a redeclaration, never a shadow.
     pub vars: HashMap<String, GlobalVar>,
+    /// Constants in scope, by local spelling, with their values.
+    pub consts: HashMap<String, crate::consts::Constant>,
     /// Type aliases in scope, by local spelling, to the type each names. An alias is
     /// transparent: it is the type itself, so nothing after resolution sees it.
     pub aliases: HashMap<String, Type>,
@@ -153,7 +155,7 @@ impl Globals {
         self.methods.get(recv).and_then(|m| m.get(name))
     }
 
-    fn type_name_taken(&self, name: &str) -> bool {
+    pub(crate) fn type_name_taken(&self, name: &str) -> bool {
         self.structs.contains_key(name)
             || self.unions.contains_key(name)
             || self.aliases.contains_key(name)
@@ -467,10 +469,14 @@ pub fn resolve_type(
             globals,
             diags,
         )?))),
-        TypeExprKind::StaticArray(elem, len) => Some(Type::StaticArray(
-            Box::new(resolve_type(elem, type_params, globals, diags)?),
-            *len,
-        )),
+        TypeExprKind::StaticArray(elem, len) => {
+            let elem = resolve_type(elem, type_params, globals, diags)?;
+            let len = match len {
+                ArrayLength::Literal(len) => *len,
+                ArrayLength::Const(name) => crate::consts::array_length(name, type_expr.span, globals, diags)?,
+            };
+            Some(Type::StaticArray(Box::new(elem), len))
+        }
         TypeExprKind::Pointer(elem) => Some(Type::Pointer(Box::new(resolve_type(
             elem,
             type_params,
@@ -650,6 +656,7 @@ fn resolve_var_decl(
 ) {
     if globals.vars.contains_key(name)
         || globals.funcs.contains_key(name)
+        || globals.consts.contains_key(name)
         || globals.structs.contains_key(name)
         || globals.unions.contains_key(name)
     {
@@ -723,7 +730,11 @@ fn resolve_extern_func(
     else {
         return;
     };
-    if globals.funcs.contains_key(name) || globals.vars.contains_key(name) || globals.type_name_taken(name) {
+    if globals.funcs.contains_key(name)
+        || globals.vars.contains_key(name)
+        || globals.consts.contains_key(name)
+        || globals.type_name_taken(name)
+    {
         diags.push(Diagnostic::error(span, format!("redeclared function {name} in the same scope")));
         return;
     }
@@ -818,6 +829,7 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
     let Some(receiver) = &func.receiver else {
         if globals.funcs.contains_key(&func.name)
             || globals.vars.contains_key(&func.name)
+            || globals.consts.contains_key(&func.name)
             || globals.type_name_taken(&func.name)
         {
             diags.push(Diagnostic::error(

@@ -353,7 +353,8 @@ impl<'g> TypeChecker<'g> {
             ExprKind::Ident(name) => self.lookup_var(name).is_some() || self.globals.vars.contains_key(name),
             ExprKind::Deref(_) => true,
             ExprKind::Field { target, .. } => match self.check_expr(target) {
-                Some(Type::Pointer(_) | Type::Module(_)) => true,
+                Some(Type::Pointer(_)) => true,
+                Some(Type::Module(_)) => self.variables.contains_key(&expr.span),
                 Some(_) => self.is_addressable(target),
                 None => false,
             },
@@ -367,6 +368,14 @@ impl<'g> TypeChecker<'g> {
         }
     }
 
+    /// Whether an assignment can write to `expr`: an addressable place, or a tuple of them.
+    fn is_assignable(&mut self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Tuple(elems) => elems.iter().all(|elem| self.is_assignable(elem)),
+            _ => self.is_addressable(expr),
+        }
+    }
+
     pub(super) fn check_assign(&mut self, op: AssignOp, target: &Expr, value: &Expr) -> Option<Type> {
         // `a[i] = v` writes an array element through the built-in index sugar; only a
         // built-in array is index-assignable.
@@ -374,6 +383,15 @@ impl<'g> TypeChecker<'g> {
             return self.check_index_assign(op, array, index, value, target.span);
         }
         let target_type = self.check_expr(target)?;
+        if !self.is_assignable(target) {
+            match &target.kind {
+                ExprKind::Ident(name) | ExprKind::Field { name, .. } if self.constants.contains_key(&target.span) => {
+                    self.err(target.span, format!("cannot assign to constant {name}"))
+                }
+                _ => self.err(target.span, "cannot assign to a non-addressable expression"),
+            }
+            return None;
+        }
         // The hint supplies a bare variant's subject; assignment equality constrains
         // the value's type, including literal variables.
         self.expected = Some(target_type.clone());

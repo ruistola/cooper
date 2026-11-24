@@ -77,6 +77,22 @@ impl<'g> TypeChecker<'g> {
     /// name it introduces into the current (arm) scope. Recurses through tuple and
     /// struct patterns so a sub-pattern is checked against its component's type.
     pub(super) fn check_pattern(&mut self, pattern: &Pattern, ty: &Type) {
+        // A bare uppercase name without binders is a constant when one is in scope, as in
+        // an expression, and otherwise a variant.
+        if let PatternKind::Variant { type_name: None, variant, binders } = &pattern.kind {
+            if let (true, Some(constant)) = (binders.is_empty(), self.globals.consts.get(variant)) {
+                let constant = constant.clone();
+                if !matches!(constant.value, ConstValue::Int(_) | ConstValue::Bool(_)) {
+                    let message = format!("a constant pattern is an integer, rune, or bool, but {variant} is {}", constant.ty);
+                    self.err(pattern.span, message);
+                } else if self.infer.unify(ty, &constant.ty).is_err() {
+                    let shown = self.shown_type(ty);
+                    self.err(pattern.span, format!("constant {variant} of type {} cannot match a value of type {shown}", constant.ty));
+                }
+                self.constants.insert(pattern.span, constant.value);
+                return;
+            }
+        }
         let resolved = self.infer.resolve(ty);
         if !self.infer.is_bound(&resolved) {
             let mut binders = HashMap::new();

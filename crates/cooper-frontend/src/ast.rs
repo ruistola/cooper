@@ -120,7 +120,7 @@ pub enum TypeExprKind {
     /// the body receives as a `T[]`.
     Variadic(Box<TypeExpr>),
     /// `T[N]`: a fixed-length array of `N` elements.
-    StaticArray(Box<TypeExpr>, u64),
+    StaticArray(Box<TypeExpr>, ArrayLength),
     /// Postfix `^` pointer, e.g. `T^`.
     Pointer(Box<TypeExpr>),
     Func {
@@ -135,6 +135,13 @@ pub enum TypeExprKind {
     },
     /// Anonymous product type `(A, B, ...)` with at least two elements.
     Tuple(Vec<TypeExpr>),
+}
+
+/// The length of a static array type as written: an integer literal or a constant's name.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ArrayLength {
+    Literal(u64),
+    Const(String),
 }
 
 /// A name paired with its declared type (struct member, parameter, or receiver).
@@ -484,6 +491,13 @@ pub enum StmtKind {
         init: Option<Expr>,
     },
     FuncDecl(FuncDecl),
+    /// `const Name: T = value`: a named value computed at compile time.
+    ConstDecl {
+        name: String,
+        name_span: Span,
+        ty: TypeExpr,
+        value: Expr,
+    },
     /// `type Name = T`: a transparent alias, a name for a type.
     TypeAlias {
         name: String,

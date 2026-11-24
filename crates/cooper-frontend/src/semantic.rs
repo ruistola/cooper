@@ -52,6 +52,7 @@ impl SemanticAnalyzer<'_> {
             StmtKind::StructDecl { .. }
             | StmtKind::UnionDecl { .. }
             | StmtKind::TypeAlias { .. }
+            | StmtKind::ConstDecl { .. }
             | StmtKind::ExternFunc { .. } => {}
             StmtKind::FuncDecl(func) if self.depth > 0 => {
                 let label = format!("function '{}'", func.name);

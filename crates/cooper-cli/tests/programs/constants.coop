@@ -1,0 +1,41 @@
+# exit: 0
+# stdout: 4096 4 kilo buffer other
+# stdout: -128 127 18446744073709551615 44 -21 21
+# stdout: 0.5 1365.3333333333333 true x hello, world
+
+use {
+    std.io,
+}
+
+const K: i64 = 1 << 10
+const BufSize: i64 = 4 * K
+const Min: i8 = -128
+const Max: i8 = -(Min + 1)
+const Big: u64 = 0xFFFF_FFFF_FFFF_FFFF
+const Narrow: u8 = u8(300)
+const Neg: i32 = -(3 * 7)
+const Half: f32 = 1.0 / 2
+const Ratio: f64 = f64(BufSize) / 3
+const Verbose: bool = BufSize > 1000 and !false
+const Letter: rune = 'x'
+const Greeting: string = "hello, " + "world"
+
+struct Buffer {
+    bytes: u8[BufSize],
+    sides: i32[4],
+}
+
+func kind(n: i64): string {
+    return match n with {
+        K => "kilo"
+        BufSize => "buffer"
+        _ => "other"
+    }
+}
+
+func main() {
+    let b: Buffer
+    std.io.println("{b.bytes.length()} {b.sides.length()} {kind(1024)} {kind(4096)} {kind(5)}")
+    std.io.println("{Min} {Max} {Big} {Narrow} {Neg} {-Neg}")
+    std.io.println("{Half} {Ratio} {Verbose} {Letter} {Greeting}")
+}

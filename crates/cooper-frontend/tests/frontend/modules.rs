@@ -373,3 +373,99 @@ fn the_standard_io_module_is_provided_by_the_compiler() {
         "module `std.io` exports no item named `shout`",
     );
 }
+
+/// The `geo` module of the visibility tests: a public file, and a `#private` file holding
+/// an abstract struct, an abstract sum type, a helper function, and a helper method.
+const GEO_PUBLIC: &str = "func area(s: Shape): i32 {
+  return match s with {
+    Square(side) => side * side
+    Rect(r) => r.w * r.h
+  }
+}
+func square(side: i32): Shape {
+  return Square(side)
+}
+(r: Rect) func width(): i32 {
+  return r.w
+}
+func doubled(n: i32): i32 {
+  return twice(n)
+}";
+const GEO_PRIVATE: &str = "#private
+struct Rect {
+  w: i32,
+  h: i32,
+}
+union Shape {
+  Square(i32),
+  Rect(Rect),
+}
+func twice(n: i32): i32 {
+  return n * 2
+}
+(r: Rect) func height(): i32 {
+  return r.h
+}";
+
+/// The diagnostics of a program whose `geo` module is [`GEO_PUBLIC`] and
+/// [`GEO_PRIVATE`], and whose `main` module is `main`.
+fn geo_diags(main: &str) -> Vec<String> {
+    use cooper_frontend::{Module, Project, ProjectKind, SourceFile};
+    let geo = Module::new(
+        "geo",
+        vec![SourceFile::new("geo", GEO_PUBLIC), SourceFile::new("geo_private", GEO_PRIVATE)],
+    );
+    let main = Module::new("main", vec![SourceFile::new("main", main)]);
+    let project = Project::new("visibility", ProjectKind::Program, vec![geo, main]);
+    cooper_frontend::analyze_project(&project).into_iter().map(|d| d.message).collect()
+}
+
+#[test]
+fn a_private_file_is_visible_to_its_module_only() {
+    // The module's public file uses the private declarations freely.
+    assert!(geo_diags("func main() {\n}").is_empty());
+    let use_geo = "use {\n  geo,\n}\n";
+    let main = format!("{use_geo}func f(): i32 {{\n  return geo.doubled(2) + geo.twice(2)\n}}");
+    assert!(geo_diags(&main).iter().any(|m| m.contains("module `geo` exports no item named `twice`")));
+    let main = "use {\n  geo.twice,\n}\nfunc main() {\n}";
+    assert!(geo_diags(main).iter().any(|m| m.contains("module `geo` exports no item named `twice`")));
+}
+
+#[test]
+fn a_type_of_a_private_file_is_abstract_outside_its_module() {
+    // Named, held, passed, zero-initialized, and given to the public functions and methods.
+    let main = "use {\n  geo,\n  geo.{ Shape, Rect },\n}
+func f(r: Rect): i32 {
+  let s: Shape = geo.square(3)
+  let zero: Rect
+  return geo.area(s) + r.width() + zero.width()
+}";
+    let diags = geo_diags(main);
+    assert!(diags.is_empty(), "expected no errors, got: {diags:?}");
+
+    let abstract_error = "is abstract outside module geo: its contents are private";
+    let looks = [
+        "func f(r: Rect): i32 {\n  return r.w\n}",
+        "func f(): Rect {\n  return Rect{w: 1, h: 2}\n}",
+        "func f(): Shape {\n  return Square(1)\n}",
+        "func f(): Shape {\n  return Shape.Square(1)\n}",
+        "func f(s: Shape): i32 {\n  return match s with {\n    Square(n) => n\n    _ => 0\n  }\n}",
+        "func f(r: Rect): i32 {\n  return match r with {\n    Rect{w: w} => w\n  }\n}",
+    ];
+    for look in looks {
+        let main = format!("use {{\n  geo.{{ Shape, Rect }},\n}}\n{look}");
+        let diags = geo_diags(&main);
+        assert!(diags.iter().any(|m| m.contains(abstract_error)), "{look}: expected {abstract_error:?}, got: {diags:?}");
+    }
+    // A method declared in the private file is not part of the type outside the module.
+    let main = "use {\n  geo.Rect,\n}\nfunc f(r: Rect): i32 {\n  return r.height()\n}";
+    assert!(geo_diags(main).iter().any(|m| m.contains("height is not a member of struct Rect")));
+}
+
+#[test]
+fn private_is_a_file_directive_before_the_use_block() {
+    project_err(
+        &[("main", "use {\n  std.io,\n}\n#private\nfunc main() {\n}")],
+        "`#private` applies to the whole file and goes before the `use` block",
+    );
+}

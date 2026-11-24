@@ -56,6 +56,7 @@ pub(crate) fn prelude() -> Globals {
                 type_params: params.iter().map(|p| p.to_string()).collect(),
                 variant_order: variants.iter().map(|(v, _)| v.to_string()).collect(),
                 variants: variants.into_iter().map(|(v, slots)| (v.to_string(), slots)).collect(),
+                ..Default::default()
             },
         );
     };
@@ -85,16 +86,34 @@ pub fn builtin_owner(ty: &Type) -> Option<TypeId> {
     })
 }
 
-/// The standard library modules written in Cooper: path, file name, and source.
-const SOURCE_MODULES: [(&str, &str, &str); 7] = [
-    ("std.strings", "std/strings.coop", include_str!("../std/strings.coop")),
-    ("std.io", "std/io.coop", include_str!("../std/io.coop")),
-    ("std.fmt", "std/fmt.coop", include_str!("../std/fmt.coop")),
-    ("std.threads", "std/threads.coop", include_str!("../std/threads.coop")),
-    ("std.sync", "std/sync.coop", include_str!("../std/sync.coop")),
-    ("std.testing", "std/testing.coop", include_str!("../std/testing.coop")),
-    ("std.gc", "std/gc.coop", include_str!("../std/gc.coop")),
+/// A standard library module written in Cooper: its path, and its files' names and sources.
+type SourceModule = (&'static str, &'static [(&'static str, &'static str)]);
+
+/// The standard library modules written in Cooper, one directory each under `std/`.
+const SOURCE_MODULES: [SourceModule; 7] = [
+    ("std.strings", &[
+        ("std/strings/strings.coop", include_str!("../std/strings/strings.coop")),
+        ("std/strings/internal.coop", include_str!("../std/strings/internal.coop")),
+    ]),
+    ("std.io", &[
+        ("std/io/io.coop", include_str!("../std/io/io.coop")),
+        ("std/io/internal.coop", include_str!("../std/io/internal.coop")),
+    ]),
+    ("std.fmt", &[("std/fmt/fmt.coop", include_str!("../std/fmt/fmt.coop"))]),
+    ("std.threads", &[("std/threads/threads.coop", include_str!("../std/threads/threads.coop"))]),
+    ("std.sync", &[
+        ("std/sync/sync.coop", include_str!("../std/sync/sync.coop")),
+        ("std/sync/internal.coop", include_str!("../std/sync/internal.coop")),
+    ]),
+    ("std.testing", &[("std/testing/testing.coop", include_str!("../std/testing/testing.coop"))]),
+    ("std.gc", &[("std/gc/gc.coop", include_str!("../std/gc/gc.coop"))]),
 ];
+
+/// The standard library module `path` as a module of a project, if it is one written in Cooper.
+fn source_module(path: &str) -> Option<Module> {
+    let (path, files) = SOURCE_MODULES.iter().find(|(p, _)| *p == path)?;
+    Some(Module::new(path, files.iter().map(|(name, source)| SourceFile::new(*name, *source)).collect()))
+}
 
 /// `project` with the embedded standard library modules its `use` declarations reach, and
 /// those they reach in turn, added as ordinary modules.
@@ -102,10 +121,12 @@ pub fn with_source_modules(project: &Project) -> Project {
     let mut project = project.clone();
     let mut present: HashSet<String> = project.modules.iter().map(|m| m.path.to_string()).collect();
     for (_, home) in HOMES {
-        if let Some((path, file, source)) = SOURCE_MODULES.iter().find(|(path, ..)| *path == home) {
-            if present.insert((*path).to_string()) {
-                project.modules.push(Module::new(path, vec![SourceFile::new(*file, *source)]));
-            }
+        if present.contains(home) {
+            continue;
+        }
+        if let Some(module) = source_module(home) {
+            present.insert(home.to_string());
+            project.modules.push(module);
         }
     }
     let mut pending: Vec<usize> = (0..project.modules.len()).collect();
@@ -121,11 +142,12 @@ pub fn with_source_modules(project: &Project) -> Project {
             }
         }
         for name in wanted {
-            let Some((path, file, source)) = SOURCE_MODULES.iter().find(|(path, ..)| *path == name) else {
+            if present.contains(&name) {
                 continue;
-            };
-            if present.insert((*path).to_string()) {
-                project.modules.push(Module::new(path, vec![SourceFile::new(*file, *source)]));
+            }
+            if let Some(module) = source_module(&name) {
+                present.insert(name);
+                project.modules.push(module);
                 pending.push(project.modules.len() - 1);
             }
         }

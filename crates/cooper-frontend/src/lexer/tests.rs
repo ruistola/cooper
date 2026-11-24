@@ -52,3 +52,13 @@ fn inclusive_range_fuses_regardless_of_spacing() {
     assert_eq!(kinds("0..=10"), expected("0", "10"));
     assert_eq!(kinds("0 ..= 10"), expected("0", "10"));
 }
+
+#[test]
+fn a_hash_directly_before_a_name_is_a_directive_and_anything_else_a_comment() {
+    assert_eq!(kinds("#private"), vec![(TokenKind::Directive, "#private".to_string())]);
+    for comment in ["# private", "#!/usr/bin/env cooper", "#1=", "##", "#"] {
+        assert_eq!(kinds(comment), vec![], "{comment}");
+    }
+    let error = tokenize("x := 1 #todo").expect_err("an unknown directive");
+    assert_eq!(error.message, "unknown directive `#todo`; a comment needs a space after `#`");
+}

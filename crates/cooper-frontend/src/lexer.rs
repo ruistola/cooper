@@ -11,8 +11,13 @@ use crate::diag::{Diagnostic, Span};
 pub enum TokenKind {
     /// A `#` comment to the end of the line. It never reaches the parser: [`tokenize`]
     /// drops it, keeping a comment block that documents the token after it (see [`Docs`]).
-    #[regex(r"#[^\n\r]*")]
+    #[regex(r"#([^a-zA-Z_\n\r][^\n\r]*)?")]
     Comment,
+
+    /// A compiler directive, `#` directly followed by a name: `#private`. Only the names
+    /// in [`DIRECTIVES`] lex.
+    #[regex(r"#[a-zA-Z_][a-zA-Z0-9_]*")]
+    Directive,
 
     #[regex(r"\r\n|\n|\r")]
     Eol,
@@ -232,6 +237,7 @@ impl std::fmt::Display for TokenKind {
             Defer => "'defer'",
             Type => "'type'",
             Comment => "comment",
+            Directive => "directive",
             Do => "'do'",
             Else => "'else'",
             Extern => "'extern'",
@@ -352,6 +358,9 @@ pub(crate) fn hole_end(rest: &[u8]) -> Option<usize> {
     }
 }
 
+/// The names of the compiler directives.
+pub const DIRECTIVES: [&str; 1] = ["private"];
+
 /// A lexed token: its kind, the exact source slice it spans, and that span.
 #[derive(Debug, Clone)]
 pub struct Token {
@@ -402,6 +411,12 @@ pub fn tokenize_with_docs(src: &str) -> Result<(Vec<Token>, Docs), Diagnostic> {
             };
             Diagnostic::error(span, message)
         })?;
+        if kind == TokenKind::Directive && !DIRECTIVES.contains(&&lex.slice()[1..]) {
+            return Err(Diagnostic::error(
+                span,
+                format!("unknown directive `{}`; a comment needs a space after `#`", lex.slice()),
+            ));
+        }
         if kind == TokenKind::Comment {
             let alone = tokens.last().map_or(true, |t| t.kind == TokenKind::Eol);
             let contiguous = block.last().is_some_and(|(end, _)| breaks(src, *end, span.start) == 1);

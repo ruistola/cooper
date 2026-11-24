@@ -26,6 +26,9 @@ mod stmts;
 pub struct ParsedFile {
     pub uses: Vec<UseSpec>,
     pub decls: Vec<Stmt>,
+    /// Whether the file is marked `#private`: its declarations are visible only within
+    /// its module.
+    pub private: bool,
     pub errors: Vec<Diagnostic>,
     /// The documentation comment of each declaration, member, and variant that has one, by
     /// the byte offset where the declaration (or its name) starts.
@@ -40,7 +43,7 @@ pub fn parse(tokens: Vec<Token>) -> ParsedFile {
 /// [`parse`], keeping the documentation comments `docs` that sit above declarations.
 pub fn parse_with_docs(tokens: Vec<Token>, mut docs: crate::lexer::Docs) -> ParsedFile {
     let mut parser = Parser::new(tokens);
-    let (uses, decls) = parser.parse_file();
+    let (private, uses, decls) = parser.parse_file();
     // Only what documents a declaration, a member, or a variant is kept.
     let mut starts = std::collections::HashSet::new();
     for decl in &decls {
@@ -55,6 +58,7 @@ pub fn parse_with_docs(tokens: Vec<Token>, mut docs: crate::lexer::Docs) -> Pars
     ParsedFile {
         uses,
         decls,
+        private,
         errors: parser.errors,
         docs,
     }
@@ -118,6 +122,7 @@ fn can_follow_semicolon(kind: TokenKind) -> bool {
             | Str
             | Char
             | Identifier
+            | Directive
             | Semicolon
             | OpenCurly
             | CloseCurly
@@ -340,11 +345,12 @@ impl Parser {
 
     // --- top level ---
 
-    /// Parse a whole file: any number of top-of-file `use` blocks, then top-level
-    /// declarations. A `use` appearing after a declaration, or a non-declaration at
-    /// top level (a bare expression or control-flow statement), is a diagnostic —
-    /// a file is a set of declarations, not a script.
-    fn parse_file(&mut self) -> (Vec<UseSpec>, Vec<Stmt>) {
+    /// Parse a whole file: its file directives, any number of `use` blocks, then
+    /// top-level declarations. A `use` appearing after a declaration, a directive after
+    /// either, or a non-declaration at top level (a bare expression or control-flow
+    /// statement), is a diagnostic — a file is a set of declarations, not a script.
+    fn parse_file(&mut self) -> (bool, Vec<UseSpec>, Vec<Stmt>) {
+        let mut private = false;
         let mut uses = Vec::new();
         let mut decls = Vec::new();
         let mut seen_decl = false;
@@ -352,6 +358,18 @@ impl Parser {
             let before = self.pos;
             if self.peek().kind == Semicolon {
                 self.advance();
+                continue;
+            }
+            if self.peek().kind == Directive {
+                let directive = self.advance();
+                if seen_decl || !uses.is_empty() {
+                    self.error(
+                        directive.span,
+                        format!("`{}` applies to the whole file and goes before the `use` block", directive.text),
+                    );
+                }
+                // The lexer admits only the directives in `DIRECTIVES`, and `#private` is the one.
+                private = true;
                 continue;
             }
             if self.peek().kind == Use {
@@ -385,7 +403,7 @@ impl Parser {
                 self.advance();
             }
         }
-        (uses, decls)
+        (private, uses, decls)
     }
 
     /// Parse a single top-level declaration: a function or method, a struct, a sum

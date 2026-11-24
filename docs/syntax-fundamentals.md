@@ -8,6 +8,15 @@ declaration (a `struct` and its members, a `union` and its variants, a function 
 the `#` and the space after it, and a blank line between the comment and the declaration detaches
 it. Tools show it as the declaration's documentation. Any other comment is dropped.
 
+## Directives
+
+A `#` directly followed by a name, with no space between, is a compiler directive rather than a
+comment. A comment therefore needs a space after its `#` (or any character that cannot begin a name,
+as in `#!` or `##`), and an unknown directive is an error rather than a comment. A directive never
+changes what a correct program does: it only adds a check. The one directive so far is `#private`,
+which stands before a file's `use` block and makes the file's declarations visible only within
+its module ([Modules and Projects](./modules-and-projects.md#visibility)).
+
 ## Source encoding
 
 A source file is UTF-8, and a file that is not valid UTF-8 is rejected. Comments, string

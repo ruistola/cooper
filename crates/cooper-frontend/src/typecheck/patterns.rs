@@ -200,6 +200,9 @@ impl<'g> TypeChecker<'g> {
             );
             return;
         }
+        if self.abstract_here(id, span) {
+            return;
+        }
         let mut seen: HashSet<&str> = HashSet::new();
         for field in fields {
             if !seen.insert(field.name.as_str()) {
@@ -253,6 +256,9 @@ impl<'g> TypeChecker<'g> {
                 );
                 return;
             }
+        }
+        if self.abstract_here(id, span) {
+            return;
         }
         let Some(payload) = self.globals.defs.payload(ty, variant) else {
             self.err(

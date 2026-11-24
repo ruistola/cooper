@@ -19,6 +19,8 @@ pub struct StructDef {
     pub members: Vec<(String, Type)>,
     /// An `extern union`: its members overlap, each at offset zero.
     pub extern_union: bool,
+    /// Declared in a `#private` file: abstract outside its module.
+    pub private: bool,
 }
 
 /// A sum type declaration's body: its type parameters and its variants' payload
@@ -28,6 +30,8 @@ pub struct UnionDef {
     pub type_params: Vec<String>,
     pub variants: HashMap<String, Vec<Type>>,
     pub variant_order: Vec<String>,
+    /// Declared in a `#private` file: abstract outside its module.
+    pub private: bool,
 }
 
 /// Every struct and sum type definition known to the compilation, keyed by
@@ -40,6 +44,16 @@ pub struct TypeDefs {
 }
 
 impl TypeDefs {
+    /// Whether the struct or sum type `id` is abstract in `module`: declared in a
+    /// `#private` file of another module, so its members and variants are out of reach.
+    pub fn is_abstract_in(&self, id: &TypeId, module: &str) -> bool {
+        let private = match self.structs.get(id) {
+            Some(def) => def.private,
+            None => self.unions.get(id).is_some_and(|def| def.private),
+        };
+        private && id.module != module
+    }
+
     /// The type parameters of the struct or sum type `ty` names, or none for any
     /// other type.
     pub fn type_params(&self, ty: &Type) -> &[String] {

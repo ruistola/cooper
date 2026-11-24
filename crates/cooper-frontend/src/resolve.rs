@@ -167,7 +167,7 @@ impl Globals {
 pub fn resolve_into(mut globals: Globals, module: &str, decls: &[Stmt]) -> (Globals, Vec<Diagnostic>) {
     let mut diags = Vec::new();
     globals.module = module.to_string();
-    declare_types(&mut globals, decls, &mut diags);
+    declare_types(&mut globals, decls, false, &mut diags);
     define_types(&mut globals, decls, &mut diags);
     check_type_sizes(&globals, decls, &mut diags);
     resolve_signatures(&mut globals, decls, &mut diags);
@@ -177,8 +177,9 @@ pub fn resolve_into(mut globals: Globals, module: &str, decls: &[Stmt]) -> (Glob
 /// Phase one: register every struct and sum type `decls` declares, under an
 /// identity in the table's module, with its type parameters but no body yet. A name already
 /// taken by a type is a redeclaration. Seeded imports never collide here: an import
-/// shadowing one of the module's own declarations is rejected at its `use`.
-pub fn declare_types(globals: &mut Globals, decls: &[Stmt], diags: &mut Vec<Diagnostic>) {
+/// shadowing one of the module's own declarations is rejected at its `use`. `private`
+/// marks the types of a `#private` file.
+pub fn declare_types(globals: &mut Globals, decls: &[Stmt], private: bool, diags: &mut Vec<Diagnostic>) {
     for stmt in decls {
         if let StmtKind::TypeAlias { name, .. } = &stmt.kind {
             if globals.type_name_taken(name) {
@@ -207,10 +208,10 @@ pub fn declare_types(globals: &mut Globals, decls: &[Stmt], diags: &mut Vec<Diag
         let type_params = type_params.clone();
         if let Some(extern_union) = kind {
             globals.structs.insert(name.clone(), id.clone());
-            globals.defs.structs.insert(id.clone(), StructDef { type_params, extern_union, ..Default::default() });
+            globals.defs.structs.insert(id.clone(), StructDef { type_params, extern_union, private, ..Default::default() });
         } else {
             globals.unions.insert(name.clone(), id.clone());
-            globals.defs.unions.insert(id.clone(), UnionDef { type_params, ..Default::default() });
+            globals.defs.unions.insert(id.clone(), UnionDef { type_params, private, ..Default::default() });
         }
         globals.pending.insert(id);
     }

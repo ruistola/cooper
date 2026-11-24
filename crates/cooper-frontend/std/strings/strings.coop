@@ -3,11 +3,6 @@
 # valid UTF-8 text in valid UTF-8 text always starts on a rune boundary. Case mapping is
 # ASCII only for now.
 
-# A string under construction: bytes appended in amortized constant time.
-struct StringBuilder {
-    bytes: u8[],
-}
-
 (b: StringBuilder^) func write(s: string) {
     for i in 0..s.length() do b.bytes.push(s.byteAt(i))
 }
@@ -78,10 +73,6 @@ func join(parts: string[], sep: string): string {
     if skip < 0 then return false
     for i in 0..suffix.length() do if s.byteAt(skip + i) != suffix.byteAt(i) then return false
     return true
-}
-
-func isSpace(c: u8): bool {
-    return c == 32 or 9 <= c <= 13
 }
 
 # Without leading ASCII whitespace.

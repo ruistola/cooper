@@ -380,6 +380,9 @@ impl<'g> TypeChecker<'g> {
             self.err(span, message);
             return;
         };
+        if self.abstract_here(id, span) {
+            return;
+        }
         let actual = if let Some(args) = payload {
             if args.len() != slots.len() {
                 self.err(span, format!("variant {}.{name} expects {} argument(s), got {}", id.name, slots.len(), args.len()));

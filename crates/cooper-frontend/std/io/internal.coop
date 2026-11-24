@@ -1,7 +1,4 @@
-# The standard `io` module: standard output, written over the C library's `write`.
-#
-# A call with a template (`println("x is {}", x)`) is the compiler's: it fills the template's
-# holes and passes the finished text to `print` or `println`.
+#private
 
 extern func write(fd: i32, buf: u8^, count: u64): i64
 extern func fflush(stream: u8^): i32
@@ -29,24 +26,4 @@ func writeTo(fd: i32, s: string) {
         if more <= 0 then return
         offset += more
     }
-}
-
-# Writes `s` to standard error.
-func eprint(s: string) {
-    writeTo(2, s)
-}
-
-# Writes `s` and a newline to standard error.
-func eprintln(s: string) {
-    writeTo(2, s + "\n")
-}
-
-# Writes `s` to standard output.
-func print(s: string) {
-    writeTo(1, s)
-}
-
-# Writes `s` and a newline to standard output.
-func println(s: string) {
-    writeTo(1, s + "\n")
 }

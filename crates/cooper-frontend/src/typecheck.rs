@@ -319,6 +319,16 @@ impl<'g> TypeChecker<'g> {
         self.diags.push(Diagnostic::error(span, msg.into()));
     }
 
+    /// Report a look into the struct or sum type `id` at `span` when it is abstract in
+    /// this module, returning whether it was.
+    fn abstract_here(&mut self, id: &TypeId, span: Span) -> bool {
+        let hidden = self.globals.defs.is_abstract_in(id, &self.globals.module);
+        if hidden {
+            self.err(span, format!("{} is abstract outside module {}: its contents are private", id.name, id.module));
+        }
+        hidden
+    }
+
     /// Types in an error use literal defaults without binding the live variables.
     fn shown_pair(&self, left: &Type, right: &Type) -> (String, String) {
         let mut view = self.infer.clone();

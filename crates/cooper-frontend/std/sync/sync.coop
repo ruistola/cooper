@@ -1,0 +1,290 @@
+# The standard `sync` module: communication and synchronization between threads.
+#
+# Threads communicate through events, in the manner of Concurrent ML. An `Event T` describes an operation
+# whose result is a `T`, such as receiving from a channel or a deadline passing, and nothing happens until a
+# thread calls `sync` on it. Events combine: `choose` takes whichever of several commits first, `wrap`
+# transforms a result, `guard` builds an event afresh at each sync, and `withNack` lets a branch learn that
+# another was chosen. A blocking operation `x()` is `sync(xEvent())`.
+
+# --- Events ---
+
+# Blocks until one of the operations in `e` commits, and gives its result. Guards and `withNack` setups run
+# first, in order. If several operations can commit at once, one of them is picked at random.
+func sync T (e: Event T): T {
+    let branches: (Branch T)[]
+    let nacks: NackRange[]
+    flatten(e, &branches, &nacks)
+    n := branches.length()
+    chosen := -1
+    if n > 0 then {
+        start := cooper_random(n)
+        for k in 0..n do {
+            i := (start + k) % n
+            if branches[i].base.attempt(nil, i) then {
+                chosen = i
+                break
+            }
+        }
+    }
+    if chosen < 0 then {
+        w := newWaiter()
+        for (i, b) in branches do if b.base.attempt(w, i) or cooper_load(&w.state) != waiting then break
+        chosen = w.await()
+    }
+    for r in nacks do if chosen < r.from or chosen >= r.to then r.latch.release()
+    return branches[chosen].result()
+}
+
+# The first of `es` to commit; one at random among those that can commit at once.
+func choose T (es: ...Event T): Event T {
+    return Choice(es)
+}
+
+# `e`, with `f` applied to its result after it commits, in the syncing thread.
+func wrap T U (e: Event T, f: func(T): U): Event U {
+    return match e with {
+        Choice(es) => {
+            let wrapped: (Event U)[]
+            for x in es do wrapped.push(wrap(x, f))
+            Choice(wrapped)
+        }
+        Leaf(base, result) => Leaf(base, func(): U { return f(result()) })
+        Guard(g) => Guard(func(): Event U { return wrap(g(), f) })
+        Nack(g) => Nack(func(nack: Event ()): Event U { return wrap(g(nack), f) })
+    }
+}
+
+# An event that `f` builds afresh at each `sync`, when the sync begins.
+func guard T (f: func(): Event T): Event T {
+    return Guard(f)
+}
+
+# An event that `f` builds afresh at each `sync`, as `guard` does, given an event that commits if and only
+# if the sync commits to an event other than the one `f` returns: a server learns that a client gave up.
+func withNack T (f: func(Event ()): Event T): Event T {
+    return Nack(f)
+}
+
+# An event that commits at once with `v`.
+func always T (v: T): Event T {
+    step := func(w: Waiter^, index: i64): Outcome { return commitNow(w, index) }
+    return Leaf(Base{word: nil, step: step}, func(): T { return v })
+}
+
+# An event that never commits.
+func never T (): Event T {
+    return Choice([])
+}
+
+# An event that commits `ms` milliseconds after the `sync` begins, so one value serves every pass of a loop.
+func after(ms: i64): Event () {
+    return Guard(func(): Event () {
+        deadline := cooper_now() + ms * 1000000
+        step := func(w: Waiter^, index: i64): Outcome {
+            if cooper_now() >= deadline then return commitNow(w, index)
+            if w != nil then cooper_wake_at(w, index, deadline)
+            return Blocked
+        }
+        return Leaf(Base{word: nil, step: step}, func() {})
+    })
+}
+
+# An event that commits once the thread `t` has finished, its starting function returned.
+func doneEvent(t: Thread): Event () {
+    step := func(w: Waiter^, index: i64): Outcome {
+        if cooper_wake_when_done(w, index, t.id) then return Blocked
+        return commitNow(w, index)
+    }
+    return Leaf(Base{word: nil, step: step}, func() {})
+}
+
+# --- Latches ---
+
+(l: Latch^) func release() {
+    cooper_lock(&l.word)
+    if !l.done then {
+        l.done = true
+        l.waiters.wakeAll(&l.word)
+    }
+    cooper_unlock(&l.word)
+}
+
+(l: Latch^) func released(): bool {
+    cooper_lock(&l.word)
+    done := l.done
+    cooper_unlock(&l.word)
+    return done
+}
+
+(l: Latch^) func releasedEvent(): Event () {
+    return condition(&l.word, func(): bool { return l.done }, &l.waiters)
+}
+
+# --- Channels ---
+
+# A channel holding up to `capacity` values.
+func channel T (capacity: i64): Channel T {
+    let ch: Channel T
+    ch.capacity = capacity
+    return ch
+}
+
+# Sending `value`. Sending on a closed channel, or having a send waiting when it is closed, is a fatal error.
+(ch: (Channel T)^) func sendEvent(value: T): Event () {
+    step := func(w: Waiter^, index: i64): Outcome { return ch.sendStep(w, index, value) }
+    return Leaf(Base{word: &ch.word, step: step}, func() {})
+}
+
+# Blocks until `value` is sent: received, or placed in the channel's buffer.
+(ch: (Channel T)^) func send(value: T) {
+    sync(ch.sendEvent(value))
+}
+
+# Receiving the next value, or `None` once the channel is closed and empty.
+(ch: (Channel T)^) func recvEvent(): Event (Maybe T) {
+    return Guard(func(): Event (Maybe T) {
+        let result: Maybe T
+        step := func(w: Waiter^, index: i64): Outcome { return ch.recvStep(w, index, &result) }
+        return Leaf(Base{word: &ch.word, step: step}, func(): Maybe T { return result })
+    })
+}
+
+# Blocks until a value arrives, or the channel is closed and empty, which gives `None`.
+(ch: (Channel T)^) func recv(): Maybe T {
+    return sync(ch.recvEvent())
+}
+
+# Ends the channel: values still in it can be received, then receives give `None`.
+(ch: (Channel T)^) func close() {
+    cooper_lock(&ch.word)
+    ch.closed = true
+    while ch.receivers.next(&ch.word) is Some(o) do {
+        o.value^ = None
+        o.waiter.publish(o.index)
+    }
+    if ch.senders.next(&ch.word) is Some(o) then cooper_fail("send on closed Channel\0".data())
+    cooper_unlock(&ch.word)
+}
+
+# --- Wait groups, mutexes, thread groups ---
+
+# Adds `n` (negative to subtract) to the number of threads being waited for. When it reaches zero, the
+# threads waiting are woken.
+(wg: WaitGroup^) func add(n: i64) {
+    cooper_lock(&wg.word)
+    wg.count += n
+    if wg.count < 0 then cooper_fail("negative WaitGroup count\0".data())
+    if wg.count == 0 then wg.waiters.wakeAll(&wg.word)
+    cooper_unlock(&wg.word)
+}
+
+# One of the threads being waited for has finished.
+(wg: WaitGroup^) func done() {
+    wg.add(-1)
+}
+
+# The count reaching zero.
+(wg: WaitGroup^) func waitEvent(): Event () {
+    return condition(&wg.word, func(): bool { return wg.count == 0 }, &wg.waiters)
+}
+
+# Blocks the running thread until the count is zero.
+(wg: WaitGroup^) func wait() {
+    sync(wg.waitEvent())
+}
+
+# Blocks until the mutex is free, then holds it.
+(m: Mutex^) func lock() {
+    while true do {
+        cooper_lock(&m.word)
+        if !m.locked then {
+            m.locked = true
+            cooper_unlock(&m.word)
+            return
+        }
+        w := newWaiter()
+        m.waiters.push(w, 0, ())
+        cooper_unlock(&m.word)
+        w.await()
+    }
+}
+
+# Holds the mutex if it is free, and says whether it did.
+(m: Mutex^) func tryLock(): bool {
+    cooper_lock(&m.word)
+    free := !m.locked
+    m.locked = true
+    cooper_unlock(&m.word)
+    return free
+}
+
+# Releases the mutex, waking a thread waiting for it.
+(m: Mutex^) func unlock() {
+    cooper_lock(&m.word)
+    if !m.locked then cooper_fail("unlock of unlocked Mutex\0".data())
+    m.locked = false
+    if m.waiters.next(&m.word) is Some(o) then o.waiter.publish(o.index)
+    cooper_unlock(&m.word)
+}
+
+(a: Atomic^) func load(): i64 {
+    return cooper_load(&a.value)
+}
+
+(a: Atomic^) func store(value: i64) {
+    cooper_store(&a.value, value)
+}
+
+# Adds `delta` and gives the new value.
+(a: Atomic^) func add(delta: i64): i64 {
+    return cooper_add(&a.value, delta)
+}
+
+# Sets the value to `new` if it is `old`, and says whether it did.
+(a: Atomic^) func compareAndSwap(old: i64, new: i64): bool {
+    return cooper_cas(&a.value, old, new)
+}
+
+# Runs `f` as a thread of the group.
+(group: ThreadGroup^) func start(f: func()) {
+    group.running.add(1)
+    thread runInGroup(group, f)
+}
+
+# Asks the group's threads to stop.
+(group: ThreadGroup^) func cancel() {
+    group.stop.release()
+}
+
+# Whether the group was cancelled, by `cancel` or by a failure.
+(group: ThreadGroup^) func cancelled(): bool {
+    return group.stop.released()
+}
+
+# The group being cancelled.
+(group: ThreadGroup^) func cancelledEvent(): Event () {
+    return group.stop.releasedEvent()
+}
+
+# Records `message` as the group's error unless one is already recorded, and cancels the group.
+(group: ThreadGroup^) func fail(message: string) {
+    cooper_lock(&group.word)
+    if group.error is None then group.error = Some(message)
+    cooper_unlock(&group.word)
+    group.stop.release()
+}
+
+# Every thread of the group having finished, giving the first error, if any.
+(group: ThreadGroup^) func waitEvent(): Event (Maybe string) {
+    return wrap(group.running.waitEvent(), func(finished: ()): Maybe string {
+        cooper_lock(&group.word)
+        error := group.error
+        cooper_unlock(&group.word)
+        return error
+    })
+}
+
+# Blocks until every thread of the group has finished, then gives the first error, if any.
+(group: ThreadGroup^) func wait(): Maybe string {
+    return sync(group.waitEvent())
+}

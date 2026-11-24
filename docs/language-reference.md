@@ -33,7 +33,8 @@ only reports diagnostics, and `cooper test dir` runs the tests of a project
 | `x as i64`, `int64(x)` | `i64(x)` (a conversion is a call on the target type) |
 | `a && b`, `a \|\| b` | `a and b`, `a or b` (`!a` is prefix not) |
 | `i++`, `i--` | `i += 1`, `i -= 1` |
-| `// comment` | `# comment` |
+| `// comment` | `# comment` (with the space: `#name` is a directive) |
+| `pub fn`, `private`, Go's capitalization | everything is public; a file starting with `#private` is visible only within its module |
 | `null`, `None` for a missing pointer | `nil` |
 | `cond ? a : b` | `if cond then a else b` (an expression; `else` is required) |
 | `t.0` on a tuple | destructure: `(a, b) := t` |
@@ -118,7 +119,9 @@ kind := match n with {               # integer, bool, tuple, struct, or sum-type
 
 ## Lexical structure
 
-* Comments run from `#` to the end of the line. Source is UTF-8; only comments, strings, and
+* Comments run from `#` to the end of the line, and need a space after the `#`: `#name` is a
+  directive ([Syntax Fundamentals](./syntax-fundamentals.md#directives)), of which there is one,
+  `#private`. Source is UTF-8; only comments, strings, and
   rune literals (`'x'`, `'\n'`, `'\u{1F600}'`) may hold non-ASCII text.
 * Identifiers are `[A-Za-z_][A-Za-z0-9_]*`. Types are PascalCase and everything else is
   camelCase. Casing matters to the compiler only in patterns (below).
@@ -144,7 +147,7 @@ choice. `ident`, `number`, and `string` are tokens. Lists are comma-separated wi
 optional trailing comma.
 
 ```
-file       ::= useBlock* decl*
+file       ::= "#private"? useBlock* decl*                # #private: visible only within the module
 useBlock   ::= "use" "{" useItem* "}"                 # items: comma-separated
 useItem    ::= path ("as" ident)? | path "." "{" (ident ("as" ident)?)* "}"
 path       ::= ident ("." ident)*

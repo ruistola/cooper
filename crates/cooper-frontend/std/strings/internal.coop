@@ -1,0 +1,10 @@
+#private
+
+# A string under construction: bytes appended in amortized constant time.
+struct StringBuilder {
+    bytes: u8[],
+}
+
+func isSpace(c: u8): bool {
+    return c == 32 or 9 <= c <= 13
+}

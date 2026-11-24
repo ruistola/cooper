@@ -18,7 +18,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{Stmt, StmtKind, UseSpec};
+use crate::ast::{Stmt, StmtKind, TypeExpr, TypeExprKind, UseSpec};
 use crate::diag::{Diagnostic, Span};
 use crate::lexer;
 use crate::parser;
@@ -146,7 +146,7 @@ fn analyze_parsed(mut parsed: Vec<ParsedModule>) -> (Vec<Diagnostic>, CheckedPro
         let (module_diags, interface, files) = analyze_module(module, &known, &interfaces, &defs);
         diags.extend(module_diags);
         defs = interface.defs.clone();
-        interfaces.insert(module.path.clone(), interface);
+        interfaces.insert(module.path.clone(), exported(interface, &module.files));
         checked.push((index, files));
     }
     let counts: Vec<usize> = parsed.iter().map(|m| m.files.len()).collect();
@@ -185,6 +185,8 @@ struct ParsedModule {
 /// tagged with the file name so later passes can label their diagnostics.
 struct ParsedFile {
     name: String,
+    /// Whether the file is marked `#private`.
+    private: bool,
     uses: Vec<UseSpec>,
     decls: Vec<Stmt>,
     docs: crate::lexer::Docs,
@@ -219,6 +221,7 @@ fn parse_module_files(module: &Module) -> (Vec<ParsedFile>, Vec<Diagnostic>) {
                 errors.push(diag.in_file(&file.name));
                 files.push(ParsedFile {
                     name: file.name.clone(),
+                    private: false,
                     uses: Vec::new(),
                     decls: Vec::new(),
                     docs: crate::lexer::Docs::new(),
@@ -230,6 +233,7 @@ fn parse_module_files(module: &Module) -> (Vec<ParsedFile>, Vec<Diagnostic>) {
         errors.extend(parsed.errors.into_iter().map(|d| d.in_file(&file.name)));
         files.push(ParsedFile {
             name: file.name.clone(),
+            private: parsed.private,
             uses: parsed.uses,
             decls: parsed.decls,
             docs: parsed.docs,
@@ -454,7 +458,7 @@ fn analyze_module(
     interface.defs = defs.clone();
     for file in &module.files {
         let mut file_diags = Vec::new();
-        resolve::declare_types(&mut interface, &file.decls, &mut file_diags);
+        resolve::declare_types(&mut interface, &file.decls, file.private, &mut file_diags);
         diags.extend(file_diags.into_iter().map(|d| d.in_file(&file.name)));
     }
     type Phase = fn(&mut Globals, &[Stmt], &mut Vec<Diagnostic>);
@@ -497,6 +501,54 @@ fn analyze_module(
         }
     }
     (diags, interface, checked)
+}
+
+/// The interface other modules see of a module whose declarations resolved into
+/// `interface`: without the functions, variables, and aliases its `#private` files
+/// declare, and without their methods. The private files' types stay, abstract (see
+/// [`TypeDefs::is_abstract_in`]).
+fn exported(mut interface: Globals, files: &[ParsedFile]) -> Globals {
+    for stmt in files.iter().filter(|file| file.private).flat_map(|file| &file.decls) {
+        match &stmt.kind {
+            StmtKind::FuncDecl(func) => match &func.receiver {
+                None => {
+                    interface.funcs.remove(&func.name);
+                }
+                Some(receiver) => {
+                    if let Some(methods) = receiver_owner(&receiver.ty, &interface).and_then(|owner| interface.methods.get_mut(&owner)) {
+                        methods.remove(&func.name);
+                    }
+                }
+            },
+            StmtKind::ExternFunc { name, .. } => {
+                interface.funcs.remove(name);
+            }
+            StmtKind::VarDecl { name, .. } => {
+                interface.vars.remove(name);
+            }
+            StmtKind::TypeAlias { name, .. } => {
+                interface.aliases.remove(name);
+            }
+            _ => {}
+        }
+    }
+    interface
+}
+
+/// The identity of the type a method with receiver type `ty` is declared on: a struct or
+/// sum type of the module, through a pointer or type arguments, or a built-in type.
+fn receiver_owner(ty: &TypeExpr, interface: &Globals) -> Option<TypeId> {
+    match &ty.kind {
+        TypeExprKind::Pointer(inner) => receiver_owner(inner, interface),
+        TypeExprKind::Application { constructor, .. } => receiver_owner(constructor, interface),
+        TypeExprKind::Named(name) => interface
+            .structs
+            .get(name)
+            .or_else(|| interface.unions.get(name))
+            .cloned()
+            .or_else(|| crate::stdlib::builtin_owner(&crate::types::Type::Primitive(name.clone()))),
+        _ => None,
+    }
 }
 
 /// The names a module declares across all its files: its top-level structs, sum

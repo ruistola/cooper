@@ -28,7 +28,9 @@ The compiler is a Rust Cargo workspace.
 * **modules.rs** — Module-graph analysis. It parses every file, resolves `use` bindings,
   orders modules topologically (rejecting cycles), and analyzes each module against its
   dependencies' exported interfaces, never their bodies. Imports are file-scoped and
-  stripped from the interface a module exports.
+  stripped from the interface a module exports, as are the functions, methods, variables, and
+  aliases of its `#private` files. Their types stay in it, flagged in `TypeDefs`, and the
+  checker rejects field access, literals, variants, and patterns of them in other modules.
 * **lexer.rs** — Tokenization with [`logos`].
 * **parser.rs** — Hand-written recursive descent with Pratt expression parsing. It recovers at
   statement boundaries to report many errors per run. The token cursor, recovery, and

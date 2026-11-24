@@ -13,6 +13,9 @@ impl<'g> TypeChecker<'g> {
             return None;
         };
         let id = id.clone();
+        if self.abstract_here(&id, target.span) {
+            return None;
+        }
         let name = id.name.clone();
         // A generic struct's members constrain fresh variables for its type arguments.
         let type_params = self.globals.defs.type_params(&target_type).to_vec();
@@ -181,6 +184,9 @@ impl<'g> TypeChecker<'g> {
         };
         let name = &id.name;
         if let Some(member_type) = self.globals.defs.member(&target_type, field) {
+            if self.abstract_here(id, span) {
+                return None;
+            }
             return Some(member_type);
         }
         // Not a data field: fall back to a method on this struct type. A bound

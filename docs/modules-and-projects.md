@@ -79,6 +79,29 @@ bindings of one name, or a binding colliding with a declaration, is an error rep
 * Aliases and bare names are local spellings only. Every item keeps its full module identity,
   so same-named items from different modules stay distinct.
 
+## Visibility
+
+Everything a module declares is visible to the modules that `use` it, except what is declared in
+a file that starts with the directive `#private`, before its `use` block:
+
+```
+#private
+
+struct StringBuilder {
+    bytes: u8[],
+}
+
+func isSpace(c: u8): bool { … }
+```
+
+A private file's declarations are visible to every file of its module, tests included, and to
+no other module. Its functions, methods, variables, and aliases do not exist outside the module.
+Its structs and sum types are **abstract** there: other modules can name them, hold, copy, pass,
+compare, and format their values, take their zero values, and call the methods the module's other
+files declare on them, but cannot read or write fields, write struct literals, construct variants,
+or match them with patterns. A public type can hold a field of an abstract type, whose contents
+stay hidden.
+
 ### Path resolution
 
 1. A path starting with `std` names the standard library. `std.io` has `print(s: string)`,

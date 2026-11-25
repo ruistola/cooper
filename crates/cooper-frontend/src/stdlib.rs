@@ -312,6 +312,7 @@ fn function(globals: &mut Globals, name: &str, params: Vec<Type>, ret: Type) {
         },
         by_pointer: false,
         variadic: false,
+        requirements: Vec::new(),
     };
     globals.funcs.insert(name.to_string(), signature);
 }

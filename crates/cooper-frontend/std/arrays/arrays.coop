@@ -1,6 +1,16 @@
-# The standard `arrays` module: methods of the dynamic arrays, in scope everywhere. The compiler
-# provides `contains(x)` and `find(x)` itself, since they compare elements with `==`, which a type
-# parameter does not allow.
+# The standard `arrays` module: methods of the dynamic arrays, in scope everywhere.
+
+# Whether any element equals `x`.
+(xs: T[]) func contains(x: T): bool {
+    for y in xs do if y == x then return true
+    return false
+}
+
+# The index of the first element equal to `x`.
+(xs: T[]) func find(x: T): Maybe i64 {
+    for i in 0..xs.length() do if xs[i] == x then return Some(i)
+    return None
+}
 
 # Whether `p` holds for any element.
 (xs: T[]) func any(p: func(T): bool): bool {
@@ -54,10 +64,16 @@
     }
 }
 
+# Sorts the elements in place into ascending order, keeping equal elements in their order. Among
+# floats, where `<` puts NaN neither before nor after anything, the order is unspecified.
+(xs: T[]) func sort() {
+    xs.sortBy(func(a, b) { return a < b })
+}
+
 # Sorts the elements in place so that `less(xs[j], xs[i])` is false for every `i < j`. The sort is
 # stable: elements neither of which is less than the other keep their order. `less` must be a
 # strict order, as `<` is.
-(xs: T[]) func sort(less: func(T, T): bool) {
+(xs: T[]) func sortBy(less: func(T, T): bool) {
     n := xs.length()
     # Insertion sort makes sorted runs, which merging then doubles in length.
     const Run: i64 = 16

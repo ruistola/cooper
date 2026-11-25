@@ -173,13 +173,12 @@ The methods of a `T[]`:
 xs.contains(x)          xs.find(x)                              # bool, Maybe i64
 xs.any(p)               xs.all(p)              xs.findWhere(p)  # p: func(T): bool
 xs.map(f)               xs.filter(p)           xs.reduce(0, add)   # new arrays, and a value
-xs.reverse()            xs.sort(less)                           # in place
+xs.reverse()            xs.sort()              xs.sortBy(less)  # in place
 ```
 
-`contains` and `find` compare elements with `==`, so the element type must be comparable. A
-type parameter is not, so the compiler provides these two rather than `std.arrays`; generic
-code that needs them on `T` takes an `eq` function and uses `findWhere`. `sort` is stable, and
-`less` is a strict order such as `func(a, b) { return a.age < b.age }`. `reduce` folds from
+`contains` and `find` compare elements with `==`, so they need a comparable element type, and
+`sort` orders them with `<`, so it needs numbers or runes ([Generics](./generics.md#requirements)).
+Both sorts are stable; `less` is a strict order such as `func(a, b) { return a.age < b.age }`. `reduce` folds from
 the left, starting with its first argument, which may be of another type than the elements:
 `xs.reduce("", func(s, x) { return s + string(x) })`.
 

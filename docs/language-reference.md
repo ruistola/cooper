@@ -302,7 +302,7 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
   `s[..hi]`) a view of those bytes. Offsets panic when out of range or inside a rune, so a
   slice never splits a character. Bytes from C that are not valid UTF-8 become U+FFFD.
 * More methods of `string` (`contains`, `split`, `trim`, `replace`, `parseInt`, …) come from
-  `std.strings`, those of arrays (`contains`, `find`, `map`, `filter`, `reduce`, `sort`, …)
+  `std.strings`, those of arrays (`contains`, `find`, `map`, `filter`, `reduce`, `sort`, `sortBy`, …)
   from `std.arrays`, those of `rune` (`isAsciiDigit`, …) from `std.runes`, and the checked
   conversions of the numeric types (`n.toU8()`, `f.toI32()`, `n.toRune()`, each a `Maybe`)
   from `std.math`, all in scope everywhere

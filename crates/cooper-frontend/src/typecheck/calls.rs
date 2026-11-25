@@ -243,9 +243,20 @@ impl<'g> TypeChecker<'g> {
         if unresolved {
             return;
         }
-        let type_args = pending.type_args.iter()
+        let type_args: Vec<Type> = pending.type_args.iter()
             .map(|(_, arg)| self.infer.resolve(arg))
             .collect();
+        if let RefTarget::Item(callee) | RefTarget::Variant(callee, ..) = &pending.item {
+            if !type_args.is_empty() {
+                self.instantiations.push(Instantiation {
+                    caller: self.generic.as_ref().map(|(item, _)| item.clone()),
+                    callee: callee.clone(),
+                    type_args: pending.type_args.iter().map(|(name, _)| name.clone()).zip(type_args.clone()).collect(),
+                    span: pending.span,
+                    label: pending.label.clone(),
+                });
+            }
+        }
         match &pending.item {
             RefTarget::Item(item) => {
                 self.refs.insert(pending.span, ItemRef { item: item.clone(), type_args });

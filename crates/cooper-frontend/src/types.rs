@@ -328,26 +328,56 @@ pub fn is_float(t: &Type) -> bool {
 /// (which member is current is unknown), and unconstrained
 /// type parameters. The same set defines which types are hashable.
 pub(crate) fn incomparable_part(t: &Type, defs: &TypeDefs) -> Option<Type> {
+    let mut params = Vec::new();
+    incomparable_given(t, defs, &mut params).or_else(|| params.first().map(|param| Type::TypeParam(param.clone())))
+}
+
+/// The component of `t` that makes it incomparable whatever its type parameters are, if any;
+/// otherwise `t` is comparable when each parameter collected into `params` is.
+pub(crate) fn incomparable_given(t: &Type, defs: &TypeDefs, params: &mut Vec<String>) -> Option<Type> {
     match t {
         Type::Unknown | Type::Unit | Type::Primitive(_) | Type::Pointer(_) | Type::Nil => None,
-        Type::Array(_)
-        | Type::StaticArray(..)
-        | Type::Func { .. }
-        | Type::TypeParam(_)
-        | Type::Infer(_)
-        | Type::Module(_) => Some(t.clone()),
-        Type::Tuple(elems) => elems.iter().find_map(|e| incomparable_part(e, defs)),
+        Type::TypeParam(name) => {
+            if !params.contains(name) {
+                params.push(name.clone());
+            }
+            None
+        }
+        Type::Array(_) | Type::StaticArray(..) | Type::Func { .. } | Type::Infer(_) | Type::Module(_) => Some(t.clone()),
+        Type::Tuple(elems) => elems.iter().find_map(|e| incomparable_given(e, defs, params)),
         Type::Struct { .. } if defs.is_extern_union(t) => Some(t.clone()),
         Type::Struct { .. } => defs
             .struct_members(t)?
             .iter()
-            .find_map(|(_, member)| incomparable_part(member, defs)),
+            .find_map(|(_, member)| incomparable_given(member, defs, params)),
         Type::Union { .. } => defs
             .variant_order(t)
             .iter()
             .flat_map(|v| defs.payload(t, v).unwrap_or_default())
-            .find_map(|slot| incomparable_part(&slot, defs)),
+            .find_map(|slot| incomparable_given(&slot, defs, params)),
     }
+}
+
+/// What an operation needs of a type: the built-in predicates the checker solves, which a
+/// generic function's body may put on its type parameters (see [`crate::resolve::Requirement`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PredicateKind {
+    Numeric,
+    /// A number or a `rune`: what `<` orders, and what converts to an integer.
+    Ordered,
+    Addable,
+    Integer,
+    /// `bool` or an integer: the operand of `and`, `or`, `xor`, and `!`.
+    Logical,
+    Comparable,
+    /// Any value: the operand of `string(x)`.
+    Formattable,
+    Float,
+    /// A number or a pointer: the operand of `u64(x)`.
+    Address,
+    /// A number the integer literal `text`, `negated` or not, fits: what a generic body's
+    /// literal needs of the type parameter it takes.
+    Literal { text: String, negated: bool },
 }
 
 /// Render `a` and `b` for a diagnostic that sets them side by side. Distinct

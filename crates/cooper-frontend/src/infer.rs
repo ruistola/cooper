@@ -23,11 +23,13 @@ impl InferKind {
         }
     }
 
+    /// Whether a variable of this class may take `ty`. A type parameter may take a literal;
+    /// the generic declaration then requires its instantiations to hold it.
     fn accepts(self, ty: &Type) -> bool {
         match self {
             Self::General => true,
-            Self::IntLiteral => is_numeric(ty),
-            Self::FloatLiteral => is_float(ty),
+            Self::IntLiteral => is_numeric(ty) || matches!(ty, Type::TypeParam(_)),
+            Self::FloatLiteral => is_float(ty) || matches!(ty, Type::TypeParam(_)),
         }
     }
 }

@@ -95,3 +95,33 @@ fn unit_is_a_type_argument_like_any_other() {
         "func f() {\n  let b: Box () = Box{v: ()}\n  call(nothing)\n}",
     ));
 }
+
+#[test]
+fn a_generic_body_requires_of_its_type_parameters_what_it_does_with_them() {
+    let same = "func same T (a: T, b: T): bool {\n  return a == b\n}\n";
+    ok(&format!("{same}struct P {{\n  x: i32,\n}}\nfunc f() {{\n  same(1, 2)\n  same(P{{x: 1}}, P{{x: 2}})\n}}"));
+    err(&format!("{same}func f() {{\n  same([1], [2])\n}}"), "values of type i32[] are not comparable");
+}
+
+#[test]
+fn a_generic_caller_passes_on_the_requirements_of_what_it_calls() {
+    let max = "func max T (a: T, b: T): T {\n  if a < b then return b\n  return a\n}\n";
+    let largest = "func largest T (xs: T[]): T {\n  m := xs[0]\n  for x in xs do m = max(m, x)\n  return m\n}\n";
+    ok(&format!("{max}{largest}func f() {{\n  largest([1.5, 2.5])\n}}"));
+    err(&format!("{max}{largest}func f() {{\n  largest([true])\n}}"), "values of type bool cannot be ordered");
+}
+
+#[test]
+fn a_literal_requires_a_type_parameter_that_holds_it() {
+    let big = "func isBig T (x: T): bool {\n  return x > 300\n}\n";
+    ok(&format!("{big}func f() {{\n  isBig(5)\n  isBig(2.5)\n}}"));
+    err(&format!("{big}func f() {{\n  isBig(u8(5))\n}}"), "integer literal 300 is out of range for u8");
+}
+
+#[test]
+fn a_nested_generic_function_cannot_require_anything_of_its_type_parameters() {
+    err(
+        "func f() {\n  func less U (a: U, b: U): bool {\n    return a < b\n  }\n}",
+        "invalid operands for <: U and U",
+    );
+}

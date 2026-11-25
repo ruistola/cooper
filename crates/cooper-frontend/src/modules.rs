@@ -188,6 +188,7 @@ struct ParsedModule {
 /// tagged with the file name so later passes can label their diagnostics.
 struct ParsedFile {
     name: String,
+    source: String,
     /// Whether the file is marked `#private`.
     private: bool,
     uses: Vec<UseSpec>,
@@ -224,6 +225,7 @@ fn parse_module_files(module: &Module) -> (Vec<ParsedFile>, Vec<Diagnostic>) {
                 errors.push(diag.in_file(&file.name));
                 files.push(ParsedFile {
                     name: file.name.clone(),
+                    source: file.source.clone(),
                     private: false,
                     uses: Vec::new(),
                     decls: Vec::new(),
@@ -236,6 +238,7 @@ fn parse_module_files(module: &Module) -> (Vec<ParsedFile>, Vec<Diagnostic>) {
         errors.extend(parsed.errors.into_iter().map(|d| d.in_file(&file.name)));
         files.push(ParsedFile {
             name: file.name.clone(),
+            source: file.source.clone(),
             private: parsed.private,
             uses: parsed.uses,
             decls: parsed.decls,
@@ -512,6 +515,9 @@ fn analyze_module(
             }
             checked.push((globals, typed));
         }
+        let files: Vec<_> = module.files.iter().map(|file| (file.name.as_str(), file.source.as_str())).collect();
+        let typed: Vec<_> = checked.iter().map(|(_, typed)| typed).collect();
+        diags.extend(typecheck::settle_requirements(&files, &typed, &mut interface, interfaces.values()));
     }
     (diags, interface, checked)
 }
@@ -553,7 +559,7 @@ fn exported(mut interface: Globals, files: &[ParsedFile]) -> Globals {
 
 /// The identity of the type a method with receiver type `ty` is declared on: a struct or
 /// sum type of the module, through a pointer or type arguments, or a built-in type.
-fn receiver_owner(ty: &TypeExpr, interface: &Globals) -> Option<TypeId> {
+pub(crate) fn receiver_owner(ty: &TypeExpr, interface: &Globals) -> Option<TypeId> {
     match &ty.kind {
         TypeExprKind::Pointer(inner) => receiver_owner(inner, interface),
         TypeExprKind::Application { constructor, .. } => receiver_owner(constructor, interface),

@@ -430,10 +430,6 @@ pub enum Intrinsic {
     /// `f.bits()` and `b.floatFromBits()`: the operand's bits as the node's type, a float
     /// type and the unsigned integer type of its width. Args: `[operand]`.
     BitCast,
-    /// `contains(x): bool` — whether an element equals `x`. Args: `[array, x]`.
-    ArrayContains,
-    /// `find(x): Maybe i64` — the index of the first element equal to `x`. Args: `[array, x]`.
-    ArrayFind,
     /// `reserve(n): unit` — make room in place for at least `n` more elements,
     /// reallocating if the array lacks it. Args: `[array, n]`.
     ArrayReserve,

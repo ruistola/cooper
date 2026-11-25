@@ -92,8 +92,34 @@ annotation. See [Type System](./type-system.md#inference) for the inference mode
 Generics are compiled by monomorphization: each distinct instantiation becomes its own
 concrete function.
 
-## Constraints
+## Requirements
 
-Type parameters are unbounded. A generic that needs an operation on its parameter takes it
-as a function argument (`fold(xs, 0, add)`). Bounds, if added, will go in a separate
-`where` clause rather than inline in the signature.
+A generic function or method may use the built-in operators on its type parameters, and
+literals as their values. What its body does with a parameter becomes a **requirement** on it:
+numeric for arithmetic or a literal, ordered for `<`, comparable for `==`, integer for an
+index or a shift, float for a float literal, and so on (the predicates of
+[Type System](./type-system.md#inference)). The signature does not spell them out; the
+compiler infers them, and checks each instantiation against them:
+
+```
+func max T (a: T, b: T): T {
+    if a < b then return b
+    return a
+}
+
+max(2, 3)              # fine: i32 is ordered
+max(true, false)       # error: values of type bool cannot be ordered
+                       #   note: function max uses < on T at main.coop:2:8
+```
+
+A generic declaration that passes a parameter on to another takes on that one's
+requirements, so `func largest T (xs: T[])` calling `max` requires an ordered `T` too, and the
+error names the chain. A literal requires a type that holds its value: a body that compares
+`x > 300` cannot be instantiated with `u8`. A struct or sum type built from a parameter is
+comparable when the parameter is.
+
+The predicates are the built-in ones only. Nothing can be declared to meet them, and they
+never select an implementation: each instantiation compiles the same body for its own
+types. Other behavior is passed in as a function argument (`xs.sortBy(less)`,
+`xs.reduce(0, add)`). Only module-level declarations have requirements; a nested generic
+function cannot use operators on its own type parameters.

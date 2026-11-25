@@ -2002,8 +2002,6 @@ impl Lower<'_> {
             "copy" => Intrinsic::ArrayCopy,
             "reserve" => Intrinsic::ArrayReserve,
             "utf8" => Intrinsic::ArrayUtf8,
-            "contains" => Intrinsic::ArrayContains,
-            "find" => Intrinsic::ArrayFind,
             // Declared in `std.arrays`, so an ordinary method call.
             _ => return Ok(None),
         };

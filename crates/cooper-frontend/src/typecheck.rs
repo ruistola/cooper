@@ -18,18 +18,20 @@ use crate::ast::*;
 use crate::consts::{ConstValue, Constant};
 use crate::diag::{Diagnostic, Span};
 use crate::infer::{InferKind, InferTable};
-use crate::resolve::{self, Callable, Globals, Signature};
+use crate::resolve::{self, Callable, Globals, Requirement, Signature};
 use crate::types::{
     display_pair, incomparable_part, integer_bits, is_integer, is_integer_name,
-    is_numeric, is_numeric_name, is_primitive, is_unit, InferId, Type, TypeId, SIGNED_INTS,
+    is_numeric, is_numeric_name, is_primitive, is_unit, InferId, PredicateKind, Type, TypeId, SIGNED_INTS,
 };
 
 mod access;
 mod calls;
 mod literals;
 mod patterns;
+mod requirements;
 mod solve;
 
+pub(crate) use requirements::settle as settle_requirements;
 pub use literals::{decode_escapes, decode_number_literal, decode_rune_literal, decode_string_literal, LiteralValue};
 use literals::{bare_number_text, is_signed_int, literal_is_float};
 use patterns::Coverage;
@@ -66,6 +68,26 @@ pub struct Typed {
     /// The calls of variadic Cooper functions, by callee span, with the number of
     /// parameters before the variadic one.
     pub packed: HashMap<Span, usize>,
+    /// What the bodies of the file's generic declarations need of their type parameters
+    /// directly, with the span of the operation that needs it.
+    pub requirements: Vec<(Callable, Requirement, Span)>,
+    /// Every reference to a generic declaration, whose type arguments must meet its
+    /// requirements.
+    pub instantiations: Vec<Instantiation>,
+}
+
+/// A generic declaration's instantiation at a reference.
+#[derive(Debug, Clone)]
+pub struct Instantiation {
+    /// The generic declaration whose body makes the reference, whose type parameters the
+    /// type arguments may name; `None` outside one.
+    pub caller: Option<Callable>,
+    pub callee: Callable,
+    /// Each of the callee's type parameters with its type argument.
+    pub type_args: Vec<(String, Type)>,
+    pub span: Span,
+    /// The callee as the reference names it, for diagnostics.
+    pub label: String,
 }
 
 /// A use of a module-level variable: the module that declares it and its name there.
@@ -141,23 +163,6 @@ struct PendingRef {
     item: RefTarget,
     /// Each binder's name and the inference variable for its type argument.
     type_args: Vec<(String, Type)>,
-}
-
-#[derive(Clone, Copy)]
-enum PredicateKind {
-    Numeric,
-    /// A number or a `rune`: what `<` orders, and what converts to an integer.
-    Ordered,
-    Addable,
-    Integer,
-    /// `bool` or an integer: the operand of `and`, `or`, `xor`, and `!`.
-    Logical,
-    Comparable,
-    /// Any value: the operand of `string(x)`.
-    Formattable,
-    Float,
-    /// A number or a pointer: the operand of `u64(x)`.
-    Address,
 }
 
 enum PredicateSite {
@@ -244,6 +249,8 @@ pub fn check(
         aliases: tc.aliases,
         dispatch: tc.dispatch,
         packed: tc.packed,
+        requirements: tc.requirements,
+        instantiations: tc.instantiations,
     }
 }
 
@@ -295,6 +302,10 @@ struct TypeChecker<'g> {
     /// The calls of variadic Cooper functions, by callee span, with the number of
     /// parameters before the variadic one: the lowering handoff.
     packed: HashMap<Span, usize>,
+    /// The generic module-level declaration being checked and its type parameters.
+    generic: Option<(Callable, Vec<String>)>,
+    requirements: Vec<(Callable, Requirement, Span)>,
+    instantiations: Vec<Instantiation>,
     /// The variables and bindings used to instantiate generic references.
     infer: InferTable,
     body: BodyConstraints,
@@ -325,6 +336,9 @@ impl<'g> TypeChecker<'g> {
             aliases: HashMap::new(),
             dispatch: HashMap::new(),
             tests: HashMap::new(),
+            generic: None,
+            requirements: Vec::new(),
+            instantiations: Vec::new(),
             infer: InferTable::default(),
             body: BodyConstraints::default(),
         }
@@ -722,11 +736,12 @@ impl<'g> TypeChecker<'g> {
 
     fn check_func_decl(&mut self, func: &FuncDecl) {
         let saved_body = std::mem::take(&mut self.body);
-        let mut type_params: HashSet<String> = func.type_params.iter().cloned().collect();
+        let mut binders = func.type_params.clone();
         if let Some(receiver) = &func.receiver {
-            type_params.extend(resolve::receiver_pattern_params(&receiver.ty));
+            binders.extend(resolve::receiver_pattern_params(&receiver.ty));
         }
-        let saved_params = std::mem::replace(&mut self.type_params, type_params);
+        let saved_params = std::mem::replace(&mut self.type_params, binders.iter().cloned().collect());
+        self.generic = self.declared_item(func).filter(|_| !binders.is_empty()).map(|item| (item, binders));
 
         let return_type = match &func.return_type {
             Some(rt) => self.resolve_local_type(rt).unwrap_or(Type::Unit),
@@ -754,6 +769,16 @@ impl<'g> TypeChecker<'g> {
         self.current_return = saved_return;
         self.scopes.pop();
         self.type_params = saved_params;
+        self.generic = None;
+    }
+
+    /// The identity of the module-level function or method `func` declares.
+    fn declared_item(&self, func: &FuncDecl) -> Option<Callable> {
+        let Some(receiver) = &func.receiver else {
+            return self.globals.funcs.get(&func.name).map(|sig| sig.item.clone());
+        };
+        let owner = crate::modules::receiver_owner(&receiver.ty, self.globals)?;
+        self.globals.methods.get(&owner)?.get(&func.name).map(|sig| sig.item.clone())
     }
 
     /// A function declared in a body: a variable bound to a function literal, in

@@ -65,9 +65,16 @@ The compiler is a Rust Cargo workspace.
      callable type arguments. Unbound variables are diagnosed, and lowering never sees
      `Type::Infer`.
 
+     A predicate or literal on a generic declaration's own type parameter is recorded as a
+     requirement rather than checked, and every instantiation of a generic declaration is
+     recorded. Once all of a module's files are checked, `typecheck/requirements.rs` passes
+     requirements from callees on to generic callers until none is added, checks every
+     instantiation against them, and stores them in the module's `Signature`s for the
+     modules that import it.
+
      The checker's state, statements, and core expressions live in `typecheck.rs`; submodules
      in `typecheck/` extend it by responsibility: `solve.rs` (obligations, predicates,
-     `finish_body`), `patterns.rs` (`match` and exhaustiveness), `literals.rs` (numeric
+     `finish_body`), `requirements.rs` (the requirements of generic declarations), `patterns.rs` (`match` and exhaustiveness), `literals.rs` (numeric
      literals and their decoding), `calls.rs` (calls, references, variants), and `access.rs`
      (struct construction, members, elements, assignment).
   3. **semantic.rs** — Control-flow checks: every path returns a value where the function

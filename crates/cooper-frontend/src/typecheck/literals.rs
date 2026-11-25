@@ -21,31 +21,31 @@ impl<'g> TypeChecker<'g> {
     /// not fit the range of integer type `name`. Values are staged through 128-bit
     /// arithmetic, wide enough to hold any 64-bit-or-narrower bound exactly.
     pub(super) fn check_integer_range(&mut self, text: &str, name: &str, negated: bool, span: Span) {
-        let Some(mag) = parse_literal_magnitude(text) else {
-            self.err(span, format!("integer literal `{text}` is too large to represent"));
-            return;
-        };
-        let bits = integer_bits(name);
-        if name.starts_with('u') {
-            if negated && mag != 0 {
-                self.err(span, format!("cannot negate a literal of unsigned type {name}"));
-                return;
-            }
-            let max = (1u128 << bits) - 1;
-            if mag > max {
-                self.err(span, format!("integer literal {mag} is out of range for {name} (0..={max})"));
-            }
-        } else if negated {
-            let min_magnitude = 1u128 << (bits - 1);
-            if mag > min_magnitude {
-                self.err(span, format!("integer literal -{mag} is out of range for {name} (min -{min_magnitude})"));
-            }
-        } else {
-            let max = (1u128 << (bits - 1)) - 1;
-            if mag > max {
-                self.err(span, format!("integer literal {mag} is out of range for {name} (max {max})"));
-            }
+        if let Some(message) = integer_range_error(text, name, negated) {
+            self.err(span, message);
         }
+    }
+}
+
+/// Why the integer literal `text`, optionally `negated`, does not fit integer type `name`, if
+/// it does not.
+pub(super) fn integer_range_error(text: &str, name: &str, negated: bool) -> Option<String> {
+    let Some(mag) = parse_literal_magnitude(text) else {
+        return Some(format!("integer literal `{text}` is too large to represent"));
+    };
+    let bits = integer_bits(name);
+    if name.starts_with('u') {
+        if negated && mag != 0 {
+            return Some(format!("cannot negate a literal of unsigned type {name}"));
+        }
+        let max = (1u128 << bits) - 1;
+        (mag > max).then(|| format!("integer literal {mag} is out of range for {name} (0..={max})"))
+    } else if negated {
+        let min_magnitude = 1u128 << (bits - 1);
+        (mag > min_magnitude).then(|| format!("integer literal -{mag} is out of range for {name} (min -{min_magnitude})"))
+    } else {
+        let max = (1u128 << (bits - 1)) - 1;
+        (mag > max).then(|| format!("integer literal {mag} is out of range for {name} (max {max})"))
     }
 }
 

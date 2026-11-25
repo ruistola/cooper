@@ -70,6 +70,19 @@ pub struct Signature {
     pub by_pointer: bool,
     /// Whether a C function takes further arguments after those of `ty`.
     pub variadic: bool,
+    /// What the body needs of the type parameters, inferred from what it does with them;
+    /// each instantiation must meet them.
+    pub requirements: Vec<Requirement>,
+}
+
+/// A predicate a generic declaration's body puts on one of its type parameters.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Requirement {
+    pub param: String,
+    pub kind: crate::types::PredicateKind,
+    /// How the body comes to need it, for diagnostics at an instantiation that does not meet
+    /// it: `uses < on T at std/math/math.coop:8:12`.
+    pub origin: String,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -755,6 +768,7 @@ fn resolve_extern_func(
             },
             by_pointer: false,
             variadic,
+            requirements: Vec::new(),
         },
     );
 }
@@ -856,6 +870,7 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
                 ty: func_type,
                 by_pointer: false,
                 variadic,
+                requirements: Vec::new(),
             },
         );
         return;
@@ -924,6 +939,7 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
             ty: func_type,
             by_pointer: matches!(recv_type, Type::Pointer(_)),
             variadic,
+            requirements: Vec::new(),
         },
     );
 }

@@ -1,6 +1,8 @@
 //! Constraint solving: obligations, predicates, and body completion.
 
 use super::*;
+use super::literals::integer_range_error;
+use crate::types::TypeDefs;
 
 impl<'g> TypeChecker<'g> {
     fn mark_obligation(&mut self, obligation: &Obligation) {
@@ -172,12 +174,24 @@ impl<'g> TypeChecker<'g> {
             self.check_predicate(predicate);
         }
         for literal in body.literals {
-            if !literal_is_float(&literal.text) {
-                if let Type::Primitive(name) = self.infer.resolve(&literal.ty) {
-                    if is_integer_name(&name) {
-                        self.check_integer_range(&literal.text, &name, literal.negated, literal.span);
+            let float = literal_is_float(&literal.text);
+            match self.infer.resolve(&literal.ty) {
+                Type::Primitive(name) if !float && is_integer_name(&name) => {
+                    self.check_integer_range(&literal.text, &name, literal.negated, literal.span);
+                }
+                Type::TypeParam(param) => {
+                    let kind = if float {
+                        PredicateKind::Float
+                    } else {
+                        PredicateKind::Literal { text: literal.text.clone(), negated: literal.negated }
+                    };
+                    let sign = if literal.negated { "-" } else { "" };
+                    let text = &literal.text;
+                    if !self.require(&[param.clone()], &kind, literal.span, |param| format!("uses the literal {sign}{text} as a {param}")) {
+                        self.err(literal.span, format!("a literal cannot take the type {param}, a type parameter of a nested function"));
                     }
                 }
+                _ => {}
             }
         }
         let mut reported = HashSet::new();
@@ -221,29 +235,20 @@ impl<'g> TypeChecker<'g> {
         if !self.infer.is_resolved(&ty) {
             return;
         }
-        let valid = match predicate.kind {
-            PredicateKind::Numeric => is_numeric(&ty),
-            PredicateKind::Ordered => is_numeric(&ty) || is_primitive(&ty, "rune"),
-            PredicateKind::Addable => is_numeric(&ty) || is_primitive(&ty, "string"),
-            PredicateKind::Integer => is_integer(&ty),
-            PredicateKind::Logical => is_integer(&ty) || is_primitive(&ty, "bool"),
-            PredicateKind::Comparable => incomparable_part(&ty, &self.globals.defs).is_none(),
-            PredicateKind::Formattable => !matches!(ty, Type::Module(_)),
-            PredicateKind::Float => crate::types::is_float(&ty),
-            PredicateKind::Address => is_numeric(&ty) || is_primitive(&ty, "rune") || matches!(ty, Type::Pointer(_) | Type::Nil),
-        };
-        if !valid {
-            let message = match predicate.kind {
-                PredicateKind::Comparable => {
-                    let part = incomparable_part(&ty, &self.globals.defs)
-                        .expect("a failed comparable predicate has an incomparable component");
-                    let reason = if part.equals(&ty) {
-                        String::new()
-                    } else {
-                        format!(" (it contains {part})")
-                    };
-                    format!("values of type {ty} are not comparable{reason}")
+        let mut nested = false;
+        if let Some(Ok(params)) = params_needing(&predicate.kind, &ty, &self.globals.defs) {
+            nested = true;
+            if self.require(&params, &predicate.kind, predicate.span, |param| predicate.site.describe(param)) {
+                if let PredicateSite::IntegerPattern { negative, magnitude } = &predicate.site {
+                    let kind = PredicateKind::Literal { text: magnitude.clone(), negated: *negative };
+                    self.require(&params, &kind, predicate.span, |param| predicate.site.describe(param));
                 }
+                return;
+            }
+        }
+        if !holds(&predicate.kind, &ty, &self.globals.defs) {
+            let message = match predicate.kind {
+                PredicateKind::Comparable => unmet(&predicate.kind, &ty, &self.globals.defs),
                 _ => match predicate.site {
                     PredicateSite::Binary(op, other) => {
                         let (left, right) = self.shown_pair(&ty, &other);
@@ -278,7 +283,11 @@ impl<'g> TypeChecker<'g> {
                     }
                 },
             };
-            self.err(predicate.span, message);
+            let mut diag = Diagnostic::error(predicate.span, message);
+            if nested {
+                diag = diag.with_note("only a module-level function or method can require this of its type parameters");
+            }
+            self.diags.push(diag);
             return;
         }
         if let PredicateSite::IntegerPattern { negative, magnitude } = predicate.site {
@@ -293,4 +302,101 @@ impl<'g> TypeChecker<'g> {
             }
         }
     }
+}
+
+impl TypeChecker<'_> {
+    /// Record that the declaration being checked needs `kind` of each of `params`, if they are
+    /// all its own type parameters; whether they were. Those of a nested generic function
+    /// cannot carry requirements, since nothing checks its instantiations against them.
+    fn require(&mut self, params: &[String], kind: &PredicateKind, span: Span, origin: impl Fn(&str) -> String) -> bool {
+        let Some((item, own)) = &self.generic else { return false };
+        if !params.iter().all(|param| own.contains(param)) {
+            return false;
+        }
+        for param in params {
+            let requirement = Requirement { param: param.clone(), kind: kind.clone(), origin: origin(param) };
+            self.requirements.push((item.clone(), requirement, span));
+        }
+        true
+    }
+}
+
+impl PredicateSite {
+    /// What the operation at this site does with the type parameter `param`, for a
+    /// requirement's origin.
+    fn describe(&self, param: &str) -> String {
+        match self {
+            PredicateSite::Binary(op, _) => format!("uses {} on {param}", op.symbol()),
+            PredicateSite::Unary(op) => format!("uses {} on {param}", op.symbol()),
+            PredicateSite::Assignment(op, _) => format!("uses {} on {param}", op.symbol()),
+            PredicateSite::Conversion(name) => format!("converts a {param} to {name}"),
+            PredicateSite::Index => format!("indexes with a {param}"),
+            PredicateSite::ShiftCount => format!("shifts by a {param}"),
+            PredicateSite::Range => format!("uses a {param} as a range bound"),
+            PredicateSite::IntegerPattern { .. } => format!("matches a {param} against an integer pattern"),
+            PredicateSite::Spec(what) => format!("formats a {param} with {what}"),
+        }
+    }
+}
+
+/// Whether `ty`, a type without inference variables, meets `kind` whatever its type parameters are.
+pub(super) fn holds(kind: &PredicateKind, ty: &Type, defs: &TypeDefs) -> bool {
+    match kind {
+        PredicateKind::Numeric => is_numeric(ty),
+        PredicateKind::Ordered => is_numeric(ty) || is_primitive(ty, "rune"),
+        PredicateKind::Addable => is_numeric(ty) || is_primitive(ty, "string"),
+        PredicateKind::Integer => is_integer(ty),
+        PredicateKind::Logical => is_integer(ty) || is_primitive(ty, "bool"),
+        PredicateKind::Comparable => incomparable_part(ty, defs).is_none(),
+        PredicateKind::Formattable => !matches!(ty, Type::Module(_)),
+        PredicateKind::Float => crate::types::is_float(ty),
+        PredicateKind::Address => is_numeric(ty) || is_primitive(ty, "rune") || matches!(ty, Type::Pointer(_) | Type::Nil),
+        PredicateKind::Literal { text, negated } => match ty {
+            Type::Primitive(name) if is_integer_name(name) => integer_range_error(text, name, *negated).is_none(),
+            _ => is_numeric(ty),
+        },
+    }
+}
+
+/// Why `ty` does not meet `kind`, in terms of what can be done with its values.
+pub(super) fn unmet(kind: &PredicateKind, ty: &Type, defs: &TypeDefs) -> String {
+    match kind {
+        PredicateKind::Comparable => {
+            let part = incomparable_part(ty, defs).expect("a type that is not comparable has an incomparable component");
+            let reason = if part.equals(ty) { String::new() } else { format!(" (it contains {part})") };
+            format!("values of type {ty} are not comparable{reason}")
+        }
+        PredicateKind::Numeric => format!("{ty} is not a numeric type"),
+        PredicateKind::Ordered => format!("values of type {ty} cannot be ordered"),
+        PredicateKind::Addable => format!("values of type {ty} cannot be added"),
+        PredicateKind::Integer => format!("{ty} is not an integer type"),
+        PredicateKind::Logical => format!("{ty} is neither bool nor an integer type"),
+        PredicateKind::Formattable => format!("values of type {ty} cannot be formatted"),
+        PredicateKind::Float => format!("{ty} is not a float type"),
+        PredicateKind::Address => format!("{ty} is neither a number nor a pointer"),
+        PredicateKind::Literal { text, negated } => match ty {
+            Type::Primitive(name) if is_integer_name(name) => {
+                integer_range_error(text, name, *negated).expect("an unmet literal is out of range")
+            }
+            _ => format!("{ty} is not a numeric type, so it cannot take the literal {}{text}", if *negated { "-" } else { "" }),
+        },
+    }
+}
+
+/// The type parameters whose meeting `kind` would make `ty` meet it, when `ty` has type
+/// parameters: `Ok` with them, or `Err` when no choice of them could. `None` when `ty` has none.
+pub(super) fn params_needing(kind: &PredicateKind, ty: &Type, defs: &TypeDefs) -> Option<Result<Vec<String>, ()>> {
+    if let Type::TypeParam(name) = ty {
+        return Some(Ok(vec![name.clone()]));
+    }
+    let mut params = Vec::new();
+    let incomparable = crate::types::incomparable_given(ty, defs, &mut params);
+    if params.is_empty() {
+        return None;
+    }
+    // A component type is comparable when its parts are; no other predicate holds of one.
+    Some(match kind {
+        PredicateKind::Comparable if incomparable.is_none() => Ok(params),
+        _ => Err(()),
+    })
 }

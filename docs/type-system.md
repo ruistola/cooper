@@ -34,7 +34,9 @@ Cooper's domain *X* has three kinds of constraint:
   (indices, shift operands), logical (`bool` or an integer, for `and`/`or`/`xor`),
   and comparable (`==`). A numeric literal is a variable
   of its class that defaults only when nothing constrains it
-  ([Numeric Types](./numeric-types.md)).
+  ([Numeric Types](./numeric-types.md)). A predicate on a generic declaration's own type
+  parameter becomes a requirement of the declaration, checked at each instantiation
+  ([Generics](./generics.md#requirements)).
 * **Member obligations**: field and method access, variant construction, and `match` patterns
   on a type not yet known wait until another constraint determines it. Each has one solution,
   so solving never searches or backtracks, and a bare variant never selects its sum type
@@ -51,9 +53,9 @@ uses inside and outside it alike.
 * **No generalization.** Hindley–Milner generalizes `let` bindings to polymorphic types. Cooper
   has no local generic functions, so local bindings stay monomorphic and only declarations
   introduce type parameters ([Generics](./generics.md)).
-* **No user-extensible constraints.** There are no type classes, bounds, or overloading, so *X*
-  is closed: the predicates above are built in, and generic code takes the behavior it needs
-  as function arguments.
+* **No user-extensible constraints.** There are no type classes, declared bounds, or
+  overloading, so *X* is closed: the predicates above are built in, and generic code takes any
+  other behavior it needs as function arguments.
 * **No subtyping.** Constraints are equalities, with the single exception of `nil` and
   pointers.
 * **No inferred signatures.** Parameter and return types of declarations are written out.
@@ -83,9 +85,9 @@ Comparison is field-wise rather than bitwise because padding, float encodings, a
 storage address, and inactive payload bytes must not affect it.
 
 A type is **comparable** when all its components are. Function types, dynamic arrays `T[]`,
-`extern union`s, and unconstrained type parameters are not comparable, and neither is any
-type containing them. Generic code that needs equality takes an `eq` function. The arrays' `contains` and
-`find` are built in for this reason: they require a comparable element type where they are called.
+and `extern union`s are not comparable, and neither is any type containing them. A generic
+body that compares a type parameter requires comparable type arguments
+([Generics](./generics.md#requirements)).
 
 The comparable types are also the **hashable** types, and hashing agrees with `==`:
 `+0.0` and `-0.0` hash alike, and a `NaN` key can be inserted but never found. Pointers hash

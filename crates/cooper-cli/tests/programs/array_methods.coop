@@ -28,7 +28,7 @@ func main() {
     # Long enough to need merging after the insertion-sorted runs.
     let big: i64[]
     for i in 0..101 do big.push((i * 37) % 101)
-    big.sort(func(a, b) { return a < b })
+    big.sort()
     sorted := true
     for i in 1..big.length() do if big[i - 1] > big[i] then sorted = false
     std.io.println("{sorted} {big[0]} {big[100]}")
@@ -36,7 +36,7 @@ func main() {
     # Stable: each group keeps the order of its people.
     let people: Person[]
     for i in 0..40 do people.push(Person{name: "p{i}", group: i32(i % 3)})
-    people.sort(func(a, b) { return a.group < b.group })
+    people.sortBy(func(a, b) { return a.group < b.group })
     std.io.println("{people[0].name} {people[1].name} {people[13].name} {people[14].name} {people[39].name}")
 
     runes := ""

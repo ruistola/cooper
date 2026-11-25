@@ -1,6 +1,0 @@
-# exit: 101
-# stderr: panic: invalid rune at
-func main(): i32 {
-    let surrogate: u32 = 0xD800
-    return i32(u32(rune(surrogate)))
-}

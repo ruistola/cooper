@@ -5,7 +5,7 @@
 //! * Modules written in Cooper, embedded in the compiler (`std/`): `std.io` (`print` and
 //!   `println`, over the C library's `write`), `std.testing` (assertions for `cooper test`), `std.fmt` (`format`, the text of a template
 //!   whose positional holes `{}` its further arguments fill), `std.strings` (the
-//!   methods of `string`), `std.threads`, `std.sync`, and `std.gc` (control of the garbage collector). A program that reaches one through its `use` declarations,
+//!   methods of `string`), `std.math` (the checked conversions of the numeric types), `std.threads`, `std.sync`, and `std.gc` (control of the garbage collector). A program that reaches one through its `use` declarations,
 //!   directly or through another std module, has its source compiled with it; the others cost
 //!   nothing. The compiler fills the holes of a template call (`println("x is {}", x)`).
 //! * The prelude, in scope in every module without a `use`: the sum types `Maybe T`
@@ -26,6 +26,8 @@ use crate::types::{StructDef, Type, TypeId, UnionDef};
 pub const IO_MODULE: &str = "std.io";
 /// The module path of text formatting.
 pub const FMT_MODULE: &str = "std.fmt";
+/// The module path of the numeric types' home.
+const MATH_MODULE: &str = "std.math";
 /// The module path of the C interop helpers.
 pub const FFI_MODULE: &str = "std.ffi";
 /// The C string type `std.ffi` declares.
@@ -71,16 +73,25 @@ pub(crate) fn prelude() -> Globals {
     globals
 }
 
-/// The built-in types whose methods a standard library module declares, with that module,
-/// its home. A home module is part of every program.
-pub(crate) const HOMES: [(&str, &str); 1] = [("string", "std.strings")];
+/// The standard library modules that declare methods of built-in types, each with those
+/// types: their homes. A home module is part of every program, and a type may have more than
+/// one. A home sees the methods the homes before it declare.
+pub(crate) const HOMES: [(&str, &[&str]); 2] = [
+    (MATH_MODULE, &["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "rune"]),
+    ("std.strings", &["string"]),
+];
+
+/// Whether the standard library module `module` is a home of the built-in type `name`.
+pub(crate) fn is_home(module: &str, name: &str) -> bool {
+    HOMES.iter().any(|(home, types)| *home == module && types.contains(&name))
+}
 
 /// The identity a method on the built-in type `ty` is declared under, if `ty` has a home.
 pub fn builtin_owner(ty: &Type) -> Option<TypeId> {
     let Type::Primitive(name) = ty else {
         return None;
     };
-    HOMES.iter().any(|(owner, _)| owner == name).then(|| TypeId {
+    HOMES.iter().any(|(_, types)| types.contains(&name.as_str())).then(|| TypeId {
         module: PRELUDE_MODULE.to_string(),
         name: name.clone(),
     })
@@ -111,8 +122,67 @@ const SOURCE_MODULES: [SourceModule; 7] = [
 
 /// The standard library module `path` as a module of a project, if it is one written in Cooper.
 fn source_module(path: &str) -> Option<Module> {
+    if path == MATH_MODULE {
+        let files = vec![
+            SourceFile::new("std/math/math.coop", include_str!("../std/math/math.coop")),
+            SourceFile::new("std/math/conversions.coop", math_conversions()),
+        ];
+        return Some(Module::new(path, files));
+    }
     let (path, files) = SOURCE_MODULES.iter().find(|(p, _)| *p == path)?;
     Some(Module::new(path, files.iter().map(|(name, source)| SourceFile::new(*name, *source)).collect()))
+}
+
+/// The source of `std.math`'s checked conversions, generated since there is one method for
+/// each pair of types: from every integer and float type to every other integer type, and
+/// from every integer type to `rune`. Each converts with `T(n)` and checks that the result is
+/// the same number.
+fn math_conversions() -> String {
+    use crate::types::{integer_bits, FLOATS, SIGNED_INTS, UNSIGNED_INTS};
+    use std::fmt::Write;
+    let ints: Vec<&str> = SIGNED_INTS.iter().chain(&UNSIGNED_INTS).copied().collect();
+    let method = |to: &str| format!("to{}{}", to[..1].to_uppercase(), &to[1..]);
+    let mut out = String::new();
+    for from in &ints {
+        for to in ints.iter().filter(|to| *to != from) {
+            // Converting back fails to restore `n` when it does not fit, except that a change
+            // of signedness at one width restores it, so the signs are compared too.
+            let _ = writeln!(
+                out,
+                "(n: {from}) func {}(): Maybe {to} {{\n    m := {to}(n)\n    \
+                 return if {from}(m) == n and (m < 0) == (n < 0) then Some(m) else None\n}}\n",
+                method(to)
+            );
+        }
+        let _ = writeln!(
+            out,
+            "(n: {from}) func toRune(): Maybe rune {{\n    c := u64(n)\n    \
+             return if n >= 0 and c <= 0x10FFFF and (c < 0xD800 or c > 0xDFFF) then Some(rune(n)) else None\n}}\n"
+        );
+    }
+    for from in FLOATS {
+        let mantissa = if from == "f32" { 24 } else { 53 };
+        for to in &ints {
+            let bits = integer_bits(to);
+            // `T(f)` rounds toward zero, so the bounds admit the fractions that round into
+            // range. Below a signed type's minimum, a float either exists one less than it,
+            // or nothing lies between them.
+            let (lower, upper) = if SIGNED_INTS.contains(to) {
+                let min = -(1i128 << (bits - 1));
+                let lower = if bits - 1 < mantissa { format!("f > {}.0", min - 1) } else { format!("f >= {min}.0") };
+                (lower, 1i128 << (bits - 1))
+            } else {
+                ("f > -1.0".to_string(), 1i128 << bits)
+            };
+            let _ = writeln!(
+                out,
+                "(f: {from}) func {}(): Maybe {to} {{\n    \
+                 return if {lower} and f < {upper}.0 then Some({to}(f)) else None\n}}\n",
+                method(to)
+            );
+        }
+    }
+    out
 }
 
 /// `project` with the embedded standard library modules its `use` declarations reach, and
@@ -120,7 +190,7 @@ fn source_module(path: &str) -> Option<Module> {
 pub fn with_source_modules(project: &Project) -> Project {
     let mut project = project.clone();
     let mut present: HashSet<String> = project.modules.iter().map(|m| m.path.to_string()).collect();
-    for (_, home) in HOMES {
+    for (home, _) in HOMES {
         if present.contains(home) {
             continue;
         }

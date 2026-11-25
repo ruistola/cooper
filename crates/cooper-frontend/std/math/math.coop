@@ -1,0 +1,11 @@
+# The standard `math` module: the checked conversions between the numeric types and `rune`,
+# as methods of the converted type. `n.toU8()` is `Some` of the same number as a `u8` when `n`
+# has one, and `None` otherwise; a float's fraction is dropped, as `u8(f)` drops it. The
+# conversions between integer and float types are generated (`math_conversions` in the
+# compiler's `stdlib.rs`).
+
+# The rune's code point as a `u8`, when it is below 256.
+(r: rune) func toU8(): Maybe u8 {
+    c := u32(r)
+    return if c < 256 then Some(u8(c)) else None
+}

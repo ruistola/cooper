@@ -1,0 +1,38 @@
+# exit: 0
+# stdout: None Some(200) None Some(-1) Some(-128) None None
+# stdout: None Some(9223372036854775808) Some(0)
+# stdout: Some('😀') None Some(233) None �
+# stdout: Some(0) Some(-42) Some(7) Some(9223372036854775807) Some(-9223372036854775808) None None None None None None
+# stdout: Some(2.5) Some(-0.5) Some(5) Some(1e+09) Some(6.02e-23) Some(-inf) Some(nan) None None None None None None
+# stdout: port 65535
+
+use {
+    std.io,
+}
+
+func main() {
+    let big: i64 = 300
+    let small: i64 = 200
+    let neg: i32 = -1
+    let f: f64 = -128.9
+    let nan: f64 = 0.0 / 0.0
+    std.io.println("{big.toU8()} {small.toU8()} {neg.toU32()} {neg.toI8()} {f.toI8()} {(f - 1.0).toI8()} {nan.toI32()}")
+    let huge: f32 = 9223372036854775807.0
+    std.io.println("{huge.toI64()} {huge.toU64()} {(-0.5).toU8()}")
+
+    let emoji: u32 = 0x1F600
+    let surrogate: u32 = 0xD800
+    std.io.println("{emoji.toRune()} {surrogate.toRune()} {'é'.toU8()} {'€'.toU8()} {rune(surrogate)}")
+
+    ints := ""
+    for s in ["0", "-42", "+7", "9223372036854775807", "-9223372036854775808", "9223372036854775808", "", "-", "1_000", " 1", "0x10"] do {
+        ints += " {s.parseInt()}"
+    }
+    std.io.println(ints[1..])
+    floats := ""
+    for s in ["2.5", "-.5", "5.", "1e9", "6.02E-23", "-inf", "nan", "1e400", ".", "1e", "1_0.0", "0x1p3", "Inf"] do {
+        floats += " {s.parseFloat()}"
+    }
+    std.io.println(floats[1..])
+    if "65535".parseInt() is Some(n) and n.toU16() is Some(port) then std.io.println("port {port}")
+}

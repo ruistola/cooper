@@ -472,11 +472,12 @@ fn lower_function(
 fn signature_of<'g>(func: &FuncDecl, globals: &'g Globals) -> Option<&'g Signature> {
     match &func.receiver {
         None => globals.lookup_func(&func.name),
-        Some(receiver) if matches!(&receiver.ty.kind, TypeExprKind::Named(name) if name == "string") => {
-            let owner = cooper_frontend::stdlib::builtin_owner(&Type::Primitive("string".to_string()))?;
-            globals.lookup_method(&owner, &func.name)
-        }
         Some(receiver) => {
+            if let TypeExprKind::Named(name) = &receiver.ty.kind {
+                if let Some(owner) = cooper_frontend::stdlib::builtin_owner(&Type::Primitive(name.clone())) {
+                    return globals.lookup_method(&owner, &func.name);
+                }
+            }
             let id = globals.struct_id(underlying_struct_name(&receiver.ty)?)?;
             globals.lookup_method(&id, &func.name)
         }

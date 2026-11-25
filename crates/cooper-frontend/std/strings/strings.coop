@@ -147,3 +147,46 @@ func join(parts: string[], sep: string): string {
     for r in s do sb.writeRune(if 'a' <= r <= 'z' then rune(u32(r) - 32) else r)
     return sb.build()
 }
+
+# The integer `s` spells in decimal, with an optional sign: `Some(-42)` for "-42". Anything
+# else is `None`, spaces and `_` included, and so is a number outside the range of `i64`. For
+# a narrower type, convert the result: `if s.parseInt() is Some(n) and n.toI32() is Some(m)`.
+(s: string) func parseInt(): Maybe i64 {
+    const Min: i64 = -9223372036854775808
+    negative := s.startsWith("-")
+    start := if negative or s.startsWith("+") then 1 else 0
+    if start == s.length() or digitsEnd(s, start) != s.length() then return None
+    # Accumulated as a negative number, since `Min` has no positive counterpart.
+    let n: i64 = 0
+    for i in start..s.length() do {
+        d := i64(s.byteAt(i) - u8('0'))
+        if n < (Min + d) / 10 then return None
+        n = n * 10 - d
+    }
+    if negative then return Some(n)
+    return if n == Min then None else Some(-n)
+}
+
+# The `f64` nearest to the number `s` spells in decimal, with an optional sign, fraction, and
+# exponent: "2.5", "-.5", "1e9", "6.02E-23". "inf", "-inf", and "nan", as `string(f)` writes
+# them, are accepted too. Anything else is `None`, spaces and `_` included, and so is a number
+# too large for an `f64`.
+(s: string) func parseFloat(): Maybe f64 {
+    start := if s.startsWith("-") or s.startsWith("+") then 1 else 0
+    if s[start..] == "inf" or s[start..] == "nan" then return Some(cFloat(s))
+    whole := digitsEnd(s, start)
+    end := whole
+    if end < s.length() and s.byteAt(end) == u8('.') then end = digitsEnd(s, end + 1)
+    # A digit is needed before or after the point.
+    if whole == start and end <= start + 1 then return None
+    if end < s.length() and (s.byteAt(end) == u8('e') or s.byteAt(end) == u8('E')) then {
+        exponent := end + 1
+        if exponent < s.length() and (s.byteAt(exponent) == u8('-') or s.byteAt(exponent) == u8('+')) then exponent += 1
+        end = digitsEnd(s, exponent)
+        if end == exponent then return None
+    }
+    if end != s.length() then return None
+    f := cFloat(s)
+    # Only an infinity has no difference from itself that is zero.
+    return if f - f == 0.0 then Some(f) else None
+}

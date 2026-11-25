@@ -392,13 +392,17 @@ impl Emitter<'_, '_> {
         };
         let value = self.expr(operand)?.expect("a converted value is a number");
         if is_rune(target) && !is_rune(&operand.ty) {
-            // Only a Unicode scalar value is a rune, whatever width it comes from.
+            // Only a Unicode scalar value is a rune, whatever width it comes from: any other
+            // value becomes U+FFFD, the replacement character.
             let wide = self.widen_index(&value, &operand.ty);
             let above = self.assign(&format!("icmp ugt i64 {wide}, 1114111"));
             let shifted = self.assign(&format!("sub i64 {wide}, 55296"));
             let surrogate = self.assign(&format!("icmp ult i64 {shifted}, 2048"));
             let invalid = self.assign(&format!("or i1 {above}, {surrogate}"));
-            self.panic_if(&invalid, "invalid rune", span);
+            let scalar = self.assign(&format!("select i1 {invalid}, i64 65533, i64 {wide}"));
+            let dest = to.llvm();
+            let operand = self.assign(&format!("trunc i64 {scalar} to {dest}"));
+            return Ok(Some(Value { ty: dest, operand }));
         }
         let (source, dest) = (from.llvm(), to.llvm());
         let instruction = match (from, to) {

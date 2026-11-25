@@ -161,18 +161,19 @@ impl<'g> TypeChecker<'g> {
             self.err(span, format!("{field} is not a method of array type {target_type}"));
             return None;
         }
-        if matches!(&target_type, Type::Primitive(name) if name == "string") {
-            if let Some(method) = crate::builtins::string_method(field) {
-                return Some(method);
+        if let Some(owner) = crate::stdlib::builtin_owner(&target_type) {
+            if owner.name == "string" {
+                if let Some(method) = crate::builtins::string_method(field) {
+                    return Some(method);
+                }
             }
-            // The rest are declared in the string's home module.
-            let owner = crate::stdlib::builtin_owner(&target_type).expect("string has a home");
+            // The rest are declared in the type's home modules.
             if let Some(sig) = self.globals.lookup_method(&owner, field) {
                 let sig = sig.clone();
                 let label = format!("method {field}");
                 return self.reference(span, &sig, &label, Some(&target_type));
             }
-            self.err(span, format!("{field} is not a method of string"));
+            self.err(span, format!("{field} is not a method of {target_type}"));
             return None;
         }
         let Type::Struct { id, .. } = &target_type else {

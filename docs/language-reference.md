@@ -301,8 +301,10 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
   bytes, `s.byteAt(i)` the byte at an offset (a `u8`), and `s[lo..hi]` (also `..=`, `s[lo..]`,
   `s[..hi]`) a view of those bytes. Offsets panic when out of range or inside a rune, so a
   slice never splits a character. Bytes from C that are not valid UTF-8 become U+FFFD.
-* More methods of `string` (`contains`, `split`, `trim`, `replace`, `toLower`, …) come from
-  `std.strings`, in scope everywhere ([Methods and Functions](./methods-and-functions.md#methods-of-built-in-types)).
+* More methods of `string` (`contains`, `split`, `trim`, `replace`, `parseInt`, …) come from
+  `std.strings`, and the checked conversions of the numeric types (`n.toU8()`, `f.toI32()`,
+  `n.toRune()`, each a `Maybe`) from `std.math`, both in scope everywhere
+  ([Methods and Functions](./methods-and-functions.md#methods-of-built-in-types)).
 * Output goes through `std.io` (`print` and `println`, each taking a `string`), and
   `string(x)` formats any value: `Point{x: 1, y: 2}`, `[1, 2]`, `Some("a")`. Every string
   literal interpolates the same formatting: `println("p is {p}")`, or positionally,

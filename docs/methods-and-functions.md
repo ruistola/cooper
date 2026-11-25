@@ -128,10 +128,12 @@ foreign type is a free function. A method name may not collide with a field name
 
 A method is declared in the module that defines its type. A built-in type has a home module in
 the standard library, which declares its methods with the same syntax: `string`'s are in
-`std.strings` (`(s: string) func trim(): string { … }`). That module is part of every program, so
-the methods are available without a `use`. No other module can declare a method on `string`, and
-the few methods the compiler implements itself (`length()`, `byteAt(i)`) cannot be redeclared.
-Everything works in byte offsets, as slicing does:
+`std.strings` (`(s: string) func trim(): string { … }`), and those of the numeric types and
+`rune` in `std.math`. A home module is part of every program, so the methods are available
+without a `use`. No other module can declare a method on a built-in type, and the few methods
+the compiler implements itself (`length()`, `byteAt(i)`) cannot be redeclared.
+
+The methods of `string` work in byte offsets, as slicing does:
 
 ```
 s.contains("ab")        s.find("ab")        # Maybe i64
@@ -139,6 +141,21 @@ s.startsWith("a")       s.endsWith("z")
 s.trim()                s.trimStart()          s.trimEnd()      # ASCII whitespace
 s.split(",")            s.replace("a", "b")    s.times(3)
 s.toLower()             s.toUpper()                             # ASCII only
+s.parseInt()            s.parseFloat()                          # Maybe i64, Maybe f64
+```
+
+`parseInt` reads an optional sign and decimal digits, and `parseFloat` also a fraction and an
+exponent (`"-2.5e3"`, `".5"`), and `inf`, `-inf`, and `nan`. Anything else is `None`, spaces and
+the `_` and `0x` of source literals included, and so is a number out of the type's range.
+
+`std.math` has the checked conversions between the numeric types: `n.toU8()` is `Some` of the
+same number as a `u8` if there is one, and `None` otherwise. Every integer and float type has
+`toI8` through `toU64` for the other integer types, a float's fraction dropped as `u8(f)` drops
+it. Every integer type has `toRune()`, and a rune has `toU8()`:
+
+```
+b := if n.toU8() is Some(b) then b else return false
+if s.parseInt() is Some(n) and n.toU16() is Some(port) then listen(port)
 ```
 
 `std.strings` also has the `StringBuilder` (`write`, `writeRune`, `build`) and `join(parts, sep)`.

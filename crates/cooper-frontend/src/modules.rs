@@ -111,11 +111,14 @@ fn analyze_parsed(mut parsed: Vec<ParsedModule>) -> (Vec<Diagnostic>, CheckedPro
         .collect();
 
     let (mut edges, mut diags) = build_edges(&parsed, &known);
-    // Every module sees the methods of the built-in types, so follows their home modules.
-    for (_, home) in crate::stdlib::HOMES {
-        let Some(home) = parsed.iter().position(|m| m.path.to_string() == home) else { continue };
+    // Every module sees the methods of the built-in types, so follows their home modules,
+    // except that a home follows only the homes listed before it.
+    let homes: Vec<Option<usize>> =
+        crate::stdlib::HOMES.iter().map(|(home, _)| parsed.iter().position(|m| m.path.to_string() == *home)).collect();
+    for (rank, home) in homes.iter().enumerate() {
+        let Some(home) = *home else { continue };
         for (i, module) in edges.iter_mut().enumerate() {
-            if i != home {
+            if !homes[rank..].contains(&Some(i)) {
                 module.entry(home).or_insert((Span::new(0, 0), parsed[home].files[0].name.clone()));
             }
         }
@@ -435,8 +438,8 @@ fn analyze_module(
         .map(|file| build_file_imports(file, &declared, known, interfaces, &mut diags))
         .collect();
     // The methods of the built-in types come from their home modules.
-    for (_, home) in crate::stdlib::HOMES {
-        let Some(interface) = interfaces.get(&ModulePath::parse(home)).filter(|_| module.path.to_string() != home)
+    for (home, _) in crate::stdlib::HOMES {
+        let Some(interface) = interfaces.get(&ModulePath::parse(home)).filter(|_| module.path.to_string() != *home)
         else {
             continue;
         };

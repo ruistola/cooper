@@ -39,7 +39,7 @@ smile := '\u{1F600}'
 
 Runes compare with `==` and ordering (`'a' <= r <= 'z'`), and match against rune literal
 patterns. There is no arithmetic on them. `u32(r)` is the scalar value, and `rune(n)` makes a
-rune from any integer, stopping the program if `n` is not a scalar value. `string(r)` is the
+rune from any integer, U+FFFD if `n` is not a scalar value (`n.toRune()` is `None` then). `string(r)` is the
 character as text; inside a printed value a rune is quoted, as a string is (`['a', 'b']`).
 
 A `for` loop over a string yields its runes, and with two variables the byte offset each one

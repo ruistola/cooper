@@ -41,7 +41,7 @@ fn duplicate_struct_member_is_reported() {
 #[test]
 fn method_on_non_struct_receiver_is_reported() {
     err(
-        "(x: i32) func f(): i32 {\n  return 0\n}",
+        "(x: bool) func f(): i32 {\n  return 0\n}",
         "must be a struct or pointer-to-struct",
     );
 }
@@ -170,4 +170,10 @@ fn extern_union_literal_sets_one_member() {
 #[test]
 fn extern_union_is_not_comparable() {
     err("extern union Value { n: i64, f: f64 }\nfunc f(a: Value, b: Value): bool { return a == b }", "Value");
+}
+
+#[test]
+fn methods_of_a_built_in_type_come_from_its_home_modules() {
+    ok("func f(n: i64, s: string): bool {\n  return n.toU8() is Some(_) and s.parseInt() is Some(_)\n}");
+    err("(n: i32) func half(): i32 {\n  return n / 2\n}", "methods of i32 are declared in the standard library");
 }

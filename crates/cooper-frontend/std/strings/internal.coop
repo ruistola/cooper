@@ -8,3 +8,25 @@ struct StringBuilder {
 func isSpace(c: u8): bool {
     return c == 32 or 9 <= c <= 13
 }
+
+extern func strtod(text: u8^, end: u8^^): f64
+
+func isDigit(c: u8): bool {
+    return u8('0') <= c <= u8('9')
+}
+
+# The offset where the run of ASCII decimal digits from offset `i` ends.
+func digitsEnd(s: string, i: i64): i64 {
+    j := i
+    while j < s.length() and isDigit(s.byteAt(j)) do j += 1
+    return j
+}
+
+# The number C's `strtod` reads from `s`, which the caller has checked to be one it reads whole.
+# Cooper programs do not set a C locale, so `strtod` takes `.` as the decimal point.
+func cFloat(s: string): f64 {
+    let text: u8[]
+    for i in 0..s.length() do text.push(s.byteAt(i))
+    text.push(0)
+    return strtod(&text[0], nil)
+}

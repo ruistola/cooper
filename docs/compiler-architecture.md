@@ -202,7 +202,7 @@ those they reach in turn, as ordinary modules before checking, so they are check
 reported on like user code, and the others cost nothing. Monomorphization starts from `main`
 and the module initializers rather than from every non-generic function, so a function nothing
 reaches is not compiled. A built-in type's home modules (`std.strings` for `string`, `std.arrays`
-for `T[]`, `std.runes` and `std.math` for `rune`, `std.math` for the numeric types) are always added, and every other module follows them in the
+for `T[]`, `std.runes` for `rune`, `std.math` for the numeric types; one each, by `home`) are always added, and every other module follows them in the
 dependency order; a home follows the homes listed before it in `HOMES`. The checked conversions
 of `std.math`, one method per pair of types, are generated source (`math_conversions`). Its methods are keyed under
 a synthetic identity for the type, merged into every other module's method table, and called

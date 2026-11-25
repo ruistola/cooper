@@ -75,19 +75,19 @@ pub(crate) fn prelude() -> Globals {
     globals
 }
 
-/// The standard library modules that declare methods of built-in types, each with those
-/// types: their homes. A home module is part of every program, and a type may have more than
-/// one. A home sees the methods the homes before it declare.
-pub(crate) const HOMES: [(&str, &[&str]); 4] = [
-    ("std.arrays", &[ARRAY]),
-    (MATH_MODULE, &["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "rune"]),
-    ("std.runes", &["rune"]),
-    ("std.strings", &["string"]),
-];
+/// The standard library modules that declare the methods of built-in types: their homes. A home
+/// module is part of every program, and sees the methods of the homes before it.
+pub(crate) const HOMES: [&str; 4] = ["std.arrays", MATH_MODULE, "std.runes", "std.strings"];
 
-/// Whether the standard library module `module` is a home of the built-in type `name`.
-pub(crate) fn is_home(module: &str, name: &str) -> bool {
-    HOMES.iter().any(|(home, types)| *home == module && types.contains(&name))
+/// The home module of the built-in type `name`, if it has methods.
+pub(crate) fn home(name: &str) -> Option<&'static str> {
+    match name {
+        ARRAY => Some("std.arrays"),
+        "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f32" | "f64" => Some(MATH_MODULE),
+        "rune" => Some("std.runes"),
+        "string" => Some("std.strings"),
+        _ => None,
+    }
 }
 
 /// The identity a method on the built-in type `ty` is declared under, if `ty` has a home.
@@ -97,7 +97,7 @@ pub fn builtin_owner(ty: &Type) -> Option<TypeId> {
         Type::Array(_) => ARRAY,
         _ => return None,
     };
-    HOMES.iter().any(|(_, types)| types.contains(&name)).then(|| TypeId {
+    home(name).map(|_| TypeId {
         module: PRELUDE_MODULE.to_string(),
         name: name.to_string(),
     })
@@ -214,7 +214,7 @@ fn math_conversions() -> String {
 pub fn with_source_modules(project: &Project) -> Project {
     let mut project = project.clone();
     let mut present: HashSet<String> = project.modules.iter().map(|m| m.path.to_string()).collect();
-    for (home, _) in HOMES {
+    for home in HOMES {
         if present.contains(home) {
             continue;
         }

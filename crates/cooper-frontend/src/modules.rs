@@ -114,7 +114,7 @@ fn analyze_parsed(mut parsed: Vec<ParsedModule>) -> (Vec<Diagnostic>, CheckedPro
     // Every module sees the methods of the built-in types, so follows their home modules,
     // except that a home follows only the homes listed before it.
     let homes: Vec<Option<usize>> =
-        crate::stdlib::HOMES.iter().map(|(home, _)| parsed.iter().position(|m| m.path.to_string() == *home)).collect();
+        crate::stdlib::HOMES.iter().map(|home| parsed.iter().position(|m| m.path.to_string() == *home)).collect();
     for (rank, home) in homes.iter().enumerate() {
         let Some(home) = *home else { continue };
         for (i, module) in edges.iter_mut().enumerate() {
@@ -438,7 +438,7 @@ fn analyze_module(
         .map(|file| build_file_imports(file, &declared, known, interfaces, &mut diags))
         .collect();
     // The methods of the built-in types come from their home modules.
-    for (home, _) in crate::stdlib::HOMES {
+    for home in crate::stdlib::HOMES {
         let Some(interface) = interfaces.get(&ModulePath::parse(home)).filter(|_| module.path.to_string() != *home)
         else {
             continue;
@@ -702,14 +702,8 @@ fn strip_imports(mut globals: Globals, imports: &Imports) -> Globals {
         globals.consts.remove(name);
     }
     globals.unions.retain(|_, id| id.module != crate::stdlib::PRELUDE_MODULE);
-    // A built-in type's methods may come from several homes, so only the imported ones go.
-    for (owner, imported) in &imports.methods {
-        if let Some(own) = globals.methods.get_mut(owner) {
-            own.retain(|name, _| !imported.contains_key(name));
-            if own.is_empty() {
-                globals.methods.remove(owner);
-            }
-        }
+    for owner in imports.methods.keys() {
+        globals.methods.remove(owner);
     }
     globals
 }

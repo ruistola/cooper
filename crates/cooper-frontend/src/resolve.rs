@@ -867,7 +867,7 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
     };
     // A built-in type takes methods in its home module only.
     let (id, receiver_struct) = if let Some(owner) = crate::stdlib::builtin_owner(&recv_type) {
-        if !crate::stdlib::is_home(&globals.module, &owner.name) {
+        if crate::stdlib::home(&owner.name) != Some(globals.module.as_str()) {
             diags.push(Diagnostic::error(
                 receiver.span,
                 format!("methods of {recv_type} are declared in the standard library, not here"),

@@ -129,8 +129,8 @@ foreign type is a free function. A method name may not collide with a field name
 A method is declared in the module that defines its type. A built-in type has a home module in
 the standard library, which declares its methods with the same syntax: `string`'s are in
 `std.strings` (`(s: string) func trim(): string { … }`), the arrays' in `std.arrays`
-(`(xs: T[]) func any(p: func(T): bool): bool { … }`), `rune`'s in `std.runes`, and the
-conversions of the numeric types and `rune` in `std.math`. A home module is part of every
+(`(xs: T[]) func any(p: func(T): bool): bool { … }`), `rune`'s in `std.runes`, and those
+of the numeric types, their checked conversions, in `std.math`. A home module is part of every
 program, so the methods are available without a `use`. No other module can declare a method on
 a built-in type, and the methods the compiler implements itself cannot be redeclared:
 `s.length()`, `s.byteAt(i)`, the arrays' `length`, `push`, `copy`, `contains`, and `find`, a
@@ -155,7 +155,7 @@ the `_` and `0x` of source literals included, and so is a number out of the type
 `std.math` has the checked conversions between the numeric types: `n.toU8()` is `Some` of the
 same number as a `u8` if there is one, and `None` otherwise. Every integer and float type has
 `toI8` through `toU64` for the other integer types, a float's fraction dropped as `u8(f)` drops
-it. Every integer type has `toRune()`, and a rune has `toU8()`:
+it. Every integer type has `toRune()`, and `std.runes` gives a rune `toU8()`:
 
 ```
 b := if n.toU8() is Some(b) then b else return false

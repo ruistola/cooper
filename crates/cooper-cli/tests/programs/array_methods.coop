@@ -1,0 +1,47 @@
+# exit: 0
+# stdout: true false Some(3) None Some(2)
+# stdout: true true Some(2)
+# stdout: [50, 30, 80, 10, 90, 20] [5, 3, 8, 9] 28 538192
+# stdout: [2, 9, 1, 8, 3, 5]
+# stdout: true 0 100
+# stdout: p0 p3 p39 p1 p38
+# stdout: H,true,true,false,1 7,true,false,true,1 é,false,false,false,2 😀,false,false,false,4
+use {
+    std.io,
+}
+
+struct Person {
+    name: string,
+    group: i32,
+}
+
+func main() {
+    xs := [5, 3, 8, 1, 9, 2]
+    words := ["b", "a", "c"]
+    std.io.println("{xs.contains(8)} {xs.contains(4)} {xs.find(1)} {xs.find(7)} {words.find("c")}")
+    std.io.println("{xs.any(func(x) { return x > 8 })} {xs.all(func(x) { return x > 0 })} {xs.findWhere(func(x) { return x % 2 == 0 })}")
+    tens := xs.map(func(x) { return x * 10 })
+    std.io.println("{tens} {xs.filter(func(x) { return x > 2 })} {xs.reduce(0, func(sum, x) { return sum + x })} {xs.reduce("", func(s, x) { return s + string(x) })}")
+    xs.reverse()
+    std.io.println("{xs}")
+
+    # Long enough to need merging after the insertion-sorted runs.
+    let big: i64[]
+    for i in 0..101 do big.push((i * 37) % 101)
+    big.sort(func(a, b) { return a < b })
+    sorted := true
+    for i in 1..big.length() do if big[i - 1] > big[i] then sorted = false
+    std.io.println("{sorted} {big[0]} {big[100]}")
+
+    # Stable: each group keeps the order of its people.
+    let people: Person[]
+    for i in 0..40 do people.push(Person{name: "p{i}", group: i32(i % 3)})
+    people.sort(func(a, b) { return a.group < b.group })
+    std.io.println("{people[0].name} {people[1].name} {people[13].name} {people[14].name} {people[39].name}")
+
+    runes := ""
+    for r in "H7é😀" do {
+        runes += " {r.toAsciiUpper()},{r.isAscii()},{r.isAsciiLetter()},{r.isAsciiDigit()},{r.utf8Length()}"
+    }
+    std.io.println(runes[1..])
+}

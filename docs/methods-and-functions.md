@@ -128,12 +128,14 @@ foreign type is a free function. A method name may not collide with a field name
 
 A method is declared in the module that defines its type. A built-in type has a home module in
 the standard library, which declares its methods with the same syntax: `string`'s are in
-`std.strings` (`(s: string) func trim(): string { … }`), and those of the numeric types and
-`rune` in `std.math`. A home module is part of every program, so the methods are available
-without a `use`. No other module can declare a method on a built-in type, and the few methods
-the compiler implements itself (`s.length()`, `s.byteAt(i)`, a float's `bits()`, and
-`floatFromBits()` on `u32` and `u64`, see [Numeric Types](./numeric-types.md#conversions-are-explicit-and-constructor-style))
-cannot be redeclared.
+`std.strings` (`(s: string) func trim(): string { … }`), the arrays' in `std.arrays`
+(`(xs: T[]) func any(p: func(T): bool): bool { … }`), `rune`'s in `std.runes`, and the
+conversions of the numeric types and `rune` in `std.math`. A home module is part of every
+program, so the methods are available without a `use`. No other module can declare a method on
+a built-in type, and the methods the compiler implements itself cannot be redeclared:
+`s.length()`, `s.byteAt(i)`, the arrays' `length`, `push`, `copy`, `contains`, and `find`, a
+float's `bits()`, and `floatFromBits()` on `u32` and `u64` (see
+[Numeric Types](./numeric-types.md#conversions-are-explicit-and-constructor-style)).
 
 The methods of `string` work in byte offsets, as slicing does:
 
@@ -142,7 +144,7 @@ s.contains("ab")        s.find("ab")        # Maybe i64
 s.startsWith("a")       s.endsWith("z")
 s.trim()                s.trimStart()          s.trimEnd()      # ASCII whitespace
 s.split(",")            s.replace("a", "b")    s.times(3)
-s.toLower()             s.toUpper()                             # ASCII only
+s.toAsciiLower()        s.toAsciiUpper()
 s.parseInt()            s.parseFloat()                          # Maybe i64, Maybe f64
 ```
 
@@ -163,6 +165,28 @@ if s.parseInt() is Some(n) and n.toU16() is Some(port) then listen(port)
 `std.strings` also has the `StringBuilder` (`write`, `writeRune`, `build`) and `join(parts, sep)`.
 A `u8[]` has the built-in `utf8(): Maybe string`, which copies the bytes into a string when they
 are valid UTF-8.
+
+The methods of a `T[]`:
+
+```
+xs.contains(x)          xs.find(x)                              # bool, Maybe i64
+xs.any(p)               xs.all(p)              xs.findWhere(p)  # p: func(T): bool
+xs.map(f)               xs.filter(p)           xs.reduce(0, add)   # new arrays, and a value
+xs.reverse()            xs.sort(less)                           # in place
+```
+
+`contains` and `find` compare elements with `==`, so the element type must be comparable. A
+type parameter is not, so the compiler provides these two rather than `std.arrays`; generic
+code that needs them on `T` takes an `eq` function and uses `findWhere`. `sort` is stable, and
+`less` is a strict order such as `func(a, b) { return a.age < b.age }`. `reduce` folds from
+the left, starting with its first argument, which may be of another type than the elements:
+`xs.reduce("", func(s, x) { return s + string(x) })`.
+
+The methods of `rune` classify and map ASCII only, and their names say so: `isAscii()`,
+`isAsciiDigit()`, `isAsciiHexDigit()`, `isAsciiLetter()`, `isAsciiAlphanumeric()`,
+`isAsciiUpper()`, `isAsciiLower()`, `isAsciiSpace()`, `toAsciiUpper()`, and `toAsciiLower()`.
+The names without `Ascii` are left for Unicode-aware versions. `r.utf8Length()` is the number
+of bytes the rune takes in a string.
 
 ## Method binding
 

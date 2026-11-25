@@ -84,7 +84,8 @@ storage address, and inactive payload bytes must not affect it.
 
 A type is **comparable** when all its components are. Function types, dynamic arrays `T[]`,
 `extern union`s, and unconstrained type parameters are not comparable, and neither is any
-type containing them. Generic code that needs equality takes an `eq` function.
+type containing them. Generic code that needs equality takes an `eq` function. The arrays' `contains` and
+`find` are built in for this reason: they require a comparable element type where they are called.
 
 The comparable types are also the **hashable** types, and hashing agrees with `==`:
 `+0.0` and `-0.0` hash alike, and a `NaN` key can be inserted but never found. Pointers hash

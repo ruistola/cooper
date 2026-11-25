@@ -131,7 +131,7 @@ impl Emitter<'_, '_> {
 
     /// Whether two values of comparable type `ty` are equal: scalars by value (floats by
     /// IEEE), pointers by address, and aggregates field by field.
-    fn equal(
+    pub(super) fn equal(
         &mut self,
         ty: &Type,
         left: Option<&Value>,

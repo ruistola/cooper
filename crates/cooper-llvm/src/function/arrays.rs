@@ -237,6 +237,19 @@ impl Emitter<'_, '_> {
                 self.slice(&array, &elem, &start, end, span).map(Some)
             }
             Intrinsic::ArrayCopy => self.copy(&array, &elem, span).map(Some),
+            Intrinsic::ArrayContains | Intrinsic::ArrayFind => {
+                let value = self.expr(&args[1])?;
+                let index = self.find_equal(&array, &elem, value.as_ref(), span)?;
+                let found = self.assign(&format!("icmp sge i64 {index}, 0"));
+                if op == Intrinsic::ArrayContains {
+                    return Ok(Some(Value { ty: "i1".to_string(), operand: found }));
+                }
+                let index = Value { ty: "i64".to_string(), operand: index };
+                let some = self.construct(result, "Some", vec![Some(index)], span)?;
+                let none = self.construct(result, "None", Vec::new(), span)?;
+                let operand = self.assign(&format!("select i1 {found}, {} {}, {} {}", some.ty, some.operand, none.ty, none.operand));
+                Ok(Some(Value { ty: some.ty, operand }))
+            }
             Intrinsic::ArrayUtf8 => {
                 let data = self.assign(&format!("extractvalue {ARRAY} {}, 0", array.operand));
                 let length = self.assign(&format!("extractvalue {ARRAY} {}, 1", array.operand));
@@ -256,6 +269,35 @@ impl Emitter<'_, '_> {
                 Ok(Some(Value { ty: some.ty, operand }))
             }
         }
+    }
+
+    /// The index of the first element of `array` equal to `value`, or -1.
+    fn find_equal(&mut self, array: &Value, elem: &Type, value: Option<&Value>, span: Span) -> Result<String, CodegenError> {
+        let data = self.assign(&format!("extractvalue {ARRAY} {}, 0", array.operand));
+        let length = self.assign(&format!("extractvalue {ARRAY} {}, 1", array.operand));
+        let entry = self.current.clone();
+        let (head, body, step, exit) = (self.fresh("find"), self.fresh("compare"), self.fresh("next"), self.fresh("found"));
+        let (index, next) = (self.fresh("%t"), self.fresh("%t"));
+        self.start_block(&head);
+        self.inst(&format!("{index} = phi i64 [ 0, %{entry} ], [ {next}, %{step} ]"));
+        let done = self.assign(&format!("icmp eq i64 {index}, {length}"));
+        self.terminate(&format!("br i1 {done}, label %{exit}, label %{body}"));
+        self.start_block(&body);
+        let llvm = self.value_type(elem, span)?;
+        let ptr = match &llvm {
+            Some(llvm) => self.assign(&format!("getelementptr {llvm}, ptr {data}, i64 {index}")),
+            None => data,
+        };
+        let place = Place { ptr, ty: elem.clone(), llvm, nullable: false, local: false };
+        let element = self.load(&place);
+        let same = self.equal(elem, element.as_ref(), value, span)?;
+        let compared = self.current.clone();
+        self.terminate(&format!("br i1 {same}, label %{exit}, label %{step}"));
+        self.start_block(&step);
+        self.inst(&format!("{next} = add i64 {index}, 1"));
+        self.terminate(&format!("br label %{head}"));
+        self.start_block(&exit);
+        Ok(self.assign(&format!("phi i64 [ -1, %{head} ], [ {index}, %{compared} ]")))
     }
 
     /// `push` and `reserve`, which change the array at the receiver's place (a temporary's,

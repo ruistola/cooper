@@ -156,10 +156,12 @@ impl<'g> TypeChecker<'g> {
         }
         if let Type::Array(elem) = &target_type {
             if let Some(method) = crate::builtins::array_method(field, elem) {
+                if matches!(field, "contains" | "find") {
+                    let elem = (**elem).clone();
+                    self.predicate(PredicateKind::Comparable, elem.clone(), span, PredicateSite::Binary(BinaryOp::Eq, elem));
+                }
                 return Some(method);
             }
-            self.err(span, format!("{field} is not a method of array type {target_type}"));
-            return None;
         }
         if let Some(owner) = crate::stdlib::builtin_owner(&target_type) {
             if let Some(method) = crate::builtins::primitive_method(&owner.name, field) {

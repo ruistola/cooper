@@ -31,7 +31,7 @@ use decision::{bool_patterns, compile_match};
 use cooper_frontend::ast::{
     AssignOp, BinaryOp, Block, Expr, ExprKind, FormatSpec, FuncDecl, Pattern, PatternKind, Stmt, StmtKind,
     StrPart,
-    TypeExpr, TypeExprKind, TypedIdent, UnaryOp,
+    TypeExpr, TypedIdent, UnaryOp,
 };
 use cooper_frontend::consts::ConstValue;
 use cooper_frontend::diag::Span;
@@ -473,10 +473,8 @@ fn signature_of<'g>(func: &FuncDecl, globals: &'g Globals) -> Option<&'g Signatu
     match &func.receiver {
         None => globals.lookup_func(&func.name),
         Some(receiver) => {
-            if let TypeExprKind::Named(name) = &receiver.ty.kind {
-                if let Some(owner) = cooper_frontend::stdlib::builtin_owner(&Type::Primitive(name.clone())) {
-                    return globals.lookup_method(&owner, &func.name);
-                }
+            if let Some(owner) = cooper_frontend::stdlib::builtin_receiver_owner(&receiver.ty) {
+                return globals.lookup_method(&owner, &func.name);
             }
             let id = globals.struct_id(underlying_struct_name(&receiver.ty)?)?;
             globals.lookup_method(&id, &func.name)
@@ -2004,7 +2002,10 @@ impl Lower<'_> {
             "copy" => Intrinsic::ArrayCopy,
             "reserve" => Intrinsic::ArrayReserve,
             "utf8" => Intrinsic::ArrayUtf8,
-            _ => unreachable!("a checked array method names a blessed method"),
+            "contains" => Intrinsic::ArrayContains,
+            "find" => Intrinsic::ArrayFind,
+            // Declared in `std.arrays`, so an ordinary method call.
+            _ => return Ok(None),
         };
         let mut lowered = vec![self.array_operand(target)?];
         for arg in args {

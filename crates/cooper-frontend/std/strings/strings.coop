@@ -135,16 +135,16 @@ func join(parts: string[], sep: string): string {
 }
 
 # ASCII letters lowercased; everything else unchanged.
-(s: string) func toLower(): string {
+(s: string) func toAsciiLower(): string {
     let sb: StringBuilder
-    for r in s do sb.writeRune(if 'A' <= r <= 'Z' then rune(u32(r) + 32) else r)
+    for r in s do sb.writeRune(r.toAsciiLower())
     return sb.build()
 }
 
 # ASCII letters uppercased; everything else unchanged.
-(s: string) func toUpper(): string {
+(s: string) func toAsciiUpper(): string {
     let sb: StringBuilder
-    for r in s do sb.writeRune(if 'a' <= r <= 'z' then rune(u32(r) - 32) else r)
+    for r in s do sb.writeRune(r.toAsciiUpper())
     return sb.build()
 }
 

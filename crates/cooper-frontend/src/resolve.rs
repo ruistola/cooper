@@ -930,7 +930,8 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
 
 /// The type-parameter names a method receiver binds through the receiver-pattern
 /// rule: the bare-identifier arguments of a generic receiver such as `(m: Map K
-/// V)`. A pointer receiver is unwrapped first; a non-generic receiver binds none.
+/// V)`, or the element of an array receiver `(xs: T[])`. A pointer receiver is
+/// unwrapped first; a non-generic receiver binds none.
 pub fn receiver_pattern_params(type_expr: &TypeExpr) -> Vec<String> {
     let inner = match &type_expr.kind {
         TypeExprKind::Pointer(inner) => inner.as_ref(),
@@ -944,6 +945,10 @@ pub fn receiver_pattern_params(type_expr: &TypeExpr) -> Vec<String> {
                 _ => None,
             })
             .collect(),
+        TypeExprKind::Array(elem) => match &elem.kind {
+            TypeExprKind::Named(name) => vec![name.clone()],
+            _ => Vec::new(),
+        },
         _ => Vec::new(),
     }
 }

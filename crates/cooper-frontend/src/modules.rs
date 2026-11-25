@@ -118,7 +118,7 @@ fn analyze_parsed(mut parsed: Vec<ParsedModule>) -> (Vec<Diagnostic>, CheckedPro
     for (rank, home) in homes.iter().enumerate() {
         let Some(home) = *home else { continue };
         for (i, module) in edges.iter_mut().enumerate() {
-            if !homes[rank..].contains(&Some(i)) {
+            if !homes[..=rank].contains(&Some(i)) {
                 module.entry(home).or_insert((Span::new(0, 0), parsed[home].files[0].name.clone()));
             }
         }
@@ -562,8 +562,8 @@ fn receiver_owner(ty: &TypeExpr, interface: &Globals) -> Option<TypeId> {
             .get(name)
             .or_else(|| interface.unions.get(name))
             .cloned()
-            .or_else(|| crate::stdlib::builtin_owner(&crate::types::Type::Primitive(name.clone()))),
-        _ => None,
+            .or_else(|| crate::stdlib::builtin_receiver_owner(ty)),
+        _ => crate::stdlib::builtin_receiver_owner(ty),
     }
 }
 
@@ -702,8 +702,14 @@ fn strip_imports(mut globals: Globals, imports: &Imports) -> Globals {
         globals.consts.remove(name);
     }
     globals.unions.retain(|_, id| id.module != crate::stdlib::PRELUDE_MODULE);
-    for owner in imports.methods.keys() {
-        globals.methods.remove(owner);
+    // A built-in type's methods may come from several homes, so only the imported ones go.
+    for (owner, imported) in &imports.methods {
+        if let Some(own) = globals.methods.get_mut(owner) {
+            own.retain(|name, _| !imported.contains_key(name));
+            if own.is_empty() {
+                globals.methods.remove(owner);
+            }
+        }
     }
     globals
 }

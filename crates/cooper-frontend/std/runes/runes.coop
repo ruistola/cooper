@@ -1,0 +1,57 @@
+# The standard `runes` module: methods of `rune`, in scope everywhere. Classification and case
+# mapping cover ASCII only, and say so in their names; names without `Ascii` are left for the
+# Unicode versions.
+
+# Whether the rune is ASCII, below U+0080.
+(r: rune) func isAscii(): bool {
+    return u32(r) < 0x80
+}
+
+# `0` to `9`.
+(r: rune) func isAsciiDigit(): bool {
+    return '0' <= r <= '9'
+}
+
+# `0` to `9`, `a` to `f`, and `A` to `F`.
+(r: rune) func isAsciiHexDigit(): bool {
+    return r.isAsciiDigit() or 'a' <= r <= 'f' or 'A' <= r <= 'F'
+}
+
+# `a` to `z` and `A` to `Z`.
+(r: rune) func isAsciiLetter(): bool {
+    return r.isAsciiLower() or r.isAsciiUpper()
+}
+
+# An ASCII letter or digit.
+(r: rune) func isAsciiAlphanumeric(): bool {
+    return r.isAsciiLetter() or r.isAsciiDigit()
+}
+
+(r: rune) func isAsciiUpper(): bool {
+    return 'A' <= r <= 'Z'
+}
+
+(r: rune) func isAsciiLower(): bool {
+    return 'a' <= r <= 'z'
+}
+
+# Space, tab, line feed, vertical tab, form feed, and carriage return.
+(r: rune) func isAsciiSpace(): bool {
+    return r == ' ' or '\t' <= r <= '\r'
+}
+
+# The uppercase of an ASCII lowercase letter; any other rune unchanged.
+(r: rune) func toAsciiUpper(): rune {
+    return if r.isAsciiLower() then rune(u32(r) - 32) else r
+}
+
+# The lowercase of an ASCII uppercase letter; any other rune unchanged.
+(r: rune) func toAsciiLower(): rune {
+    return if r.isAsciiUpper() then rune(u32(r) + 32) else r
+}
+
+# The number of bytes the rune takes in UTF-8, 1 to 4.
+(r: rune) func utf8Length(): i64 {
+    c := u32(r)
+    return if c < 0x80 then 1 else if c < 0x800 then 2 else if c < 0x10000 then 3 else 4
+}

@@ -1,0 +1,96 @@
+# The standard `arrays` module: methods of the dynamic arrays, in scope everywhere. The compiler
+# provides `contains(x)` and `find(x)` itself, since they compare elements with `==`, which a type
+# parameter does not allow.
+
+# Whether `p` holds for any element.
+(xs: T[]) func any(p: func(T): bool): bool {
+    for x in xs do if p(x) then return true
+    return false
+}
+
+# Whether `p` holds for every element; true for no elements.
+(xs: T[]) func all(p: func(T): bool): bool {
+    for x in xs do if !p(x) then return false
+    return true
+}
+
+# The index of the first element for which `p` holds.
+(xs: T[]) func findWhere(p: func(T): bool): Maybe i64 {
+    for i in 0..xs.length() do if p(xs[i]) then return Some(i)
+    return None
+}
+
+# A new array of `f` applied to each element, in order.
+(xs: T[]) func map U (f: func(T): U): U[] {
+    let out: U[]
+    out.reserve(xs.length())
+    for x in xs do out.push(f(x))
+    return out
+}
+
+# A new array of the elements for which `p` holds, in order.
+(xs: T[]) func filter(p: func(T): bool): T[] {
+    let out: T[]
+    for x in xs do if p(x) then out.push(x)
+    return out
+}
+
+# `f` applied from the left to `initial` and each element in turn: `xs.reduce(0, add)` is
+# `add(add(add(0, xs[0]), xs[1]), xs[2])` for three elements, and `initial` for none.
+(xs: T[]) func reduce A (initial: A, f: func(A, T): A): A {
+    result := initial
+    for x in xs do result = f(result, x)
+    return result
+}
+
+# Reverses the order of the elements in place.
+(xs: T[]) func reverse() {
+    i := 0
+    j := xs.length() - 1
+    while i < j do {
+        (xs[i], xs[j]) = (xs[j], xs[i])
+        i += 1
+        j -= 1
+    }
+}
+
+# Sorts the elements in place so that `less(xs[j], xs[i])` is false for every `i < j`. The sort is
+# stable: elements neither of which is less than the other keep their order. `less` must be a
+# strict order, as `<` is.
+(xs: T[]) func sort(less: func(T, T): bool) {
+    n := xs.length()
+    # Insertion sort makes sorted runs, which merging then doubles in length.
+    const Run: i64 = 16
+    for start in 0..(n + Run - 1) / Run do {
+        lo := start * Run
+        hi := if lo + Run < n then lo + Run else n
+        for i in lo + 1..hi do {
+            x := xs[i]
+            j := i
+            while j > lo and less(x, xs[j - 1]) do {
+                xs[j] = xs[j - 1]
+                j -= 1
+            }
+            xs[j] = x
+        }
+    }
+    if n <= Run then return
+    # Each pass merges pairs of runs from one array into the other.
+    from := xs
+    to := xs.copy()
+    inPlace := true
+    width := Run
+    while width < n do {
+        lo := 0
+        while lo < n do {
+            mid := if lo + width < n then lo + width else n
+            hi := if mid + width < n then mid + width else n
+            merge(from, to, lo, mid, hi, less)
+            lo = hi
+        }
+        (from, to) = (to, from)
+        inPlace = !inPlace
+        width *= 2
+    }
+    if !inPlace then for i in 0..n do xs[i] = from[i]
+}

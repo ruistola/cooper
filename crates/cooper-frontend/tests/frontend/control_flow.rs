@@ -94,7 +94,7 @@ fn pushing_the_wrong_element_type_is_reported() {
 fn unknown_array_method_is_reported() {
     err(
         "func f(xs: i32[]): i32 {\n  return xs.size()\n}",
-        "size is not a method of array type",
+        "size is not a method of i32[]",
     );
 }
 

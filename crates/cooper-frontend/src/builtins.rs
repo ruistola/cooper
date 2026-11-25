@@ -57,17 +57,22 @@ pub(crate) fn array_method(name: &str, elem: &Type) -> Option<Type> {
         "copy" => Some(func(Vec::new(), Type::Array(Box::new(elem.clone())))),
         // Room for at least `n` more elements.
         "reserve" => Some(func(vec![index_type()], Type::Unit)),
+        // Whether, and at which index first, an element equals the argument. Built in rather
+        // than declared in `std.arrays`, since a type parameter is not comparable; the checker
+        // requires the element type to be.
+        "contains" => Some(func(vec![elem.clone()], Type::Primitive("bool".to_string()))),
+        "find" => Some(func(vec![elem.clone()], maybe(index_type()))),
         // A byte array read as UTF-8 text, copied: `None` unless every byte sequence is valid.
         "utf8" if matches!(elem, Type::Primitive(name) if name == "u8") => {
-            let id = crate::types::TypeId {
-                module: crate::stdlib::PRELUDE_MODULE.to_string(),
-                name: "Maybe".to_string(),
-            };
-            let string = Type::Primitive("string".to_string());
-            Some(func(Vec::new(), Type::Union { id, type_args: vec![string] }))
+            Some(func(Vec::new(), maybe(Type::Primitive("string".to_string()))))
         }
         _ => None,
     }
+}
+
+fn maybe(ty: Type) -> Type {
+    let id = crate::types::TypeId { module: crate::stdlib::PRELUDE_MODULE.to_string(), name: "Maybe".to_string() };
+    Type::Union { id, type_args: vec![ty] }
 }
 
 /// The bound signature of the blessed method `name` on the primitive type `ty`, or `None`

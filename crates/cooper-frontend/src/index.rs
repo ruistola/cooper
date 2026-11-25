@@ -146,12 +146,10 @@ impl<'p> Index<'p> {
                         None,
                     ),
                     Some(receiver) => {
-                        let owner = underlying_struct_name(&receiver.ty).unwrap_or("").to_string();
                         // A built-in type's methods are keyed under the prelude.
-                        let home = if crate::stdlib::HOMES.iter().any(|(_, types)| types.contains(&owner.as_str())) {
-                            crate::stdlib::PRELUDE_MODULE.to_string()
-                        } else {
-                            module.to_string()
+                        let (home, owner) = match crate::stdlib::builtin_receiver_owner(&receiver.ty) {
+                            Some(id) => (id.module, id.name),
+                            None => (module.to_string(), underlying_struct_name(&receiver.ty).unwrap_or("").to_string()),
                         };
                         let ty = file
                             .globals

@@ -1,0 +1,17 @@
+#private
+
+# Merges the sorted runs `from[lo..mid]` and `from[mid..hi]` into `to[lo..hi]`. An element of the
+# second run goes first only when it is less, which keeps the sort stable.
+func merge T (from: T[], to: T[], lo: i64, mid: i64, hi: i64, less: func(T, T): bool) {
+    i := lo
+    j := mid
+    for k in lo..hi do {
+        if j == hi or i < mid and !less(from[j], from[i]) then {
+            to[k] = from[i]
+            i += 1
+        } else {
+            to[k] = from[j]
+            j += 1
+        }
+    }
+}

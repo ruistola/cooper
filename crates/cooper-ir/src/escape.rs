@@ -659,7 +659,7 @@ impl<'a> Pass<'a> {
                 held
             }
             ArrayLength | ArrayCopy | ArrayUtf8 | StringLength | StringData | StringByteAt | StringSlice { .. }
-            | BitCast | SourceLocation | ToCString | FromCString | CopyBytes => {
+            | ArrayContains | ArrayFind | BitCast | SourceLocation | ToCString | FromCString | CopyBytes => {
                 self.eval_all(args);
                 Set::new()
             }

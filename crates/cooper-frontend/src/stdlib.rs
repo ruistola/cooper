@@ -4,8 +4,9 @@
 //!
 //! * Modules written in Cooper, embedded in the compiler (`std/`): `std.io` (`print` and
 //!   `println`, over the C library's `write`), `std.testing` (assertions for `cooper test`), `std.fmt` (`format`, the text of a template
-//!   whose positional holes `{}` its further arguments fill), `std.strings` (the
-//!   methods of `string`), `std.math` (the checked conversions of the numeric types), `std.threads`, `std.sync`, and `std.gc` (control of the garbage collector). A program that reaches one through its `use` declarations,
+//!   whose positional holes `{}` its further arguments fill), `std.strings`,
+//!   `std.arrays`, and `std.runes` (the methods of `string`, the arrays, and `rune`), `std.math`
+//!   (the checked conversions of the numeric types), `std.threads`, `std.sync`, and `std.gc` (control of the garbage collector). A program that reaches one through its `use` declarations,
 //!   directly or through another std module, has its source compiled with it; the others cost
 //!   nothing. The compiler fills the holes of a template call (`println("x is {}", x)`).
 //! * The prelude, in scope in every module without a `use`: the sum types `Maybe T`
@@ -18,6 +19,7 @@
 
 use std::collections::HashSet;
 
+use crate::ast::{TypeExpr, TypeExprKind};
 use crate::project::{Module, ModulePath, Project, SourceFile};
 use crate::resolve::{Callable, Globals, Signature};
 use crate::types::{StructDef, Type, TypeId, UnionDef};
@@ -76,8 +78,10 @@ pub(crate) fn prelude() -> Globals {
 /// The standard library modules that declare methods of built-in types, each with those
 /// types: their homes. A home module is part of every program, and a type may have more than
 /// one. A home sees the methods the homes before it declare.
-pub(crate) const HOMES: [(&str, &[&str]); 2] = [
+pub(crate) const HOMES: [(&str, &[&str]); 4] = [
+    ("std.arrays", &[ARRAY]),
     (MATH_MODULE, &["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "rune"]),
+    ("std.runes", &["rune"]),
     ("std.strings", &["string"]),
 ];
 
@@ -88,24 +92,44 @@ pub(crate) fn is_home(module: &str, name: &str) -> bool {
 
 /// The identity a method on the built-in type `ty` is declared under, if `ty` has a home.
 pub fn builtin_owner(ty: &Type) -> Option<TypeId> {
-    let Type::Primitive(name) = ty else {
-        return None;
+    let name = match ty {
+        Type::Primitive(name) => name.as_str(),
+        Type::Array(_) => ARRAY,
+        _ => return None,
     };
-    HOMES.iter().any(|(_, types)| types.contains(&name.as_str())).then(|| TypeId {
+    HOMES.iter().any(|(_, types)| types.contains(&name)).then(|| TypeId {
         module: PRELUDE_MODULE.to_string(),
-        name: name.clone(),
+        name: name.to_string(),
     })
 }
+
+/// The identity of the built-in type a method receiver `ty` names, through a pointer.
+pub fn builtin_receiver_owner(ty: &TypeExpr) -> Option<TypeId> {
+    match &ty.kind {
+        TypeExprKind::Pointer(inner) => builtin_receiver_owner(inner),
+        TypeExprKind::Named(name) => builtin_owner(&Type::Primitive(name.clone())),
+        TypeExprKind::Array(_) => builtin_owner(&Type::Array(Box::new(Type::Unit))),
+        _ => None,
+    }
+}
+
+/// The name the methods of the dynamic array types are keyed under, whatever the element.
+const ARRAY: &str = "array";
 
 /// A standard library module written in Cooper: its path, and its files' names and sources.
 type SourceModule = (&'static str, &'static [(&'static str, &'static str)]);
 
 /// The standard library modules written in Cooper, one directory each under `std/`.
-const SOURCE_MODULES: [SourceModule; 7] = [
+const SOURCE_MODULES: [SourceModule; 9] = [
+    ("std.arrays", &[
+        ("std/arrays/arrays.coop", include_str!("../std/arrays/arrays.coop")),
+        ("std/arrays/internal.coop", include_str!("../std/arrays/internal.coop")),
+    ]),
     ("std.strings", &[
         ("std/strings/strings.coop", include_str!("../std/strings/strings.coop")),
         ("std/strings/internal.coop", include_str!("../std/strings/internal.coop")),
     ]),
+    ("std.runes", &[("std/runes/runes.coop", include_str!("../std/runes/runes.coop"))]),
     ("std.io", &[
         ("std/io/io.coop", include_str!("../std/io/io.coop")),
         ("std/io/internal.coop", include_str!("../std/io/internal.coop")),

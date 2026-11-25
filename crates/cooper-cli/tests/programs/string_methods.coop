@@ -25,9 +25,9 @@ func main() {
   println("{"a,b,,c".split(",")} {"abc".split("")} {"日本".split("")} {"".split(",")}")
   println("{"aXbXc".replace("X", "--")} {"abc".replace("", "z")}")
   println("{"ab".times(3)} [{"ab".times(0)}]")
-  println("{"Hello, WÖRLD".toLower()} {"Hello, wörld".toUpper()}")
+  println("{"Hello, WÖRLD".toAsciiLower()} {"Hello, wörld".toAsciiUpper()}")
   println("{["x", "y", "z"].length()}")
-  println("é".toUpper())
+  println("é".toAsciiUpper())
   let ok: u8[3] = [104, 195, 169]
   let bad: u8[2] = [104, 195]
   println("{ok[..].utf8()} {bad[..].utf8()}")

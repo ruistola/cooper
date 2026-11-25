@@ -874,7 +874,7 @@ fn resolve_func_decl(globals: &mut Globals, diags: &mut Vec<Diagnostic>, func: &
             ));
             return;
         }
-        if crate::builtins::string_method(&func.name).is_some() {
+        if crate::builtins::primitive_method(&owner.name, &func.name).is_some() {
             diags.push(Diagnostic::error(func.span, format!("{} is a built-in method of {recv_type}", func.name)));
             return;
         }

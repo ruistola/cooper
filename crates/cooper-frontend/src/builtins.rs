@@ -70,9 +70,20 @@ pub(crate) fn array_method(name: &str, elem: &Type) -> Option<Type> {
     }
 }
 
-/// The bound signature of the blessed method `name` on `string`, or `None` when
-/// `string` carries no such method.
-pub(crate) fn string_method(name: &str) -> Option<Type> {
+/// The bound signature of the blessed method `name` on the primitive type `ty`, or `None`
+/// when `ty` carries no such method.
+pub(crate) fn primitive_method(ty: &str, name: &str) -> Option<Type> {
+    let primitive = |name: &str| Type::Primitive(name.to_string());
+    let reinterpret = |to: &str| Some(Type::Func { return_type: Box::new(primitive(to)), param_types: Vec::new() });
+    match (ty, name) {
+        // A float's IEEE 754 representation, and back.
+        ("f32", "bits") => return reinterpret("u32"),
+        ("f64", "bits") => return reinterpret("u64"),
+        ("u32", "floatFromBits") => return reinterpret("f32"),
+        ("u64", "floatFromBits") => return reinterpret("f64"),
+        ("string", _) => {}
+        _ => return None,
+    }
     match name {
         "length" => Some(Type::Func {
             return_type: Box::new(index_type()),

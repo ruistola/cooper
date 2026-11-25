@@ -427,6 +427,9 @@ pub enum Intrinsic {
     /// `utf8(): Maybe string` — a `u8[]` copied into a string, `None` unless it is valid
     /// UTF-8. Args: `[array]`.
     ArrayUtf8,
+    /// `f.bits()` and `b.floatFromBits()`: the operand's bits as the node's type, a float
+    /// type and the unsigned integer type of its width. Args: `[operand]`.
+    BitCast,
     /// `reserve(n): unit` — make room in place for at least `n` more elements,
     /// reallocating if the array lacks it. Args: `[array, n]`.
     ArrayReserve,

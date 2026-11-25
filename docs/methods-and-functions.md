@@ -131,7 +131,9 @@ the standard library, which declares its methods with the same syntax: `string`'
 `std.strings` (`(s: string) func trim(): string { … }`), and those of the numeric types and
 `rune` in `std.math`. A home module is part of every program, so the methods are available
 without a `use`. No other module can declare a method on a built-in type, and the few methods
-the compiler implements itself (`length()`, `byteAt(i)`) cannot be redeclared.
+the compiler implements itself (`s.length()`, `s.byteAt(i)`, a float's `bits()`, and
+`floatFromBits()` on `u32` and `u64`, see [Numeric Types](./numeric-types.md#conversions-are-explicit-and-constructor-style))
+cannot be redeclared.
 
 The methods of `string` work in byte offsets, as slicing does:
 

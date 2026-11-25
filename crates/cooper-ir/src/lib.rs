@@ -1990,6 +1990,10 @@ impl Lower<'_> {
                 };
                 return Ok(Some(IrExprKind::Intrinsic { op, args: lowered }));
             }
+            Some(Type::Primitive(_)) if matches!(name.as_str(), "bits" | "floatFromBits") => {
+                let args = vec![self.expr(target)?];
+                return Ok(Some(IrExprKind::Intrinsic { op: Intrinsic::BitCast, args }));
+            }
             _ => return Ok(None),
         }
         let op = match name.as_str() {

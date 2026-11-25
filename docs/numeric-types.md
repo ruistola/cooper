@@ -66,6 +66,12 @@ value. Each conversion that can lose the number has a checked form in `std.math`
 ([Methods and Functions](./methods-and-functions.md#methods-of-built-in-types)), so the cautious
 form is available without taxing every `u8(x)`.
 
+A conversion changes the representation to keep the number. To keep the representation
+instead, `f.bits()` is a float's IEEE 754 bits as the unsigned integer type of its width (`u32`
+for `f32`, `u64` for `f64`), and `b.floatFromBits()` on a `u32` or `u64` is the float those
+bits encode. For two finite floats of the same sign, `i64(b.bits()) - i64(a.bits())` is their
+distance in units in the last place.
+
 `string(x)` formats a number or a `bool` as text: integers in decimal, floats as the shortest
 text that reads back as the same value (`string(0.1)` is `"0.1"`), bools as `true`/`false`.
 It formats any other value too ([Type System](./type-system.md#formatting)), and a hole in a

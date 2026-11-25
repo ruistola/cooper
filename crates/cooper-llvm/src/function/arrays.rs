@@ -100,6 +100,12 @@ impl Emitter<'_, '_> {
 
     /// A built-in array operation.
     pub(super) fn intrinsic(&mut self, op: Intrinsic, args: &[IrExpr], result: &Type, span: Span) -> Result<Option<Value>, CodegenError> {
+        if op == Intrinsic::BitCast {
+            let value = self.expr(&args[0])?.expect("a reinterpreted value is a number");
+            let ty = Scalar::of(result).expect("a bit cast gives a number").llvm();
+            let operand = self.assign(&format!("bitcast {} {} to {ty}", value.ty, value.operand));
+            return Ok(Some(Value { ty, operand }));
+        }
         if matches!(op, Intrinsic::ToCString | Intrinsic::FromCString | Intrinsic::CopyBytes) {
             return self.ffi(op, args, result, span).map(Some);
         }
@@ -181,6 +187,7 @@ impl Emitter<'_, '_> {
             | Intrinsic::StringLength
             | Intrinsic::StringByteAt
             | Intrinsic::StringData
+            | Intrinsic::BitCast
             | Intrinsic::SourceLocation
             | Intrinsic::Spawn
             | Intrinsic::StringSlice { .. } => unreachable!("handled above"),

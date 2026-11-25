@@ -162,10 +162,8 @@ impl<'g> TypeChecker<'g> {
             return None;
         }
         if let Some(owner) = crate::stdlib::builtin_owner(&target_type) {
-            if owner.name == "string" {
-                if let Some(method) = crate::builtins::string_method(field) {
-                    return Some(method);
-                }
+            if let Some(method) = crate::builtins::primitive_method(&owner.name, field) {
+                return Some(method);
             }
             // The rest are declared in the type's home modules.
             if let Some(sig) = self.globals.lookup_method(&owner, field) {

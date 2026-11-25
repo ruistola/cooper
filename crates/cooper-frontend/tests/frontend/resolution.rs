@@ -176,4 +176,5 @@ fn extern_union_is_not_comparable() {
 fn methods_of_a_built_in_type_come_from_its_home_modules() {
     ok("func f(n: i64, s: string): bool {\n  return n.toU8() is Some(_) and s.parseInt() is Some(_)\n}");
     err("(n: i32) func half(): i32 {\n  return n / 2\n}", "methods of i32 are declared in the standard library");
+    err("func f(n: i64): f64 {\n  return n.floatFromBits()\n}", "floatFromBits is not a method of i64");
 }

@@ -1,7 +1,7 @@
 # The standard `strings` module: the methods of `string`, and string building, written in
 # Cooper. Everything works in byte offsets, which are the offsets slicing takes; a match of
 # valid UTF-8 text in valid UTF-8 text always starts on a rune boundary. Case mapping is
-# ASCII only for now.
+# ASCII only, and named so.
 
 (b: StringBuilder^) func write(s: string) {
     for i in 0..s.length() do b.bytes.push(s.byteAt(i))
@@ -125,6 +125,18 @@ func join(parts: string[], sep: string): string {
     }
     sb.write(s[offset..])
     return sb.build()
+}
+
+# `s` with spaces before it to make it `width` runes long, as the `{s:>8}` hole aligns it; `s`
+# itself when it is at least that long.
+(s: string) func padStart(width: i64): string {
+    return " ".times(width - runeCount(s)) + s
+}
+
+# `s` with spaces after it to make it `width` runes long, as the `{s:<8}` hole aligns it; `s`
+# itself when it is at least that long.
+(s: string) func padEnd(width: i64): string {
+    return s + " ".times(width - runeCount(s))
 }
 
 # `s` `n` times over (`repeat` is a keyword); empty when `n` is not positive.

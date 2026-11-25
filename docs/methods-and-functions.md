@@ -144,6 +144,7 @@ s.contains("ab")        s.find("ab")        # Maybe i64
 s.startsWith("a")       s.endsWith("z")
 s.trim()                s.trimStart()          s.trimEnd()      # ASCII whitespace
 s.split(",")            s.replace("a", "b")    s.times(3)
+s.padStart(8)           s.padEnd(8)                             # to 8 runes, with spaces
 s.toAsciiLower()        s.toAsciiUpper()
 s.parseInt()            s.parseFloat()                          # Maybe i64, Maybe f64
 ```

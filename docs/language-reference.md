@@ -310,7 +310,8 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
 * Output goes through `std.io` (`print` and `println`, each taking a `string`), and
   `string(x)` formats any value: `Point{x: 1, y: 2}`, `[1, 2]`, `Some("a")`. Every string
   literal interpolates the same formatting: `println("p is {p}")`, or positionally,
-  `println("p is {}", p)` (also `std.fmt.format`). C functions
+  `println("p is {}", p)` (also `std.fmt.format`). `std.fmt.list(xs, show)` formats an array
+  of values that a function shows ([Type System](./type-system.md#formatting)). C functions
   are declared `extern func`, and strings convert to and from C with `CString(s)` and
   `string(c)` ([C Interop](./c-interop.md)).
 

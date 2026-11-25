@@ -30,3 +30,9 @@ func cFloat(s: string): f64 {
     text.push(0)
     return strtod(&text[0], nil)
 }
+
+func runeCount(s: string): i64 {
+    n := 0
+    for _ in s do n += 1
+    return n
+}

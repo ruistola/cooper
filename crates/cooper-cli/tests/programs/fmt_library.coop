@@ -1,0 +1,35 @@
+# exit: 0
+# stdout: [(1, 2), (3, 4)]
+# stdout: [[#1, #2], [#3]] []
+# stdout: "a\"b\\c\nd\té" ["a\"b\\c\nd\té"]
+# stdout: 3.14 2 -1 0.33333333333333331483
+# stdout: |  ab|äb  |long text|
+use {
+    std.io,
+    std.fmt as fmt,
+}
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+func showPoint(p: Point): string {
+    return "({p.x}, {p.y})"
+}
+
+func main() {
+    std.io.println(fmt.list([Point{x: 1, y: 2}, Point{x: 3, y: 4}], showPoint))
+    grid := [[1, 2], [3]]
+    let none: i32[]
+    nested := fmt.list(grid, func(row) { return fmt.list(row, func(n) { return "#{n}" }) })
+    std.io.println("{nested} {fmt.list(none, func(n) { return string(n) })}")
+
+    # `quote` writes a string as it appears inside a formatted value.
+    s := "a\"b\\c\nd\té"
+    std.io.println("{fmt.quote(s)} {[s]}")
+
+    std.io.println("{fmt.fixed(3.14159, 2)} {fmt.fixed(2.5, 0)} {fmt.fixed(-1.0, -3)} {fmt.fixed(1.0 / 3.0, 20)}")
+    width := 4
+    std.io.println("|{"ab".padStart(width)}|{"äb".padEnd(width)}|{"long text".padStart(width)}|")
+}

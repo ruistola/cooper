@@ -107,7 +107,7 @@ stay hidden.
 
 1. A path starting with `std` names the standard library. `std.io` has `print(s: string)`,
    which writes `s` to standard output, and `println(s: string)`, which adds a newline;
-   `std.fmt` has `format`; `std.strings`, `std.arrays`, and `std.runes` have the methods of
+   `std.fmt` has `format`, `list`, `quote`, and `fixed`; `std.strings`, `std.arrays`, and `std.runes` have the methods of
    `string`, the arrays, and `rune`, and `std.math` the checked conversions of the numeric types. They are Cooper source
    the compiler embeds and compiles with a program that uses them.
 2. A path naming a module of this project resolves under the module root

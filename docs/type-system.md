@@ -124,4 +124,7 @@ time proportional to its size. Addresses are never shown; `u64(p)` gives one as 
 The format is fixed: a type cannot override it, as it cannot override equality. A type with
 its own presentation has a plain function for it (`func showPoint(p: Point): string`), and
 code that formats a collection of such values takes that function as an argument, the way
-generic code takes any behavior it needs.
+generic code takes any behavior it needs. `std.fmt` has such code: `fmt.list(points, showPoint)`
+gives `[(1, 2), (3, 4)]`, bracketed as an array formats, and `fmt.quote(s)` writes a string
+quoted as it appears inside a value (`"a\"b"`), so that a `show` function can match the built-in
+format.

@@ -1,8 +1,56 @@
-# The standard `fmt` module.
-#
-# `format` is the text of its template, whose holes `{}` its further arguments fill
-# (`format("X is {}", x)`); the compiler fills them where the call is written.
+# The standard `fmt` module: `format`, and functions for formatting what a format spec or
+# `string(x)` cannot: collections of values a function shows, and a precision computed at run
+# time.
 
+use {
+    std.ffi.CString,
+    std.strings.StringBuilder,
+    std.strings.join,
+}
+
+extern func snprintf(buffer: u8^, size: u64, format: CString, ...): i32
+
+# The text of `template`, whose holes `{}` the further arguments fill
+# (`format("X is {}", x)`); the compiler fills them where the call is written.
 func format(template: string): string {
     return template
+}
+
+# The elements as `show` gives them, in brackets as an array formats: `[a, b]`. Lists nest
+# through `show`: `list(rows, func(row) { return list(row, showCell) })`.
+func list T (xs: T[], show: func(T): string): string {
+    return "[" + join(xs.map(show), ", ") + "]"
+}
+
+# `s` quoted as a string inside a formatted value is: in double quotes, with `"` and `\`
+# escaped, and the control characters with an escape of their own (`\n`, `\t`, `\r`, `\0`)
+# written as it.
+func quote(s: string): string {
+    let sb: StringBuilder
+    sb.write("\"")
+    for r in s do {
+        match r with {
+            '"' => sb.write("\\\"")
+            '\\' => sb.write("\\\\")
+            '\n' => sb.write("\\n")
+            '\t' => sb.write("\\t")
+            '\r' => sb.write("\\r")
+            '\0' => sb.write("\\0")
+            _ => sb.writeRune(r)
+        }
+    }
+    sb.write("\"")
+    return sb.build()
+}
+
+# `f` with `digits` digits after the point, as the `{f:.2}` hole formats it with 2. A negative
+# `digits` is 0, and more than 1074, enough to write any `f64` exactly, is 1074.
+func fixed(f: f64, digits: i64): string {
+    precision := i32(if digits < 0 then 0 else if digits > 1074 then 1074 else digits)
+    spec := CString("%.*f")
+    n := snprintf(nil, 0, spec, precision, f)
+    let buffer: u8[]
+    for _ in 0..n + 1 do buffer.push(0)
+    snprintf(&buffer[0], u64(n + 1), spec, precision, f)
+    return if buffer[..n].utf8() is Some(text) then text else ""
 }

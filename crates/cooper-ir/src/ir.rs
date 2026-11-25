@@ -430,6 +430,9 @@ pub enum Intrinsic {
     /// `f.bits()` and `b.floatFromBits()`: the operand's bits as the node's type, a float
     /// type and the unsigned integer type of its width. Args: `[operand]`.
     BitCast,
+    /// One of `std.math`'s [`FLOAT_FUNCTIONS`](cooper_frontend::stdlib::FLOAT_FUNCTIONS), by
+    /// name, on floats of the node's type. Args: its parameters.
+    FloatMath(&'static str),
     /// `reserve(n): unit` — make room in place for at least `n` more elements,
     /// reallocating if the array lacks it. Args: `[array, n]`.
     ArrayReserve,

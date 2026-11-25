@@ -197,6 +197,10 @@ impl<'g> TypeChecker<'g> {
         let type_args: Vec<_> = sig.type_params.iter()
             .map(|param| (param.clone(), self.infer.fresh(InferKind::General)))
             .collect();
+        for requirement in sig.requirements.iter().filter(|r| r.kind == PredicateKind::Float) {
+            let (_, arg) = type_args.iter().find(|(param, _)| *param == requirement.param).expect("a requirement names a type parameter");
+            self.body.floats.push(arg.clone());
+        }
         let subst = type_args.iter().cloned().collect();
         if let (Some(template), Some(actual)) = (&sig.receiver, receiver) {
             let _ = self.infer.unify(&template.substitute(&subst), actual);

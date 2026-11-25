@@ -220,7 +220,10 @@ replace building std from source.
 `write` (after `fflush(NULL)`, so output C code buffered stays in order). Only `std.ffi` is
 compiler-provided: `stdlib.rs` supplies its interface (`copyBytes`, and the `CString` struct) to
 the module graph, lowering turns its calls into the `CopyBytes` intrinsic, and the runtime
-implements it. A call to `print` or `println` with a template lowers the template to its text
+implements it. `std.math` is source with compiler-provided functions added
+(`stdlib::provide`): the `FLOAT_FUNCTIONS`, each generic with a `Float` requirement, lower to
+the `FloatMath` intrinsic, which calls LLVM's intrinsic where it has one and otherwise the C
+library's function (`sin`, or `sinf` for `f32`); programs link with `-lm`. A call to `print` or `println` with a template lowers the template to its text
 and calls the function; `format` is the text itself.
 The conversions `CString(s)` and `string(c)` lower to the intrinsics `ToCString` and
 `FromCString`; a callee of struct type can only be a type name, which is how `CString(s)`

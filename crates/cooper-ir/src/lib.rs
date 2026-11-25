@@ -2239,6 +2239,10 @@ fn standard_intrinsic(item: &Callable) -> Option<Intrinsic> {
         (module @ stdlib::FFI_MODULE, name) => {
             unreachable!("`{module}.{name}` is not a standard function")
         }
+        (stdlib::MATH_MODULE, name) => {
+            let (name, _) = stdlib::FLOAT_FUNCTIONS.iter().find(|(provided, _)| *provided == name)?;
+            Intrinsic::FloatMath(name)
+        }
         _ => return None,
     })
 }

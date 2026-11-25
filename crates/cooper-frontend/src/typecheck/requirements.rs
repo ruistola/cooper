@@ -30,7 +30,11 @@ pub(crate) fn settle<'a>(
         }
     }
 
-    let mut own: HashMap<Callable, Vec<Requirement>> = HashMap::new();
+    // The compiler provides some declarations with their requirements.
+    let mut own: HashMap<Callable, Vec<Requirement>> = (interface.funcs.values())
+        .filter(|sig| !sig.requirements.is_empty())
+        .map(|sig| (sig.item.clone(), sig.requirements.clone()))
+        .collect();
     for ((name, source), typed) in files.iter().zip(typed) {
         for (item, requirement, span) in &typed.requirements {
             let (line, col) = line_col(source, span.start);
@@ -80,9 +84,11 @@ pub(crate) fn settle<'a>(
                 Some(Ok(names)) => instance.caller.as_ref().is_some_and(|caller| names.iter().all(|name| params[caller].contains(name))),
                 Some(Err(())) => false,
             };
+            // The first unmet requirement explains the error; more would repeat it.
             if !met {
                 let note = format!("{} {}", instance.label, requirement.origin);
                 diags.push(Diagnostic::error(instance.span, unmet(&requirement.kind, arg, &interface.defs)).with_note(note).in_file(*file));
+                break;
             }
         }
     }

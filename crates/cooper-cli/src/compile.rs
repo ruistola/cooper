@@ -189,6 +189,8 @@ fn link(
         .args(&runtime_objects)
         .args(shims)
         .args(&native.sources)
+        // The C math library, for `std.math`.
+        .arg("-lm")
         .args(native.libraries.iter().map(|library| format!("-l{library}")))
         .output()
         .map_err(|e| BuildError::Toolchain(format!("cannot run `{cc}`: {e}")))?;

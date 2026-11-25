@@ -106,6 +106,25 @@ impl Emitter<'_, '_> {
             let operand = self.assign(&format!("bitcast {} {} to {ty}", value.ty, value.operand));
             return Ok(Some(Value { ty, operand }));
         }
+        if let Intrinsic::FloatMath(name) = op {
+            let ty = Scalar::of(result).expect("a float function gives a float").llvm();
+            let mut operands = Vec::new();
+            for arg in args {
+                let value = self.expr(arg)?.expect("a float function's argument is a float");
+                operands.push(format!("{ty} {}", value.operand));
+            }
+            // LLVM's own intrinsics become instructions where the target has them; the rest are
+            // the C library's.
+            let symbol = match (name, ty.as_str()) {
+                ("sqrt" | "floor" | "ceil" | "round" | "trunc", _) => format!("llvm.{name}.{}", if ty == "float" { "f32" } else { "f64" }),
+                (_, "float") => format!("{name}f"),
+                _ => name.to_string(),
+            };
+            let params = vec![ty.as_str(); args.len()].join(", ");
+            self.module.declare(&format!("declare {ty} @{symbol}({params})"));
+            let operand = self.assign(&format!("call {ty} @{symbol}({})", operands.join(", ")));
+            return Ok(Some(Value { ty, operand }));
+        }
         if matches!(op, Intrinsic::ToCString | Intrinsic::FromCString | Intrinsic::CopyBytes) {
             return self.ffi(op, args, result, span).map(Some);
         }
@@ -188,6 +207,7 @@ impl Emitter<'_, '_> {
             | Intrinsic::StringByteAt
             | Intrinsic::StringData
             | Intrinsic::BitCast
+            | Intrinsic::FloatMath(_)
             | Intrinsic::SourceLocation
             | Intrinsic::Spawn
             | Intrinsic::StringSlice { .. } => unreachable!("handled above"),

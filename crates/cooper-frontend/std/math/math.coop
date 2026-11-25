@@ -1,5 +1,56 @@
-# The standard `math` module: the checked conversions between the numeric types, and from the
-# integer types to `rune`, as methods of the converted type. `n.toU8()` is `Some` of the same
-# number as a `u8` when `n` has one, and `None` otherwise; a float's fraction is dropped, as
-# `u8(f)` drops it. The conversions are generated (`math_conversions` in the compiler's
+# The standard `math` module: functions over the numeric types, mathematical constants, and the
+# checked conversions between the numeric types.
+#
+# The compiler provides the float functions named as in C's `math.h`, each for `f32` and `f64`:
+# `sqrt`, `cbrt`, `pow`, `hypot`, `exp`, `exp2`, `log`, `log2`, `log10`, `sin`, `cos`, `tan`,
+# `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `floor`, `ceil`, `round` (halves away
+# from zero), and `trunc`.
+#
+# The checked conversions are methods of the converted type, as are those to `rune`. `n.toU8()` is
+# `Some` of the same number as a `u8` when `n` has one, and `None` otherwise; a float's fraction is
+# dropped, as `u8(f)` drops it. They are generated (`math_conversions` in the compiler's
 # `stdlib.rs`).
+
+const Pi: f64 = 3.141592653589793
+const E: f64 = 2.718281828459045
+const Sqrt2: f64 = 1.4142135623730951
+const Ln2: f64 = 0.6931471805599453
+const Ln10: f64 = 2.302585092994046
+const Inf: f64 = 1.0 / 0.0
+const NaN: f64 = 0.0 / 0.0
+
+# The lesser of `a` and `b`; NaN if either is.
+func min T (a: T, b: T): T {
+    return if a < b or a != a then a else b
+}
+
+# The greater of `a` and `b`; NaN if either is.
+func max T (a: T, b: T): T {
+    return if a > b or a != a then a else b
+}
+
+# `x` limited to `lo..=hi`: `lo` if `x` is less, `hi` if `x` is greater.
+func clamp T (x: T, lo: T, hi: T): T {
+    return min(max(x, lo), hi)
+}
+
+# The magnitude of `x`, positive zero for either zero. The most negative value of a signed integer
+# type has no positive counterpart, so its `abs` overflows, which panics.
+func abs T (x: T): T {
+    return if x <= 0 then 0 - x else x
+}
+
+# Whether `x` is neither finite nor infinite.
+func isNaN T (x: T): bool {
+    return !isFinite(x) and !isInf(x)
+}
+
+# Whether `x` is positive or negative infinity.
+func isInf T (x: T): bool {
+    return abs(x) == 1.0 / 0.0
+}
+
+# Whether `x` is neither infinite nor NaN.
+func isFinite T (x: T): bool {
+    return abs(x) < 1.0 / 0.0
+}

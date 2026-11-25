@@ -6,7 +6,8 @@
 //!   `println`, over the C library's `write`), `std.testing` (assertions for `cooper test`), `std.fmt` (`format`, the text of a template
 //!   whose positional holes `{}` its further arguments fill, and `list`, `quote`, and `fixed`), `std.strings`,
 //!   `std.arrays`, and `std.runes` (the methods of `string`, the arrays, and `rune`), `std.math`
-//!   (the checked conversions of the numeric types), `std.threads`, `std.sync`, and `std.gc` (control of the garbage collector). A program that reaches one through its `use` declarations,
+//!   (the checked conversions of the numeric types, functions such as `min` and `sqrt`, and
+//!   constants; the compiler provides its [`FLOAT_FUNCTIONS`]), `std.threads`, `std.sync`, and `std.gc` (control of the garbage collector). A program that reaches one through its `use` declarations,
 //!   directly or through another std module, has its source compiled with it; the others cost
 //!   nothing. The compiler fills the holes of a template call (`println("x is {}", x)`).
 //! * The prelude, in scope in every module without a `use`: the sum types `Maybe T`
@@ -29,7 +30,19 @@ pub const IO_MODULE: &str = "std.io";
 /// The module path of text formatting.
 pub const FMT_MODULE: &str = "std.fmt";
 /// The module path of the numeric types' home.
-const MATH_MODULE: &str = "std.math";
+pub const MATH_MODULE: &str = "std.math";
+
+/// The functions of `std.math` the compiler provides, by name and number of parameters. Each is
+/// `func name T (x: T, …): T` for a float type `T`, computed as the C library's function of the
+/// same name computes it, or for `f32` the one with an `f` suffix.
+pub const FLOAT_FUNCTIONS: [(&str, usize); 23] = [
+    ("sqrt", 1), ("cbrt", 1), ("pow", 2), ("hypot", 2),
+    ("exp", 1), ("exp2", 1), ("log", 1), ("log2", 1), ("log10", 1),
+    ("sin", 1), ("cos", 1), ("tan", 1), ("asin", 1), ("acos", 1), ("atan", 1), ("atan2", 2),
+    ("sinh", 1), ("cosh", 1), ("tanh", 1),
+    ("floor", 1), ("ceil", 1), ("round", 1), ("trunc", 1),
+];
+
 /// The module path of the C interop helpers.
 pub const FFI_MODULE: &str = "std.ffi";
 /// The C string type `std.ffi` declares.
@@ -273,6 +286,31 @@ pub(crate) fn interfaces() -> Vec<(ModulePath, Globals)> {
     vec![
         (ModulePath::parse(FFI_MODULE), ffi),
     ]
+}
+
+/// Add the functions the compiler provides to the module `globals` declares, if any.
+pub(crate) fn provide(globals: &mut Globals) {
+    if globals.module != MATH_MODULE {
+        return;
+    }
+    let param = Type::TypeParam("T".to_string());
+    for (name, arity) in FLOAT_FUNCTIONS {
+        let requirement = crate::resolve::Requirement {
+            param: "T".to_string(),
+            kind: crate::types::PredicateKind::Float,
+            origin: "takes f32 or f64".to_string(),
+        };
+        let signature = Signature {
+            item: Callable::Func { module: MATH_MODULE.to_string(), name: name.to_string() },
+            type_params: vec!["T".to_string()],
+            receiver: None,
+            ty: Type::Func { return_type: Box::new(param.clone()), param_types: vec![param.clone(); arity] },
+            by_pointer: false,
+            variadic: false,
+            requirements: vec![requirement],
+        };
+        globals.funcs.insert(name.to_string(), signature);
+    }
 }
 
 /// Whether `item` is `std.fmt.format`, which is the text of its template.

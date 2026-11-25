@@ -464,6 +464,7 @@ fn analyze_module(
     let mut interface = Globals::default();
     interface.module = module_name.clone();
     interface.defs = defs.clone();
+    crate::stdlib::provide(&mut interface);
     for file in &module.files {
         let mut file_diags = Vec::new();
         resolve::declare_types(&mut interface, &file.decls, file.private, &mut file_diags);

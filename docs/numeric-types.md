@@ -80,3 +80,30 @@ string literal can choose a radix, precision, or width
 
 `u64(p)` converts a pointer to its address, which no other conversion produces and nothing
 converts back to a pointer: `"{u64(p):x}"` shows it in hexadecimal, and `u64(nil)` is `0`.
+
+## Math functions
+
+`std.math` has the mathematical functions as generic free functions, called with the module
+prefix (`use { std.math as math }`):
+
+```
+math.min(a, b)      math.max(a, b)      math.clamp(x, lo, hi)      # numbers and runes
+math.abs(x)                                                        # numbers
+math.sqrt(x)        math.pow(x, y)      math.sin(x)                # f32 and f64
+math.isNaN(x)       math.isInf(x)       math.isFinite(x)           # f32 and f64
+```
+
+Which types a function takes follows from what its body does with them
+([Generics](./generics.md#requirements)), and an error names the operation that needs it:
+`math.sqrt(i64(4))` is rejected because `sqrt` takes `f32` or `f64`. An integer literal that a
+float function takes from the call site is a float, so `math.sqrt(4)` is `2.0`; that applies to
+the functions of other modules, whose requirements are known when the call is checked.
+
+The float functions are those of C's `math.h`, by the same names: `sqrt`, `cbrt`, `pow`,
+`hypot`, `exp`, `exp2`, `log`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`,
+`atan2`, `sinh`, `cosh`, `tanh`, `floor`, `ceil`, `round` (halves away from zero), and `trunc`,
+each computed in the argument's type. `min` and `max` give NaN when either argument is NaN,
+and `abs` of a signed integer type's most negative value overflows.
+
+The constants `Pi`, `E`, `Sqrt2`, `Ln2`, `Ln10`, `Inf`, and `NaN` are `f64`; `f32(math.Pi)` is
+the nearest `f32`.

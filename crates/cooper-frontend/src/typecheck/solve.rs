@@ -152,13 +152,16 @@ impl<'g> TypeChecker<'g> {
     /// Complete the current body's constraints before its types reach lowering.
     pub(super) fn finish_body(&mut self) {
         self.solve_obligations();
-        // A precision asks for a float, so an integer literal it formats is one.
-        for predicate in &self.body.predicates {
-            let precision = matches!(predicate.kind, PredicateKind::Float)
-                && matches!(predicate.site, PredicateSite::Spec(_));
-            if precision && self.infer.is_int_literal(&predicate.ty) {
+        // A precision asks for a float, as may a generic callee, so an integer literal it
+        // takes is one.
+        let precisions = (self.body.predicates.iter())
+            .filter(|predicate| matches!((&predicate.kind, &predicate.site), (PredicateKind::Float, PredicateSite::Spec(_))))
+            .map(|predicate| predicate.ty.clone());
+        let floats: Vec<Type> = precisions.chain(self.body.floats.iter().cloned()).collect();
+        for ty in floats {
+            if self.infer.is_int_literal(&ty) {
                 let float = self.infer.fresh(InferKind::FloatLiteral);
-                let _ = self.infer.unify(&predicate.ty, &float);
+                let _ = self.infer.unify(&ty, &float);
             }
         }
         for literal in &self.body.literals {

@@ -306,7 +306,9 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
   from `std.arrays`, those of `rune` (`isAsciiDigit`, …) from `std.runes`, and the checked
   conversions of the numeric types (`n.toU8()`, `f.toI32()`, `n.toRune()`, each a `Maybe`)
   from `std.math`, all in scope everywhere
-  ([Methods and Functions](./methods-and-functions.md#methods-of-built-in-types)).
+  ([Methods and Functions](./methods-and-functions.md#methods-of-built-in-types)). `std.math`
+  also has the generic math functions (`math.min`, `math.abs`, `math.sqrt`, …) and constants
+  (`math.Pi`) ([Numeric Types](./numeric-types.md#math-functions)).
 * Output goes through `std.io` (`print` and `println`, each taking a `string`), and
   `string(x)` formats any value: `Point{x: 1, y: 2}`, `[1, 2]`, `Some("a")`. Every string
   literal interpolates the same formatting: `println("p is {p}")`, or positionally,

@@ -221,6 +221,8 @@ struct BodyConstraints {
     calls: HashMap<Span, DeferredCall>,
     reported: HashSet<InferId>,
     spans: Vec<Span>,
+    /// Type arguments a referenced declaration requires to be floats.
+    floats: Vec<Type>,
 }
 
 /// Type check `module` against `globals`. `modules` maps each `use`-bound module's

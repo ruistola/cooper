@@ -2,25 +2,25 @@
 # stdout: arr 3
 # stdout: n = 42
 # Values a started thread uses live on past the function that started it, and so are on the heap.
-use { std.io.println, std.threads.sleep, std.sync.WaitGroup }
-func work(n: i64^, wg: WaitGroup^) {
-    sleep(5)
-    println("n = {n^}")
+use { std.io, std.threads, std.sync }
+func work(n: i64^, wg: sync.WaitGroup^) {
+    threads.sleep(5)
+    io.println("n = {n^}")
     wg.done()
 }
-func start(wg: WaitGroup^) {
+func start(wg: sync.WaitGroup^) {
     let n: i64 = 42
     let arr: i64[3] = [1, 2, 3]
-    f := func() { println("arr {arr[2]}") }
+    f := func() { io.println("arr {arr[2]}") }
     thread work(&n, wg)
     thread f()
 }
 func main() {
-    let wg: WaitGroup
+    let wg: sync.WaitGroup
     wg.add(1)
     start(&wg)
     let junk: i64[512]
     junk[1] = 7
-    sleep(20)
+    threads.sleep(20)
     wg.wait()
 }

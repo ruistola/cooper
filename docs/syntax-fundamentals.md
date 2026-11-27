@@ -58,9 +58,9 @@ in. `\{` writes a brace, and a `}` alone is literal.
 
 ```
 x := 5
-println("X is {x}, doubled {x * 2}")       # X is 5, doubled 10
-println("p = {Point{x: 1, y: 2}}")         # p = Point{x: 1, y: 2}
-println("{greet("bob")} \{literal}")       # a hole may hold strings and braces
+io.println("X is {x}, doubled {x * 2}")    # X is 5, doubled 10
+io.println("p = {Point{x: 1, y: 2}}")      # p = Point{x: 1, y: 2}
+io.println("{greet("bob")} \{literal}")    # a hole may hold strings and braces
 ```
 
 A hole is any single expression, written on one line. A string inside a value is quoted as
@@ -68,12 +68,12 @@ A hole is any single expression, written on one line. A string inside a value is
 spliced as is.
 
 An empty hole `{}` is positional: it takes its value from the call the literal is the
-template of, for an expression better kept outside the text. `std.fmt.format` returns the
-text, and `print` and `println` accept the same arguments:
+template of, for an expression better kept outside the text. `fmt.format` returns the
+text, and `io.print` and `io.println` accept the same arguments:
 
 ```
-println("{} + {} = {}", a, b, a + b)
-label := format("total {} of {limit}", sum(xs))
+io.println("{} + {} = {}", a, b, a + b)
+label := fmt.format("total {} of {limit}", sum(xs))
 ```
 
 Each argument fills the next `{}` in order. The template must be a literal, and its `{}`
@@ -96,7 +96,7 @@ After a `:` in a hole, a spec says how to format its value, in Rust's syntax
 
 A positional hole takes a spec the same way: `"{:>4}"`. A spec is part of the literal; for
 a width or precision computed at run time, `s.padStart(w)` and `s.padEnd(w)` align a string,
-and `std.fmt.fixed(f, digits)` writes a float with `digits` digits after the point. A radix applies to integers, a
+and `fmt.fixed(f, digits)` writes a float with `digits` digits after the point. A radix applies to integers, a
 precision to floats, and zero padding to numbers; any other use is a compile error. An
 integer literal given a precision is a float literal: `"{1:.2}"` gives `1.00`. The `:`
 that begins a spec is the first one outside the expression's brackets, braces,
@@ -276,7 +276,7 @@ func draw(r: Rect, handle: TokenHandler) { … }
 ```
 
 An alias of a struct or sum type works wherever that type's name does: `Pt{x: 1, y: 2}`, `Fig.Circle(3)`, patterns, and method receivers. An alias may name another alias but not itself, takes no type arguments, and is declared at module
-level, importable with `use { geometry.Rect }`. Messages show the type it stands for. When the
+level; another module writes it qualified, as `geometry.Rect`. Messages show the type it stands for. When the
 parts of a value should be reached by name, declare a `struct`. A distinct nominal type backed by
 an existing one (e.g. `LengthMm` over `i32`) is a planned feature with its own keyword.
 

@@ -3,12 +3,12 @@
 # valid UTF-8 text in valid UTF-8 text always starts on a rune boundary. Case mapping is
 # ASCII only, and named so.
 
-(b: StringBuilder^) func write(s: string) {
+(b: Builder^) func write(s: string) {
     for i in 0..s.length() do b.bytes.push(s.byteAt(i))
 }
 
 # Appends the UTF-8 encoding of a rune.
-(b: StringBuilder^) func writeRune(r: rune) {
+(b: Builder^) func writeRune(r: rune) {
     c := u32(r)
     if c < 0x80 then {
         b.bytes.push(u8(c))
@@ -27,18 +27,18 @@
     }
 }
 
-(b: StringBuilder) func length(): i64 {
+(b: Builder) func length(): i64 {
     return b.bytes.length()
 }
 
 # The text built so far.
-(b: StringBuilder) func build(): string {
+(b: Builder) func build(): string {
     return if b.bytes.utf8() is Some(text) then text else ""
 }
 
 # The parts joined with `sep` between them.
 func join(parts: string[], sep: string): string {
-    let sb: StringBuilder
+    let sb: Builder
     for (i, part) in parts do {
         if i > 0 then sb.write(sep)
         sb.write(part)
@@ -98,7 +98,7 @@ func join(parts: string[], sep: string): string {
     let parts: string[]
     if sep.length() == 0 then {
         for (i, r) in s do {
-            let sb: StringBuilder
+            let sb: Builder
             sb.writeRune(r)
             parts.push(sb.build())
         }
@@ -116,7 +116,7 @@ func join(parts: string[], sep: string): string {
 # `s` with every occurrence of `old` replaced by `new`; unchanged when `old` is empty.
 (s: string) func replace(old: string, new: string): string {
     if old.length() == 0 then return s
-    let sb: StringBuilder
+    let sb: Builder
     offset := 0
     while s[offset..].find(old) is Some(idx) do {
         sb.write(s[offset..offset + idx])
@@ -141,21 +141,21 @@ func join(parts: string[], sep: string): string {
 
 # `s` `n` times over (`repeat` is a keyword); empty when `n` is not positive.
 (s: string) func times(n: i64): string {
-    let sb: StringBuilder
+    let sb: Builder
     for _ in 0..n do sb.write(s)
     return sb.build()
 }
 
 # ASCII letters lowercased; everything else unchanged.
 (s: string) func toAsciiLower(): string {
-    let sb: StringBuilder
+    let sb: Builder
     for r in s do sb.writeRune(r.toAsciiLower())
     return sb.build()
 }
 
 # ASCII letters uppercased; everything else unchanged.
 (s: string) func toAsciiUpper(): string {
-    let sb: StringBuilder
+    let sb: Builder
     for r in s do sb.writeRune(r.toAsciiUpper())
     return sb.build()
 }

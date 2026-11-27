@@ -30,9 +30,9 @@ that keeps every processor busy gives a quarter of the processors' time to marki
 
 ## Garbage collector controls
 
-A program controls the collector with `std.gc`, after Go's `runtime.GC` and `debug.SetGCPercent`: `collect()`
-collects now, `setGrowth(Some(n))` sets the growth percentage, `setGrowth(None)` turns automatic collection off
-(`collect` still works), each giving the previous setting, and `stats()` gives the collections, the stops of the
+A program controls the collector with `std.gc`, after Go's `runtime.GC` and `debug.SetGCPercent`: `gc.collect()`
+collects now, `gc.setGrowth(Some(n))` sets the growth percentage, `gc.setGrowth(None)` turns automatic collection off
+(`gc.collect` still works), each giving the previous setting, and `gc.stats()` gives the collections, the stops of the
 world and their time, and the bytes allocated, live, and in the heap. A game, for one, can turn collection off
 during a level and collect at a transition.
 

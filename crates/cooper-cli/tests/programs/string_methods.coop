@@ -12,27 +12,27 @@
 # stdout: x日 4
 # The methods of `string` declared in the standard library (`std.strings`, in scope for every
 # program without a `use`): searching, trimming, splitting, replacing, and ASCII case
-# mapping, all in byte offsets; `utf8()` reading bytes as text; and the `StringBuilder`.
+# mapping, all in byte offsets; `utf8()` reading bytes as text; and `strings.Builder`.
 use {
-    std.io.println,
-    std.strings.StringBuilder,
+    std.io,
+    std.strings,
 }
 func main() {
   s := "  Hello, Wörld! 日本  "
-  println("[{s.trim()}] [{s.trimStart()}] [{s.trimEnd()}]")
-  println("{s.contains("Wör")} {s.contains("xyz")} {s.find("Wör")} {s.find("q")}")
-  println("{"abc".startsWith("ab")} {"abc".endsWith("bc")} {"abc".startsWith("abcd")} {"é".startsWith("é")}")
-  println("{"a,b,,c".split(",")} {"abc".split("")} {"日本".split("")} {"".split(",")}")
-  println("{"aXbXc".replace("X", "--")} {"abc".replace("", "z")}")
-  println("{"ab".times(3)} [{"ab".times(0)}]")
-  println("{"Hello, WÖRLD".toAsciiLower()} {"Hello, wörld".toAsciiUpper()}")
-  println("{["x", "y", "z"].length()}")
-  println("é".toAsciiUpper())
+  io.println("[{s.trim()}] [{s.trimStart()}] [{s.trimEnd()}]")
+  io.println("{s.contains("Wör")} {s.contains("xyz")} {s.find("Wör")} {s.find("q")}")
+  io.println("{"abc".startsWith("ab")} {"abc".endsWith("bc")} {"abc".startsWith("abcd")} {"é".startsWith("é")}")
+  io.println("{"a,b,,c".split(",")} {"abc".split("")} {"日本".split("")} {"".split(",")}")
+  io.println("{"aXbXc".replace("X", "--")} {"abc".replace("", "z")}")
+  io.println("{"ab".times(3)} [{"ab".times(0)}]")
+  io.println("{"Hello, WÖRLD".toAsciiLower()} {"Hello, wörld".toAsciiUpper()}")
+  io.println("{["x", "y", "z"].length()}")
+  io.println("é".toAsciiUpper())
   let ok: u8[3] = [104, 195, 169]
   let bad: u8[2] = [104, 195]
-  println("{ok[..].utf8()} {bad[..].utf8()}")
-  let sb: StringBuilder
+  io.println("{ok[..].utf8()} {bad[..].utf8()}")
+  let sb: strings.Builder
   sb.write("x")
   sb.writeRune('日')
-  println("{sb.build()} {sb.length()}")
+  io.println("{sb.build()} {sb.length()}")
 }

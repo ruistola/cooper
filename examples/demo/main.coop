@@ -1,9 +1,9 @@
 use {
   mathx,
-  geometry.Point,
+  geometry,
 }
 
 func main(): i32 {
-  p := Point { x: 3, y: 4 }
+  p := geometry.Point { x: 3, y: 4 }
   return mathx.add(p.x, p.y)
 }

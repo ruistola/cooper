@@ -445,14 +445,8 @@ pub struct FuncDecl {
     pub span: Span,
 }
 
-/// A single `use` binding, normalized to bind exactly one local name.
-///
-/// `path` is the dotted trail as written, including the final item segment; for a
-/// grouped entry (`a.b.{ x, y }`) the group is flattened into one `UseSpec` per
-/// item, each carrying the full path (`a.b.x`, `a.b.y`). Whether the final segment
-/// names a module (module binding) or an exported item (name binding) is decided
-/// during resolution against the project's known modules. `alias` is the explicit
-/// `as` rename, if any; otherwise the local surface name is the final segment.
+/// A single `use` binding of a module: its dotted path as written, and the explicit
+/// `as` rename, if any; otherwise the local name is the path's final segment.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UseSpec {
     pub path: Vec<String>,

@@ -6,7 +6,7 @@
 # An alias of a struct or sum type works wherever the type's own name does: struct literals,
 # variant construction and patterns, struct patterns, method receivers, and annotations.
 use {
-  std.io.println,
+  std.io,
 }
 struct Point { x: i32, y: i32 }
 struct Box T { v: T }
@@ -31,9 +31,9 @@ func main() {
   b := IntBox{v: 5}
   m := MaybeInt.Some(4)
   c := Fig.Circle(3)
-  println("{p.sum()} {b.v} {m} {describe(c)} {describe(Fig.Dot)}")
-  if p is Pt{x: a, y: _} then println("{a}")
-  if m is MaybeInt.Some(n) then println("{n}")
+  io.println("{p.sum()} {b.v} {m} {describe(c)} {describe(Fig.Dot)}")
+  if p is Pt{x: a, y: _} then io.println("{a}")
+  if m is MaybeInt.Some(n) then io.println("{n}")
   let z: Pt
-  println("{z}")
+  io.println("{z}")
 }

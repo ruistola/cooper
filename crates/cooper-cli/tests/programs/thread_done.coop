@@ -6,37 +6,37 @@
 # `doneEvent(t)` commits once the thread `t` has finished: at once if it has, and it can be chosen
 # against other events, such as a timeout.
 use {
-    std.io.println,
-    std.sync.{ after, choose, doneEvent, sync, wrap },
-    std.threads.sleep,
+    std.io,
+    std.sync,
+    std.threads,
 }
 
 func store(slot: i64^, value: i64, ms: i64) {
-    sleep(ms)
+    threads.sleep(ms)
     slot^ = value
 }
 
 func main() {
     let result = 0
     t := thread store(&result, 42, 20)
-    sync(doneEvent(t))
-    println("waited: {result}")
-    sync(doneEvent(t))
-    println("done again")
+    sync.wait(sync.doneEvent(t))
+    io.println("waited: {result}")
+    sync.wait(sync.doneEvent(t))
+    io.println("done again")
 
     slow := thread store(&result, 1, 200)
-    late := sync(choose(
-        wrap(doneEvent(slow), func(d: ()): bool { return false }),
-        wrap(after(10), func(d: ()): bool { return true }),
+    late := sync.wait(sync.choose(
+        sync.wrap(sync.doneEvent(slow), func(d: ()): bool { return false }),
+        sync.wrap(sync.after(10), func(d: ()): bool { return true }),
     ))
-    sync(doneEvent(slow))
-    if late and result == 1 then println("timed out, then done")
+    sync.wait(sync.doneEvent(slow))
+    if late and result == 1 then io.println("timed out, then done")
 
     let slots: i64[200]
     let threads: Thread[] = []
     for i in 0..200 do threads.push(thread store(&slots[i], i + 1, i % 3))
-    for t in threads do sync(doneEvent(t))
+    for t in threads do sync.wait(sync.doneEvent(t))
     total := 0
     for v in slots do total += v
-    println("{threads.length()} threads done, total {total}")
+    io.println("{threads.length()} threads done, total {total}")
 }

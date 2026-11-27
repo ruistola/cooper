@@ -12,7 +12,7 @@ extern func moveBy(p: Point^, dx: i32)
 
 An `extern func` declares a C function at module level, with no body. It is linked under its
 name exactly as written, not mangled. Its signature cannot be generic. Otherwise an extern is
-an ordinary module function: it is called, imported by other modules, and used as a function
+an ordinary module function: it is called, by other modules too, and used as a function
 value like any other. Two modules may declare the same C function, but only with the same
 signature.
 
@@ -83,22 +83,21 @@ cross to C as is. The compiler-provided module `std.ffi` declares the C string t
 copies between the two representations:
 
 ```
-use { std.ffi.CString }
+use { std.ffi }
 
-extern func getenv(name: CString): CString
+extern func getenv(name: ffi.CString): ffi.CString
 
-home := string(getenv(CString("HOME")))
+home := string(getenv(ffi.CString("HOME")))
 ```
 
-* `CString` is a NUL-terminated C string, `struct CString { data: u8^ }`. It crosses to C as
+* `ffi.CString` is a NUL-terminated C string, `struct CString { data: u8^ }`. It crosses to C as
   a `char *`; its zero value is `NULL`.
-* `CString(s)` converts a string by copying its bytes and a terminating NUL to fresh
+* `ffi.CString(s)` converts a string by copying its bytes and a terminating NUL to fresh
   memory. A NUL inside the string ends the C string there. It is a conversion like any
-  other, spelled with the type's name however it is in scope (`ffi.CString(s)` after
-  `use { std.ffi as ffi }`).
+  other, spelled with the type's name.
 * `string(c)` converts back, copying the bytes before the NUL. A `NULL` C string yields
   `""`.
-* `copyBytes(p: u8^, n: i64): u8[]` copies `n` bytes into a new array; a negative `n` stops
+* `ffi.copyBytes(p: u8^, n: i64): u8[]` copies `n` bytes into a new array; a negative `n` stops
   the program. Reading through `nil` yields zeros, as any load through nil does.
 
 Each copy is independent of its source: C may free or reuse its memory afterwards, and a
@@ -138,13 +137,13 @@ sources = ["native/shim.c"]    # relative to the project root, compiled with the
 A final `...` declares a C function that takes further arguments, as `printf` does. A call
 passes any number of extra arguments, each as its own type under C's default promotions:
 integers narrower than `int` and `bool` widen to `int`, and `f32` to `double`. Only integers,
-floats, `bool`, pointers, and `CString` can be passed this way, and a variadic function cannot
+floats, `bool`, pointers, and `ffi.CString` can be passed this way, and a variadic function cannot
 take or return a struct by value. Number the arguments carefully: an integer literal is an
 `i32`, and `%ld` wants an `i64`.
 
 ```
-extern func snprintf(buf: u8^, n: u64, fmt: CString, ...): i32
-n := snprintf(&buf[0], 64, CString("%d-%s"), 42, CString("hi"))
+extern func snprintf(buf: u8^, n: u64, fmt: ffi.CString, ...): i32
+n := snprintf(&buf[0], 64, ffi.CString("%d-%s"), 42, ffi.CString("hi"))
 ```
 
 ## Callbacks

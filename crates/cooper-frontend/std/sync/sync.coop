@@ -2,15 +2,15 @@
 #
 # Threads communicate through events, in the manner of Concurrent ML. An `Event T` describes an operation
 # whose result is a `T`, such as receiving from a channel or a deadline passing, and nothing happens until a
-# thread calls `sync` on it. Events combine: `choose` takes whichever of several commits first, `wrap`
-# transforms a result, `guard` builds an event afresh at each sync, and `withNack` lets a branch learn that
-# another was chosen. A blocking operation `x()` is `sync(xEvent())`.
+# thread waits for it with `wait`. Events combine: `choose` takes whichever of several commits first, `wrap`
+# transforms a result, `guard` builds an event afresh at each wait, and `withNack` lets a branch learn that
+# another was chosen. A blocking operation `x()` is `wait(xEvent())`.
 
 # --- Events ---
 
 # Blocks until one of the operations in `e` commits, and gives its result. Guards and `withNack` setups run
 # first, in order. If several operations can commit at once, one of them is picked at random.
-func sync T (e: Event T): T {
+func wait T (e: Event T): T {
     let branches: (Branch T)[]
     let nacks: NackRange[]
     flatten(e, &branches, &nacks)
@@ -54,13 +54,13 @@ func wrap T U (e: Event T, f: func(T): U): Event U {
     }
 }
 
-# An event that `f` builds afresh at each `sync`, when the sync begins.
+# An event that `f` builds afresh at each `wait`, when the wait begins.
 func guard T (f: func(): Event T): Event T {
     return Guard(f)
 }
 
-# An event that `f` builds afresh at each `sync`, as `guard` does, given an event that commits if and only
-# if the sync commits to an event other than the one `f` returns: a server learns that a client gave up.
+# An event that `f` builds afresh at each `wait`, as `guard` does, given an event that commits if and only
+# if the wait commits to an event other than the one `f` returns: a server learns that a client gave up.
 func withNack T (f: func(Event ()): Event T): Event T {
     return Nack(f)
 }
@@ -76,7 +76,7 @@ func never T (): Event T {
     return Choice([])
 }
 
-# An event that commits `ms` milliseconds after the `sync` begins, so one value serves every pass of a loop.
+# An event that commits `ms` milliseconds after the `wait` begins, so one value serves every pass of a loop.
 func after(ms: i64): Event () {
     return Guard(func(): Event () {
         deadline := cooper_now() + ms * 1000000
@@ -137,7 +137,7 @@ func channel T (capacity: i64): Channel T {
 
 # Blocks until `value` is sent: received, or placed in the channel's buffer.
 (ch: (Channel T)^) func send(value: T) {
-    sync(ch.sendEvent(value))
+    wait(ch.sendEvent(value))
 }
 
 # Receiving the next value, or `None` once the channel is closed and empty.
@@ -151,7 +151,7 @@ func channel T (capacity: i64): Channel T {
 
 # Blocks until a value arrives, or the channel is closed and empty, which gives `None`.
 (ch: (Channel T)^) func recv(): Maybe T {
-    return sync(ch.recvEvent())
+    return wait(ch.recvEvent())
 }
 
 # Ends the channel: values still in it can be received, then receives give `None`.
@@ -190,7 +190,7 @@ func channel T (capacity: i64): Channel T {
 
 # Blocks the running thread until the count is zero.
 (wg: WaitGroup^) func wait() {
-    sync(wg.waitEvent())
+    wait(wg.waitEvent())
 }
 
 # Blocks until the mutex is free, then holds it.
@@ -286,5 +286,5 @@ func channel T (capacity: i64): Channel T {
 
 # Blocks until every thread of the group has finished, then gives the first error, if any.
 (group: ThreadGroup^) func wait(): Maybe string {
-    return sync(group.waitEvent())
+    return wait(group.waitEvent())
 }

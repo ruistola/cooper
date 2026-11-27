@@ -9,8 +9,8 @@
 # std.gc turns automatic collection off and on and collects on request. The stress modes collect whatever the
 # setting, so this program runs without them.
 use {
-    std.gc as gc,
-    std.io.println,
+    std.gc,
+    std.io,
 }
 
 # Allocates about `mib` MiB, none of which survives.
@@ -23,18 +23,18 @@ func churn(mib: i64) {
 
 func main() {
     previous := gc.setGrowth(None)
-    println("the default growth is 100: {previous is Some(p) and p == 100}")
+    io.println("the default growth is 100: {previous is Some(p) and p == 100}")
     off := gc.stats()
     churn(64)
-    println("collections while off: {gc.stats().collections - off.collections}")
+    io.println("collections while off: {gc.stats().collections - off.collections}")
 
     gc.collect()
     collected := gc.stats()
-    println("collect ran one: {collected.collections == off.collections + 1}")
-    println("the garbage is gone: {collected.live < 1048576 and collected.allocated > 64 * 1048576}")
+    io.println("collect ran one: {collected.collections == off.collections + 1}")
+    io.println("the garbage is gone: {collected.live < 1048576 and collected.allocated > 64 * 1048576}")
 
     gc.setGrowth(previous)
     churn(64)
-    println("collections with growth back on: {gc.stats().collections > collected.collections}")
-    println("pauses counted: {collected.pauses >= 2 and collected.longestPause > 0}")
+    io.println("collections with growth back on: {gc.stats().collections > collected.collections}")
+    io.println("pauses counted: {collected.pauses >= 2 and collected.longestPause > 0}")
 }

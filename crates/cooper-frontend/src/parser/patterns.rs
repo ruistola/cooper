@@ -54,12 +54,19 @@ impl Parser {
             }
             _ => {}
         }
-        let first = self.expect(Identifier)?.text;
+        let mut first = self.expect(Identifier)?.text;
         if first == "_" {
             return Ok(Pattern {
                 kind: PatternKind::Wildcard,
                 span: start,
             });
+        }
+        // Another module's type is qualified with the module's name: `geo.Point { x: a }` and
+        // `geo.Shape.Circle(r)` name the types `geo.Point` and `geo.Shape`. A lowercase name
+        // followed by a dot can only be a module's.
+        if !starts_uppercase(&first) && self.peek().kind == Dot {
+            self.expect(Dot)?;
+            first = format!("{first}.{}", self.expect(Identifier)?.text);
         }
         // A struct pattern names an uppercase type followed by a brace block of
         // field patterns: `Point { x: a, y: b }`.

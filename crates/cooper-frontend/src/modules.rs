@@ -8,13 +8,12 @@
 //! the modules it depends on, never their bodies. This interface-only rule is what
 //! keeps modules separable (a future cache can supply an interface without source).
 //!
-//! `use` bindings are resolved here against the set of the project's modules: a path
-//! whose final segment names a module is a *module binding*, made available for
-//! qualified access (`other.func()`, `other.Type`), while a path whose prefix names a
-//! module and whose final segment names one of that module's exported items is a
-//! *name binding*, bringing the item into scope for bare use. Imports are file-scoped:
-//! each file is resolved and checked against the module's united declarations plus its
-//! own `use` bindings, so a name imported in one file is invisible in its siblings.
+//! `use` bindings are resolved here against the set of the project's modules. Each names
+//! a module, bound under its last path segment or its `as` alias, and everything the
+//! file uses from it is qualified with that name (`io.println()`, `sync.WaitGroup`).
+//! Imports are file-scoped: each file is resolved and checked against the module's united
+//! declarations plus its own `use` bindings, so a module bound in one file is invisible
+//! in its siblings.
 
 use std::collections::{HashMap, HashSet};
 
@@ -23,7 +22,7 @@ use crate::diag::{Diagnostic, Span};
 use crate::lexer;
 use crate::parser;
 use crate::project::{Module, ModulePath, Project};
-use crate::resolve::{self, GlobalVar, Globals, Signature};
+use crate::resolve::{self, Globals, Signature};
 use crate::types::{TypeDefs, TypeId};
 use crate::{semantic, typecheck};
 
@@ -248,33 +247,21 @@ fn parse_module_files(module: &Module) -> (Vec<ParsedFile>, Vec<Diagnostic>) {
     (files, errors)
 }
 
-/// What a `use` binding refers to, once resolved against the project's modules.
-enum UseTarget {
-    /// The final segment names a module; its members are reached qualified.
-    Module(ModulePath),
-    /// The prefix names a module and the final segment one of its exported items.
-    Name { module: ModulePath, item: String },
+/// The module a `use` path names, if it names one.
+fn named_module(spec: &UseSpec, known: &HashSet<ModulePath>) -> Option<ModulePath> {
+    Some(ModulePath(spec.path.clone())).filter(|path| known.contains(path))
 }
 
-/// Classify a `use` path against the set of known modules. The longest interpretation
-/// wins: a path that is itself a module is a module binding; otherwise a path whose
-/// prefix is a module is a name binding for its final segment. A path matching
-/// neither is unresolvable.
-fn classify(spec: &UseSpec, known: &HashSet<ModulePath>) -> Option<UseTarget> {
-    let full = ModulePath(spec.path.clone());
-    if known.contains(&full) {
-        return Some(UseTarget::Module(full));
+/// The diagnostic for a `use` path that names no module: an item of a module, which is
+/// reached through the module instead, or nothing.
+fn unknown_use(spec: &UseSpec, known: &HashSet<ModulePath>) -> Diagnostic {
+    let (item, module) = spec.path.split_last().expect("a use path has at least one segment");
+    let module = ModulePath(module.to_vec());
+    if known.contains(&module) {
+        let name = module.0.last().expect("a module path has at least one segment");
+        return Diagnostic::error(spec.span, format!("`use` names modules, not their items: use `{module}`, then write `{name}.{item}`"));
     }
-    if spec.path.len() >= 2 {
-        let prefix = ModulePath(spec.path[..spec.path.len() - 1].to_vec());
-        if known.contains(&prefix) {
-            return Some(UseTarget::Name {
-                module: prefix,
-                item: spec.path.last().cloned().unwrap(),
-            });
-        }
-    }
-    None
+    Diagnostic::error(spec.span, format!("no module `{}` in this project", spec.path.join(".")))
 }
 
 /// Build the dependency edges from every module's `use` bindings, reporting any
@@ -292,19 +279,9 @@ fn build_edges(
     for (i, module) in parsed.iter().enumerate() {
         for file in &module.files {
             for spec in &file.uses {
-                let target = match classify(spec, known) {
-                    Some(UseTarget::Module(path))
-                    | Some(UseTarget::Name { module: path, .. }) => path,
-                    None => {
-                        diags.push(
-                            Diagnostic::error(
-                                spec.span,
-                                format!("no module `{}` in this project", spec.path.join(".")),
-                            )
-                            .in_file(&file.name),
-                        );
-                        continue;
-                    }
+                let Some(target) = named_module(spec, known) else {
+                    diags.push(unknown_use(spec, known).in_file(&file.name));
+                    continue;
                 };
                 if let Some(&j) = index_of.get(&target) {
                     if j != i {
@@ -372,29 +349,24 @@ fn topological_order(
     Ok(order)
 }
 
-/// The imported names a module brings into scope, keyed by local surface name (its
-/// alias, or the item's own name). Types and functions are kept apart so they seed
-/// the right symbol tables; an imported struct's methods travel with it.
+/// What a file's `use` bindings bring into scope. The bound modules' types are kept
+/// under their qualified spelling (`sync.WaitGroup`) so they seed the symbol tables type
+/// expressions resolve against; their methods travel with them.
 #[derive(Default)]
 struct Imports {
     structs: HashMap<String, TypeId>,
     unions: HashMap<String, TypeId>,
     aliases: HashMap<String, crate::types::Type>,
-    funcs: HashMap<String, Signature>,
-    vars: HashMap<String, GlobalVar>,
-    consts: HashMap<String, crate::consts::Constant>,
     methods: HashMap<TypeId, HashMap<String, Signature>>,
-    /// Module bindings keyed by local spelling (`["std", "io"]`, or `["web"]` when
-    /// aliased), each mapped to that module's interface for qualified access.
-    modules: HashMap<Vec<String>, Globals>,
-    local_names: HashSet<String>,
+    /// Bound modules by local name (`io`, or `web` for `http as web`), each mapped to
+    /// its interface for qualified access.
+    modules: HashMap<String, Globals>,
 }
 
 impl Imports {
-    /// This file's bare imports overlaid on `base` — the module's own declarations —
+    /// This file's imported types overlaid on `base` — the module's own declarations —
     /// yielding the symbol table a file's declarations and bodies are checked against.
-    /// Imported structs, sum types, functions, and variables join by local name; an imported
-    /// struct's methods merge under its identity.
+    /// Imported types join by qualified name; their methods merge under their identity.
     fn overlay(&self, base: &Globals) -> Globals {
         let mut globals = base.clone();
         let prelude = crate::stdlib::prelude();
@@ -407,9 +379,6 @@ impl Imports {
         globals.structs.extend(self.structs.clone());
         globals.unions.extend(self.unions.clone());
         globals.aliases.extend(self.aliases.clone());
-        globals.funcs.extend(self.funcs.clone());
-        globals.vars.extend(self.vars.clone());
-        globals.consts.extend(self.consts.clone());
         for (owner, methods) in &self.methods {
             globals
                 .methods
@@ -576,8 +545,8 @@ pub(crate) fn receiver_owner(ty: &TypeExpr, interface: &Globals) -> Option<TypeI
 
 /// The names a module declares across all its files: its top-level structs, sum
 /// types, free functions, module-level variables, and constants. Methods are keyed by receiver,
-/// not by a bare name, so they never collide with an import. Used to reject an import
-/// whose local name would shadow one of the module's own declarations.
+/// not by a bare name, so they never collide with a module's name. Used to reject a `use`
+/// whose module name would shadow one of the module's own declarations.
 fn declared_names(files: &[ParsedFile]) -> HashSet<String> {
     let mut names = HashSet::new();
     for file in files {
@@ -601,12 +570,12 @@ fn declared_names(files: &[ParsedFile]) -> HashSet<String> {
     names
 }
 
-/// Resolve one file's `use` bindings against its dependencies' interfaces, collecting
-/// the imported symbols. Name bindings seed bare names; module bindings record the
-/// dependency's interface under its local spelling for qualified access. An import is
-/// rejected — reported at its own `use` — when it binds an unknown item, repeats a
-/// local name already bound in this file, or collides with one of `declared`, the
-/// module's own declaration names.
+/// Resolve one file's `use` bindings against its dependencies' interfaces. Each binds a
+/// module under its last path segment or its alias, for qualified access only: its
+/// types join the file's table as `name.Type`, which is how type expressions and patterns
+/// spell them, and its interface is recorded for qualified expressions (`name.func()`).
+/// A binding is rejected — reported at its own `use` — when its name is already bound in
+/// this file or collides with one of `declared`, the module's own declaration names.
 fn build_file_imports(
     file: &ParsedFile,
     declared: &HashSet<String>,
@@ -616,7 +585,7 @@ fn build_file_imports(
 ) -> Imports {
     let mut imports = Imports::default();
     for spec in &file.uses {
-        let Some(target) = classify(spec, known) else {
+        let Some(interface) = named_module(spec, known).and_then(|dep| interfaces.get(&dep)) else {
             continue;
         };
         let local = spec.local_name().to_string();
@@ -624,64 +593,38 @@ fn build_file_imports(
             diags.push(
                 Diagnostic::error(
                     spec.span,
-                    format!("import `{local}` collides with a declaration of the same name in this module"),
+                    format!("module name `{local}` collides with a declaration of the same name in this module; rename the module with `as`"),
                 )
                 .in_file(&file.name),
             );
             continue;
         }
-        if !imports.local_names.insert(local.clone()) {
+        if imports.modules.contains_key(&local) {
             diags.push(
                 Diagnostic::error(
                     spec.span,
-                    format!("`{local}` is bound by more than one use in this file"),
+                    format!("`{local}` is bound by more than one use in this file; rename one with `as`"),
                 )
                 .in_file(&file.name),
             );
             continue;
         }
-        match target {
-            UseTarget::Module(dep) => {
-                let Some(interface) = interfaces.get(&dep) else {
-                    continue;
-                };
-                // A module is spelled by its full local path, or by its alias alone.
-                let spelling = match &spec.alias {
-                    Some(alias) => vec![alias.clone()],
-                    None => spec.path.clone(),
-                };
-                imports.modules.insert(spelling, interface.clone());
-            }
-            UseTarget::Name { module: dep, item } => {
-                let Some(interface) = interfaces.get(&dep) else {
-                    continue;
-                };
-                if let Some(id) = interface.structs.get(&item) {
-                    imports.structs.insert(local, id.clone());
-                    if let Some(methods) = interface.methods.get(id) {
-                        imports.methods.insert(id.clone(), methods.clone());
-                    }
-                } else if let Some(ty) = interface.aliases.get(&item) {
-                    imports.aliases.insert(local, ty.clone());
-                } else if let Some(id) = interface.unions.get(&item) {
-                    imports.unions.insert(local, id.clone());
-                } else if let Some(sig) = interface.lookup_func(&item) {
-                    imports.funcs.insert(local, sig.clone());
-                } else if let Some(var) = interface.vars.get(&item) {
-                    imports.vars.insert(local, var.clone());
-                } else if let Some(constant) = interface.consts.get(&item) {
-                    imports.consts.insert(local, constant.clone());
-                } else {
-                    diags.push(
-                        Diagnostic::error(
-                            spec.span,
-                            format!("module `{dep}` exports no item named `{item}`"),
-                        )
-                        .in_file(&file.name),
-                    );
-                }
+        let qualified = |name: &String| format!("{local}.{name}");
+        for (name, id) in &interface.structs {
+            imports.structs.insert(qualified(name), id.clone());
+        }
+        for (name, id) in &interface.unions {
+            imports.unions.insert(qualified(name), id.clone());
+        }
+        for (name, ty) in &interface.aliases {
+            imports.aliases.insert(qualified(name), ty.clone());
+        }
+        for (owner, methods) in &interface.methods {
+            if owner.module != crate::stdlib::PRELUDE_MODULE {
+                imports.methods.insert(owner.clone(), methods.clone());
             }
         }
+        imports.modules.insert(local, interface.clone());
     }
     imports
 }
@@ -699,15 +642,7 @@ fn strip_imports(mut globals: Globals, imports: &Imports) -> Globals {
     for name in imports.aliases.keys() {
         globals.aliases.remove(name);
     }
-    for name in imports.funcs.keys() {
-        globals.funcs.remove(name);
-    }
-    for name in imports.vars.keys() {
-        globals.vars.remove(name);
-    }
-    for name in imports.consts.keys() {
-        globals.consts.remove(name);
-    }
+    globals.structs.retain(|_, id| id.module != crate::stdlib::PRELUDE_MODULE);
     globals.unions.retain(|_, id| id.module != crate::stdlib::PRELUDE_MODULE);
     for owner in imports.methods.keys() {
         globals.methods.remove(owner);

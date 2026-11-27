@@ -8,7 +8,7 @@ func add(x: i32, y: i32): i32 {
 }
 
 func greet(name: string) {
-  print("hello, " + name)
+  io.print("hello, " + name)
 }
 ```
 
@@ -163,7 +163,7 @@ b := if n.toU8() is Some(b) then b else return false
 if s.parseInt() is Some(n) and n.toU16() is Some(port) then listen(port)
 ```
 
-`std.strings` also has the `StringBuilder` (`write`, `writeRune`, `build`) and `join(parts, sep)`.
+`std.strings` also has `strings.Builder` (`write`, `writeRune`, `build`) and `strings.join(parts, sep)`.
 A `u8[]` has the built-in `utf8(): Maybe string`, which copies the bytes into a string when they
 are valid UTF-8.
 

@@ -5,7 +5,7 @@
 # type, an array) stay intact while garbage is collected around them: the collector follows only the
 # variant a value holds (the harness also runs this collecting at every allocation).
 use {
-    std.io.println,
+    std.io,
 }
 
 struct Node {
@@ -68,6 +68,6 @@ func main() {
     items.push(Item.Many([1, 2, 3]))
     items.push(Item.Text("kept"))
     churn()
-    println("{describe(items[0])} {describe(items[1])} {depth(items[2])} {describe(items[3])} {describe(items[4])}")
-    println("{items.length()} {churn()}")
+    io.println("{describe(items[0])} {describe(items[1])} {depth(items[2])} {describe(items[3])} {describe(items[4])}")
+    io.println("{items.length()} {churn()}")
 }

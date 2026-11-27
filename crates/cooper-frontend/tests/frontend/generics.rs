@@ -128,6 +128,6 @@ fn a_nested_generic_function_cannot_require_anything_of_its_type_parameters() {
 
 #[test]
 fn the_float_functions_of_std_math_take_floats_and_make_integer_literals_floats() {
-    ok("use { std.math as math }\nfunc f() {\n  a := math.sqrt(4)\n  b := math.sqrt(f32(2))\n}");
-    err("use { std.math as math }\nfunc f() {\n  a := math.sqrt(i64(4))\n}", "i64 is not a float type");
+    ok("use { std.math }\nfunc f() {\n  a := math.sqrt(4)\n  b := math.sqrt(f32(2))\n}");
+    err("use { std.math }\nfunc f() {\n  a := math.sqrt(i64(4))\n}", "i64 is not a float type");
 }

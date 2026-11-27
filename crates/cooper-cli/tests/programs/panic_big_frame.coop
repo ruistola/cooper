@@ -3,7 +3,7 @@
 # A local array larger than the guard page must not step over it: the frame is probed a page at a
 # time, so the overflow is caught instead of corrupting whatever lies below the stack.
 use {
-    std.sync.WaitGroup,
+    std.sync,
 }
 
 extern func getpid(): i32
@@ -15,13 +15,13 @@ func big(): i64 {
     return a[i64(getpid()) * 7 % 3000000]
 }
 
-func run(wg: WaitGroup^) {
+func run(wg: sync.WaitGroup^) {
     big()
     wg.done()
 }
 
 func main() {
-    let wg: WaitGroup
+    let wg: sync.WaitGroup
     wg.add(1)
     thread run(&wg)
     wg.wait()

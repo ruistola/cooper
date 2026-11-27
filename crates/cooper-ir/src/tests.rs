@@ -501,7 +501,7 @@ fn module_qualified_reference_names_the_declaration() {
     let (globals, diags) = resolve_into(Globals::default(), "main", &main.decls);
     assert!(diags.is_empty(), "main resolves: {diags:?}");
 
-    let modules = HashMap::from([(vec!["dep".to_string()], dep_globals)]);
+    let modules = HashMap::from([("dep".to_string(), dep_globals)]);
     let checked = typecheck::check(&main.decls, &globals, &modules);
     assert!(checked.diags.is_empty(), "main checks: {:?}", checked.diags);
 

@@ -7,7 +7,7 @@
 # with the same signature: the call branches on the variant, through a pointer too, and
 # with a generic payload.
 use {
-    std.io.println,
+    std.io,
 }
 
 struct Melee {
@@ -58,11 +58,11 @@ union Holder {
 func main() {
     weak := Attack.Melee(Melee{damage: 10})
     strong := Attack.Ranged(Ranged{damage: 60, accuracy: 0.95})
-    println("{weak.isLethal()} {strong.isLethal()} {weak.scaled(3)} {strong.scaled(2)}")
-    println("{anyLethal([weak])} {anyLethal([weak, strong])}")
+    io.println("{weak.isLethal()} {strong.isLethal()} {weak.scaled(3)} {strong.scaled(2)}")
+    io.println("{anyLethal([weak])} {anyLethal([weak, strong])}")
     p := &strong
-    println("{p.isLethal()}")
+    io.println("{p.isLethal()}")
     boxed := Holder.Boxed(Box{v: 5})
     paired := Holder.Paired(Pair{a: 1, b: 2})
-    println("{boxed.get()} {paired.get()}")
+    io.println("{boxed.get()} {paired.get()}")
 }

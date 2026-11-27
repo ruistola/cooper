@@ -5,14 +5,14 @@
 # runs on a new Cooper thread while the OS thread waits for its result. The main thread meanwhile waits on a
 # channel, not in C, which is not a deadlock while C may still call back.
 use {
-    std.io.println,
-    std.sync.{ Channel, channel },
+    std.io,
+    std.sync,
 }
 
 extern func pthread_create(handle: u64^, attributes: u8^, start: func(i64^): i64^, argument: i64^): i32
 extern func pthread_join(handle: u64, result: (i64^)^): i32
 
-let results: Channel i64 = channel(0)
+let results: sync.Channel i64 = sync.channel(0)
 
 func work(from: i64^): i64^ {
     let values: i64[] = []
@@ -35,12 +35,12 @@ func main(): i32 {
         received += 1
         sum += total
     }
-    println("{received} results, total {sum}")
+    io.println("{received} results, total {sum}")
     joined := 0
     for i in 0..4 do {
         let result: i64^ = nil
         if pthread_join(handles[i], &result) == 0 and result == &starts[i] then joined += 1
     }
-    println("joined {joined}")
+    io.println("joined {joined}")
     return 0
 }

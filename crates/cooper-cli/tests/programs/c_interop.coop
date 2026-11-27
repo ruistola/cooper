@@ -3,13 +3,13 @@
 # C interop with the C library: scalar arguments and results, a pointer into a Cooper
 # array, a C function used as a value, a struct returned by value (`div_t`), and
 # `CString` conversions in both directions, including a char pointer C returns.
-use { std.io as io, std.ffi.{ CString, copyBytes } }
+use { std.io, std.ffi }
 
 struct DivT { quot: i32, rem: i32 }
 
 extern func abs(v: i32): i32
 extern func strlen(s: u8^): u64
-extern func strchr(s: CString, c: i32): CString
+extern func strchr(s: ffi.CString, c: i32): ffi.CString
 extern func div(a: i32, b: i32): DivT
 
 func apply(f: func(i32): i32, v: i32): i32 { return f(v) }
@@ -20,12 +20,12 @@ func main(): i32 {
     if strlen(&bytes[0]) != 2 then return 2
     d := div(17, 5)
     if d.quot != 3 or d.rem != 2 then return 3
-    c := CString("hello")
+    c := ffi.CString("hello")
     if strlen(c.data) != 5 then return 4
     io.println(string(strchr(c, 108)))
-    copy := copyBytes(c.data, 2)
+    copy := ffi.copyBytes(c.data, 2)
     if copy.length() != 2 or copy[1] != 101 then return 5
-    let none: CString
+    let none: ffi.CString
     if string(none) != "" then return 6
     return 0
 }

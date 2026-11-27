@@ -5,61 +5,61 @@
 # stdout: error: none
 # stdout: worker handled 2 jobs, then stopped
 use {
-    std.io.println,
-    std.sync.{ Atomic, Channel, ThreadGroup, channel, choose, sync, wrap },
-    std.threads.{ sleep, yield },
+    std.io,
+    std.sync,
+    std.threads,
 }
 
 func report(e: Maybe string) {
     match e with {
-        Some(m) => println("error: {m}")
-        None => println("error: none")
+        Some(m) => io.println("error: {m}")
+        None => io.println("error: none")
     }
 }
 
 func main() {
     # every thread finishes before wait returns
-    let group: ThreadGroup
-    let finished: Atomic
+    let group: sync.ThreadGroup
+    let finished: sync.Atomic
     for i in 0..5 do group.start(func() {
-        sleep(2 * i)
+        threads.sleep(2 * i)
         finished.add(1)
     })
     group.wait()
-    println("all {finished.load()} done")
+    io.println("all {finished.load()} done")
 
     # a failure cancels the rest, which check and stop
-    let failing: ThreadGroup
-    let steps: Atomic
+    let failing: sync.ThreadGroup
+    let steps: sync.Atomic
     failing.start(func() {
-        sleep(3)
+        threads.sleep(3)
         failing.fail("disk full")
     })
     for i in 0..3 do failing.start(func() {
         while !failing.cancelled() do {
             steps.add(1)
-            sleep(1)
+            threads.sleep(1)
         }
     })
     report(failing.wait())
-    println("stopped early: {steps.load() < 100}")
+    io.println("stopped early: {steps.load() < 100}")
 
     # a group with no failure
-    let quiet: ThreadGroup
-    quiet.start(func() { yield() })
+    let quiet: sync.ThreadGroup
+    quiet.start(func() { threads.yield() })
     report(quiet.wait())
 
     # a member blocked on a channel stops when the group is cancelled
-    let workers: ThreadGroup
-    let jobs: Channel i32 = channel(0)
+    let workers: sync.ThreadGroup
+    let jobs: sync.Channel i32 = sync.channel(0)
     handled := 0
     workers.start(func() {
-        stopped := wrap(workers.cancelledEvent(), func(c: ()): Maybe i32 { return None })
-        while sync(choose(jobs.recvEvent(), stopped)) is Some(job) do handled += 1
+        stopped := sync.wrap(workers.cancelledEvent(), func(c: ()): Maybe i32 { return None })
+        while sync.wait(sync.choose(jobs.recvEvent(), stopped)) is Some(job) do handled += 1
     })
     jobs.send(1)
     jobs.send(2)
     workers.cancel()
     workers.wait()
-    println("worker handled {handled} jobs, then stopped")
+    io.println("worker handled {handled} jobs, then stopped")
 }

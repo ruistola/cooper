@@ -64,7 +64,7 @@ pub(crate) fn array_length(name: &str, span: Span, globals: &Globals, diags: &mu
 /// with the index of its file.
 pub(crate) fn evaluate(
     decls: &[(usize, &Stmt)],
-    files: &[(&Globals, &HashMap<Vec<String>, Globals>)],
+    files: &[(&Globals, &HashMap<String, Globals>)],
 ) -> (HashMap<String, Constant>, Vec<(usize, Diagnostic)>) {
     let locals = HashMap::new();
     let mut evaluator = Evaluator { decls: HashMap::new(), files, locals: &locals, done: HashMap::new(), active: Vec::new() };
@@ -102,7 +102,7 @@ pub(crate) fn evaluate(
 pub(crate) fn evaluate_local(
     stmt: &Stmt,
     globals: &Globals,
-    modules: &HashMap<Vec<String>, Globals>,
+    modules: &HashMap<String, Globals>,
     locals: &HashMap<String, Constant>,
 ) -> Result<Constant, Diagnostic> {
     let StmtKind::ConstDecl { name, name_span, ty, value } = &stmt.kind else {
@@ -126,7 +126,7 @@ type Eval<T> = Result<T, (usize, Diagnostic)>;
 struct Evaluator<'a> {
     /// The module's constant declarations, by name, with the index of each one's file.
     decls: HashMap<&'a str, (usize, &'a Stmt)>,
-    files: &'a [(&'a Globals, &'a HashMap<Vec<String>, Globals>)],
+    files: &'a [(&'a Globals, &'a HashMap<String, Globals>)],
     /// The local constants in scope, when evaluating one in a function body.
     locals: &'a HashMap<String, Constant>,
     /// The constants evaluated so far; `None` for one whose initializer has an error,
@@ -233,18 +233,10 @@ impl<'a> Evaluator<'a> {
                 },
                 None => Ok(globals.consts.get(name).cloned()),
             },
-            ExprKind::Field { target, name, .. } => {
-                let mut path = Vec::new();
-                let mut head = &**target;
-                while let ExprKind::Field { target, name, .. } = &head.kind {
-                    path.push(name.clone());
-                    head = target;
-                }
-                let ExprKind::Ident(first) = &head.kind else { return Ok(None) };
-                path.push(first.clone());
-                path.reverse();
-                Ok(modules.get(&path).and_then(|interface| interface.consts.get(name)).cloned())
-            }
+            ExprKind::Field { target, name, .. } => match &target.kind {
+                ExprKind::Ident(module) => Ok(modules.get(module).and_then(|interface| interface.consts.get(name)).cloned()),
+                _ => Ok(None),
+            },
             _ => Ok(None),
         }
     }

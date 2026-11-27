@@ -46,38 +46,60 @@ use {
 }
 ```
 
-The final path segment decides what is bound:
+A `use` names a module, never an item of one. The module is bound under the last segment of
+its path, and everything the file takes from it, types and constants included, is written
+qualified with that name:
 
-* **A module binding** brings the module into scope, and its members are reached qualified:
-  `use { std.io }` then `std.io.print("hello")`.
-* **A name binding** brings one exported item (a type, function, variable, or constant) into
-  scope for bare use:
-  `use { geometry.Point }` then `let p: Point`. Several names from one module are grouped:
-  `use { geometry.{ Point, Shape } }`.
+```
+use {
+  std.io,
+  std.sync,
+}
 
-`as` renames any binding, and the alias is its only spelling in that file:
+func main() {
+  let wg: sync.WaitGroup
+  io.println("waiting")
+  wg.wait()
+}
+```
+
+The full path is not a spelling: after `use { std.io }` the module is `io`, and `std.io.println`
+is an error. A qualified name is written the same way wherever a name may appear: in an
+expression (`io.println`, `math.Pi`, `geo.Shape.Circle(1)`, `geo.Point { x: 1, y: 2 }`), a type
+(`sync.WaitGroup`, `sync.Channel i32`), and a pattern (`geo.Shape.Circle(r)`,
+`geo.Point { x: x }`). Methods are not qualified: they are reached through a value
+(`wg.wait()`). A variant whose sum type inference fixes is written bare (`Circle(1)`) whatever
+module declares it.
+
+Since a module's names always appear behind its name, they are chosen to read well that way and
+not repeat it: `strings.Builder`, not `strings.StringBuilder`.
+
+`as` renames a module, and the alias is its only spelling in that file. It is needed only when two
+modules end in the same segment, or when a module's name collides with one of the file's own
+module's declarations:
 
 ```
 use {
   http as web,                                 # web.serve()
-  geometry.{ Point, Shape as Figure },
+  std.strings,
+  text.strings as textStrings,
 }
 ```
 
 `Maybe` and `Result` need no `use`; see [Sum Types](./sum-types.md#maybe-and-result).
 
-A bare-bound name shares the file's top-level namespace with the module's declarations. Two
+A module's name shares the file's top-level namespace with the module's declarations. Two
 bindings of one name, or a binding colliding with a declaration, is an error reported at the
-`use`.
+`use`. A local variable may shadow a module's name.
 
 ### Rules
 
 * `use` is file-scoped. A name used in a file is either declared in its module (in any of the
-  module's files) or listed in that file's `use` block.
+  module's files) or qualified with the name of a module listed in that file's `use` block.
 * `use` does not propagate: `use { server }` does not bring in `server.auth`, and a module
   never re-exports what it uses.
 * A module dependency cycle is an error.
-* Aliases and bare names are local spellings only. Every item keeps its full module identity,
+* Module names and aliases are local spellings only. Every item keeps its full module identity,
   so same-named items from different modules stay distinct.
 
 ## Visibility
@@ -88,7 +110,7 @@ a file that starts with the directive `#private`, before its `use` block:
 ```
 #private
 
-struct StringBuilder {
+struct Builder {
     bytes: u8[],
 }
 

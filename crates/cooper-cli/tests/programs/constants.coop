@@ -58,8 +58,8 @@ func locals(): string {
 
 func main() {
     let b: Buffer
-    std.io.println("{b.bytes.length()} {b.sides.length()} {kind(1024)} {kind(4096)} {kind(5)}")
-    std.io.println("{Min} {Max} {Big} {Narrow} {Neg} {-Neg}")
-    std.io.println("{Half} {Ratio} {Verbose} {Letter} {Greeting}")
-    std.io.println(locals())
+    io.println("{b.bytes.length()} {b.sides.length()} {kind(1024)} {kind(4096)} {kind(5)}")
+    io.println("{Min} {Max} {Big} {Narrow} {Neg} {-Neg}")
+    io.println("{Half} {Ratio} {Verbose} {Letter} {Greeting}")
+    io.println(locals())
 }

@@ -9,7 +9,7 @@
 # when there are none; `xs...` passes an array or slice as those arguments. Works with
 # generics and methods, and mixes with ordinary parameters.
 use {
-  std.io.println,
+  std.io,
 }
 
 func max(vals: ...i32): i32 {
@@ -33,14 +33,14 @@ struct Acc { total: i32 }
 (a: Acc^) func add(ns: ...i32) { for n in ns do a.total += n }
 
 func main() {
-  println("{max(3, 9, 4)} {max()} {max(7)}")
+  io.println("{max(3, 9, 4)} {max()} {max(7)}")
   nums := [5, 2, 8]
-  println("{max(nums...)} {max(nums[1..]...)}")
-  println(join(", ", "a", "b", "c"))
-  println(join("-"))
-  println("{count(1, 2, 3)} {count("x")}")
+  io.println("{max(nums...)} {max(nums[1..]...)}")
+  io.println(join(", ", "a", "b", "c"))
+  io.println(join("-"))
+  io.println("{count(1, 2, 3)} {count("x")}")
   let acc: Acc
   acc.add(1, 2, 3)
   acc.add(nums...)
-  println("{acc.total}")
+  io.println("{acc.total}")
 }

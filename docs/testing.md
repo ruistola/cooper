@@ -12,16 +12,16 @@ leaves `*_test.coop` files out; `check` reads them.
 ```
 # mathx/mathx_test.coop
 use {
-  std.testing.check,
+  std.testing,
 }
 
 func testAdd() {
-  check(add(2, 3) == 5, "2 + 3")
+  testing.check(add(2, 3) == 5, "2 + 3")
 }
 ```
 
-`std.testing` has `check(ok: bool, message: string)`, which fails the test with `message` unless
-`ok` holds, and `fail(message)`. A test passes when it returns. It fails when it calls `fail`,
+`std.testing` has `testing.check(ok: bool, message: string)`, which fails the test with `message`
+unless `ok` holds, and `testing.fail(message)`. A test passes when it returns. It fails when it calls `fail`,
 when a `check` does not hold, or when the program panics. Any other function in a test file is a
 helper, not a test.
 

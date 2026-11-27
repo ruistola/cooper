@@ -58,36 +58,14 @@ fn project_err(modules: &[(&str, &str)], needle: &str) {
 }
 
 #[test]
-fn name_binding_imports_a_function_for_bare_use() {
-    project_ok(&[
-        ("util", "func inc(x: i32): i32 {\n  return x + 1\n}"),
-        (
-            "main",
-            "use {\n  util.inc,\n}\nfunc main(): i32 {\n  return inc(41)\n}",
-        ),
-    ]);
-}
-
-#[test]
-fn name_binding_imports_a_type_for_construction_and_fields() {
-    project_ok(&[
-        ("geo", "struct Point {\n  x: i32,\n  y: i32,\n}"),
-        (
-            "main",
-            "use {\n  geo.Point,\n}\nfunc origin(): i32 {\n  p := Point { x: 0, y: 0 }\n  return p.x\n}",
-        ),
-    ]);
-}
-
-#[test]
-fn imported_name_may_be_aliased() {
-    project_ok(&[
-        ("util", "func inc(x: i32): i32 {\n  return x + 1\n}"),
-        (
-            "main",
-            "use {\n  util.inc as bump,\n}\nfunc main(): i32 {\n  return bump(41)\n}",
-        ),
-    ]);
+fn use_names_modules_not_their_items() {
+    project_err(
+        &[
+            ("util", "func inc(x: i32): i32 {\n  return x + 1\n}"),
+            ("main", "use {\n  util.inc,\n}\nfunc main() {}"),
+        ],
+        "`use` names modules, not their items: use `util`, then write `util.inc`",
+    );
 }
 
 #[test]
@@ -99,54 +77,41 @@ fn use_of_unknown_module_is_reported() {
 }
 
 #[test]
-fn use_of_unexported_item_is_reported() {
-    project_err(
-        &[
-            ("util", "func inc(x: i32): i32 {\n  return x + 1\n}"),
-            ("main", "use {\n  util.dec,\n}\nfunc main() {}"),
-        ],
-        "module `util` exports no item named `dec`",
-    );
-}
-
-#[test]
 fn imports_do_not_re_export_transitively() {
-    // `mid` uses `base.Thing`, but does not re-export it; `main` using `mid.Thing`
-    // must fail — a name reaches a module only through that module's own use.
+    // `mid` uses `base`, but does not re-export its items: a module's items reach another
+    // module only through that module's own use.
     project_err(
         &[
             ("base", "struct Thing {\n  v: i32,\n}"),
-            ("mid", "use {\n  base.Thing,\n}\nfunc wrap(t: Thing): i32 {\n  return t.v\n}"),
-            ("main", "use {\n  mid.Thing,\n}\nfunc main() {}"),
+            ("mid", "use {\n  base,\n}\nfunc wrap(t: base.Thing): i32 {\n  return t.v\n}"),
+            ("main", "use {\n  mid,\n}\nfunc main() {\n  t := mid.Thing { v: 1 }\n}"),
         ],
         "module `mid` exports no item named `Thing`",
     );
 }
 
 #[test]
-fn colliding_imports_are_reported() {
-    // Two imports aliased to the same local name collide.
-    project_err(
-        &[
-            ("a", "func f(): i32 {\n  return 1\n}"),
-            ("b", "func g(): i32 {\n  return 2\n}"),
-            (
-                "main",
-                "use {\n  a.f as dup,\n  b.g as dup,\n}\nfunc main() {}",
-            ),
-        ],
-        "bound by more than one use",
-    );
+fn modules_with_the_same_name_collide_unless_renamed() {
+    let modules = |uses: &str| {
+        project_diags(&[
+            ("left.util", "func f(): i32 {\n  return 1\n}"),
+            ("right.util", "func f(): i32 {\n  return 2\n}"),
+            ("main", &format!("use {{\n  {uses}\n}}\nfunc main() {{}}")),
+        ])
+    };
+    let diags = modules("left.util,\n  right.util,");
+    assert!(diags.iter().any(|d| d.message.contains("`util` is bound by more than one use in this file")));
+    assert!(modules("left.util,\n  right.util as rightUtil,").is_empty());
 }
 
 #[test]
 fn import_colliding_with_a_declaration_is_reported_at_the_use() {
-    // An imported name that shadows one of the importing module's own declarations is
+    // A module name that shadows one of the importing module's own declarations is
     // rejected at the `use` site, not at the declaration.
     let diags = multifile_main_diags(
         &[(
             "main",
-            "use {\n  util.inc,\n}\nfunc inc(x: i32): i32 {\n  return x\n}\nfunc main() {}",
+            "use {\n  util,\n}\nfunc util(x: i32): i32 {\n  return x\n}\nfunc main() {}",
         )],
         &[("util", "func inc(x: i32): i32 {\n  return x + 1\n}")],
     );
@@ -160,8 +125,8 @@ fn import_colliding_with_a_declaration_is_reported_at_the_use() {
 #[test]
 fn module_dependency_cycle_is_reported() {
     let diags = multifile_main_diags(
-        &[("main", "use {\n  b.fromB,\n}\nfunc fromA(): i32 {\n  return fromB()\n}")],
-        &[("b", "use {\n  main.fromA,\n}\nfunc fromB(): i32 {\n  return fromA()\n}")],
+        &[("main", "use {\n  b,\n}\nfunc fromA(): i32 {\n  return b.fromB()\n}")],
+        &[("b", "use {\n  main,\n}\nfunc fromB(): i32 {\n  return main.fromA()\n}")],
     );
     // The cycle is reported against a real `use` site, tagged with its file, rather
     // than an anonymous zero span.
@@ -221,12 +186,49 @@ fn module_binding_may_be_aliased() {
 }
 
 #[test]
-fn multi_segment_module_is_reached_by_full_spelling() {
+fn a_module_is_reached_by_its_last_path_segment() {
     project_ok(&[
         ("server.auth", "func token(): i32 {\n  return 7\n}"),
         (
             "main",
-            "use {\n  server.auth,\n}\nfunc main(): i32 {\n  return server.auth.token()\n}",
+            "use {\n  server.auth,\n}\nfunc main(): i32 {\n  return auth.token()\n}",
+        ),
+    ]);
+    project_err(
+        &[
+            ("server.auth", "func token(): i32 {\n  return 7\n}"),
+            ("main", "use {\n  server.auth,\n}\nfunc main(): i32 {\n  return server.auth.token()\n}"),
+        ],
+        "undefined variable: server",
+    );
+}
+
+#[test]
+fn qualified_types_are_written_in_signatures_patterns_and_type_applications() {
+    project_ok(&[
+        (
+            "geo",
+            "struct Point {\n  x: i32,\n  y: i32,\n}\nunion Shape {\n  Dot,\n  Circle(Point, i32),\n}\nstruct Box T {\n  v: T,\n}",
+        ),
+        (
+            "main",
+            "use {\n  geo,\n}
+func radius(s: geo.Shape): i32 {
+  return match s with {
+    geo.Shape.Circle(_, r) => r
+    geo.Shape.Dot => 0
+  }
+}
+func x(p: geo.Point): i32 {
+  return match p with {
+    geo.Point { x: x } => x
+  }
+}
+func main() {
+  let b: geo.Box i32 = geo.Box { v: 1 }
+  let ps: (geo.Point)[] = []
+  n := radius(geo.Shape.Circle(geo.Point { x: 1, y: 2 }, 3)) + x(ps[0]) + b.v
+}",
         ),
     ]);
 }
@@ -269,12 +271,12 @@ fn multifile_main_diags(
 
 #[test]
 fn a_use_is_visible_only_in_its_own_file() {
-    // `a.coop` imports `inc`; `b.coop`, in the same module, may not use it bare — a
-    // `use` is file-scoped, so the name is undefined there.
+    // `a.coop` uses `util`; `b.coop`, in the same module, may not — a `use` is
+    // file-scoped, so the name is undefined there.
     let diags = multifile_main_diags(
         &[
-            ("a", "use {\n  util.inc,\n}\nfunc first(): i32 {\n  return inc(1)\n}"),
-            ("b", "func second(): i32 {\n  return inc(2)\n}"),
+            ("a", "use {\n  util,\n}\nfunc first(): i32 {\n  return util.inc(1)\n}"),
+            ("b", "func second(): i32 {\n  return util.inc(2)\n}"),
         ],
         &[("util", "func inc(x: i32): i32 {\n  return x + 1\n}")],
     );
@@ -290,13 +292,13 @@ fn a_use_is_visible_only_in_its_own_file() {
 }
 
 #[test]
-fn sibling_files_may_import_the_same_name_independently() {
-    // The same bare name imported in two files of one module is not a collision:
-    // each `use` is file-scoped.
+fn sibling_files_may_use_the_same_module_independently() {
+    // The same module used in two files of one module is not a collision: each `use`
+    // is file-scoped.
     let diags = multifile_main_diags(
         &[
-            ("a", "use {\n  util.inc,\n}\nfunc first(): i32 {\n  return inc(1)\n}"),
-            ("b", "use {\n  util.inc,\n}\nfunc second(): i32 {\n  return inc(2)\n}"),
+            ("a", "use {\n  util,\n}\nfunc first(): i32 {\n  return util.inc(1)\n}"),
+            ("b", "use {\n  util,\n}\nfunc second(): i32 {\n  return util.inc(2)\n}"),
         ],
         &[("util", "func inc(x: i32): i32 {\n  return x + 1\n}")],
     );
@@ -309,14 +311,14 @@ fn sibling_files_may_import_the_same_name_independently() {
 
 #[test]
 fn a_declaration_in_one_file_is_visible_across_the_module() {
-    // A type imported in `a.coop` is used there; a function declared in `b.coop`
+    // A type of a module `a.coop` uses is used there; a function declared in `b.coop`
     // (module-global) is callable from `a.coop`, confirming declarations unite while
-    // imports do not.
+    // uses do not.
     let diags = multifile_main_diags(
         &[
             (
                 "a",
-                "use {\n  geo.Point,\n}\nfunc origin(): i32 {\n  p := Point { x: 0, y: 0 }\n  return helper(p.x)\n}",
+                "use {\n  geo,\n}\nfunc origin(): i32 {\n  p := geo.Point { x: 0, y: 0 }\n  return helper(p.x)\n}",
             ),
             ("b", "func helper(n: i32): i32 {\n  return n + 1\n}"),
         ],
@@ -332,14 +334,14 @@ fn a_declaration_in_one_file_is_visible_across_the_module() {
 // --- control flow ---
 
 #[test]
-fn same_named_types_from_two_modules_stay_distinct_and_read_qualified() {
+fn same_named_types_from_two_modules_stay_distinct() {
     project_err(
         &[
             ("a", "struct Node {\n  x: i32,\n}"),
             ("b", "struct Node {\n  x: i32,\n}"),
             (
                 "main",
-                "use {\n  a.Node as ANode,\n  b.Node as BNode,\n}\nfunc f(x: ANode): BNode {\n  return x\n}",
+                "use {\n  a,\n  b,\n}\nfunc f(x: a.Node): b.Node {\n  return x\n}",
             ),
         ],
         "return type mismatch: expected b.Node, found a.Node",
@@ -350,7 +352,7 @@ fn same_named_types_from_two_modules_stay_distinct_and_read_qualified() {
 fn a_type_reaches_another_it_names_without_importing_it() {
     project_ok(&[
         ("a", "struct Item {\n  tag: i32,\n}\nstruct Node {\n  item: Item,\n}"),
-        ("main", "use {\n  a.Node,\n}\nfunc f(n: Node): i32 {\n  return n.item.tag\n}"),
+        ("main", "use {\n  a,\n}\nfunc f(n: a.Node): i32 {\n  return n.item.tag\n}"),
     ]);
 }
 
@@ -366,22 +368,22 @@ fn a_generic_function_is_called_through_a_module_binding() {
 fn the_standard_io_module_is_provided_by_the_compiler() {
     project_ok(&[(
         "main",
-        "use {\n  std.io,\n  std.io.println,\n}\nfunc main() {\n  std.io.print(\"a\")\n  println(\"b\")\n}",
+        "use {\n  std.io,\n}\nfunc main() {\n  io.print(\"a\")\n  io.println(\"b\")\n}",
     )]);
     project_err(
-        &[("main", "use {\n  std.io,\n}\nfunc main() {\n  std.io.shout(\"a\")\n}")],
-        "module `std.io` exports no item named `shout`",
+        &[("main", "use {\n  std.io,\n}\nfunc main() {\n  io.shout(\"a\")\n}")],
+        "module `io` exports no item named `shout`",
     );
 }
 
 #[test]
-fn constants_are_used_across_modules_by_qualified_and_bound_names() {
+fn constants_are_used_across_modules_qualified() {
     project_ok(&[
         ("sizes", "const Page: i64 = 4096\nconst Pages: i64 = 4"),
         (
             "main",
-            "use {\n  sizes,\n  sizes.Page,\n}
-const Total: i64 = sizes.Pages * Page
+            "use {\n  sizes,\n}
+const Total: i64 = sizes.Pages * sizes.Page
 struct Buffer {
   bytes: u8[Total],
 }
@@ -447,8 +449,6 @@ fn a_private_file_is_visible_to_its_module_only() {
     let use_geo = "use {\n  geo,\n}\n";
     let main = format!("{use_geo}func f(): i32 {{\n  return geo.doubled(2) + geo.twice(2)\n}}");
     assert!(geo_diags(&main).iter().any(|m| m.contains("module `geo` exports no item named `twice`")));
-    let main = "use {\n  geo.twice,\n}\nfunc main() {\n}";
-    assert!(geo_diags(main).iter().any(|m| m.contains("module `geo` exports no item named `twice`")));
     let main = format!("{use_geo}func f(): i32 {{\n  return geo.Offset\n}}");
     assert!(geo_diags(&main).iter().any(|m| m.contains("module `geo` exports no item named `Offset`")));
 }
@@ -456,10 +456,10 @@ fn a_private_file_is_visible_to_its_module_only() {
 #[test]
 fn a_type_of_a_private_file_is_abstract_outside_its_module() {
     // Named, held, passed, zero-initialized, and given to the public functions and methods.
-    let main = "use {\n  geo,\n  geo.{ Shape, Rect },\n}
-func f(r: Rect): i32 {
-  let s: Shape = geo.square(3)
-  let zero: Rect
+    let main = "use {\n  geo,\n}
+func f(r: geo.Rect): i32 {
+  let s: geo.Shape = geo.square(3)
+  let zero: geo.Rect
   return geo.area(s) + r.width() + zero.width()
 }";
     let diags = geo_diags(main);
@@ -467,20 +467,20 @@ func f(r: Rect): i32 {
 
     let abstract_error = "is abstract outside module geo: its contents are private";
     let looks = [
-        "func f(r: Rect): i32 {\n  return r.w\n}",
-        "func f(): Rect {\n  return Rect{w: 1, h: 2}\n}",
-        "func f(): Shape {\n  return Square(1)\n}",
-        "func f(): Shape {\n  return Shape.Square(1)\n}",
-        "func f(s: Shape): i32 {\n  return match s with {\n    Square(n) => n\n    _ => 0\n  }\n}",
-        "func f(r: Rect): i32 {\n  return match r with {\n    Rect{w: w} => w\n  }\n}",
+        "func f(r: geo.Rect): i32 {\n  return r.w\n}",
+        "func f(): geo.Rect {\n  return geo.Rect{w: 1, h: 2}\n}",
+        "func f(): geo.Shape {\n  return Square(1)\n}",
+        "func f(): geo.Shape {\n  return geo.Shape.Square(1)\n}",
+        "func f(s: geo.Shape): i32 {\n  return match s with {\n    Square(n) => n\n    _ => 0\n  }\n}",
+        "func f(r: geo.Rect): i32 {\n  return match r with {\n    geo.Rect{w: w} => w\n  }\n}",
     ];
     for look in looks {
-        let main = format!("use {{\n  geo.{{ Shape, Rect }},\n}}\n{look}");
+        let main = format!("use {{\n  geo,\n}}\n{look}");
         let diags = geo_diags(&main);
         assert!(diags.iter().any(|m| m.contains(abstract_error)), "{look}: expected {abstract_error:?}, got: {diags:?}");
     }
     // A method declared in the private file is not part of the type outside the module.
-    let main = "use {\n  geo.Rect,\n}\nfunc f(r: Rect): i32 {\n  return r.height()\n}";
+    let main = "use {\n  geo,\n}\nfunc f(r: geo.Rect): i32 {\n  return r.height()\n}";
     assert!(geo_diags(main).iter().any(|m| m.contains("height is not a member of struct Rect")));
 }
 

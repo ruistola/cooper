@@ -11,7 +11,7 @@
 # other values, also through a generic function. A pointer shows its target; a target
 # reached more than once is labelled and referred to by label, and nesting stops at 64
 # pointers with `...`.
-use { std.io as io }
+use { std.io }
 
 struct Point { x: i32, y: f64 }
 union Shape { Dot, Circle(f64), Rect(Point, Point) }

@@ -1,6 +1,6 @@
 # Allocation-heavy: many short-lived trees of several depths, and one long-lived tree.
 use {
-    std.io.println,
+    std.io,
 }
 
 struct Tree {
@@ -30,8 +30,8 @@ func main() {
         iters := 1 << (maxDepth - d + 4)
         sum := 0
         for i in 0..iters do sum += check(make(d))
-        println("{iters} trees of depth {d}: {sum}")
+        io.println("{iters} trees of depth {d}: {sum}")
         d += 4
     }
-    println("long lived: {check(long)}")
+    io.println("long lived: {check(long)}")
 }

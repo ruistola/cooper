@@ -1,7 +1,7 @@
 #private
 
 # A string under construction: bytes appended in amortized constant time.
-struct StringBuilder {
+struct Builder {
     bytes: u8[],
 }
 

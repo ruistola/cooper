@@ -18,10 +18,10 @@ fn tests_run_one_at_a_time_and_report_their_own_status() {
     write(
         &root,
         "main_test.coop",
-        "use { std.testing.check }\n\
-         func testPasses() { check(add(1, 2) == 3, \"sum\") }\n\
-         func testFails() { check(add(1, 2) == 4, \"wrong sum\") }\n\
-         func notATest() { check(false, \"never run\") }\n",
+        "use { std.testing }\n\
+         func testPasses() { testing.check(add(1, 2) == 3, \"sum\") }\n\
+         func testFails() { testing.check(add(1, 2) == 4, \"wrong sum\") }\n\
+         func notATest() { testing.check(false, \"never run\") }\n",
     );
 
     let loaded = cooper_cli::load_with_tests(&root).unwrap();

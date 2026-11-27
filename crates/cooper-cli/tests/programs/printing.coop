@@ -6,8 +6,7 @@
 # stdout: no newline, then one
 # `string(x)` formats numbers and bools; `print` writes without a newline.
 use {
-    std.io as io,
-    std.io.print,
+    std.io,
 }
 
 func main() {
@@ -24,6 +23,6 @@ func main() {
     io.println("floats: " + string(0.1) + " " + string(2.5) + " " + string(-1e20) + " " + string(third) + " " + string(inf))
 
     io.println("flags: " + string(true) + " " + string(1 > 2))
-    print("no newline, ")
+    io.print("no newline, ")
     io.println("then one")
 }

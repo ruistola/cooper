@@ -5,8 +5,8 @@
 # without probing the frame a page at a time, the first access could land beyond the guard page, in
 # memory that belongs to something else.
 use {
-    std.io.println,
-    std.sync.WaitGroup,
+    std.io,
+    std.sync,
 }
 
 extern func getpid(): i32
@@ -24,13 +24,13 @@ func spread(): i64 {
     return a[j] + b[j] + c[j]
 }
 
-func run(wg: WaitGroup^) {
-    println("{spread()}")
+func run(wg: sync.WaitGroup^) {
+    io.println("{spread()}")
     wg.done()
 }
 
 func main() {
-    let wg: WaitGroup
+    let wg: sync.WaitGroup
     wg.add(1)
     thread run(&wg)
     wg.wait()

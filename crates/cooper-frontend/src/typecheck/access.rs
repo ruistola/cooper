@@ -124,11 +124,11 @@ impl<'g> TypeChecker<'g> {
         target_span: Span,
         type_name: bool,
     ) -> Option<Type> {
-        // A member access whose base is a module reference selects an exported item
-        // (or a deeper module), distinct from struct-field and variant access.
-        if let Type::Module(prefix) = &target_type {
-            let prefix = prefix.clone();
-            return self.check_module_access(&prefix, field, span);
+        // A member access whose base is a module reference selects an exported item,
+        // distinct from struct-field and variant access.
+        if let Type::Module(module) = &target_type {
+            let module = module.clone();
+            return self.check_module_access(&module, field, span);
         }
         // A member access whose base is a sum type names a variant constructor.
         if matches!(target_type, Type::Union { .. }) {

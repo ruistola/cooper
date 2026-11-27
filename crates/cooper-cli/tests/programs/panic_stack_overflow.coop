@@ -1,21 +1,21 @@
 # exit: 101
 # stderr: panic: stack overflow in thread
 use {
-    std.threads.yield,
-    std.sync.WaitGroup,
+    std.threads,
+    std.sync,
 }
 
 func forever(n: i64): i64 {
     return forever(n + 1) + 1
 }
 
-func run(wg: WaitGroup^) {
+func run(wg: sync.WaitGroup^) {
     forever(0)
     wg.done()
 }
 
 func main() {
-    let wg: WaitGroup
+    let wg: sync.WaitGroup
     wg.add(1)
     thread run(&wg)
     wg.wait()

@@ -9,18 +9,18 @@
 # code and by `println` stays in order, and `print`, `println`, and `format` work as values.
 # `s.data()` is the pointer C wants for a string's bytes.
 use {
-    std.io.{ print, println },
-    std.fmt.format,
+    std.io,
+    std.fmt,
 }
 
 extern func puts(s: u8^): i32
 
 func main() {
-    println("one")
+    io.println("one")
     puts("two\0".data())
-    println(format("three {}", 3))
-    f := println
+    io.println(fmt.format("three {}", 3))
+    f := io.println
     f("four")
-    print("five\n")
-    println("héllo, 日本")
+    io.print("five\n")
+    io.println("héllo, 日本")
 }

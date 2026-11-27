@@ -11,7 +11,7 @@
 # returned or kept past a loop pass, or taken of a static array that is then sliced and returned.
 # Values that do not outlive the frame are the same either way, which these also check.
 use {
-    std.io.println,
+    std.io,
 }
 
 struct Point {
@@ -109,15 +109,15 @@ func main() {
     stored(&b, 6)
     other := fresh(1)
     other.x += 100
-    println("{p.x} {q.x} {b.p.x} {pointerToPointer() - 4}")
+    io.println("{p.x} {q.x} {b.p.x} {pointerToPointer() - 4}")
     c := counter(-1)
-    println("{c()} {c()} {c()}")
+    io.println("{c()} {c()} {c()}")
     k := kept()
-    println("{k() + 10} {k() + 11} {k() + 12}")
+    io.println("{k() + 10} {k() + 11} {k() + 12}")
     s := slice(9)
     t := slice(20)
-    println("{s[0]} {t[1]} {t[2] + 10}")
-    println("{collect()[1] + 3} {collect()[2] + 3}")
-    println("{localOnly()} {collect().length() - 1}")
-    println("{[1, 2, 3].length()} {[p.x, q.x].length() + 1}")
+    io.println("{s[0]} {t[1]} {t[2] + 10}")
+    io.println("{collect()[1] + 3} {collect()[2] + 3}")
+    io.println("{localOnly()} {collect().length() - 1}")
+    io.println("{[1, 2, 3].length()} {[p.x, q.x].length() + 1}")
 }

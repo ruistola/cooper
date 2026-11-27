@@ -4,7 +4,7 @@
 # doc comment) that signatures use, an alias of an alias, and one in an array type. Any value of
 # the aliased type fits, and function parameter names in a function type are documentation only.
 use {
-    std.io.println,
+    std.io,
 }
 
 # A rectangle: left, top, width, height.
@@ -32,5 +32,5 @@ func mine(a: u8, b: u8[]): (bool, i32, bool) {
 
 func main() {
     let l: Area = (1, 2, 3, 4)
-    println("{area(l)} {area((0, 0, 5, 6))} {run(mine, [mine])}")
+    io.println("{area(l)} {area((0, 0, 5, 6))} {run(mine, [mine])}")
 }

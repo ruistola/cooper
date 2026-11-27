@@ -18,7 +18,7 @@
 # of arrays (`i32[3][2]` is two rows of three), pointers to elements, and indexing, slicing,
 # and iteration through a pointer to the array.
 use {
-  std.io.println,
+  std.io,
 }
 
 struct Pixel {
@@ -56,39 +56,39 @@ func count(a: i32[3]^): i32 {
 func main() {
   let rgb: u8[3] = [10, 20, 30]
   let zero: i32[4]
-  println("{rgb} {zero} {rgb.length()}")
+  io.println("{rgb} {zero} {rgb.length()}")
   b := rgb
   b[0] = 99
-  println("{rgb[0]} {b[0]}")
+  io.println("{rgb[0]} {b[0]}")
   let nums: i32[4] = [1, 2, 3, 4]
-  println("{sum(nums[..])} {sum(nums[1..3])}")
+  io.println("{sum(nums[..])} {sum(nums[1..3])}")
   view := nums[..]
   view[0] = 100
   view.push(5)
-  println("{nums} {view}")
+  io.println("{nums} {view}")
   let v1: f32[3] = [1.0, 2.0, 3.0]
-  println("{dot(v1, v1)}")
-  println("{double(nums)} {nums}")
-  println("{fill()[1]}")
+  io.println("{dot(v1, v1)}")
+  io.println("{double(nums)} {nums}")
+  io.println("{fill()[1]}")
   let grid: i32[3][2]
   grid[1][2] = 5
   grid[0][0] += 2
-  println("{grid} {grid.length()} {grid[1].length()}")
+  io.println("{grid} {grid.length()} {grid[1].length()}")
   row := grid[1][..]
   row[0] = 4
-  println("{grid}")
+  io.println("{grid}")
   let px: Pixel
   px.rgb[1] = 200
   p := &px
   p.rgb[2] = 7
-  println("{px} {px.rgb[..]}")
+  io.println("{px} {px.rgb[..]}")
   q := &nums[2]
   q^ = 55
-  println("{nums}")
+  io.println("{nums}")
   let big: i64[1000]
   big[999] = 1
-  println("{big[999] + big[0]}")
+  io.println("{big[999] + big[0]}")
   let counted: i32[3]
   total := count(&counted)
-  println("{counted} {total}")
+  io.println("{counted} {total}")
 }

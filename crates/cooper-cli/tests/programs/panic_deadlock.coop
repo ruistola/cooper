@@ -1,11 +1,11 @@
 # exit: 101
 # stderr: panic: all threads are blocked: deadlock
 use {
-    std.sync.WaitGroup,
+    std.sync,
 }
 
 func main() {
-    let wg: WaitGroup
+    let wg: sync.WaitGroup
     wg.add(1)
     wg.wait()
 }

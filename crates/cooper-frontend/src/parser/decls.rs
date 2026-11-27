@@ -53,7 +53,14 @@ impl Parser {
         } else if self.peek().kind == Func {
             self.parse_func_type_expr()?
         } else {
-            TypeExprKind::Named(self.expect(Identifier)?.text)
+            let mut name = self.expect(Identifier)?.text;
+            // Another module's type is spelled with the module's name, `sync.WaitGroup`, and
+            // resolves under that dotted name.
+            if self.peek().kind == Dot {
+                self.expect(Dot)?;
+                name = format!("{name}.{}", self.expect(Identifier)?.text);
+            }
+            TypeExprKind::Named(name)
         };
         let mut ty = TypeExpr {
             kind,
@@ -411,7 +418,7 @@ impl Parser {
         self.paren_stack.push(OpenCurly);
         let mut specs = Vec::new();
         while self.peek().kind != CloseCurly {
-            self.parse_use_entry(&mut specs)?;
+            specs.push(self.parse_use_entry()?);
             if self.peek().kind == Comma {
                 self.expect(Comma)?;
             } else {
@@ -422,53 +429,18 @@ impl Parser {
         Ok(specs)
     }
 
-    /// Parse one comma-separated entry of a use block. An entry is a dotted path
-    /// with an optional trailing `as` rename, or a path prefix followed by a braced
-    /// group (`prefix.{ a, b as c }`) that expands into one binding per item. Every
-    /// resulting binding is appended to `specs`, flattening groups away.
-    fn parse_use_entry(&mut self, specs: &mut Vec<UseSpec>) -> PResult<()> {
+    /// Parse one comma-separated entry of a use block: a module's dotted path with an
+    /// optional trailing `as` rename.
+    fn parse_use_entry(&mut self) -> PResult<UseSpec> {
         let start = self.peek().span;
-        let mut prefix = vec![self.expect(Identifier)?.text];
-        loop {
-            if self.peek().kind != Dot {
-                break;
-            }
+        let mut path = vec![self.expect(Identifier)?.text];
+        while self.peek().kind == Dot {
             self.expect(Dot)?;
-            if self.peek().kind == OpenCurly {
-                return self.parse_use_group(&prefix, specs);
-            }
-            prefix.push(self.expect(Identifier)?.text);
+            path.push(self.expect(Identifier)?.text);
         }
         let alias = self.parse_use_alias()?;
         let span = Span::new(start.start, self.current_token().span.end);
-        specs.push(UseSpec {
-            path: prefix,
-            alias,
-            span,
-        });
-        Ok(())
-    }
-
-    /// Parse a braced group of item bindings sharing `prefix` as their module path,
-    /// appending one flattened `UseSpec` per item.
-    fn parse_use_group(&mut self, prefix: &[String], specs: &mut Vec<UseSpec>) -> PResult<()> {
-        self.expect(OpenCurly)?;
-        self.paren_stack.push(OpenCurly);
-        while self.peek().kind != CloseCurly {
-            let item = self.expect(Identifier)?;
-            let alias = self.parse_use_alias()?;
-            let span = Span::new(item.span.start, self.current_token().span.end);
-            let mut path = prefix.to_vec();
-            path.push(item.text);
-            specs.push(UseSpec { path, alias, span });
-            if self.peek().kind == Comma {
-                self.expect(Comma)?;
-            } else {
-                break;
-            }
-        }
-        self.expect(CloseCurly)?;
-        Ok(())
+        Ok(UseSpec { path, alias, span })
     }
 
     /// Parse an optional `as <identifier>` rename, returning the alias if present.

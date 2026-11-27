@@ -7,11 +7,11 @@
 # events with timeouts under load. A thread that never blocks still stops at the safe points the compiler puts
 # in loops, so collections caused by the other threads can proceed.
 use {
-    std.io.println,
-    std.sync.{ Atomic, Channel, Mutex, WaitGroup, after, channel, choose, sync, wrap },
+    std.io,
+    std.sync,
 }
 
-func bump(m: Mutex^, counter: i64^, wg: WaitGroup^) {
+func bump(m: sync.Mutex^, counter: i64^, wg: sync.WaitGroup^) {
     for i in 0..1000 do {
         m.lock()
         counter^ = counter^ + 1
@@ -20,20 +20,20 @@ func bump(m: Mutex^, counter: i64^, wg: WaitGroup^) {
     wg.done()
 }
 
-func stage(input: (Channel i64)^, output: (Channel i64)^) {
+func stage(input: (sync.Channel i64)^, output: (sync.Channel i64)^) {
     while input.recv() is Some(v) do output.send(v)
     output.close()
 }
 
-func send(ch: (Channel i32)^, n: i32) {
+func send(ch: (sync.Channel i32)^, n: i32) {
     for i in 0..n do ch.send(i)
 }
 
-func spin(stop: Atomic^, turns: Atomic^) {
+func spin(stop: sync.Atomic^, turns: sync.Atomic^) {
     while stop.load() == 0 do turns.add(1)
 }
 
-func garbage(wg: WaitGroup^) {
+func garbage(wg: sync.WaitGroup^) {
     for i in 0..5000 do {
         let words: string[]
         words.push("allocated {i}")
@@ -42,17 +42,17 @@ func garbage(wg: WaitGroup^) {
 }
 
 func main() {
-    let m: Mutex
+    let m: sync.Mutex
     counter := 0
-    let wg: WaitGroup
+    let wg: sync.WaitGroup
     wg.add(8)
     for i in 0..8 do thread bump(&m, &counter, &wg)
     wg.wait()
-    println("counter {counter}")
+    io.println("counter {counter}")
 
-    let source: Channel i64 = channel(4)
-    let middle: Channel i64 = channel(4)
-    let sink: Channel i64 = channel(4)
+    let source: sync.Channel i64 = sync.channel(4)
+    let middle: sync.Channel i64 = sync.channel(4)
+    let sink: sync.Channel i64 = sync.channel(4)
     thread stage(&source, &middle)
     thread stage(&middle, &sink)
     thread func() {
@@ -61,25 +61,25 @@ func main() {
     }()
     sum := 0
     while sink.recv() is Some(v) do sum += v
-    println("pipeline sum {sum}")
+    io.println("pipeline sum {sum}")
 
-    let values: Channel i32 = channel(0)
+    let values: sync.Channel i32 = sync.channel(0)
     for i in 0..4 do thread send(&values, 100)
     timeouts := 0
     received := 0
-    timeout := wrap(after(10000), func(late: ()): bool { return false })
+    timeout := sync.wrap(sync.after(10000), func(late: ()): bool { return false })
     for i in 0..400 do {
-        got := sync(choose(wrap(values.recvEvent(), func(v: Maybe i32): bool { return true }), timeout))
+        got := sync.wait(sync.choose(sync.wrap(values.recvEvent(), func(v: Maybe i32): bool { return true }), timeout))
         if got then received += 1 else timeouts += 1
     }
-    println("timeouts {timeouts}, received {received}")
+    io.println("timeouts {timeouts}, received {received}")
 
-    let stop: Atomic
-    let turns: Atomic
+    let stop: sync.Atomic
+    let turns: sync.Atomic
     thread spin(&stop, &turns)
     wg.add(4)
     for i in 0..4 do thread garbage(&wg)
     wg.wait()
     stop.store(1)
-    println("spinner stopped for the collector: {turns.load() > 0}")
+    io.println("spinner stopped for the collector: {turns.load() > 0}")
 }

@@ -1,7 +1,7 @@
 # A live heap with poor locality: a random graph, each node pointing at two others chosen by a
 # pseudo-random sequence, so that tracing it jumps all over memory. Garbage churns on top.
 use {
-    std.io.println,
+    std.io,
 }
 
 struct Node {
@@ -42,5 +42,5 @@ func main() {
         }
         sum += i64(junk.length())
     }
-    println("{sum} {head.id}")
+    io.println("{sum} {head.id}")
 }

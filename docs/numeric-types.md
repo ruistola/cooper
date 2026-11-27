@@ -84,7 +84,7 @@ converts back to a pointer: `"{u64(p):x}"` shows it in hexadecimal, and `u64(nil
 ## Math functions
 
 `std.math` has the mathematical functions as generic free functions, called with the module
-prefix (`use { std.math as math }`):
+prefix (`use { std.math }`):
 
 ```
 math.min(a, b)      math.max(a, b)      math.clamp(x, lo, hi)      # numbers and runes

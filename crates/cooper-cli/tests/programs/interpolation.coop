@@ -12,7 +12,7 @@
 # included), `\{` escapes, positional `{}` holes filled by `format`/`println`
 # arguments, format specs (radix, precision, width, alignment, fill, zero padding), and
 # evaluation order: the template's holes first, then the arguments, each once.
-use { std.io as io, std.fmt.format }
+use { std.io, std.fmt }
 
 struct Point { x: i32, y: i32 }
 
@@ -30,7 +30,7 @@ func main() {
     io.println("{greet("bob")}, literal \{x} and } alone, inside {[name]}, bare {name}")
     io.println("{} + {} = {}", 2, 3, 2 + 3)
     limit := 10
-    io.println(format("total {} of {limit}", 1 + 2 + 3))
+    io.println(fmt.format("total {} of {limit}", 1 + 2 + 3))
 
     n := 255
     let neg: i8 = -1
@@ -41,6 +41,6 @@ func main() {
     io.println("[{:>4}] [{:x}] [{:.1}]", 7, 4096, 2.25)
 
     let log: i32[] = []
-    format("{trace(&log, 1)} {} {trace(&log, 3)} {}", trace(&log, 2), trace(&log, 4))
+    fmt.format("{trace(&log, 1)} {} {trace(&log, 3)} {}", trace(&log, 2), trace(&log, 4))
     io.println("order {log[0]} {log[1]} {log[2]} {log[3]}")
 }

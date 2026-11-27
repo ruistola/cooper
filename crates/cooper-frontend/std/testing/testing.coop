@@ -5,7 +5,7 @@
 # own, so a failure stops that test and no other.
 
 use {
-    std.io.eprintln,
+    std.io,
 }
 
 extern func exit(status: i32)
@@ -23,7 +23,7 @@ func check(ok: bool, message: string) {
 
 # `fail`, told where it was called from.
 func failAt(message: string, at: string) {
-    eprintln("FAIL: " + message + "\n      at " + at)
+    io.eprintln("FAIL: " + message + "\n      at " + at)
     exit(1)
 }
 

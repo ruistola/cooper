@@ -4,22 +4,22 @@
 # A sync that committed before its timeout leaves no timer behind: the deadlock that follows is found at
 # once, not when the 1000 s timeout would have passed.
 use {
-    std.io.println,
-    std.sync.{ Latch, WaitGroup, after, choose, sync },
-    std.threads.sleep,
+    std.io,
+    std.sync,
+    std.threads,
 }
 
-func release(latch: Latch^) {
-    sleep(10)
+func release(latch: sync.Latch^) {
+    threads.sleep(10)
     latch.release()
 }
 
 func main() {
-    let latch: Latch
+    let latch: sync.Latch
     thread release(&latch)
-    sync(choose(latch.releasedEvent(), after(1000000)))
-    println("released")
-    let wg: WaitGroup
+    sync.wait(sync.choose(latch.releasedEvent(), sync.after(1000000)))
+    io.println("released")
+    let wg: sync.WaitGroup
     wg.add(1)
     wg.wait()
 }

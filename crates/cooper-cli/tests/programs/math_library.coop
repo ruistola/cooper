@@ -7,7 +7,7 @@
 # stdout: [1, 2, 3] 3.1415927
 use {
     std.io,
-    std.math as math,
+    std.math,
 }
 
 # Generic code may pass its own type parameter on to the float functions, and use literals of it.
@@ -16,12 +16,12 @@ func circleArea T (r: T): T {
 }
 
 func main() {
-    std.io.println("{math.min(3, 4)} {math.max(2.5, 1.5)} {math.clamp(15, 0, 10)} {math.clamp(-5, 0, 10)} {math.abs(-7)} {math.abs(-0.0)}")
+    io.println("{math.min(3, 4)} {math.max(2.5, 1.5)} {math.clamp(15, 0, 10)} {math.clamp(-5, 0, 10)} {math.abs(-7)} {math.abs(-0.0)}")
     # An integer literal a float function takes is a float.
-    std.io.println("{math.sqrt(2.0)} {math.sqrt(f64(2))} {math.sqrt(4)} {math.pow(2.0, 10.0)} {math.sin(math.Pi / 2.0)} {math.atan2(1.0, 1.0) * 4.0}")
-    std.io.println("{math.floor(-1.5)} {math.ceil(-1.5)} {math.round(2.5)} {math.round(-2.5)} {math.trunc(-2.7)} {math.hypot(1.5, 2.0)}")
-    std.io.println("{math.isNaN(math.NaN)} {math.isNaN(1.0)} {math.isInf(-math.Inf)} {math.isFinite(math.Inf)} {math.isFinite(f32(3))}")
-    std.io.println("{math.min(math.NaN, 1.0)} {math.min(1.0, math.NaN)} {math.max('a', 'b')}")
+    io.println("{math.sqrt(2.0)} {math.sqrt(f64(2))} {math.sqrt(4)} {math.pow(2.0, 10.0)} {math.sin(math.Pi / 2.0)} {math.atan2(1.0, 1.0) * 4.0}")
+    io.println("{math.floor(-1.5)} {math.ceil(-1.5)} {math.round(2.5)} {math.round(-2.5)} {math.trunc(-2.7)} {math.hypot(1.5, 2.0)}")
+    io.println("{math.isNaN(math.NaN)} {math.isNaN(1.0)} {math.isInf(-math.Inf)} {math.isFinite(math.Inf)} {math.isFinite(f32(3))}")
+    io.println("{math.min(math.NaN, 1.0)} {math.min(1.0, math.NaN)} {math.max('a', 'b')}")
     xs := [1.0, 4.0, 9.0].map(math.sqrt)
-    std.io.println("{xs} {circleArea(f32(1))}")
+    io.println("{xs} {circleArea(f32(1))}")
 }

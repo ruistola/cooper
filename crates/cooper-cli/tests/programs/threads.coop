@@ -14,45 +14,45 @@
 # OS thread's (8 MiB, committed as used): here one recurses 50000 frames deep, and a thousand threads exist
 # at once.
 use {
-    std.io.println,
-    std.threads.{ sleep, yield },
-    std.sync.{ Atomic, Mutex, WaitGroup },
+    std.io,
+    std.threads,
+    std.sync,
 }
 
 struct Counter {
-    total: Atomic,
+    total: sync.Atomic,
 }
 
 (c: Counter^) func add(n: i64) {
     c.total.add(n)
 }
 
-func worker(name: string, rounds: i32, wg: WaitGroup^, m: Mutex^, log: string[]^) {
+func worker(name: string, rounds: i32, wg: sync.WaitGroup^, m: sync.Mutex^, log: string[]^) {
     for i in 0..rounds do {
         m.lock()
         log.push("{name}{i}")
         m.unlock()
-        yield()
+        threads.yield()
     }
     wg.done()
 }
 
-func show(label: string, a: i32, b: i32, wg: WaitGroup^) {
-    println("{label}: {a} {b} x")
+func show(label: string, a: i32, b: i32, wg: sync.WaitGroup^) {
+    io.println("{label}: {a} {b} x")
     wg.done()
 }
 
-func nap(label: string, ms: i64, wg: WaitGroup^, m: Mutex^, order: string[]^) {
-    sleep(ms)
+func nap(label: string, ms: i64, wg: sync.WaitGroup^, m: sync.Mutex^, order: string[]^) {
+    threads.sleep(ms)
     m.lock()
     order.push(label)
     m.unlock()
     wg.done()
 }
 
-func count(counter: Counter^, wg: WaitGroup^) {
+func count(counter: Counter^, wg: sync.WaitGroup^) {
     counter.add(1)
-    yield()
+    threads.yield()
     counter.add(1)
     wg.done()
 }
@@ -62,25 +62,25 @@ func depth(n: i64): i64 {
     return depth(n - 1) + 1
 }
 
-func recurse(result: i64^, wg: WaitGroup^) {
+func recurse(result: i64^, wg: sync.WaitGroup^) {
     result^ = depth(50000)
     wg.done()
 }
 
-func echo T (value: T, out: T^, wg: WaitGroup^) {
+func echo T (value: T, out: T^, wg: sync.WaitGroup^) {
     out^ = value
     wg.done()
 }
 
 func main() {
-    let wg: WaitGroup
-    let m: Mutex
+    let wg: sync.WaitGroup
+    let m: sync.Mutex
     let log: string[]
     wg.add(3)
     thread worker("a", 3, &wg, &m, &log)
     thread worker("b", 2, &wg, &m, &log)
     thread worker("c", 3, &wg, &m, &log)
-    println("main waits")
+    io.println("main waits")
     wg.wait()
     let a0 = -1
     let a2 = -1
@@ -88,7 +88,7 @@ func main() {
         if entry == "a0" then a0 = i
         if entry == "a2" then a2 = i
     }
-    println("{log.length()} turns logged, {if a2 > a0 then "a2 after a0" else "out of order"}")
+    io.println("{log.length()} turns logged, {if a2 > a0 then "a2 after a0" else "out of order"}")
 
     x := 5
     wg.add(1)
@@ -101,26 +101,26 @@ func main() {
     thread nap("slow", 40, &wg, &m, &order)
     thread nap("fast", 10, &wg, &m, &order)
     wg.wait()
-    println("{order[1]} after {order[0]}")
+    io.println("{order[1]} after {order[0]}")
 
     # each thread has its own handle, with an id that grows
     wg.add(2)
     first := thread nap("one", 0, &wg, &m, &order)
     second := thread nap("two", 0, &wg, &m, &order)
     wg.wait()
-    println("handles 1 2 {if second.id == first.id + 1 and first.id > 0 then "ok" else "wrong"}")
+    io.println("handles 1 2 {if second.id == first.id + 1 and first.id > 0 then "ok" else "wrong"}")
 
     let counter: Counter
     wg.add(1000)
     for i in 0..1000 do thread count(&counter, &wg)
     wg.wait()
-    println("1000 threads counted {counter.total.load()}")
+    io.println("1000 threads counted {counter.total.load()}")
 
     let deep: i64
     wg.add(1)
     thread recurse(&deep, &wg)
     wg.wait()
-    println("{deep}")
+    io.println("{deep}")
 
     let three: i32
     let five: i32
@@ -130,5 +130,5 @@ func main() {
     thread echo(5, &five, &wg)
     thread echo("ab", &word, &wg)
     wg.wait()
-    println("{three} {five} {word}")
+    io.println("{three} {five} {word}")
 }

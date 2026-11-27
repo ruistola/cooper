@@ -3,19 +3,18 @@
 # stdout: |
 # stdout: x-y
 # A standard library module written in Cooper (`std.strings`), compiled with the program
-# that uses it, by module or by name. Functions `main` never reaches are not compiled.
+# that uses it. Functions `main` never reaches are not compiled.
 use {
-    std.io.println,
-    std.strings as strings,
-    std.strings.join,
+    std.io,
+    std.strings,
 }
 
 func unused() {
-    println("never compiled")
+    io.println("never compiled")
 }
 
 func main() {
-    println(strings.join(["a", "b", "c"], ", "))
-    println(strings.join([], "-") + "|")
-    println(join(["x", "y"], "-"))
+    io.println(strings.join(["a", "b", "c"], ", "))
+    io.println(strings.join([], "-") + "|")
+    io.println(strings.join(["x", "y"], "-"))
 }

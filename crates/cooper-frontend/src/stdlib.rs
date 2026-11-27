@@ -9,13 +9,13 @@
 //!   (the checked conversions of the numeric types, functions such as `min` and `sqrt`, and
 //!   constants; the compiler provides its [`FLOAT_FUNCTIONS`]), `std.threads`, `std.sync`, and `std.gc` (control of the garbage collector). A program that reaches one through its `use` declarations,
 //!   directly or through another std module, has its source compiled with it; the others cost
-//!   nothing. The compiler fills the holes of a template call (`println("x is {}", x)`).
+//!   nothing. The compiler fills the holes of a template call (`io.println("x is {}", x)`).
 //! * The prelude, in scope in every module without a `use`: the sum types `Maybe T`
 //!   (`None`, `Some(T)`) and `Result T E` (`Ok(T)`, `Err(E)`), and `Thread`, the handle a
 //!   `thread` expression gives (`struct Thread { id: i64 }`). A module's own declaration of
 //!   one of these names shadows the prelude's.
 //! * `std.ffi`, interface only (the runtime implements it): `CString`, a NUL-terminated C string (`struct CString { data: u8^ }`),
-//!   converted from a string as `CString(s)` and back as `string(c)`, and
+//!   converted from a string as `ffi.CString(s)` and back as `string(c)`, and
 //!   `copyBytes(p: u8^, n: i64): u8[]`, which copies C bytes into an array.
 
 use std::collections::HashSet;

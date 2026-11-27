@@ -226,12 +226,12 @@ struct BodyConstraints {
 }
 
 /// Type check `module` against `globals`. `modules` maps each `use`-bound module's
-/// local spelling to its interface, so qualified accesses (`other.func()`) resolve
+/// local name to its interface, so qualified accesses (`other.func()`) resolve
 /// against the depended-on module.
 pub fn check(
     module: &[Stmt],
     globals: &Globals,
-    modules: &HashMap<Vec<String>, Globals>,
+    modules: &HashMap<String, Globals>,
 ) -> Typed {
     let mut tc = TypeChecker::new(globals, modules);
     tc.scopes.push(HashMap::new());
@@ -258,8 +258,8 @@ pub fn check(
 
 struct TypeChecker<'g> {
     globals: &'g Globals,
-    /// Bound module interfaces, keyed by local spelling (`["std", "io"]`).
-    modules: &'g HashMap<Vec<String>, Globals>,
+    /// Bound module interfaces, keyed by local name (`io`).
+    modules: &'g HashMap<String, Globals>,
     diags: Vec<Diagnostic>,
     /// Every expression's attributed type, keyed by span: the lowering handoff.
     types: HashMap<Span, Type>,
@@ -314,7 +314,7 @@ struct TypeChecker<'g> {
 }
 
 impl<'g> TypeChecker<'g> {
-    fn new(globals: &'g Globals, modules: &'g HashMap<Vec<String>, Globals>) -> Self {
+    fn new(globals: &'g Globals, modules: &'g HashMap<String, Globals>) -> Self {
         TypeChecker {
             globals,
             modules,
@@ -1122,10 +1122,9 @@ impl<'g> TypeChecker<'g> {
             let sig = sig.clone();
             return self.reference(span, &sig, &format!("function {name}"), None);
         }
-        // A bare name that begins some `use`-bound module's spelling is a module
-        // reference, navigated further by qualified field access.
-        if self.module_is_prefix(std::slice::from_ref(&name.to_string())) {
-            return Some(Type::Module(vec![name.to_string()]));
+        // A bound module's name is a module reference, which qualified access navigates.
+        if self.modules.contains_key(name) {
+            return Some(Type::Module(name.to_string()));
         }
         // A bare variant takes its subject from context or from a later use.
         if self.is_bare_variant(name) {
@@ -1137,56 +1136,27 @@ impl<'g> TypeChecker<'g> {
         None
     }
 
-    /// Whether `segs` names a `use`-bound module or the leading segments of one, so
-    /// that a partial spelling (`std` of `std.io`) is still recognised as a module
-    /// reference to be navigated further.
-    fn module_is_prefix(&self, segs: &[String]) -> bool {
-        self.modules.keys().any(|key| key.starts_with(segs))
-    }
-
-    /// Resolve a qualified access `prefix.field` where `prefix` is a module reference.
-    /// Extending the spelling toward a bound module yields a deeper module reference;
-    /// once it names a complete module, `field` selects one of that module's exported
-    /// items.
-    fn check_module_access(
-        &mut self,
-        prefix: &[String],
-        field: &str,
-        span: Span,
-    ) -> Option<Type> {
-        let mut candidate = prefix.to_vec();
-        candidate.push(field.to_string());
-        if self.module_is_prefix(&candidate) {
-            return Some(Type::Module(candidate));
+    /// Resolve a qualified access `module.field`, which selects one of the bound
+    /// module's exported items.
+    fn check_module_access(&mut self, module: &str, field: &str, span: Span) -> Option<Type> {
+        let interface = &self.modules[module];
+        if let Some(ty) = interface.lookup_type_value(field) {
+            return Some(ty);
         }
-        if let Some(interface) = self.modules.get(prefix) {
-            if let Some(ty) = interface.lookup_type_value(field) {
-                return Some(ty);
-            }
-            if let Some(sig) = interface.lookup_func(field) {
-                let sig = sig.clone();
-                let label = format!("function {}.{field}", prefix.join("."));
-                return self.reference(span, &sig, &label, None);
-            }
-            if let Some(var) = interface.vars.get(field) {
-                let (module, ty) = (var.module.clone(), var.ty.clone());
-                self.variables.insert(span, VarRef { module, name: field.to_string() });
-                return Some(ty);
-            }
-            if let Some(constant) = interface.consts.get(field) {
-                self.constants.insert(span, constant.value.clone());
-                return Some(constant.ty.clone());
-            }
-            self.err(
-                span,
-                format!("module `{}` exports no item named `{field}`", prefix.join(".")),
-            );
-            return None;
+        if let Some(sig) = interface.lookup_func(field) {
+            let sig = sig.clone();
+            return self.reference(span, &sig, &format!("function {module}.{field}"), None);
         }
-        self.err(
-            span,
-            format!("`{field}` is not a member of module `{}`", prefix.join(".")),
-        );
+        if let Some(var) = interface.vars.get(field) {
+            let (var_module, ty) = (var.module.clone(), var.ty.clone());
+            self.variables.insert(span, VarRef { module: var_module, name: field.to_string() });
+            return Some(ty);
+        }
+        if let Some(constant) = interface.consts.get(field) {
+            self.constants.insert(span, constant.value.clone());
+            return Some(constant.ty.clone());
+        }
+        self.err(span, format!("module `{module}` exports no item named `{field}`"));
         None
     }
 

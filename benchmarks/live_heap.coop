@@ -1,6 +1,6 @@
 # A large live heap that every collection must mark, with steady short-lived garbage on top.
 use {
-    std.io.println,
+    std.io,
 }
 
 struct Tree {
@@ -26,6 +26,6 @@ func main() {
     long := make(22)
     sum := 0
     for i in 0..20000 do sum += check(make(10))
-    println("short lived: {sum}")
-    println("long lived: {check(long)}")
+    io.println("short lived: {sum}")
+    io.println("long lived: {check(long)}")
 }

@@ -28,7 +28,7 @@ only reports diagnostics, and `cooper test dir` runs the tests of a project
 | `fn id<T>(x: T) -> T` | `func id T (x: T): T` (binders follow the name; no angle brackets) |
 | `enum Shape { Circle(i32), Empty }` | `union Shape { Empty, Circle(i32) }` (list a lone payloadless variant first); `Maybe` and `Result` are built in |
 | `Maybe::Some(5)` | `Maybe.Some(5)`, or bare `Some(5)` where inference fixes the sum type |
-| `use std::io;`, `import "fmt"` | `use { std.io }` (a braced block of dotted paths) |
+| `use std::io;`, `import "fmt"` | `use { std.io }` (a braced block of module paths); everything from it is written `io.name`, types included |
 | `println!("{}", n)`, `fmt.Println(n)` | `io.println("n = {n}")` (every string literal interpolates) |
 | `x as i64`, `int64(x)` | `i64(x)` (a conversion is a call on the target type) |
 | `a && b`, `a \|\| b` | `a and b`, `a or b` (`!a` is prefix not) |
@@ -89,7 +89,7 @@ func main(): i32 {
     n := 0
     while n < 3 do n += 1
     if area(Rect(n, 2)) != 6 then return 1
-    if first(xs) == Some(3) then std.io.println("ok: " + string(total))
+    if first(xs) == Some(3) then io.println("ok: " + string(total))
     return 0
 }
 ```
@@ -149,8 +149,9 @@ optional trailing comma.
 ```
 file       ::= "#private"? useBlock* decl*                # #private: visible only within the module
 useBlock   ::= "use" "{" useItem* "}"                 # items: comma-separated
-useItem    ::= path ("as" ident)? | path "." "{" (ident ("as" ident)?)* "}"
+useItem    ::= path ("as" ident)?                     # a module
 path       ::= ident ("." ident)*
+typeName   ::= (ident ".")? ident                     # another module's type: `sync.WaitGroup`
 
 decl       ::= struct | union | func | extern | "let" ident ":" type ("=" expr)?   # a module-level variable
              | "const" ident ":" type "=" expr        # a compile-time constant
@@ -165,7 +166,7 @@ receiver   ::= "(" ident ":" type ")"
 param      ::= ident ":" type
 
 type       ::= typeAtom typeAtom*                     # juxtaposition: `Map string i32`
-typeAtom   ::= (ident | "(" type* ")" | funcType) ("[" "]" | "^")*
+typeAtom   ::= (typeName | "(" type* ")" | funcType) ("[" "]" | "^")*
 funcType   ::= "func" "(" type* ")" (":" type)?       # `()` is unit; `(A, B)` a tuple
 
 block      ::= "{" stmt* "}"
@@ -201,9 +202,9 @@ expr       ::= number | string | "true" | "false" | "nil" | ident | "(" ")"
              | "func" "(" (ident (":" type)?)* ")" (":" type)? block   # literal; types may be inferred
 
 pattern    ::= "_" | ident | "true" | "false" | "-"? number
-             | (ident ".")? ident ("(" (ident | "_")* ")")?   # variant: `Some(x)`, `None`
-             | "(" pattern ("," pattern)+ ")"                 # tuple
-             | ident "{" (ident ":" pattern)* "}"             # struct: `Point { x: a }`
+             | (typeName ".")? ident ("(" (ident | "_")* ")")?   # variant: `Some(x)`, `None`
+             | "(" pattern ("," pattern)+ ")"                    # tuple
+             | typeName "{" (ident ":" pattern)* "}"             # struct: `Point { x: a }`
 ```
 
 In a pattern, a lowercase identifier alone binds the value. An uppercase one is a constant if
@@ -266,7 +267,7 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
   uses first, then its own in declaration order, except that a variable is initialized after
   every variable its initializer reaches, directly or through the functions it calls. An
   initializer that reaches its own variable is an error. Another module's variable is reached
-  as `module.name` or bound by `use { module.name }`.
+  as `module.name`.
 * `const BufSize: i64 = 4 * 1024` is a constant: a typed value computed at compile time, not a
   variable. It is declared at module level, or in a body, where it is scoped like a variable. Its
   initializer uses literals, operators, numeric conversions, and other constants (`module.Name`
@@ -309,12 +310,12 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
   ([Methods and Functions](./methods-and-functions.md#methods-of-built-in-types)). `std.math`
   also has the generic math functions (`math.min`, `math.abs`, `math.sqrt`, …) and constants
   (`math.Pi`) ([Numeric Types](./numeric-types.md#math-functions)).
-* Output goes through `std.io` (`print` and `println`, each taking a `string`), and
+* Output goes through `std.io` (`io.print` and `io.println`, each taking a `string`), and
   `string(x)` formats any value: `Point{x: 1, y: 2}`, `[1, 2]`, `Some("a")`. Every string
-  literal interpolates the same formatting: `println("p is {p}")`, or positionally,
-  `println("p is {}", p)` (also `std.fmt.format`). `std.fmt.list(xs, show)` formats an array
+  literal interpolates the same formatting: `io.println("p is {p}")`, or positionally,
+  `io.println("p is {}", p)` (also `fmt.format`). `fmt.list(xs, show)` formats an array
   of values that a function shows ([Type System](./type-system.md#formatting)). C functions
-  are declared `extern func`, and strings convert to and from C with `CString(s)` and
+  are declared `extern func`, and strings convert to and from C with `ffi.CString(s)` and
   `string(c)` ([C Interop](./c-interop.md)).
 
 ## Not implemented yet

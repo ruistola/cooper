@@ -2,7 +2,7 @@
 # stdout: b
 # stdout: true
 # A struct literal may span lines with function literals as multi-line field values.
-use { std.io.println }
+use { std.io }
 struct C {
     a: func(): bool,
     b: func(),
@@ -13,12 +13,12 @@ func mk(): C {
             return true
         },
         b: func() {
-            println("b")
+            io.println("b")
         },
     }
 }
 func main() {
     c := mk()
     c.b()
-    println("{c.a()}")
+    io.println("{c.a()}")
 }

@@ -6,9 +6,9 @@
 # not just the running one's: the data must come back intact. (The harness also runs this collecting
 # at every allocation.)
 use {
-    std.io.println,
-    std.threads.yield,
-    std.sync.{ Atomic, WaitGroup },
+    std.io,
+    std.threads,
+    std.sync,
 }
 
 struct Node {
@@ -34,11 +34,11 @@ func total(list: Node^): i64 {
     return sum
 }
 
-func holder(id: i32, wg: WaitGroup^, strings: Atomic^, sums: Atomic^) {
+func holder(id: i32, wg: sync.WaitGroup^, strings: sync.Atomic^, sums: sync.Atomic^) {
     let mine: string[]
     for i in 0..15 do mine.push("thread {id} holds string number {i} of its own")
     let list = build(10 + i64(id))
-    for round in 0..6 do yield()
+    for round in 0..6 do threads.yield()
     for (i, s) in mine do {
         if s != "thread {id} holds string number {i} of its own" then strings.add(-1000000)
     }
@@ -47,24 +47,24 @@ func holder(id: i32, wg: WaitGroup^, strings: Atomic^, sums: Atomic^) {
     wg.done()
 }
 
-func churn(wg: WaitGroup^) {
+func churn(wg: sync.WaitGroup^) {
     for round in 0..300 do {
         let junk: string[]
         for j in 0..20 do junk.push("garbage {round} {j} padded out to a reasonable length")
-        yield()
+        threads.yield()
     }
     wg.done()
 }
 
 func main() {
-    let wg: WaitGroup
-    let strings: Atomic
-    let sums: Atomic
+    let wg: sync.WaitGroup
+    let strings: sync.Atomic
+    let sums: sync.Atomic
     wg.add(10)
     for id in 0..8 do thread holder(id, &wg, &strings, &sums)
     thread churn(&wg)
     thread churn(&wg)
     wg.wait()
-    println("8 threads hold {strings.load()} strings and 8 lists")
-    println("lists sum {sums.load()}")
+    io.println("8 threads hold {strings.load()} strings and 8 lists")
+    io.println("lists sum {sums.load()}")
 }

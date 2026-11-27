@@ -4,7 +4,7 @@
 # sets one member over zeroed storage, writing a member reinterprets the bytes the others read,
 # and C can fill one through a pointer. A word that is a pointer in any member keeps its target
 # alive (the test harness also runs this collecting at every allocation).
-use { std.io.println }
+use { std.io }
 
 extern union Bits { f: f64, n: u64, bytes: u8[12] }
 struct Tagged { kind: u8, bits: Bits }
@@ -42,6 +42,6 @@ func main(): i32 {
     }
     let total = 0
     for slot in slots do total += slot.node.value
-    println("{b} {total}")
+    io.println("{b} {total}")
     return 0
 }

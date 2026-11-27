@@ -18,31 +18,31 @@ func main() {
     let neg: i32 = -1
     let f: f64 = -128.9
     let nan: f64 = 0.0 / 0.0
-    std.io.println("{big.toU8()} {small.toU8()} {neg.toU32()} {neg.toI8()} {f.toI8()} {(f - 1.0).toI8()} {nan.toI32()}")
+    io.println("{big.toU8()} {small.toU8()} {neg.toU32()} {neg.toI8()} {f.toI8()} {(f - 1.0).toI8()} {nan.toI32()}")
     let huge: f32 = 9223372036854775807.0
-    std.io.println("{huge.toI64()} {huge.toU64()} {(-0.5).toU8()}")
+    io.println("{huge.toI64()} {huge.toU64()} {(-0.5).toU8()}")
 
     let emoji: u32 = 0x1F600
     let surrogate: u32 = 0xD800
-    std.io.println("{emoji.toRune()} {surrogate.toRune()} {'é'.toU8()} {'€'.toU8()} {rune(surrogate)}")
+    io.println("{emoji.toRune()} {surrogate.toRune()} {'é'.toU8()} {'€'.toU8()} {rune(surrogate)}")
 
     ints := ""
     for s in ["0", "-42", "+7", "9223372036854775807", "-9223372036854775808", "9223372036854775808", "", "-", "1_000", " 1", "0x10"] do {
         ints += " {s.parseInt()}"
     }
-    std.io.println(ints[1..])
+    io.println(ints[1..])
     floats := ""
     for s in ["2.5", "-.5", "5.", "1e9", "6.02E-23", "-inf", "nan", "1e400", ".", "1e", "1_0.0", "0x1p3", "Inf"] do {
         floats += " {s.parseFloat()}"
     }
-    std.io.println(floats[1..])
-    if "65535".parseInt() is Some(n) and n.toU16() is Some(port) then std.io.println("port {port}")
+    io.println(floats[1..])
+    if "65535".parseInt() is Some(n) and n.toU16() is Some(port) then io.println("port {port}")
 
     let a: f64 = 1.0
     let b: f32 = -2.5
     let next: f64 = 1.0000000000000002
-    std.io.println("{a.bits()} {b.bits()} {i64(next.bits()) - i64(a.bits())}")
+    io.println("{a.bits()} {b.bits()} {i64(next.bits()) - i64(a.bits())}")
     let one: u64 = 0x3FF0000000000000
     let half: u32 = 0x3F000000
-    std.io.println("{one.floatFromBits()} {half.floatFromBits()} {b.bits().floatFromBits()}")
+    io.println("{one.floatFromBits()} {half.floatFromBits()} {b.bits().floatFromBits()}")
 }

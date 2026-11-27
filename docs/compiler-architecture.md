@@ -30,7 +30,10 @@ The compiler is a Rust Cargo workspace.
   dependencies' exported interfaces, never their bodies. Imports are file-scoped and
   stripped from the interface a module exports, as are the functions, methods, variables,
   constants, and aliases of its `#private` files. Their types stay in it, flagged in `TypeDefs`, and the
-  checker rejects field access, literals, variants, and patterns of them in other modules.
+  checker rejects field access, literals, variants, and patterns of them in other modules. A
+  used module's types join the file's symbol table under their qualified name (`sync.WaitGroup`),
+  which the parser reads as one name in types and patterns, so resolving a type name needs no
+  notion of modules; qualified expressions (`io.println`) go through `Type::Module` instead.
 * **lexer.rs** — Tokenization with [`logos`].
 * **parser.rs** — Hand-written recursive descent with Pratt expression parsing. It recovers at
   statement boundaries to report many errors per run. The token cursor, recovery, and
@@ -233,7 +236,7 @@ intrinsic, like a function literal capturing nothing.
 `string(x)` lowers to a conversion, and so does each hole of an interpolated string, which
 the lexer scans whole (holes may hold strings and braces), the parser parses hole by hole
 with spans inside the literal, and lowering joins with its text by concatenation. A call to
-`std.fmt.format`, `print`, or `println` with a literal template fills the template's
+`fmt.format`, `io.print`, or `io.println` with a literal template fills the template's
 positional holes `{}` with its further arguments: the checker matches their number, and
 lowering binds the holes' and arguments' values in order before joining. A hole with a
 format spec lowers to `Intrinsic::Format(spec)`, which `format.rs` expands into the radix,

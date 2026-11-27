@@ -194,7 +194,7 @@ struct Base {
     return false
 }
 
-# An operation whose result is a `T`; nothing happens until `sync`. The zero value never commits.
+# An operation whose result is a `T`; nothing happens until `wait`. The zero value never commits.
 union Event T {
     Choice((Event T)[]),
     Leaf(Base, func(): T),

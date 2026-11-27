@@ -7,7 +7,7 @@
 # these exercise mixed scalar and pointer fields, strings, tuples, static arrays of structs, sum
 # types with and without pointer payloads, function values, and arrays of each.
 use {
-    std.io.println,
+    std.io,
 }
 
 struct Mixed {
@@ -75,12 +75,12 @@ func main() {
     m := mixed()
     p := pair()
     (t0, t1, t2) := p.b
-    println("{if m.flag then 1 else 0} {m.name} {m.small} {m.wide} {i32(m.half)} {p.a} {t0} {p.cells[1].wide}")
+    io.println("{if m.flag then 1 else 0} {m.name} {m.small} {m.wide} {i32(m.half)} {p.a} {t0} {p.cells[1].wide}")
     s := shapes()
     cs := callbacks(3)
-    println("{p.a} {cs.length()} {cs[0]() - 1}")
+    io.println("{p.a} {cs.length()} {cs[0]() - 1}")
     match shape(2)^ with {
-        Label(text, n) => println("{n} {text} {i32(s.length()) + cs[2]() + 1}")
-        _ => println("wrong")
+        Label(text, n) => io.println("{n} {text} {i32(s.length()) + cs[2]() + 1}")
+        _ => io.println("wrong")
     }
 }

@@ -21,19 +21,19 @@
 # seeing the variable it names even where an inner block shadows it, and the returned or
 # block value being evaluated before the deferred code runs.
 use {
-  std.io.println,
+  std.io,
 }
 
 func order() {
-  defer println("first deferred, runs last")
-  defer println("second deferred")
-  println("body")
+  defer io.println("first deferred, runs last")
+  defer io.println("second deferred")
+  io.println("body")
 }
 
 func early(n: i32): i32 {
-  defer println("cleanup {n}")
+  defer io.println("cleanup {n}")
   if n > 0 then {
-    defer println("inner")
+    defer io.println("inner")
     return n * 2
   }
   return -1
@@ -41,20 +41,20 @@ func early(n: i32): i32 {
 
 func shadow() {
   x := 1
-  defer println("x is {x}")
+  defer io.println("x is {x}")
   if x > 0 then {
     x := 2
-    println("inner x {x}")
+    io.println("inner x {x}")
     return
   }
 }
 
 func loops() {
   for i in 0..3 do {
-    defer println("end of pass {i}")
+    defer io.println("end of pass {i}")
     if i == 0 then continue
     if i == 2 then break
-    println("pass {i}")
+    io.println("pass {i}")
   }
 }
 
@@ -75,16 +75,16 @@ func block(): i32 {
 }
 
 func viaMatch(m: Maybe i32): i32 {
-  defer println("viaMatch done")
+  defer io.println("viaMatch done")
   x := if m is Some(x) then x else return 0
   return x
 }
 
 func main() {
   order()
-  println("{early(3)} {early(0)}")
+  io.println("{early(3)} {early(0)}")
   shadow()
   loops()
-  println("{counter()} {block()}")
-  println("{viaMatch(Some(4))} {viaMatch(None)}")
+  io.println("{counter()} {block()}")
+  io.println("{viaMatch(Some(4))} {viaMatch(None)}")
 }

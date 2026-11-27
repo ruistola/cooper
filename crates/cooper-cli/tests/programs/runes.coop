@@ -23,7 +23,7 @@
 # formatting bare and inside values, `match` and `is` patterns, and `for` over a string,
 # which yields each rune and the byte offset it starts at.
 use {
-    std.io.println,
+    std.io,
 }
 
 struct Tok {
@@ -42,18 +42,18 @@ func kind(r: rune): string {
 
 func main() {
     r := 'x'
-    println("{r} {u32(r)} {'é'} {u32('日')} {'\u{1F600}'} {'\''} {'"'} {'}'}")
-    println("{'a' < 'b'} {r == 'x'} {'a' <= r <= 'z'}")
-    println("{rune(955)} {rune(u8(65))}")
-    println("{[r, 'y']} {Tok{c: 'q', n: 1}} {['\n', '\\']}")
+    io.println("{r} {u32(r)} {'é'} {u32('日')} {'\u{1F600}'} {'\''} {'"'} {'}'}")
+    io.println("{'a' < 'b'} {r == 'x'} {'a' <= r <= 'z'}")
+    io.println("{rune(955)} {rune(u8(65))}")
+    io.println("{[r, 'y']} {Tok{c: 'q', n: 1}} {['\n', '\\']}")
     s := "héllo, 日本!"
-    for (i, c) in s do println("{i}: {c}")
+    for (i, c) in s do io.println("{i}: {c}")
     count := 0
     for c in s do count += 1
-    println("{count} {s.length()}")
-    println("{kind('a')} {kind('\n')} {kind('日')} {kind('z')}")
+    io.println("{count} {s.length()}")
+    io.println("{kind('a')} {kind('\n')} {kind('日')} {kind('z')}")
     let zero: rune
-    println("{u32(zero)} {zero == '\0'}")
-    if r is 'x' then println("is x")
-    println("{r:>3}|{r:*^5}")
+    io.println("{u32(zero)} {zero == '\0'}")
+    if r is 'x' then io.println("is x")
+    io.println("{r:>3}|{r:*^5}")
 }

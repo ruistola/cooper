@@ -4,20 +4,20 @@
 # stdout: closed after 5, got 10
 # stdout: counter 400
 use {
-    std.io.println,
-    std.sync.{ Channel, Mutex, WaitGroup, channel },
-    std.threads.yield,
+    std.io,
+    std.sync,
+    std.threads,
 }
 
-func produce(ch: (Channel i32)^, from: i32, to: i32) {
+func produce(ch: (sync.Channel i32)^, from: i32, to: i32) {
     for i in from..to do ch.send(i)
 }
 
-func bump(m: Mutex^, counter: i64^, wg: WaitGroup^) {
+func bump(m: sync.Mutex^, counter: i64^, wg: sync.WaitGroup^) {
     for i in 0..100 do {
         m.lock()
         let seen = counter^
-        yield()
+        threads.yield()
         counter^ = seen + 1
         m.unlock()
     }
@@ -31,35 +31,35 @@ func value(m: Maybe i32): i32 {
     }
 }
 
-func relay(ping: (Channel i32)^, pong: (Channel i32)^) {
+func relay(ping: (sync.Channel i32)^, pong: (sync.Channel i32)^) {
     for i in 0..3 do pong.send(value(ping.recv()) + 1)
 }
 
 func main() {
     # unbuffered channel, two producers, one consumer
-    numbers := channel(0)
+    numbers := sync.channel(0)
     thread produce(&numbers, 0, 50)
     thread produce(&numbers, 50, 100)
     total := 0
     for i in 0..100 do match numbers.recv() with {
         Some(v) => total += v
-        None => println("unexpected close")
+        None => io.println("unexpected close")
     }
-    println("sum {total}")
+    io.println("sum {total}")
 
     # two threads taking turns over a pair of channels
-    ping := channel(0)
-    pong := channel(0)
+    ping := sync.channel(0)
+    pong := sync.channel(0)
     thread relay(&ping, &pong)
     r := 0
     for i in 0..3 do {
         ping.send(r)
         r = value(pong.recv())
     }
-    println("ping pong {r}")
+    io.println("ping pong {r}")
 
     # buffered channel, closed
-    buf := channel(8)
+    buf := sync.channel(8)
     for i in 0..5 do buf.send(i)
     buf.close()
     n := 0
@@ -68,14 +68,14 @@ func main() {
         Some(v) => { n += 1; sum += v }
         None => break
     }
-    println("closed after {n}, got {sum}")
+    io.println("closed after {n}, got {sum}")
 
     # a mutex around a read-yield-write
-    let m: Mutex
+    let m: sync.Mutex
     counter := 0
-    let wg: WaitGroup
+    let wg: sync.WaitGroup
     wg.add(4)
     for i in 0..4 do thread bump(&m, &counter, &wg)
     wg.wait()
-    println("counter {counter}")
+    io.println("counter {counter}")
 }

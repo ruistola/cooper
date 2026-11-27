@@ -5,5 +5,5 @@ use {
 }
 
 func main() {
-    std.io.println("hello, world")
+    io.println("hello, world")
 }

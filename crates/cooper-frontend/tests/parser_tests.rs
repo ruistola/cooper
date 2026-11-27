@@ -109,11 +109,11 @@ fn uses(src: &str) -> Vec<cooper_frontend::ast::UseSpec> {
 }
 
 #[test]
-fn parses_use_paths_groups_and_aliases() {
-    // A group flattens into one binding per item; `as` renames the local surface
-    // name; a bare path defaults its local name to the final segment.
+fn parses_use_paths_and_aliases() {
+    // `as` renames the local name; a bare path defaults its local name to the final
+    // segment.
     let specs = uses(
-        "use {\n  std.io,\n  http as web,\n  std.types.{ Maybe, Result as CoreResult },\n}\n",
+        "use {\n  std.io,\n  http as web,\n  std.strings as text,\n}\n",
     );
     let bindings: Vec<(Vec<&str>, &str)> = specs
         .iter()
@@ -129,8 +129,7 @@ fn parses_use_paths_groups_and_aliases() {
         vec![
             (vec!["std", "io"], "io"),
             (vec!["http"], "web"),
-            (vec!["std", "types", "Maybe"], "Maybe"),
-            (vec!["std", "types", "Result"], "CoreResult"),
+            (vec!["std", "strings"], "text"),
         ]
     );
 }

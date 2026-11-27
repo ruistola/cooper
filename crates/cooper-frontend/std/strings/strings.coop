@@ -164,19 +164,19 @@ func join(parts: string[], sep: string): string {
 # else is `None`, spaces and `_` included, and so is a number outside the range of `i64`. For
 # a narrower type, convert the result: `if s.parseInt() is Some(n) and n.toI32() is Some(m)`.
 (s: string) func parseInt(): Maybe i64 {
-    const Min: i64 = -9223372036854775808
+    const MIN: i64 = -9223372036854775808
     negative := s.startsWith("-")
     start := if negative or s.startsWith("+") then 1 else 0
     if start == s.length() or digitsEnd(s, start) != s.length() then return None
-    # Accumulated as a negative number, since `Min` has no positive counterpart.
+    # Accumulated as a negative number, since `MIN` has no positive counterpart.
     let n: i64 = 0
     for i in start..s.length() do {
         d := i64(s.byteAt(i) - u8('0'))
-        if n < (Min + d) / 10 then return None
+        if n < (MIN + d) / 10 then return None
         n = n * 10 - d
     }
     if negative then return Some(n)
-    return if n == Min then None else Some(-n)
+    return if n == MIN then None else Some(-n)
 }
 
 # The `f64` nearest to the number `s` spells in decimal, with an optional sign, fraction, and

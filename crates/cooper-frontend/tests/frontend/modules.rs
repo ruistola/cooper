@@ -379,17 +379,17 @@ fn the_standard_io_module_is_provided_by_the_compiler() {
 #[test]
 fn constants_are_used_across_modules_qualified() {
     project_ok(&[
-        ("sizes", "const Page: i64 = 4096\nconst Pages: i64 = 4"),
+        ("sizes", "const PAGE: i64 = 4096\nconst PAGES: i64 = 4"),
         (
             "main",
             "use {\n  sizes,\n}
-const Total: i64 = sizes.Pages * sizes.Page
+const TOTAL: i64 = sizes.PAGES * sizes.PAGE
 struct Buffer {
-  bytes: u8[Total],
+  bytes: u8[TOTAL],
 }
 func main() {
   let b: Buffer
-  n := b.bytes.length() + sizes.Page
+  n := b.bytes.length() + sizes.PAGE
 }",
         ),
     ]);
@@ -410,7 +410,7 @@ func square(side: i32): Shape {
   return r.w
 }
 func doubled(n: i32): i32 {
-  return twice(n) + Offset
+  return twice(n) + OFFSET
 }";
 const GEO_PRIVATE: &str = "#private
 struct Rect {
@@ -421,7 +421,7 @@ union Shape {
   Square(i32),
   Rect(Rect),
 }
-const Offset: i32 = 0
+const OFFSET: i32 = 0
 func twice(n: i32): i32 {
   return n * 2
 }
@@ -449,8 +449,8 @@ fn a_private_file_is_visible_to_its_module_only() {
     let use_geo = "use {\n  geo,\n}\n";
     let main = format!("{use_geo}func f(): i32 {{\n  return geo.doubled(2) + geo.twice(2)\n}}");
     assert!(geo_diags(&main).iter().any(|m| m.contains("module `geo` exports no item named `twice`")));
-    let main = format!("{use_geo}func f(): i32 {{\n  return geo.Offset\n}}");
-    assert!(geo_diags(&main).iter().any(|m| m.contains("module `geo` exports no item named `Offset`")));
+    let main = format!("{use_geo}func f(): i32 {{\n  return geo.OFFSET\n}}");
+    assert!(geo_diags(&main).iter().any(|m| m.contains("module `geo` exports no item named `OFFSET`")));
 }
 
 #[test]

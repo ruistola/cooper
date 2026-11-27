@@ -485,7 +485,7 @@ pub enum StmtKind {
         init: Option<Expr>,
     },
     FuncDecl(FuncDecl),
-    /// `const Name: T = value`: a named value computed at compile time.
+    /// `const NAME: T = value`: a named value computed at compile time.
     ConstDecl {
         name: String,
         name_span: Span,

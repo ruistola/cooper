@@ -65,7 +65,7 @@ func main() {
 
 The full path is not a spelling: after `use { std.io }` the module is `io`, and `std.io.println`
 is an error. A qualified name is written the same way wherever a name may appear: in an
-expression (`io.println`, `math.Pi`, `geo.Shape.Circle(1)`, `geo.Point { x: 1, y: 2 }`), a type
+expression (`io.println`, `math.PI`, `geo.Shape.Circle(1)`, `geo.Point { x: 1, y: 2 }`), a type
 (`sync.WaitGroup`, `sync.Channel i32`), and a pattern (`geo.Shape.Circle(r)`,
 `geo.Point { x: x }`). Methods are not qualified: they are reached through a value
 (`wg.wait()`). A variant whose sum type inference fixes is written bare (`Circle(1)`) whatever

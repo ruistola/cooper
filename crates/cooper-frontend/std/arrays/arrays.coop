@@ -76,10 +76,10 @@
 (xs: T[]) func sortBy(less: func(T, T): bool) {
     n := xs.length()
     # Insertion sort makes sorted runs, which merging then doubles in length.
-    const Run: i64 = 16
-    for start in 0..(n + Run - 1) / Run do {
-        lo := start * Run
-        hi := if lo + Run < n then lo + Run else n
+    const RUN: i64 = 16
+    for start in 0..(n + RUN - 1) / RUN do {
+        lo := start * RUN
+        hi := if lo + RUN < n then lo + RUN else n
         for i in lo + 1..hi do {
             x := xs[i]
             j := i
@@ -90,12 +90,12 @@
             xs[j] = x
         }
     }
-    if n <= Run then return
+    if n <= RUN then return
     # Each pass merges pairs of runs from one array into the other.
     from := xs
     to := xs.copy()
     inPlace := true
-    width := Run
+    width := RUN
     while width < n do {
         lo := 0
         while lo < n do {

@@ -117,8 +117,9 @@ pub(crate) fn evaluate_local(
 }
 
 fn misnamed(name: &str) -> Option<String> {
-    (!name.starts_with(|c: char| c.is_ascii_uppercase()))
-        .then(|| format!("a constant's name is PascalCase, as in BufSize: {name}"))
+    let screaming = name.starts_with(|c: char| c.is_ascii_uppercase())
+        && name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+    (!screaming).then(|| format!("a constant's name is SCREAMING_SNAKE_CASE, as in BUF_SIZE: {name}"))
 }
 
 type Eval<T> = Result<T, (usize, Diagnostic)>;

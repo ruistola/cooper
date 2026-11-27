@@ -9,57 +9,57 @@ use {
 }
 
 const K: i64 = 1 << 10
-const BufSize: i64 = 4 * K
-const Min: i8 = -128
-const Max: i8 = -(Min + 1)
-const Big: u64 = 0xFFFF_FFFF_FFFF_FFFF
-const Narrow: u8 = u8(300)
-const Neg: i32 = -(3 * 7)
-const Half: f32 = 1.0 / 2
-const Ratio: f64 = f64(BufSize) / 3
-const Verbose: bool = BufSize > 1000 and !false
-const Letter: rune = 'x'
-const Greeting: string = "hello, " + "world"
+const BUF_SIZE: i64 = 4 * K
+const MIN: i8 = -128
+const MAX: i8 = -(MIN + 1)
+const BIG: u64 = 0xFFFF_FFFF_FFFF_FFFF
+const NARROW: u8 = u8(300)
+const NEG: i32 = -(3 * 7)
+const HALF: f32 = 1.0 / 2
+const RATIO: f64 = f64(BUF_SIZE) / 3
+const VERBOSE: bool = BUF_SIZE > 1000 and !false
+const LETTER: rune = 'x'
+const GREETING: string = "hello, " + "world"
 
 struct Buffer {
-    bytes: u8[BufSize],
+    bytes: u8[BUF_SIZE],
     sides: i32[4],
 }
 
 func kind(n: i64): string {
     return match n with {
         K => "kilo"
-        BufSize => "buffer"
+        BUF_SIZE => "buffer"
         _ => "other"
     }
 }
 
 func locals(): string {
-    const BufSize: i64 = 2 * 3
-    let buf: u8[BufSize]
+    const BUF_SIZE: i64 = 2 * 3
+    let buf: u8[BUF_SIZE]
     more := func(): i64 {
-        const Inner: i64 = BufSize + 1
-        let more: i32[Inner]
+        const INNER: i64 = BUF_SIZE + 1
+        let more: i32[INNER]
         return more.length()
     }
     let inner: i64 = 0
     if true then {
-        const BufSize: i64 = 1
-        let one: u8[BufSize]
+        const BUF_SIZE: i64 = 1
+        let one: u8[BUF_SIZE]
         inner = one.length()
     }
-    let outer: u8[BufSize]
-    const Small: i32 = 3
-    const Big: i32 = Small * 10
-    small := match 3 with { Small => "small"; _ => "other" }
-    big := match 30 with { Small => "small"; Big => "big"; _ => "other" }
+    let outer: u8[BUF_SIZE]
+    const SMALL: i32 = 3
+    const BIG: i32 = SMALL * 10
+    small := match 3 with { SMALL => "small"; _ => "other" }
+    big := match 30 with { SMALL => "small"; BIG => "big"; _ => "other" }
     return "{buf.length()} {more()} {inner} {outer.length()} {small} {big}"
 }
 
 func main() {
     let b: Buffer
     io.println("{b.bytes.length()} {b.sides.length()} {kind(1024)} {kind(4096)} {kind(5)}")
-    io.println("{Min} {Max} {Big} {Narrow} {Neg} {-Neg}")
-    io.println("{Half} {Ratio} {Verbose} {Letter} {Greeting}")
+    io.println("{MIN} {MAX} {BIG} {NARROW} {NEG} {-NEG}")
+    io.println("{HALF} {RATIO} {VERBOSE} {LETTER} {GREETING}")
     io.println(locals())
 }

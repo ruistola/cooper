@@ -105,5 +105,5 @@ The float functions are those of C's `math.h`, by the same names: `sqrt`, `cbrt`
 each computed in the argument's type. `min` and `max` give NaN when either argument is NaN,
 and `abs` of a signed integer type's most negative value overflows.
 
-The constants `Pi`, `E`, `Sqrt2`, `Ln2`, `Ln10`, `Inf`, and `NaN` are `f64`; `f32(math.Pi)` is
+The constants `PI`, `E`, `SQRT2`, `LN2`, `LN10`, `INF`, and `NAN` are `f64`; `f32(math.PI)` is
 the nearest `f32`.

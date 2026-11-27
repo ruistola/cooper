@@ -124,7 +124,8 @@ its operator (`total := a +`) or wrap the expression in parentheses. A block eva
 
 ## Naming conventions
 
-Types are PascalCase; functions, methods, variables, and fields are camelCase. Casing carries
+Types are PascalCase; constants are SCREAMING_SNAKE_CASE; functions, methods, variables, and
+fields are camelCase. Casing carries
 no visibility meaning. The visibility mechanism is still to be designed.
 
 ## Arrays
@@ -315,20 +316,20 @@ let (a, b): (i32, string) = row
 `const` names a value computed at compile time:
 
 ```
-const PageSize: i64 = 4096
-const BufSize: i64 = 4 * PageSize
-const Greeting: string = "hello, " + "world"
+const PAGE_SIZE: i64 = 4096
+const BUF_SIZE: i64 = 4 * PAGE_SIZE
+const GREETING: string = "hello, " + "world"
 ```
 
-A constant has a declared type, and its name is PascalCase. Its initializer may use literals,
-operators, numeric conversions such as `f64(PageSize)`, and other constants, including another
-module's (`sizes.PageSize`), in any declaration order. It cannot call a function. The arithmetic
+A constant has a declared type, and its name is SCREAMING_SNAKE_CASE. Its initializer may use
+literals, operators, numeric conversions such as `f64(PAGE_SIZE)`, and other constants, including another
+module's (`sizes.PAGE_SIZE`), in any declaration order. It cannot call a function. The arithmetic
 is the run-time arithmetic of the declared type, and what would stop the program at run time,
 such as overflow or division by zero, is a compile error. A constant is a number, `bool`,
 `rune`, or `string`.
 
-A constant is a value, not a variable: it cannot be assigned, and `&PageSize` is an error. An
-integer constant may give a static array's length, `u8[BufSize]`, and an integer, rune, or
+A constant is a value, not a variable: it cannot be assigned, and `&PAGE_SIZE` is an error. An
+integer constant may give a static array's length, `u8[BUF_SIZE]`, and an integer, rune, or
 `bool` constant may be a pattern, where it matches its value.
 
 A constant declared in a function body is in scope from its declaration to the end of its

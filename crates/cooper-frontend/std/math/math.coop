@@ -11,13 +11,13 @@
 # dropped, as `u8(f)` drops it. They are generated (`math_conversions` in the compiler's
 # `stdlib.rs`).
 
-const Pi: f64 = 3.141592653589793
+const PI: f64 = 3.141592653589793
 const E: f64 = 2.718281828459045
-const Sqrt2: f64 = 1.4142135623730951
-const Ln2: f64 = 0.6931471805599453
-const Ln10: f64 = 2.302585092994046
-const Inf: f64 = 1.0 / 0.0
-const NaN: f64 = 0.0 / 0.0
+const SQRT2: f64 = 1.4142135623730951
+const LN2: f64 = 0.6931471805599453
+const LN10: f64 = 2.302585092994046
+const INF: f64 = 1.0 / 0.0
+const NAN: f64 = 0.0 / 0.0
 
 # The lesser of `a` and `b`; NaN if either is.
 func min T (a: T, b: T): T {

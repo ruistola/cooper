@@ -196,7 +196,7 @@ impl Parser {
         })
     }
 
-    /// `const Name: T = value`.
+    /// `const NAME: T = value`.
     pub(super) fn parse_const_decl(&mut self) -> PResult<Stmt> {
         let start = self.peek().span;
         self.expect(Const)?;

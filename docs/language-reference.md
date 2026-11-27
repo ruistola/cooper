@@ -123,8 +123,8 @@ kind := match n with {               # integer, bool, tuple, struct, or sum-type
   directive ([Syntax Fundamentals](./syntax-fundamentals.md#directives)), of which there is one,
   `#private`. Source is UTF-8; only comments, strings, and
   rune literals (`'x'`, `'\n'`, `'\u{1F600}'`) may hold non-ASCII text.
-* Identifiers are `[A-Za-z_][A-Za-z0-9_]*`. Types are PascalCase and everything else is
-  camelCase. Casing matters to the compiler only in patterns (below).
+* Identifiers are `[A-Za-z_][A-Za-z0-9_]*`. Types are PascalCase, constants are
+  SCREAMING_SNAKE_CASE, and everything else is camelCase. Casing matters to the compiler only in patterns (below).
 * A final parameter `vals: ...T` receives its arguments as a `T[]`; `f(xs...)` passes an array
   as them ([Methods and Functions](./methods-and-functions.md#variadic-parameters)).
 * Reserved words: `and as break const continue defer do else extern false for func if in is let match nil or
@@ -268,9 +268,9 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
   every variable its initializer reaches, directly or through the functions it calls. An
   initializer that reaches its own variable is an error. Another module's variable is reached
   as `module.name`.
-* `const BufSize: i64 = 4 * 1024` is a constant: a typed value computed at compile time, not a
+* `const BUF_SIZE: i64 = 4 * 1024` is a constant: a typed value computed at compile time, not a
   variable. It is declared at module level, or in a body, where it is scoped like a variable. Its
-  initializer uses literals, operators, numeric conversions, and other constants (`module.Name`
+  initializer uses literals, operators, numeric conversions, and other constants (`module.NAME`
   too), and overflow there is a compile error. A constant is a number, `bool`, `rune`, or
   `string`, cannot be assigned or have its address taken, and may give a static array's length
   or, if an integer, rune, or `bool`, be a pattern.
@@ -309,7 +309,7 @@ Comparisons bind tighter than all three, so `x != nil and x.count > 10` needs no
   from `std.math`, all in scope everywhere
   ([Methods and Functions](./methods-and-functions.md#methods-of-built-in-types)). `std.math`
   also has the generic math functions (`math.min`, `math.abs`, `math.sqrt`, …) and constants
-  (`math.Pi`) ([Numeric Types](./numeric-types.md#math-functions)).
+  (`math.PI`) ([Numeric Types](./numeric-types.md#math-functions)).
 * Output goes through `std.io` (`io.print` and `io.println`, each taking a `string`), and
   `string(x)` formats any value: `Point{x: 1, y: 2}`, `[1, 2]`, `Some("a")`. Every string
   literal interpolates the same formatting: `io.println("p is {p}")`, or positionally,
